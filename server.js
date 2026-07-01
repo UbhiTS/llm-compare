@@ -21,7 +21,7 @@ const crypto = require('crypto');
 const express = require('express');
 
 const { runComparison } = require('./src/orchestrator');
-const { DEFAULT_MODELS } = require('./src/pricing');
+const { DEFAULT_MODELS, MODEL_CATALOG, resolveModels } = require('./src/pricing');
 const { TASKS } = require('./src/tasks');
 const { autoMintEnabled } = require('./src/gcloudToken');
 const { runCode, executionEnabled } = require('./src/codeRunner');
@@ -231,6 +231,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 app.get('/api/config', (req, res) => {
   res.json({
     models: DEFAULT_MODELS,
+    catalog: MODEL_CATALOG, // the fixed set of models a user may add/remove (settings locked)
     tasks: TASKS.map((t) => ({
       id: t.id,
       title: t.title,
@@ -352,7 +353,10 @@ app.post('/api/run', async (req, res) => {
   } else {
     task = TASKS.find((t) => t.id === taskId) || TASKS[0];
   }
-  const chosenModels = Array.isArray(models) && models.length ? models : DEFAULT_MODELS;
+  // Server-authoritative: rebuild every slot from the fixed catalog. Any
+  // client-supplied price / model id / provider is ignored — users can only
+  // add/remove catalog models, never modify their settings.
+  const chosenModels = resolveModels(models);
 
   // Per-user daily abuse guardrail — but ONLY when the run uses the SERVER's keys.
   // If the user brought their own credentials for every model, they're on their own

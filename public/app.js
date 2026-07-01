@@ -2,7 +2,6 @@
 // LLM Agent Arena — frontend
 // ---------------------------------------------------------------------------
 
-const PROVIDERS = ['agentplatform', 'gemini', 'openai', 'anthropic'];
 const PALETTE = ['#5e8bff', '#2fd9a6', '#ff9e6d', '#b388ff', '#ffcb5e', '#22e0ff']; // Aurora accents
 const MIN_SLOTS = 1;
 const MAX_SLOTS = 3; // compare at most 3 models at a time
@@ -99,7 +98,6 @@ async function init() {
 
   $('#runBtn').addEventListener('click', run);
   $('#clearRunBtn').addEventListener('click', clearRunUI);
-  $('#addModelBtn').addEventListener('click', addModel);
   $('#runAllBtn').addEventListener('click', runAllCode);
   $('#historyBtn').addEventListener('click', openHistoryModal);
   updateQuotaBadge();
@@ -317,14 +315,21 @@ function openChangePwModal() {
   });
 }
 
-// ---------- dynamic slots: add / remove ----------
-function addModel() {
+// ---------- model slots: add / remove from the fixed catalog ----------
+function catalog() { return (CONFIG && CONFIG.catalog) || []; }
+
+// Add a preconfigured catalog model (by its catalog id). Settings come straight
+// from the catalog — the user can't modify price/provider/model.
+function addModel(catalogId) {
   if (MODELS.length >= MAX_SLOTS) return;
+  const c = catalog().find((x) => x.id === catalogId);
+  if (!c) return;
+  if (MODELS.some((m) => m.catalogId === c.id)) return; // each model at most once
   const slot = nextSlotId();
   MODELS.push({
-    slot, label: `Model ${slot}`,
-    provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash',
-    price: { input: 1.50, output: 9.00 },
+    slot, catalogId: c.id, label: c.label,
+    provider: c.provider, publisher: c.publisher, model: c.model,
+    price: { input: c.price.input, output: c.price.output },
   });
   renderModelEditors();
   buildArena();
@@ -371,51 +376,46 @@ function renderTaskPrompt() {
 function renderModelEditors() {
   const wrap = $('#modelEditors');
   wrap.innerHTML = '';
+  // Selected models — read-only cards (settings are preconfigured & locked).
   MODELS.forEach((m, i) => {
-    const card = el('div', 'model-card-edit');
+    const price = `$${(+m.price.input).toFixed(2)} in · $${(+m.price.output).toFixed(2)} out`;
+    const card = el('div', 'model-card-locked');
     card.style.borderTop = `3px solid ${slotColor(m.slot)}`;
     card.innerHTML = `
       <div class="card-head">
-        <h4><span class="slot-dot" style="background:${slotColor(m.slot)}"></span>Slot ${m.slot}</h4>
+        <h4><span class="slot-dot" style="background:${slotColor(m.slot)}"></span>${esc(m.label)}</h4>
         <button class="remove-slot" data-rm="${i}" type="button" title="Remove this model"${MODELS.length <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
       </div>
-      <div class="mini"><label>Display label</label><input data-i="${i}" data-k="label" value="${esc(m.label)}"></div>
-      <div class="mini"><label>Provider</label>
-        <select data-i="${i}" data-k="provider">
-          ${PROVIDERS.map((p) => `<option value="${p}" ${p === m.provider ? 'selected' : ''}>${p}</option>`).join('')}
-        </select>
-      </div>
-      <div class="mini"><label>Publisher (Agent Platform)</label>
-        <select data-i="${i}" data-k="publisher">
-          ${['google', 'anthropic'].map((pp) => `<option value="${pp}" ${pp === (m.publisher || 'google') ? 'selected' : ''}>${pp}</option>`).join('')}
-        </select>
-      </div>
-      <div class="mini"><label>Model id</label><input data-i="${i}" data-k="model" value="${esc(m.model)}"></div>
-      <div class="price-row">
-        <div class="mini"><label>$ / 1M in</label><input data-i="${i}" data-k="pin" type="number" step="0.01" value="${m.price.input}"></div>
-        <div class="mini"><label>$ / 1M out</label><input data-i="${i}" data-k="pout" type="number" step="0.01" value="${m.price.output}"></div>
-      </div>`;
+      <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(m.provider)} · ${esc(m.model)}</span></div>
+      <div class="mc-row"><span class="mc-key">Price</span><span class="mc-val">${price} <span class="mc-per">/ 1M tok</span></span></div>
+      <div class="mc-locked" title="Model settings are preconfigured from public pricing and can’t be edited">🔒 Preconfigured</div>`;
     wrap.appendChild(card);
   });
   wrap.querySelectorAll('.remove-slot').forEach((b) =>
     b.addEventListener('click', (e) => removeModel(+e.currentTarget.dataset.rm)));
-  wrap.querySelectorAll('input,select').forEach((node) => {
-    node.addEventListener('change', (e) => {
-      const i = +e.target.dataset.i;
-      const k = e.target.dataset.k;
-      const v = e.target.value;
-      if (k === 'pin') MODELS[i].price.input = parseFloat(v) || 0;
-      else if (k === 'pout') MODELS[i].price.output = parseFloat(v) || 0;
-      else MODELS[i][k] = v;
-      if (k === 'label' || k === 'model') buildArena();
-    });
-  });
 
-  const addBtn = $('#addModelBtn');
-  if (addBtn) {
-    addBtn.disabled = MODELS.length >= MAX_SLOTS;
-    addBtn.title = MODELS.length >= MAX_SLOTS ? `Maximum ${MAX_SLOTS} models` : 'Add another model slot';
+  // Add-picker: one chip per catalog model not already selected.
+  const addWrap = $('#addModels');
+  if (!addWrap) return;
+  addWrap.innerHTML = '';
+  if (MODELS.length >= MAX_SLOTS) {
+    addWrap.appendChild(el('span', 'add-note', `Maximum ${MAX_SLOTS} models selected.`));
+    return;
   }
+  const present = new Set(MODELS.map((m) => m.catalogId));
+  const avail = catalog().filter((c) => !present.has(c.id));
+  if (!avail.length) {
+    addWrap.appendChild(el('span', 'add-note', 'All available models are selected.'));
+    return;
+  }
+  avail.forEach((c) => {
+    const chip = el('button', 'add-model-chip',
+      `<span class="am-plus">+</span> ${esc(c.label)} <span class="am-price">$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}</span>`);
+    chip.type = 'button';
+    chip.title = `Add ${c.label} (${c.model})`;
+    chip.addEventListener('click', () => addModel(c.id));
+    addWrap.appendChild(chip);
+  });
 }
 
 // ---------- arena scaffolding ----------
@@ -1129,7 +1129,7 @@ function saveRun(taskId, resultsMap, models) {
   if (!taskId || !models || !models.length) return;
   const snap = {
     v: 1, taskId, savedAt: Date.now(),
-    models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
+    models: models.map((m) => ({ slot: m.slot, catalogId: m.catalogId, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
     slots: models.map((m) => ({ slot: m.slot, data: resultsMap[m.slot] || null })),
   };
   const set = (obj) => { try { localStorage.setItem(RUN_KEY(taskId), JSON.stringify(obj)); return true; } catch (e) { return false; } };
@@ -1174,7 +1174,7 @@ function saveHistory(taskId, resultsMap, models) {
   const entry = {
     v: 1, id: 'h' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
     taskId, title: (task && task.title) || (taskId === 'custom' ? 'Custom prompt' : taskId), savedAt: Date.now(),
-    models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
+    models: models.map((m) => ({ slot: m.slot, catalogId: m.catalogId, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
     slots: models.map((m) => ({ slot: m.slot, data: resultsMap[m.slot] || null })),
     summary: historySummary(resultsMap, models),
   };

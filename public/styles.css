@@ -197,19 +197,27 @@ select option { color: var(--text); background: var(--bg); }
 .model-config { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .model-config summary { cursor: pointer; color: var(--accent); font-size: 13px; user-select: none; letter-spacing: .01em; }
 .model-editors { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-top: 12px; }
-.model-card-edit { background: var(--surface-2); border: 1px solid var(--border); border-radius: 0; padding: 13px; }
-.model-card-edit .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; }
-.model-card-edit h4 { font-family: "Space Grotesk", sans-serif; margin: 0; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.model-card-locked { background: var(--surface-2); border: 1px solid var(--border); border-radius: 0; padding: 13px; }
+.model-card-locked .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.model-card-locked h4 { font-family: "Space Grotesk", sans-serif; margin: 0; font-size: 13.5px; display: flex; align-items: center; gap: 8px; }
 .slot-dot { width: 10px; height: 10px; border-radius: 0; display: inline-block; flex: 0 0 auto; box-shadow: 0 0 9px currentColor; }
-.model-card-edit .mini { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.price-row { display: flex; gap: 8px; }
-.price-row .mini { flex: 1; }
-.remove-slot { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 24px; height: 24px; border-radius: 0; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
+.mc-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 12px; margin-top: 6px; }
+.mc-row .mc-key { color: var(--muted); text-transform: uppercase; letter-spacing: .12em; font-size: 10.5px; font-weight: 600; flex: 0 0 auto; }
+.mc-row .mc-val { color: var(--text); text-align: right; }
+.mc-row .mc-val.mono { font-family: "JetBrains Mono", monospace; font-size: 11.5px; word-break: break-all; }
+.mc-per { color: var(--faint); }
+.mc-locked { margin-top: 10px; font-size: 11px; color: var(--faint); letter-spacing: .02em; }
+.remove-slot { background: transparent; border: 1px solid var(--border); color: var(--muted); width: 24px; height: 24px; border-radius: 0; cursor: pointer; font-size: 16px; line-height: 1; padding: 0; flex: 0 0 auto; }
 .remove-slot:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); }
 .remove-slot:disabled { opacity: .35; cursor: not-allowed; }
-.add-model-btn { margin-top: 12px; background: var(--well); border: 1px dashed var(--border-hi); color: var(--accent); border-radius: 0; padding: 9px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.add-model-btn:hover:not(:disabled) { border-color: #5e8bff; }
-.add-model-btn:disabled { opacity: .45; cursor: not-allowed; }
+.add-models-row { display: flex; align-items: center; gap: 12px 14px; flex-wrap: wrap; margin-top: 14px; }
+.add-models-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .14em; font-weight: 600; }
+.add-models { display: flex; gap: 8px; flex-wrap: wrap; }
+.add-model-chip { background: var(--well); border: 1px dashed var(--border-hi); color: var(--text); border-radius: 0; padding: 8px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+.add-model-chip:hover { border-color: var(--accent); border-style: solid; }
+.add-model-chip .am-plus { color: var(--accent); font-weight: 700; }
+.add-model-chip .am-price { color: var(--faint); font-weight: 500; font-family: "JetBrains Mono", monospace; font-size: 11px; }
+.add-note { font-size: 12px; color: var(--faint); }
 .hint { color: var(--faint); font-size: 12px; margin: 12px 2px 2px; }
 .hint code, .foot code, .disclaimer code { background: var(--well); padding: 1px 7px; border-radius: 0; border: 1px solid var(--border); color: var(--text); }
 
