@@ -60,11 +60,30 @@ async function buildWebGame(code) {
 function patchIndexHtml(idxPath) {
   try {
     let html = fs.readFileSync(idxPath, 'utf8');
-    const fixed = html.replace(
+    html = html.replace(
       /https:\/\/pygame-web\.github\.io\/cdn\/[0-9.]+\/+browserfs\.min\.js/g,
       'https://cdn.jsdelivr.net/npm/browserfs@1.4.3/dist/browserfs.min.js',
     );
-    if (fixed !== html) fs.writeFileSync(idxPath, fixed, 'utf8');
+    // Make the game page self-diagnosing: surface real errors (ignoring browser-
+    // extension noise like the injected share-modal.js), and if pygbag's loader
+    // never hands off, drop its "Loading…" overlay after a grace period so a
+    // running or frozen game is visible instead of a perpetual spinner.
+    if (html.indexOf('ullm-diag') < 0) {
+      const nl = '\\n';
+      const diag =
+        '<script>(function(){' +
+        'function box(){var e=document.getElementById("ullm-diag");if(!e){e=document.createElement("div");e.id="ullm-diag";' +
+        'e.style.cssText="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(30,0,0,.92);color:#ff9b9b;font:12px/1.4 monospace;padding:8px 10px;white-space:pre-wrap;max-height:45%;overflow:auto";' +
+        'document.body.appendChild(e);}return e;}' +
+        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0;}' +
+        'window.addEventListener("error",function(e){var src=(e&&e.filename)||"";if(noise(src)||noise(e&&e.message))return;box().textContent+="JS error: "+((e&&e.message)||e)+(src?(" @ "+src+":"+(e.lineno||"")):"")+"' + nl + '";});' +
+        'window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason;var m=(r&&r.message)||r;if(noise(m))return;box().textContent+="Promise rejected: "+m+"' + nl + '";});' +
+        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";},15000);' +
+        '})();</script>';
+      if (html.indexOf('</body>') >= 0) html = html.replace('</body>', diag + '\n</body>');
+      else html += diag;
+    }
+    fs.writeFileSync(idxPath, html, 'utf8');
   } catch (e) { /* non-fatal: leave the file as-is */ }
 }
 
