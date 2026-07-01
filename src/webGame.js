@@ -64,6 +64,12 @@ function patchIndexHtml(idxPath) {
       /https:\/\/pygame-web\.github\.io\/cdn\/[0-9.]+\/+browserfs\.min\.js/g,
       'https://cdn.jsdelivr.net/npm/browserfs@1.4.3/dist/browserfs.min.js',
     );
+    // Auto-start the game instead of blocking on a user click. pygbag computes
+    // MM.UME = !ume_block, so the default ume_block:1 leaves MM.UME false and the
+    // loader sits waiting for a gesture — which, embedded in an iframe that just
+    // reads "Loading…", the user has no idea they need to make. ume_block:0 starts
+    // the game immediately; the audio context simply resumes on the first click.
+    html = html.replace(/ume_block\s*:\s*1/g, 'ume_block : 0');
     // Make the game page self-diagnosing: surface real errors (ignoring browser-
     // extension noise like the injected share-modal.js), and if pygbag's loader
     // never hands off, drop its "Loading…" overlay after a grace period so a
