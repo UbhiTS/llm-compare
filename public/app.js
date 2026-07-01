@@ -60,8 +60,8 @@ function applyTheme(t) {
   document.querySelectorAll('#themeSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.theme === t));
 }
 function initTheme() {
-  let t = 'dark';
-  try { t = localStorage.getItem('ullm.theme') || 'dark'; } catch (e) { /* ignore */ }
+  let t = 'medium';
+  try { t = localStorage.getItem('ullm.theme') || 'medium'; } catch (e) { /* ignore */ }
   applyTheme(t);
   const sw = document.querySelector('#themeSwitch');
   if (sw) sw.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
@@ -945,6 +945,11 @@ function handleEvent(ev, results) {
       finalize(results);
       saveRun(lastRunTaskId, results, lastRunModels); // remember this task's last run (localStorage, for instant restore)
       // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
+      // Bring the Model comparison scorecard to the top now that the run is done.
+      setTimeout(() => {
+        const sc = $('#scorecard');
+        if (sc && !sc.classList.contains('hidden')) sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 80);
       break;
     case 'error':
       slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(ev.message), 'err'); });
