@@ -29,6 +29,33 @@ function webGameEnabled() { return process.env.ENABLE_WEB_GAME !== '0'; }
 function idFor(code) { return crypto.createHash('sha256').update(code).digest('hex').slice(0, 16); }
 function webDirFor(id) { return path.join(ROOT, id, 'build', 'web'); }
 
+// Make LLM-generated pygame code survive pygbag's WASM runtime. The big one:
+// `import pygame.gfxdraw` — gfxdraw isn't in pygbag's pygame-ce build, and the
+// failed import triggers pygbag's pip-install fallback, which fetches a
+// non-existent PyPI package and crashes the async loop *during import* (before a
+// single frame renders). Models emit this constantly (often unused). We strip the
+// import and shim pygame.gfxdraw to a no-op so import-only games run and any real
+// usage degrades gracefully (that draw is skipped) instead of killing the game.
+function sanitizeForPygbag(code) {
+  const src = String(code || '');
+  const usesGfx = /(^|\n)\s*import\s+pygame\.gfxdraw\b/.test(src) || /(^|\n)\s*from\s+pygame\s+import\b[^\n]*\bgfxdraw\b/.test(src);
+  if (!usesGfx) return src;
+  let out = src
+    .replace(/^([ \t]*)import\s+pygame\.gfxdraw(?:\s+as\s+\w+)?[ \t]*$/gm, '$1pass  # pygbag: pygame.gfxdraw not available in WASM (shimmed below)')
+    .replace(/^([ \t]*)from\s+pygame\s+import\s+gfxdraw[ \t]*$/gm, '$1pass  # pygbag: gfxdraw import removed (shimmed below)');
+  const shim = [
+    'import pygame as _pgb_pygame',
+    'if not hasattr(_pgb_pygame, "gfxdraw"):',
+    '    class _PgbNoGfxdraw:',
+    '        def __getattr__(self, _name):',
+    '            return lambda *a, **k: None',
+    '    _pgb_pygame.gfxdraw = _PgbNoGfxdraw()',
+    '',
+    '',
+  ].join('\n');
+  return shim + out;
+}
+
 // Build (or reuse a cached build of) the given Python/Pygame source. Returns
 // { id, cached }. Concurrent requests for identical code share one build.
 async function buildWebGame(code) {
@@ -40,7 +67,7 @@ async function buildWebGame(code) {
   const p = (async () => {
     const appDir = path.join(ROOT, id);
     fs.mkdirSync(appDir, { recursive: true });
-    fs.writeFileSync(path.join(appDir, 'main.py'), code, 'utf8'); // pygbag entry point must be main.py
+    fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(code), 'utf8'); // pygbag entry point must be main.py
     await runPygbag(appDir);
     const idxPath = path.join(webDir, 'index.html');
     if (!fs.existsSync(idxPath)) {
@@ -84,7 +111,8 @@ function patchIndexHtml(idxPath) {
         'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0;}' +
         'window.addEventListener("error",function(e){var src=(e&&e.filename)||"";if(noise(src)||noise(e&&e.message))return;box().textContent+="JS error: "+((e&&e.message)||e)+(src?(" @ "+src+":"+(e.lineno||"")):"")+"' + nl + '";});' +
         'window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason;var m=(r&&r.message)||r;if(noise(m))return;box().textContent+="Promise rejected: "+m+"' + nl + '";});' +
-        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";},15000);' +
+        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";' +
+        'var c=document.getElementById("canvas");if(c&&c.width<=1){var pc=document.getElementById("pyconsole");if(pc){pc.hidden=false;pc.style.cssText="position:fixed;left:0;right:0;bottom:0;height:45%;z-index:2147483646;background:#000;color:#ddd;overflow:auto;font:11px monospace";}}},15000);' +
         '})();</script>';
       if (html.indexOf('</body>') >= 0) html = html.replace('</body>', diag + '\n</body>');
       else html += diag;
