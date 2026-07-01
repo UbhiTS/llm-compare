@@ -121,6 +121,11 @@ async function init() {
   $('#runBtn').addEventListener('click', run);
   $('#clearRunBtn').addEventListener('click', clearRunUI);
   $('#runAllBtn').addEventListener('click', runAllCode);
+  { const ar = $('#autoRun'); if (ar) ar.addEventListener('click', () => {
+    const on = !ar.classList.contains('is-on');
+    ar.classList.toggle('is-on', on);
+    ar.setAttribute('aria-pressed', String(on));
+  }); }
   $('#historyBtn').addEventListener('click', openHistoryModal);
   updateQuotaBadge();
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeAuthModal(); } });
@@ -931,7 +936,7 @@ function handleEvent(ev, results) {
         const rab = $('#runAllBtn');
         if (rab) rab.disabled = false;
         const auto = $('#autoRun');
-        if (auto && auto.checked) execSlotCode(ev.slot); // auto-launch on finish (default on)
+        if (auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
       }
       {
         const rr = ev.result;

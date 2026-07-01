@@ -181,8 +181,27 @@ select option { color: var(--text); background: var(--bg); }
 .clear-run-btn:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 16%, transparent); }
 .clear-run-btn:disabled { opacity: .45; cursor: not-allowed; }
 
-.auto-run { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
-.auto-run input { width: 15px; height: 15px; accent-color: #5e8bff; cursor: pointer; }
+/* auto-run: a themed toggle push-button (on/off) instead of a checkbox */
+.autorun-toggle { display: inline-flex; align-items: center; gap: 8px; font-family: inherit; font-size: 12.5px; font-weight: 600;
+  color: var(--muted); background: var(--well); border: 1px solid var(--border-hi); padding: 8px 14px; cursor: pointer;
+  white-space: nowrap; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+.autorun-toggle:hover { border-color: var(--accent); color: var(--text); }
+.autorun-toggle .ar-led { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; transition: background .15s ease, box-shadow .15s ease; }
+.autorun-toggle.is-on { color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--border-hi)); background: color-mix(in srgb, var(--accent) 15%, var(--well)); }
+.autorun-toggle.is-on .ar-led { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.autorun-toggle:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent); }
+
+/* themed checkbox (admin "make this user an admin" control) */
+.auth-check input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  width: 18px; height: 18px; margin: 0; flex: 0 0 auto; position: relative; vertical-align: middle;
+  border: 1.5px solid var(--border-hi); border-radius: 5px; background: var(--well); cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+}
+.auth-check input[type="checkbox"]:hover { border-color: var(--accent); }
+.auth-check input[type="checkbox"]:checked { background: linear-gradient(135deg, var(--accent), #6d5bd0); border-color: transparent; box-shadow: 0 0 11px -3px var(--accent); }
+.auth-check input[type="checkbox"]:checked::after { content: ""; position: absolute; left: 6px; top: 2px; width: 4px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.auth-check input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent); }
 
 .task-prompt { color: var(--muted); font-size: 13.5px; margin: 10px 2px 2px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
 .task-meta { display: inline-block; margin: 14px 2px 0; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
@@ -541,7 +560,6 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 .auth-field input { width: 100%; background: var(--well); border: 1px solid var(--border); color: var(--text); padding: 10px 12px; font-size: 14px; outline: none; }
 .auth-field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(94,139,255,.16); }
 .auth-check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer; margin: 4px 0 6px; }
-.auth-check input { width: 15px; height: 15px; accent-color: #5e8bff; }
 .auth-msg { font-size: 12.5px; min-height: 15px; margin: 8px 0 4px; }
 .auth-msg.err { color: var(--bad); }
 .auth-msg.ok { color: var(--good); }
