@@ -26,6 +26,7 @@ const { TASKS } = require('./src/tasks');
 const { autoMintEnabled } = require('./src/gcloudToken');
 const { runCode, executionEnabled } = require('./src/codeRunner');
 const { buildWebGame, gameDir, webGameEnabled } = require('./src/webGame');
+const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 
@@ -258,6 +259,35 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+// ---------- run history (per-user; admins can see everyone) ----------
+// A user only ever sees their own runs. Admins can request scope=all and the
+// usage summary. History is written server-side after each run (see /api/run),
+// so the browser cannot forge or tamper with it.
+app.get('/api/history', (req, res) => {
+  if (req.query.scope === 'all') {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
+    return res.json({ scope: 'all', runs: history.listAllRuns() });
+  }
+  res.json({ scope: 'me', runs: history.listRuns(req.user.username) });
+});
+
+app.get('/api/history/:id', (req, res) => {
+  const rec = history.getRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!rec) return res.status(404).json({ error: 'Run not found.' });
+  res.json({ run: rec });
+});
+
+app.delete('/api/history/:id', (req, res) => {
+  const ok = history.deleteRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!ok) return res.status(404).json({ error: 'Run not found or not yours to delete.' });
+  res.json({ ok: true });
+});
+
+// Admin at-a-glance usage: who's active, runs today, totals.
+app.get('/api/usage', requireAdmin, (req, res) => {
+  res.json(history.usageSummary());
+});
+
 // Execute an LLM-generated solution: python -> run the program; javascript ->
 // run the function against the task's hidden tests. taskId supplies the tests.
 app.post('/api/execute', async (req, res) => {
@@ -311,9 +341,15 @@ app.get('/games/:id/*', (req, res) => {
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://pygame-web.github.io https://cdn.jsdelivr.net",
     "style-src 'self' 'unsafe-inline' https://pygame-web.github.io",
     "img-src 'self' data: blob: https://pygame-web.github.io",
+    // pygame loads sound (e.g. beep.ogg) via blob:/data: URLs; without media-src it
+    // falls back to default-src (no blob:/data:) and the game crashes on audio load.
+    "media-src 'self' data: blob: https://pygame-web.github.io https://cdn.jsdelivr.net",
     "connect-src 'self' blob: data: https://pygame-web.github.io https://cdn.jsdelivr.net",
     "worker-src 'self' blob:",
-    "child-src 'self' blob:",
+    "child-src 'self' blob: https://pygame-web.github.io",
+    // pygbag frames its own vt/console from the CDN; without frame-src this is blocked
+    // (surfaces as the share-modal.js 'addEventListener of null' error).
+    "frame-src 'self' blob: https://pygame-web.github.io",
     "frame-ancestors 'self'",
   ].join('; '));
   res.sendFile(fp);
@@ -392,10 +428,19 @@ app.post('/api/run', async (req, res) => {
 
   emit({ type: 'quota', quota: quotaInfo }); // let the UI update the "runs left today" counter
 
+  let results = null;
   try {
-    await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys });
   } catch (e) {
     emit({ type: 'error', message: String((e && e.message) || e) });
+  }
+  // Log this run to the durable per-user history. FIRE-AND-FORGET: saveRun is
+  // async and never throws, so this never blocks res.end() or the event loop on
+  // a slow gcsfuse write (which would otherwise stall other users on this single
+  // instance). The server is the source of truth (the browser never writes
+  // history), so a user cannot forge or tamper with the log.
+  if (Array.isArray(results)) {
+    history.saveRun({ user: req.user.username, userName: req.user.username, task, models: chosenModels, results }).catch(() => {});
   }
   res.end();
 });

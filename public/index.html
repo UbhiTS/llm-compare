@@ -15,6 +15,12 @@
   <script src="app.js" defer></script>
 </head>
 <body>
+  <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <linearGradient id="ic-gemini" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4989f5" /><stop offset=".5" stop-color="#9168e0" /><stop offset="1" stop-color="#e0664f" />
+    </linearGradient>
+  </defs></svg>
   <div class="aurora" aria-hidden="true"></div>
 
   <header class="topbar">
@@ -82,27 +88,38 @@
   <section id="arena" class="arena"></section>
 
   <section id="scorecard" class="scorecard glass hidden">
-    <h2>Balanced scorecard</h2>
-    <div id="takeaway" class="takeaway"></div>
+    <div class="sc-head">
+      <h2>Balanced scorecard</h2>
+      <p class="sc-sub">Every axis normalized 0–100 across this run · higher is better</p>
+    </div>
+
+    <div id="winnerHero" class="winner-hero"></div>
+    <div id="modelCards" class="model-cards"></div>
+
     <div class="score-grid">
       <div class="chart-wrap">
         <canvas id="radar"></canvas>
-        <p class="chart-note">Each axis normalized 0–100 (higher is better) across this run.</p>
+        <p class="chart-note">Balance of all axes — a bigger, rounder shape is a better all-rounder.</p>
       </div>
       <div id="barWrap" class="bar-wrap"></div>
     </div>
-    <div class="table-wrap">
-      <table id="resultsTable">
-        <thead>
-          <tr>
-            <th>Model</th><th>Correctness</th><th>Wall time</th><th>Rounds</th>
-            <th>Tokens (in / out / think)</th><th>Tokens/s</th><th>Cost / task</th><th>Cost / 1k tasks</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-      <p class="disclaimer">Metrics are measured live from the provider APIs (latency, returned token usage) and your configured prices. Quality = % of hidden edge-case tests passed on the final round.</p>
-    </div>
+
+    <details class="sc-details">
+      <summary>Full metrics table &amp; details</summary>
+      <div id="takeaway" class="takeaway"></div>
+      <div class="table-wrap">
+        <table id="resultsTable">
+          <thead>
+            <tr>
+              <th>Model</th><th>Correctness</th><th>Wall time</th><th>Rounds</th>
+              <th>Tokens (in / out / think)</th><th>Tokens/s</th><th>Cost / task</th><th>Cost / 1k tasks</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="disclaimer">Metrics are measured live from the provider APIs (latency, returned token usage) and your configured prices. Quality = % of hidden edge-case tests passed on the final round.</p>
+      </div>
+    </details>
   </section>
 
   <footer class="foot">LLM Compare · a configurable model-comparison harness · edit tasks in <code>src/tasks.js</code> · prices in <code>src/pricing.js</code></footer>

@@ -37,6 +37,22 @@ const esc = (s) =>
   String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const MAGNIFY_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.4"/><line x1="10.1" y1="10.1" x2="14" y2="14"/></svg>';
 
+// ---------- model icons (brand marks used across arena, editor, scorecard) ----------
+const ICON_GEMINI = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.5c.45 5.4 3.6 8.55 9 9-5.4.45-8.55 3.6-9 9-.45-5.4-3.6-8.55-9-9 5.4-.45 8.55-3.6 9-9Z" fill="url(#ic-gemini)"/></svg>';
+const ICON_CLAUDE = (() => {
+  let rays = '';
+  for (let i = 0; i < 12; i++) rays += `<rect x="11.05" y="2.1" width="1.9" height="6.4" rx=".95" transform="rotate(${i * 30} 12 12)"/>`;
+  return `<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><g fill="#d97757">${rays}</g></svg>`;
+})();
+const ICON_GENERIC = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>';
+// Pick a brand mark from a model's publisher / provider / model id / label.
+function modelIconSvg(m) {
+  const s = (((m && m.publisher) || '') + ' ' + ((m && m.provider) || '') + ' ' + ((m && m.model) || '') + ' ' + ((m && m.label) || '')).toLowerCase();
+  if (s.indexOf('anthropic') >= 0 || s.indexOf('claude') >= 0) return ICON_CLAUDE;
+  if (s.indexOf('gemini') >= 0 || s.indexOf('google') >= 0) return ICON_GEMINI;
+  return ICON_GENERIC;
+}
+
 // ---------- theme (light / medium / dark) ----------
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
@@ -383,7 +399,7 @@ function renderModelEditors() {
     card.style.borderTop = `3px solid ${slotColor(m.slot)}`;
     card.innerHTML = `
       <div class="card-head">
-        <h4><span class="slot-dot" style="background:${slotColor(m.slot)}"></span>${esc(m.label)}</h4>
+        <h4><span class="mc-ic">${modelIconSvg(m)}</span>${esc(m.label)}</h4>
         <button class="remove-slot" data-rm="${i}" type="button" title="Remove this model"${MODELS.length <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
       </div>
       <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(m.provider)} · ${esc(m.model)}</span></div>
@@ -410,7 +426,7 @@ function renderModelEditors() {
   }
   avail.forEach((c) => {
     const chip = el('button', 'add-model-chip',
-      `<span class="am-plus">+</span> ${esc(c.label)} <span class="am-price">$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}</span>`);
+      `<span class="am-plus">+</span><span class="am-ic">${modelIconSvg(c)}</span> ${esc(c.label)} <span class="am-price">$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}</span>`);
     chip.type = 'button';
     chip.title = `Add ${c.label} (${c.model})`;
     chip.addEventListener('click', () => addModel(c.id));
@@ -431,6 +447,7 @@ function buildArena(models) {
     col.innerHTML = `
       <div class="col-head">
         <span class="col-accent" style="background:${slotColor(m.slot)}"></span>
+        <span class="col-ic">${modelIconSvg(m)}</span>
         <div>
           <div class="col-title">${esc(m.label)}</div>
           <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}</div>
@@ -926,8 +943,8 @@ function handleEvent(ev, results) {
       break;
     case 'all_done':
       finalize(results);
-      saveRun(lastRunTaskId, results, lastRunModels);    // remember this run for the task
-      saveHistory(lastRunTaskId, results, lastRunModels); // + append to the restorable run history
+      saveRun(lastRunTaskId, results, lastRunModels); // remember this task's last run (localStorage, for instant restore)
+      // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
       break;
     case 'error':
       slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(ev.message), 'err'); });
@@ -981,10 +998,65 @@ function buildScorecard(results) {
     return { ...r, axes, overall };
   });
 
+  renderWinnerHero(scored, isCustom);
+  renderModelCards(scored, isCustom);
   renderRadar(scored);
   renderBars(scored);
   renderTable(scored, isCustom);
   renderTakeaway(scored, isCustom);
+}
+
+// Headline: the balanced winner + the single most striking comparative fact.
+function renderWinnerHero(scored, isCustom) {
+  const host = $('#winnerHero');
+  if (!host) return;
+  const ranked = [...scored].sort((a, b) => b.overall - a.overall);
+  const winner = ranked[0];
+  const cheapest = [...scored].sort((a, b) => a.costUsd - b.costUsd)[0];
+  const fastest = [...scored].sort((a, b) => a.wallMs - b.wallMs)[0];
+  const priciest = [...scored].sort((a, b) => b.costUsd - a.costUsd)[0];
+  const slowest = [...scored].sort((a, b) => b.wallMs - a.wallMs)[0];
+  const bits = [];
+  if (!isCustom) {
+    const allSolved = scored.every((r) => r.solved);
+    bits.push(allSolved ? 'all models reached 100% correct' : `${esc(winner.label)} led on correctness`);
+  }
+  const costMult = priciest.costUsd / Math.max(cheapest.costUsd, 1e-9);
+  if (scored.length > 1 && costMult >= 1.15) bits.push(`<b>${esc(cheapest.label)}</b> ${costMult.toFixed(1)}× cheaper`);
+  const timeMult = slowest.wallMs / Math.max(fastest.wallMs, 1);
+  if (scored.length > 1 && timeMult >= 1.15) bits.push(`<b>${esc(fastest.label)}</b> ${timeMult.toFixed(1)}× faster`);
+  const why = bits.length ? bits.join(' · ') : 'closely matched across speed, tokens and cost';
+  host.style.setProperty('--accent', slotColor(winner.slot));
+  host.innerHTML = `
+    <div class="wh-icon">${modelIconSvg(winner)}</div>
+    <div class="wh-main">
+      <div class="wh-badge">▲ Best balanced</div>
+      <div class="wh-name">${esc(winner.label)}</div>
+      <div class="wh-why">${why}</div>
+    </div>
+    <div class="wh-score"><div class="whs-num">${winner.overall}</div><div class="whs-lbl">overall / 100</div></div>`;
+}
+
+// One scannable card per model, ranked, with icon + big score + key stats.
+function renderModelCards(scored, isCustom) {
+  const wrap = $('#modelCards');
+  if (!wrap) return;
+  const ranked = [...scored].sort((a, b) => b.overall - a.overall);
+  wrap.innerHTML = ranked.map((r, i) => {
+    const stats = isCustom
+      ? [['Cost / task', fmtCost(r.costUsd)], ['Speed', (r.wallMs / 1000).toFixed(1) + 's'], ['Out tokens', fmtInt(Math.max(0, r.completionTokens - (r.reasoningTokens || 0)))]]
+      : [['Correctness', (r.correctness == null ? '—' : r.correctness + '%')], ['Cost / task', fmtCost(r.costUsd)], ['Speed', (r.wallMs / 1000).toFixed(1) + 's']];
+    const statHtml = stats.map(([k, v]) => `<div class="mcc-stat"><span class="mcs-k">${k}</span><span class="mcs-v">${esc(v)}</span></div>`).join('');
+    return `<div class="mc-card${i === 0 ? ' is-win' : ''}" style="--accent:${slotColor(r.slot)}">
+      <div class="mcc-top">
+        <span class="mcc-rank">P${i + 1}</span>
+        <span class="mcc-ic">${modelIconSvg(r)}</span>
+        <span class="mcc-name">${esc(r.label)}</span>
+      </div>
+      <div class="mcc-overall"><b>${r.overall}</b><span>/ 100</span><i>balanced score</i></div>
+      <div class="mcc-stats">${statHtml}</div>
+    </div>`;
+  }).join('');
 }
 
 function renderRadar(scored) {
@@ -1038,7 +1110,7 @@ function renderBars(scored) {
       const w = Math.max(4, Math.round(((scoreFn(r) || 0) / maxScore) * 100));
       const row = el('div', 'bar-row' + (title.indexOf('Overall') === 0 && r.slot === champSlot ? ' champ' : ''));
       row.innerHTML =
-        `<span class="name">${esc(r.label)}</span>` +
+        `<span class="name">${modelIconSvg(r)}${esc(r.label)}</span>` +
         `<span class="bar-track"><span class="bar-fill" style="width:${w}%;background:${slotColor(r.slot)}"></span></span>` +
         `<span class="val">${labelFn(r)}</span>`;
       rows.appendChild(row);
@@ -1059,7 +1131,7 @@ function renderTable(scored, isCustom) {
     const tr = el('tr');
     if (r.slot === champSlot) tr.className = 'champ';
     tr.innerHTML =
-      `<td><span class="row-dot" style="background:${slotColor(r.slot)}"></span>${esc(r.label)}</td>` +
+      `<td><span class="row-ic">${modelIconSvg(r)}</span>${esc(r.label)}</td>` +
       `<td class="${!isCustom && r.correctness === bestCorr ? 'best' : ''}">${isCustom || r.correctness == null ? '\u2014' : r.correctness + '%'}</td>` +
       `<td class="${r.wallMs === bestWall ? 'best' : ''}">${(r.wallMs / 1000).toFixed(1)}s</td>` +
       `<td>${r.iterations}</td>` +
@@ -1145,75 +1217,103 @@ function loadRun(taskId) {
 }
 function clearRun(taskId) { try { localStorage.removeItem(RUN_KEY(taskId)); } catch (e) { /* ignore */ } }
 
-// ---------- run history / log (client-side; restore any past comparison) ----------
-const HISTORY_KEY = 'ullm.history';
-const HISTORY_MAX = 25;
-function loadHistory() { try { const a = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
-function writeHistory(a) {
-  let list = a.slice(0, HISTORY_MAX);
-  const attempt = (arr) => { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); return true; } catch (e) { return false; } };
-  if (attempt(list)) return;
-  // Too big for the quota: shed the heaviest fields, then the oldest entries.
-  const strip = (key) => list.map((h) => ({ ...h, slots: (h.slots || []).map((s) => (s.data && !s.data.error ? { slot: s.slot, data: { ...s.data, [key]: '' } } : s)) }));
-  list = strip('reasoning'); if (attempt(list)) return;
-  list = strip('code'); if (attempt(list)) return;
-  while (list.length && !attempt(list)) list = list.slice(0, list.length - 1);
-}
-function historySummary(resultsMap, models) {
-  return models.map((m) => {
-    const r = resultsMap[m.slot] || {};
-    return { slot: m.slot, label: m.label, model: m.model, error: r.error || null,
-      correctness: r.correctness, solved: r.solved, total: r.total,
-      answerTokens: Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)),
-      costUsd: r.costUsd, wallMs: r.wallMs };
-  });
-}
-function saveHistory(taskId, resultsMap, models) {
-  if (!taskId || !models || !models.length) return;
-  const task = (CONFIG && CONFIG.tasks || []).find((x) => x.id === taskId) || currentTask();
-  const entry = {
-    v: 1, id: 'h' + Date.now() + '-' + Math.floor(Math.random() * 1e6),
-    taskId, title: (task && task.title) || (taskId === 'custom' ? 'Custom prompt' : taskId), savedAt: Date.now(),
-    models: models.map((m) => ({ slot: m.slot, catalogId: m.catalogId, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
-    slots: models.map((m) => ({ slot: m.slot, data: resultsMap[m.slot] || null })),
-    summary: historySummary(resultsMap, models),
-  };
-  const list = loadHistory();
-  list.unshift(entry);
-  writeHistory(list);
-}
-function deleteHistory(id) { writeHistory(loadHistory().filter((h) => h.id !== id)); }
-function clearAllHistory() { try { localStorage.removeItem(HISTORY_KEY); } catch (e) { /* ignore */ } }
+// ---------- run history / log (SERVER-backed; per-user, admins see everyone) ----------
+// The server logs every run (see /api/run) — the browser never writes history,
+// so it's durable, per-user and tamper-proof. A user sees only their own runs;
+// admins can toggle to all users and get an at-a-glance usage summary.
+let historyScope = 'me';
+function fmtWhen(ms) { try { return new Date(ms).toLocaleString(); } catch (e) { return ''; } }
 
-function openHistoryModal() {
+async function openHistoryModal() {
+  const isAdmin = ME && ME.role === 'admin';
+  if (!isAdmin) historyScope = 'me';
   const body = openAuthModal('Run history');
-  const list = loadHistory();
-  if (!list.length) { body.innerHTML = '<p class="auth-loading">No saved runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>'; return; }
-  const rows = list.map((h) => {
-    const when = new Date(h.savedAt).toLocaleString();
-    const chips = (h.summary || []).map((s) => {
-      const stat = s.error ? '<span class="hc-err">error</span>' : (s.total ? esc(s.correctness + '%') : 'done');
-      const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
-      return `<span class="hist-chip"><b>${esc(s.label)}</b> ${stat}${cost}</span>`;
-    }).join('');
-    return `<div class="hist-row">
-      <div class="hist-main"><div class="hist-title">${esc(h.title)}</div><div class="hist-when">${esc(when)}</div><div class="hist-chips">${chips}</div></div>
-      <div class="hist-act"><button class="submit-btn hist-restore" data-id="${esc(h.id)}">Restore ▸</button><button class="u-del hist-del" data-id="${esc(h.id)}">Delete</button></div>
-    </div>`;
-  }).join('');
-  body.innerHTML = `<div class="hist-list">${rows}</div><div class="hist-foot"><button class="u-del" id="histClearAll">Clear all history</button></div>`;
-  body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
-  body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => { deleteHistory(b.dataset.id); openHistoryModal(); }));
-  body.querySelector('#histClearAll').addEventListener('click', () => { if (window.confirm('Delete all saved run history?')) { clearAllHistory(); openHistoryModal(); } });
+  body.innerHTML = '<p class="auth-loading">Loading…</p>';
+  try {
+    const [histResp, usage] = await Promise.all([
+      fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
+      isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (histResp.status === 401) { window.location.replace('/login'); return; }
+    const data = await histResp.json();
+    if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
+    renderHistoryModal(body, data.runs || [], usage, isAdmin);
+  } catch (e) {
+    body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message;
+  }
 }
-function restoreHistory(id) {
-  const h = loadHistory().find((x) => x.id === id);
-  if (!h) return;
-  closeAuthModal();
-  const sel = $('#taskSelect');
-  if ([].slice.call(sel.options).some((o) => o.value === h.taskId)) { sel.value = h.taskId; renderTaskPrompt(); }
-  renderSavedRun(h); // rebuilds the arena + scorecard from the snapshot (its own model set)
-  $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+function renderHistoryModal(body, runs, usage, isAdmin) {
+  const usagePanel = (isAdmin && usage) ? renderUsagePanel(usage) : '';
+  const scopeToggle = isAdmin
+    ? `<div class="hist-scope">
+         <button class="hs-btn ${historyScope === 'me' ? 'active' : ''}" data-scope="me" type="button">My runs</button>
+         <button class="hs-btn ${historyScope === 'all' ? 'active' : ''}" data-scope="all" type="button">All users</button>
+       </div>`
+    : '';
+  const rows = runs.length
+    ? runs.map((h) => histRowHtml(h)).join('')
+    : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
+  body.innerHTML = usagePanel + scopeToggle + `<div class="hist-list">${rows}</div>`;
+  body.querySelectorAll('.hs-btn').forEach((b) => b.addEventListener('click', () => { historyScope = b.dataset.scope; openHistoryModal(); }));
+  body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
+  body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => deleteHistoryRun(b.dataset.id)));
+}
+
+function histRowHtml(h) {
+  const chips = (h.summary || []).map((s) => {
+    const stat = s.error ? '<span class="hc-err">error</span>' : (s.total ? esc(s.correctness + '%') : 'done');
+    const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
+    return `<span class="hist-chip"><b>${esc(s.label)}</b> ${stat}${cost}</span>`;
+  }).join('');
+  const who = (historyScope === 'all' && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
+  return `<div class="hist-row">
+    <div class="hist-main"><div class="hist-title">${esc(h.title)}${who}</div><div class="hist-when">${esc(fmtWhen(h.at))}</div><div class="hist-chips">${chips}</div></div>
+    <div class="hist-act"><button class="submit-btn hist-restore" data-id="${esc(h.id)}">Restore ▸</button><button class="u-del hist-del" data-id="${esc(h.id)}">Delete</button></div>
+  </div>`;
+}
+
+function renderUsagePanel(u) {
+  const t = u.totals || {};
+  const rows = (u.users || []).slice(0, 15).map((x) =>
+    `<tr><td class="u-name">${esc(x.userName || x.user)}</td><td>${fmtInt(x.runs)}</td><td>${fmtInt(x.runsToday)}</td><td>${esc(fmtCost(x.costUsd))}</td><td class="hist-when">${esc(x.lastAt ? fmtWhen(x.lastAt) : '—')}</td></tr>`
+  ).join('');
+  return `<div class="usage-panel">
+    <div class="usage-stats">
+      <div class="ustat"><div class="uk">Active users</div><div class="uv">${fmtInt(t.users || 0)}</div></div>
+      <div class="ustat"><div class="uk">Runs today</div><div class="uv">${fmtInt(t.runsToday || 0)}</div></div>
+      <div class="ustat"><div class="uk">Runs total</div><div class="uv">${fmtInt(t.totalRuns || 0)}</div></div>
+    </div>
+    ${rows ? `<table class="usage-table"><thead><tr><th>User</th><th>Runs</th><th>Today</th><th>Cost</th><th>Last run</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
+    <p class="hint">Usage across all users (today = since 00:00 UTC).</p>
+  </div>`;
+}
+
+async function restoreHistory(id) {
+  try {
+    const r = await fetch('/api/history/' + encodeURIComponent(id), { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const j = await r.json();
+    if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
+    const snap = j.run;
+    snap.savedAt = snap.savedAt || snap.at; // renderSavedRun/showSavedBanner expect savedAt
+    closeAuthModal();
+    const sel = $('#taskSelect');
+    if ([].slice.call(sel.options).some((o) => o.value === snap.taskId)) { sel.value = snap.taskId; renderTaskPrompt(); }
+    renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
+    $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) { window.alert(e.message); }
+}
+
+async function deleteHistoryRun(id) {
+  if (!window.confirm('Delete this run from history?')) return;
+  try {
+    const r = await fetch('/api/history/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error((j && j.error) || 'Could not delete.');
+    openHistoryModal();
+  } catch (e) { window.alert(e.message); }
 }
 
 // Wipe the current run from the UI → clean slate: clears results, scorecard, this
