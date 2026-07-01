@@ -468,7 +468,6 @@ function buildArena(models) {
         <div class="progress-track"><div class="progress-fill" id="pf-${m.slot}"></div></div>
         <div class="progress-label"><span id="pl-${m.slot}">0 / ${currentTask().testCount} tests</span><span id="ph-${m.slot}"></span></div>
       </div>
-      <div class="rounds" id="rounds-${m.slot}"></div>
       <details class="think" id="thinkbox-${m.slot}" open>
         <summary>Thinking / reasoning <span class="think-meta" id="think-meta-${m.slot}"></span><button class="md-magnify think-magnify" data-slot="${m.slot}" data-kind="think" type="button" title="Open full-page preview">${MAGNIFY_SVG}</button></summary>
         <pre class="think-pre"><code id="think-${m.slot}">—</code></pre>
@@ -895,11 +894,6 @@ function handleEvent(ev, results) {
         const pct = ev.total ? Math.round((ev.passed / ev.total) * 100) : 0;
         $(`#pf-${ev.slot}`).style.width = pct + '%';
         $(`#pl-${ev.slot}`).textContent = `${ev.passed} / ${ev.total} tests`;
-        $(`#ph-${ev.slot}`).textContent = `round ${ev.iteration}`;
-        const tok = ev.roundCompletionTokens ? ` · ${fmtInt(ev.roundCompletionTokens)} tok` : '';
-        const chip = el('span', 'round-chip ' + (ev.passed === ev.total ? 'pass' : 'fail'),
-          `R${ev.iteration}: ${ev.passed}/${ev.total}${tok}`);
-        $(`#rounds-${ev.slot}`).appendChild(chip);
       }
       if (ev.code) setCode(ev.slot, ev.code);
       if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, null);
@@ -929,7 +923,7 @@ function handleEvent(ev, results) {
         const secs = (rr.wallMs / 1000).toFixed(1);
         const msg = rr.total === 0
           ? `Done · ${secs}s`
-          : (rr.solved ? `Solved in ${rr.iterations} round(s) · ${secs}s` : `Finished ${rr.correctness}% · ${secs}s`);
+          : (rr.solved ? `Solved · ${secs}s` : `Finished ${rr.correctness}% · ${secs}s`);
         setStatus(ev.slot, msg, 'done');
       }
       break;
@@ -982,7 +976,6 @@ function buildScorecard(results) {
   const minCost = Math.min(...results.map((r) => Math.max(r.costUsd, 1e-9)));
   const minWall = Math.min(...results.map((r) => r.wallMs));
   const minTok = Math.min(...results.map((r) => r.totalTokens));
-  const minIter = Math.min(...results.map((r) => r.iterations));
 
   const isCustom = results.every((r) => !r.total);
   const scored = results.map((r) => {
@@ -993,7 +986,6 @@ function buildScorecard(results) {
     };
     if (!isCustom) {
       axes.Correctness = r.correctness;
-      axes.Reliability = Math.round((minIter / r.iterations) * 100);
     }
     const vals = Object.values(axes);
     const overall = Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
@@ -1171,7 +1163,6 @@ function renderTable(scored, isCustom) {
       `<td><span class="row-ic">${modelIconSvg(r)}</span>${esc(r.label)}</td>` +
       `<td class="${!isCustom && r.correctness === bestCorr ? 'best' : ''}">${isCustom || r.correctness == null ? '\u2014' : r.correctness + '%'}</td>` +
       `<td class="${r.wallMs === bestWall ? 'best' : ''}">${(r.wallMs / 1000).toFixed(1)}s</td>` +
-      `<td>${r.iterations}</td>` +
       `<td>${fmtInt(r.promptTokens)} / ${fmtInt(Math.max(0, r.completionTokens - (r.reasoningTokens || 0)))} / ${fmtInt(r.reasoningTokens || 0)}</td>` +
       `<td>${r.tokensPerSec}</td>` +
       `<td class="${r.costUsd === bestCost ? 'best' : ''}">${fmtCost(r.costUsd)}</td>` +
@@ -1432,14 +1423,12 @@ function applyResultToColumn(slot, r) {
   if (r.total) {
     $(`#pf-${slot}`).style.width = Math.round((r.passed / r.total) * 100) + '%';
     $(`#pl-${slot}`).textContent = `${r.passed} / ${r.total} tests`;
-    (r.history || []).forEach((h) => $(`#rounds-${slot}`).appendChild(
-      el('span', 'round-chip ' + (h.passed === h.total ? 'pass' : 'fail'), `R${h.iteration}: ${h.passed}/${h.total}`)));
   } else {
     $(`#pf-${slot}`).style.width = '100%';
     $(`#pl-${slot}`).textContent = 'generated · no automated tests';
   }
   const secs = (r.wallMs / 1000).toFixed(1);
-  setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved in ${r.iterations} round(s) · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
+  setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
   if (currentTask().executable && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;

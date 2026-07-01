@@ -293,12 +293,6 @@ select option { color: var(--text); background: var(--bg); }
 @keyframes barber { to { background-position: 16px 0, 0 0; } }
 .progress-label { font-size: 12px; color: var(--muted); margin-top: 7px; display: flex; justify-content: space-between; }
 
-.rounds { padding: 9px 17px 0; display: flex; gap: 6px; flex-wrap: wrap; }
-.round-chip { font-size: 11px; padding: 3px 9px; border-radius: 0; border: 1px solid var(--border); background: var(--well); color: var(--muted); animation: chip-pop .22s ease; }
-.round-chip.pass { color: var(--good); border-color: rgba(52,224,161,.45); box-shadow: 0 0 14px -6px var(--good); }
-.round-chip.fail { color: var(--warn); border-color: rgba(255,203,94,.4); }
-@keyframes chip-pop { from { transform: scale(.7); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-
 .think { margin: 9px 17px 0; border: 1px solid var(--border); border-radius: 0; background: var(--well); }
 .think > summary { cursor: pointer; padding: 9px 13px; font-size: 12.5px; color: var(--accent); user-select: none; list-style: none; }
 .think > summary::-webkit-details-marker { display: none; }
@@ -621,5 +615,5 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .aurora::before, .aurora::after { animation: none; }
-  .col.is-live::after, .col.is-live .progress-fill, .metric.flash .v, .bar-fill, .round-chip { animation: none; }
+  .col.is-live::after, .col.is-live .progress-fill, .metric.flash .v, .bar-fill { animation: none; }
 }
