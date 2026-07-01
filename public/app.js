@@ -52,6 +52,12 @@ function modelIconSvg(m) {
   if (s.indexOf('gemini') >= 0 || s.indexOf('google') >= 0) return ICON_GEMINI;
   return ICON_GENERIC;
 }
+// A compact, distinct name for tight spaces — drops the family prefix so the two
+// Geminis read as "3.5 Flash" / "3.1 Pro" instead of both truncating to "Ge…".
+function shortLabel(label) {
+  const s = String(label || '');
+  return s.replace(/^(Gemini|Claude|GPT|Llama|Mistral|OpenAI|Anthropic|Google|DeepSeek|Qwen)\s+/i, '').trim() || s;
+}
 
 // ---------- theme (light / medium / dark) ----------
 function applyTheme(t) {
@@ -1035,13 +1041,13 @@ function renderMetricGrid(scored, isCustom) {
     const max = Math.max(...vals.map((x) => x.v), 1e-9);
     const cols = vals.map(({ r, v }) => {
       const h = Math.max(4, Math.round((v / max) * 100));
-      return `<div class="mp-col">
+      return `<div class="mp-col" title="${esc(r.label)}: ${esc(m.fmt(v))}">
         <div class="mp-val">${esc(m.fmt(v))}</div>
         <div class="mp-track"><div class="mp-bar" style="height:${h}%;background:${slotColor(r.slot)}"></div></div>
-        <div class="mp-name">${modelIconSvg(r)}<span>${esc(r.label)}</span></div>
+        <div class="mp-name">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></div>
       </div>`;
     }).join('');
-    return `<div class="metric-panel">
+    return `<div class="metric-panel" data-n="${scored.length}">
       <div class="mp-head"><span class="mp-title">${esc(m.label)}</span><span class="mp-hint">${esc(m.hint)}</span></div>
       <div class="mp-chart">${cols}</div>
     </div>`;
