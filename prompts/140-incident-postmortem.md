@@ -20,3 +20,10 @@ Deliverables:
 4. Detection & response analysis: time-to-detect, time-to-mitigate, what slowed diagnosis (e.g., the wrong initial hypothesis), and how monitoring/alerting should change.
 5. Corrective actions: a prioritized table of action items (owner-role, priority P0-P2, and whether each prevents recurrence, speeds detection, or limits blast radius) - covering the connection-pool/query design, the feature-flag default, load-testing at peak, and automated SLO-based rollback.
 6. Lessons learned and a short "what went well" section, written blamelessly (focus on systems, not individuals).
+
+Presentation - make it look genuinely professional (this matters as much as the content): format the entire response as a polished, publishable **Markdown** postmortem, not a plain-text dump.
+- Lead with a bold **Summary** (what happened, impact, duration) up top, then the sections in the order of the deliverables above, using clear `##` / `###` headings.
+- Put ALL numeric, comparative, or tabular data - the impact table, the timeline, and the action items - in well-formed **Markdown tables** (bold header row, aligned columns, units in the header).
+- Use tight bullet / numbered lists, and **bold** every key figure, timestamp, decision, and risk so the page scans in seconds.
+- Add polished touches: a one-line takeaway under each major table, and simple status markers where useful (✅ / ⚠️ / 🔴, or **P0 / P1 / P2** badges in the action-items table).
+- Keep it crisp and skimmable - favour tables and short lines over long paragraphs, and do not output raw code, JSON, or unformatted blobs.

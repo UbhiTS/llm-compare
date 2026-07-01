@@ -22,3 +22,10 @@ Deliverables:
 5. Financials: estimated cost of each mitigation lever and the net revenue protected, in a comparison table.
 6. Risk register + trigger points: what could go wrong with each lever, leading indicators to watch, and the "if X by date Y, then switch to plan Z" contingencies.
 7. A one-paragraph executive summary and the single recommended course of action.
+
+Presentation - make it look genuinely professional (this matters as much as the content): format the entire response as a polished, board-ready **Markdown** document, not a plain-text dump.
+- Lead with a bold **Executive summary** (3-5 crisp lines), then the sections in the order of the deliverables above, using clear `##` / `###` headings.
+- Put ALL numeric, comparative, or tabular data in well-formed **Markdown tables** (bold header row, aligned columns, units in the header) - never bury figures in prose.
+- Use tight bullet / numbered lists, and **bold** every key figure, target, decision, and risk so the page scans in seconds.
+- Add polished touches: a one-line takeaway under each major table, and simple status markers where useful (✅ / ⚠️ / 🔴, or **High / Med / Low** badges in risk and priority columns).
+- Keep it crisp and skimmable - favour tables and short lines over long paragraphs, and do not output raw code, JSON, or unformatted blobs.

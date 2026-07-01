@@ -36,3 +36,9 @@ Please structure the response with a day-by-day schedule (morning / afternoon / 
 - An allowance for general consumables (vending-machine drinks, street-food snacks, souvenirs).
 
 Conclude with a structured, itemized budget table summarizing the low-end, expected, and high-end total estimates for the entire trip, plus a per-person and per-day figure.
+
+Presentation - make it look genuinely professional: format the whole plan as a polished **Markdown** document a family would be delighted to print.
+- Lead with a short **Trip at a glance** summary (dates, cities, headline budget range) before the day-by-day detail.
+- Give each day its own `###` heading with a clean **morning / afternoon / evening** table (time-of-day, activity, area, rough cost).
+- Put flights, lodging, ground transport, tickets, and the final budget in well-formed **Markdown tables** with bold headers and USD figures; **bold** every subtotal and total.
+- Use bullet lists and small polished touches (e.g. 💡 tips, ⭐ must-dos) sparingly; keep it skimmable - no code or raw text dumps.

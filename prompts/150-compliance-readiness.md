@@ -20,3 +20,10 @@ Deliverables:
 4. The specific policies, and the evidence/artifacts an auditor will request, that must exist before the Type II observation window starts (list them).
 5. Vendor / sub-processor management: how to inventory them, what to require (DPAs, security reviews), and how to handle international data transfers.
 6. An executive summary: overall readiness rating, the top 5 risks to close first, a realistic cost/effort estimate, and the go/no-go criteria for starting the audit window.
+
+Presentation - make it look genuinely professional (this matters as much as the content): format the entire response as a polished, board-ready **Markdown** document, not a plain-text dump.
+- Lead with a bold **Executive summary** (3-5 crisp lines), then the sections in the order of the deliverables above, using clear `##` / `###` headings.
+- Put ALL numeric, comparative, or tabular data - the framework mapping and the gap analysis especially - in well-formed **Markdown tables** (bold header row, aligned columns).
+- Use tight bullet / numbered lists, and **bold** every key control, target date, decision, and risk so the page scans in seconds.
+- Add polished touches: a one-line takeaway under each major table, and simple status markers where useful (✅ / ⚠️ / 🔴, or **High / Med / Low** badges in the severity and priority columns).
+- Keep it crisp and skimmable - favour tables and short lines over long paragraphs, and do not output raw code, JSON, or unformatted blobs.

@@ -27,3 +27,10 @@ Deliverables:
 4. A risk register: flag likely stockouts before the promo and overstock/aged inventory, each with a recommended action.
 5. Markdown / clearance strategy for the slow mover (SKU D) with suggested markdown depth and expected sell-through.
 6. An executive summary: top 5 actions this week, projected service level, and the KPIs you would track (weeks-of-supply, sell-through, in-stock %, GMROI).
+
+Presentation - make it look genuinely professional (this matters as much as the content): format the entire response as a polished, board-ready **Markdown** document, not a plain-text dump.
+- Lead with a bold **Executive summary** (3-5 crisp lines), then the sections in the order of the deliverables above, using clear `##` / `###` headings.
+- Put ALL numeric, comparative, or tabular data in well-formed **Markdown tables** (bold header row, aligned columns, units in the header) - never bury figures in prose.
+- Use tight bullet / numbered lists, and **bold** every key figure, target, decision, and risk so the page scans in seconds.
+- Add polished touches: a one-line takeaway under each major table, and simple status markers where useful (✅ / ⚠️ / 🔴, or **High / Med / Low** badges in risk and priority columns).
+- Keep it crisp and skimmable - favour tables and short lines over long paragraphs, and do not output raw code, JSON, or unformatted blobs.

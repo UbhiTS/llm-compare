@@ -28,3 +28,10 @@ Deliverables:
 4. The optimization logic you used (how you matched shifts to the demand curve and minimized cost) and how you'd encode it as an automated solver (objective + hard/soft constraints) for a 300-store rollout.
 5. Edge-case handling: a call-out plan (someone calls in sick Saturday midday) and how the schedule flexes.
 6. KPIs to track (schedule-to-forecast fit, labor cost as % of sales, overtime %, compliance exceptions) and an executive summary of cost and coverage.
+
+Presentation - make it look genuinely professional (this matters as much as the content): format the entire response as a polished, board-ready **Markdown** document, not a plain-text dump.
+- Lead with a bold **Executive summary** (3-5 crisp lines), then the sections in the order of the deliverables above, using clear `##` / `###` headings.
+- Put ALL numeric, comparative, or tabular data in well-formed **Markdown tables** (bold header row, aligned columns, units in the header) - never bury figures in prose (the schedule itself must be a table).
+- Use tight bullet / numbered lists, and **bold** every key figure, target, decision, and risk so the page scans in seconds.
+- Add polished touches: a one-line takeaway under each major table, and simple status markers where useful (✅ / ⚠️ / 🔴, or **High / Med / Low** badges in risk and priority columns).
+- Keep it crisp and skimmable - favour tables and short lines over long paragraphs, and do not output raw code, JSON, or unformatted blobs.
