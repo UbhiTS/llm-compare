@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Sign in · Ubhi's LLM Matrix</title>
+  <style nonce="__NONCE__">
+    :root {
+      --bg: #0a0c12; --panel: #12151f; --well: #0c0f17; --border: #232a3a; --border-hi: #34405c;
+      --text: #e7ecf6; --muted: #8a93a8; --accent: #5e8bff; --accent2: #6d5bd0; --bad: #ff6b6b; --ok: #2fd9a6;
+      font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--text); display: grid; place-items: center; overflow: hidden; }
+    .bg { position: fixed; inset: -20% -10% -20% -10%; z-index: 0; filter: blur(70px); opacity: .55;
+      background:
+        radial-gradient(40% 40% at 20% 25%, rgba(94,139,255,.55), transparent 70%),
+        radial-gradient(38% 38% at 80% 30%, rgba(109,91,208,.5), transparent 70%),
+        radial-gradient(42% 42% at 50% 85%, rgba(47,217,166,.35), transparent 70%); }
+    .card { position: relative; z-index: 1; width: min(400px, 92vw); background: var(--panel);
+      border: 1px solid var(--border-hi); padding: 30px 28px 26px; box-shadow: 0 30px 80px -30px rgba(0,0,0,.8); }
+    .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 4px; }
+    .logo { width: 30px; height: 30px; display: grid; place-items: center; color: #fff; font-size: 15px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+    h1 { font-size: 17px; margin: 0; letter-spacing: .01em; }
+    .sub { color: var(--muted); font-size: 12.5px; margin: 14px 0 18px; line-height: 1.5; }
+    label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 14px 0 6px; }
+    input { width: 100%; background: var(--well); border: 1px solid var(--border); color: var(--text);
+      padding: 11px 12px; font-size: 14px; outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
+    input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(94,139,255,.18); }
+    input[readonly] { color: var(--muted); }
+    button.submit { width: 100%; margin-top: 20px; background: linear-gradient(135deg, var(--accent), var(--accent2));
+      color: #fff; border: none; padding: 12px; font-size: 14px; font-weight: 650; cursor: pointer; letter-spacing: .01em; }
+    button.submit:hover { filter: brightness(1.07); }
+    button.submit:disabled { opacity: .55; cursor: not-allowed; filter: saturate(.6); }
+    .msg { margin-top: 14px; font-size: 12.5px; min-height: 16px; }
+    .msg.err { color: var(--bad); }
+    .msg.ok { color: var(--ok); }
+    .hint { color: var(--muted); font-size: 11.5px; margin-top: 7px; line-height: 1.45; }
+    .code-box { background: var(--well); border: 1px dashed var(--border-hi); padding: 9px 11px; font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
+    .foot { text-align: center; color: var(--muted); font-size: 11px; margin-top: 18px; }
+    .spin { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: r .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
+    @keyframes r { to { transform: rotate(360deg); } }
+    .hide { display: none; }  /* hide via class (the strict login CSP blocks inline style="" attributes) */
+    .google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
+      background: #fff; color: #1f1f1f; text-decoration: none; font-weight: 600; font-size: 14px;
+      padding: 11px 12px; border: 1px solid #dadce0; cursor: pointer; }
+    .google-btn:hover { background: #f7f8fa; }
+    .google-btn svg { width: 18px; height: 18px; }
+    .divider { display: flex; align-items: center; gap: 10px; margin: 16px 0; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; }
+    .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  </style>
+</head>
+<body>
+  <div class="bg" aria-hidden="true"></div>
+  <main class="card">
+    <div class="brand"><div class="logo">◆</div><h1>Ubhi's LLM Matrix</h1></div>
+    <p class="sub" id="sub">Sign in to continue.</p>
+
+    <div id="googleBox" class="hide">
+      <a class="google-btn" href="/auth/google/login">
+        <svg viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.46.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>
+        <span id="googleBtnLabel">Sign in with Google</span>
+      </a>
+      <div class="divider" id="pwDivider"><span>or sign in with a password</span></div>
+    </div>
+
+    <form id="form" autocomplete="on">
+      <div id="setupCodeRow" class="hide">
+        <label for="code">First-run setup code</label>
+        <input id="code" name="code" type="text" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX" />
+        <div class="hint">Printed in the server console (the terminal running <code>npm start</code>) the first time the app launches.</div>
+      </div>
+
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" value="admin" />
+
+      <label for="password" id="pwLabel">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" />
+
+      <div id="confirmRow" class="hide">
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" name="confirm" type="password" autocomplete="new-password" />
+      </div>
+
+      <button class="submit" id="submit" type="submit">Sign in</button>
+      <div class="msg" id="msg"></div>
+    </form>
+
+    <div class="foot">Protected demo · sessions are server-side &amp; expire automatically</div>
+  </main>
+
+  <script nonce="__NONCE__">
+    (function () {
+      var mode = 'login'; // 'login' | 'setup'
+      var $ = function (id) { return document.getElementById(id); };
+      var msg = $('msg');
+      function setMsg(t, kind) { msg.textContent = t || ''; msg.className = 'msg' + (kind ? ' ' + kind : ''); }
+
+      // Surface an error passed back from the OAuth callback (e.g. domain not allowed).
+      try {
+        var qerr = new URLSearchParams(window.location.search).get('error');
+        if (qerr) setMsg(qerr, 'err');
+      } catch (e) { /* ignore */ }
+
+      function render() {
+        var setup = mode === 'setup';
+        $('setupCodeRow').classList.toggle('hide', !setup);
+        $('confirmRow').classList.toggle('hide', !setup);
+        $('sub').textContent = setup
+          ? 'Welcome! No account exists yet. Create a password for the "admin" account to secure this instance.'
+          : 'Sign in to continue.';
+        $('pwLabel').textContent = setup ? 'Create password' : 'Password';
+        $('username').readOnly = setup;            // first account is always "admin"
+        $('password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+        $('submit').textContent = setup ? 'Create account & sign in' : 'Sign in';
+        var focusEl = setup ? $('code') : $('password');
+        if (focusEl) setTimeout(function () { focusEl.focus(); }, 30);
+      }
+
+      fetch('/api/auth/status', { credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s && s.authenticated) { window.location.replace('/'); return; }
+          var googleOn = !!(s && s.googleAuth);
+          if (googleOn) {
+            $('googleBox').classList.remove('hide');
+            if (s.allowedDomains && s.allowedDomains.length) {
+              $('googleBtnLabel').textContent = 'Sign in with Google (' + s.allowedDomains.join(', ') + ')';
+            }
+          }
+          // With Google enabled, the password form is a secondary fallback (login mode);
+          // only offer the first-run admin-password setup when Google is NOT configured.
+          mode = (!googleOn && s && s.setupRequired) ? 'setup' : 'login';
+          render();
+        })
+        .catch(function () { render(); });
+
+      $('form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var btn = $('submit');
+        var password = $('password').value;
+        var body, url;
+        if (mode === 'setup') {
+          var confirm = $('confirm').value;
+          if (password !== confirm) { setMsg('Passwords do not match.', 'err'); return; }
+          url = '/api/auth/setup';
+          body = { code: $('code').value, password: password };
+        } else {
+          url = '/api/auth/login';
+          body = { username: $('username').value, password: password };
+        }
+        btn.disabled = true;
+        var orig = btn.textContent;
+        btn.innerHTML = '<span class="spin"></span>Working…';
+        setMsg('');
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(body),
+        }).then(function (r) {
+          return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; });
+        }).then(function (res) {
+          if (res.ok && res.j && res.j.ok) { window.location.replace('/'); return; }
+          setMsg((res.j && res.j.error) || 'Something went wrong. Please try again.', 'err');
+          btn.disabled = false; btn.textContent = orig;
+        }).catch(function () {
+          setMsg('Network error. Please try again.', 'err');
+          btn.disabled = false; btn.textContent = orig;
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

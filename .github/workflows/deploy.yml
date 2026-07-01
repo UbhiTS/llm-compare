@@ -1,0 +1,71 @@
+name: Deploy to Cloud Run
+
+# Builds the container on the runner, pushes it to Artifact Registry, and deploys
+# to Cloud Run on every push to main (and on demand). Authentication to Google
+# Cloud is KEYLESS via Workload Identity Federation — no JSON keys in GitHub.
+#
+# Everything is parameterized:
+#   Repository VARIABLES (Settings ▸ Secrets and variables ▸ Actions ▸ Variables):
+#     GCP_PROJECT_ID, GCP_REGION, ARTIFACT_REPO, CLOUD_RUN_SERVICE,
+#     RUNTIME_SERVICE_ACCOUNT, ALLOWED_EMAIL_DOMAINS, ADMIN_EMAILS,
+#     MAX_RUNS_PER_DAY, GOOGLE_CLIENT_ID, OAUTH_REDIRECT_BASE
+#   Repository SECRETS:
+#     WIF_PROVIDER (workload identity provider resource name),
+#     DEPLOY_SERVICE_ACCOUNT (deployer SA email)
+#   Secret Manager secrets referenced at deploy (see --set-secrets):
+#     AGENT_PLATFORM_API_KEY, GOOGLE_CLIENT_SECRET
+# See DEPLOYMENT.md for the one-time setup that creates all of the above.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write   # required for Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (keyless)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build & push image
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --image "$IMAGE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --service-account "${{ vars.RUNTIME_SERVICE_ACCOUNT }}" \
+            --allow-unauthenticated \
+            --min-instances=1 --max-instances=1 \
+            --cpu=1 --memory=1Gi --timeout=3600 \
+            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@MAX_RUNS_PER_DAY=${{ vars.MAX_RUNS_PER_DAY }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}" \
+            --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest"
+
+      - name: Show service URL
+        run: |
+          gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+            --format='value(status.url)'

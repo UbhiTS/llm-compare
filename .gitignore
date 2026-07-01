@@ -1,0 +1,30 @@
+# --- dependencies / build ---
+node_modules/
+npm-debug.log*
+*.log
+
+# --- secrets & credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+.auth/
+*.pem
+*.key
+*_rsa
+*.p12
+credentials.json
+client_secret*.json
+service-account*.json
+gha-creds-*.json
+
+# --- local runtime / temp state ---
+.DS_Store
+Thumbs.db
+build/
+dist/
+tmp/
+scratchpad/
+
+# --- editor / AI-assistant scaffolding (not part of the app) ---
+.claude/
+CLAUDE.md
