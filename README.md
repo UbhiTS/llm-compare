@@ -222,4 +222,4 @@ npm test    # offline: mocks the provider API and exercises the full loop + scor
 
 ## License
 
-No open-source license has been set yet — ask before reuse.
+Released under the [MIT License](LICENSE).
