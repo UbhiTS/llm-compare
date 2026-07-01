@@ -62,7 +62,7 @@ jobs:
             --min-instances=1 --max-instances=1 \
             --cpu=1 --memory=1Gi --timeout=3600 \
             --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@MAX_RUNS_PER_DAY=${{ vars.MAX_RUNS_PER_DAY }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}" \
-            --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest"
+            --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest"
 
       - name: Show service URL
         run: |

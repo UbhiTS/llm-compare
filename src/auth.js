@@ -126,6 +126,37 @@ async function verifyHash(password, stored) {
   } catch (e) { return false; }
 }
 
+// ---------- break-glass bootstrap admin ----------
+// If ADMIN_BOOTSTRAP_PASSWORD is set (e.g. injected from Secret Manager on Cloud
+// Run), (re)create a durable admin account on EVERY startup. Because it is
+// re-seeded from the secret each boot, it survives the ephemeral container
+// filesystem — so there is always a username/password way in even if Google
+// sign-in is unavailable or your account is locked out. Dormant (no effect)
+// unless the env var is set, so local dev / the first-run setup flow is unchanged.
+(function ensureBootstrapAdmin() {
+  const pw = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+  if (!pw) return;
+  const uname = normalize(process.env.ADMIN_BOOTSTRAP_USERNAME || ADMIN_USERNAME);
+  if (!USERNAME_RE.test(uname) || RESERVED_USERNAMES.has(uname)) {
+    console.warn('[auth] ADMIN_BOOTSTRAP_USERNAME is invalid — break-glass admin skipped.');
+    return;
+  }
+  if (String(pw).length < MIN_PASSWORD_LEN) {
+    console.warn(`[auth] ADMIN_BOOTSTRAP_PASSWORD is shorter than ${MIN_PASSWORD_LEN} chars — break-glass admin skipped.`);
+    return;
+  }
+  try {
+    const existing = ownUser(uname);
+    users[uname] = {
+      username: uname, role: 'admin', hash: hashPasswordSync(String(pw)),
+      createdAt: (existing && existing.createdAt) || new Date().toISOString(),
+    };
+    console.log(`[auth] break-glass admin "${uname}" ensured from ADMIN_BOOTSTRAP_PASSWORD.`);
+  } catch (e) {
+    console.warn('[auth] break-glass admin seeding failed:', (e && e.message) || e);
+  }
+})();
+
 // ---------- validation ----------
 function validateUsername(username) {
   const u = normalize(username);
