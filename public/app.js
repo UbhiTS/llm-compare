@@ -998,12 +998,49 @@ function buildScorecard(results) {
     return { ...r, axes, overall };
   });
 
-  renderWinnerHero(scored, isCustom);
-  renderModelCards(scored, isCustom);
-  renderRadar(scored);
-  renderBars(scored);
+  renderModelLegend(scored);
+  renderMetricGrid(scored, isCustom);
   renderTable(scored, isCustom);
-  renderTakeaway(scored, isCustom);
+}
+
+// Neutral legend: one chip per model (icon + name + provider·model), equal weight.
+function renderModelLegend(scored) {
+  const wrap = $('#modelLegend');
+  if (!wrap) return;
+  wrap.innerHTML = scored.map((r) =>
+    `<span class="ml-chip"><span class="ml-dot" style="background:${slotColor(r.slot)}"></span>${modelIconSvg(r)}<b>${esc(r.label)}</b><span class="ml-sub">${esc(r.provider)} · ${esc(r.model)}</span></span>`
+  ).join('');
+}
+
+// Per-metric vertical bar charts — a fair, side-by-side comparison of each
+// parameter with big values and an explicit better-direction hint. No overall
+// "winner" is declared; the numbers speak for themselves.
+function renderMetricGrid(scored, isCustom) {
+  const wrap = $('#metricGrid');
+  if (!wrap) return;
+  const metrics = [];
+  if (!isCustom) metrics.push({ label: 'Correctness', hint: '↑ higher is better', get: (r) => (r.correctness == null ? 0 : r.correctness), fmt: (v) => Math.round(v) + '%' });
+  metrics.push({ label: 'Cost / task', hint: '↓ lower is better', get: (r) => Math.max(r.costUsd || 0, 0), fmt: (v) => fmtCost(v) });
+  metrics.push({ label: 'Wall time', hint: '↓ lower is better', get: (r) => (r.wallMs || 0) / 1000, fmt: (v) => v.toFixed(1) + 's' });
+  metrics.push({ label: 'Tokens / sec', hint: '↑ higher is better', get: (r) => r.tokensPerSec || 0, fmt: (v) => fmtInt(Math.round(v)) });
+  metrics.push({ label: 'Output tokens', hint: 'answer length', get: (r) => Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)), fmt: (v) => fmtInt(v) });
+
+  wrap.innerHTML = metrics.map((m) => {
+    const vals = scored.map((r) => ({ r, v: m.get(r) }));
+    const max = Math.max(...vals.map((x) => x.v), 1e-9);
+    const cols = vals.map(({ r, v }) => {
+      const h = Math.max(4, Math.round((v / max) * 100));
+      return `<div class="mp-col">
+        <div class="mp-val">${esc(m.fmt(v))}</div>
+        <div class="mp-track"><div class="mp-bar" style="height:${h}%;background:${slotColor(r.slot)}"></div></div>
+        <div class="mp-name">${modelIconSvg(r)}<span>${esc(r.label)}</span></div>
+      </div>`;
+    }).join('');
+    return `<div class="metric-panel">
+      <div class="mp-head"><span class="mp-title">${esc(m.label)}</span><span class="mp-hint">${esc(m.hint)}</span></div>
+      <div class="mp-chart">${cols}</div>
+    </div>`;
+  }).join('');
 }
 
 // Headline: the balanced winner + the single most striking comparative fact.
@@ -1126,10 +1163,8 @@ function renderTable(scored, isCustom) {
   const bestCost = Math.min(...scored.map((r) => r.costUsd));
   const bestWall = Math.min(...scored.map((r) => r.wallMs));
   const bestCorr = Math.max(...scored.map((r) => r.correctness));
-  const champSlot = [...scored].sort((a, b) => b.overall - a.overall)[0].slot;
   scored.forEach((r) => {
     const tr = el('tr');
-    if (r.slot === champSlot) tr.className = 'champ';
     tr.innerHTML =
       `<td><span class="row-ic">${modelIconSvg(r)}</span>${esc(r.label)}</td>` +
       `<td class="${!isCustom && r.correctness === bestCorr ? 'best' : ''}">${isCustom || r.correctness == null ? '\u2014' : r.correctness + '%'}</td>` +

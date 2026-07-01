@@ -397,6 +397,30 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 .sc-details > summary { cursor: pointer; color: var(--accent); font-size: 13px; user-select: none; letter-spacing: .01em; }
 .sc-details .takeaway { margin-top: 14px; }
 
+/* neutral model legend */
+.model-legend { display: flex; flex-wrap: wrap; gap: 10px 20px; margin-bottom: 22px; }
+.ml-chip { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+.ml-chip .ml-dot { width: 10px; height: 10px; box-shadow: 0 0 9px currentColor; flex: 0 0 auto; }
+.ml-chip .mi { width: 18px; height: 18px; }
+.ml-chip b { font-weight: 650; }
+.ml-sub { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 11px; }
+
+/* per-metric vertical bar charts (neutral comparison, no declared winner) */
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 16px; }
+.metric-panel { border: 1px solid var(--border); background: var(--well); padding: 16px 16px 14px; }
+.mp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.mp-title { font-family: "Space Grotesk", sans-serif; font-size: 14px; font-weight: 650; }
+.mp-hint { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+.mp-chart { display: flex; align-items: flex-end; justify-content: space-around; gap: 14px; }
+.mp-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; height: 172px; justify-content: flex-end; }
+.mp-val { font-family: "Space Grotesk", sans-serif; font-size: 21px; font-weight: 700; color: var(--text); margin-bottom: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mp-track { width: 100%; max-width: 66px; flex: 1; display: flex; align-items: flex-end; }
+.mp-bar { width: 100%; min-height: 4px; box-shadow: 0 0 16px -6px currentColor; transform-origin: bottom; animation: bar-rise .6s cubic-bezier(.2,.8,.2,1); }
+.mp-name { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--muted); max-width: 100%; }
+.mp-name .mi { width: 15px; height: 15px; flex: 0 0 auto; }
+.mp-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@keyframes bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+
 .foot { max-width: var(--maxw); margin: 32px auto 0; color: var(--faint); font-size: 12.5px; text-align: center; }
 
 /* ---------- Towers of Hanoi visualizer ---------- */
