@@ -60,15 +60,10 @@
         <label for="taskSelect">Agentic task</label>
         <select id="taskSelect"></select>
       </div>
-      <div class="field narrow">
-        <label for="maxIter">Max self-debug rounds</label>
-        <input id="maxIter" type="number" min="1" max="8" value="4" />
-      </div>
-      <button id="runBtn" class="run-btn">Run comparison ▸</button>
-      <button id="clearRunBtn" class="clear-run-btn" type="button" title="Clear the current results and this task's saved run — back to a clean slate">⟲ Clear run</button>
-      <button id="runAllBtn" class="run-all-btn hidden" type="button" disabled title="Run every model's generated code at once">▶ Run all code</button>
-      <button id="autoRun" class="autorun-toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
-      <button id="historyBtn" class="ghost-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
+      <button id="runBtn" class="ctl-btn primary">Run comparison ▸</button>
+      <button id="clearRunBtn" class="ctl-btn danger" type="button" title="Clear the current results and this task's saved run — back to a clean slate">⟲ Clear run</button>
+      <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
+      <button id="historyBtn" class="ctl-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
       <span id="quotaBadge" class="quota-badge"></span>
     </div>
     <div id="taskMeta" class="task-meta"></div>

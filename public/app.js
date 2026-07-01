@@ -120,7 +120,6 @@ async function init() {
 
   $('#runBtn').addEventListener('click', run);
   $('#clearRunBtn').addEventListener('click', clearRunUI);
-  $('#runAllBtn').addEventListener('click', runAllCode);
   { const ar = $('#autoRun'); if (ar) ar.addEventListener('click', () => {
     const on = !ar.classList.contains('is-on');
     ar.classList.toggle('is-on', on);
@@ -231,9 +230,11 @@ function ensureAuthModal() {
   return m;
 }
 function closeAuthModal() { const m = $('#authModal'); if (m) m.classList.add('hidden'); }
-function openAuthModal(title) {
+function openAuthModal(title, opts) {
   const m = ensureAuthModal();
   $('#authModalTitle').textContent = title;
+  const panel = m.querySelector('.auth-panel');
+  if (panel) panel.classList.toggle('wide', !!(opts && opts.wide));
   m.classList.remove('hidden');
   return $('#authModalBody');
 }
@@ -396,8 +397,6 @@ function renderTaskPrompt() {
     ta.classList.add('hidden');
   }
   renderTaskMeta();
-  const rab = $('#runAllBtn');
-  if (rab) { rab.classList.toggle('hidden', !currentTask().executable); rab.disabled = true; }
 }
 
 function renderModelEditors() {
@@ -603,17 +602,6 @@ function formatTestResult(r) {
   return `${head}\n\nFailing cases:\n${lines.join('\n')}${more}`;
 }
 
-// Run every slot's generated code at once.
-async function runAllCode() {
-  const btn = $('#runAllBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Running all…'; }
-  try {
-    await Promise.all(slotIds().map((s) => execSlotCode(s)));
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '▶ Run all code'; }
-  }
-}
-
 // Parse "Move disk K from X to Y" lines out of a program's stdout.
 function parseHanoiMoves(stdout) {
   const moves = [];
@@ -805,7 +793,7 @@ async function run() {
 
   const payload = {
     taskId: $('#taskSelect').value,
-    maxIterations: +$('#maxIter').value || 4,
+    maxIterations: 1, // single-shot: correctness = the model's first-attempt pass rate (no self-debug retries)
     models: MODELS,
     customPrompt: $('#customPrompt').value,
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
@@ -933,8 +921,6 @@ function handleEvent(ev, results) {
       if (currentTask().executable && ev.result.code) {
         const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
         if (eb) eb.disabled = false;
-        const rab = $('#runAllBtn');
-        if (rab) rab.disabled = false;
         const auto = $('#autoRun');
         if (auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
       }
@@ -1273,12 +1259,15 @@ function clearRun(taskId) { try { localStorage.removeItem(RUN_KEY(taskId)); } ca
 // so it's durable, per-user and tamper-proof. A user sees only their own runs;
 // admins can toggle to all users and get an at-a-glance usage summary.
 let historyScope = 'me';
+let historyPage = 0;
+const HIST_PAGE_SIZE = 6;           // rows rendered at once — keeps the DOM small however big history grows
+let _histState = { body: null, runs: [], usage: null, isAdmin: false };
 function fmtWhen(ms) { try { return new Date(ms).toLocaleString(); } catch (e) { return ''; } }
 
 async function openHistoryModal() {
   const isAdmin = ME && ME.role === 'admin';
   if (!isAdmin) historyScope = 'me';
-  const body = openAuthModal('Run history');
+  const body = openAuthModal('Run history', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
     const [histResp, usage] = await Promise.all([
@@ -1288,13 +1277,19 @@ async function openHistoryModal() {
     if (histResp.status === 401) { window.location.replace('/login'); return; }
     const data = await histResp.json();
     if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
-    renderHistoryModal(body, data.runs || [], usage, isAdmin);
+    _histState = { body, runs: data.runs || [], usage, isAdmin };
+    historyPage = 0;                 // reset to first page on (re)open / scope change
+    paintHistoryModal();
   } catch (e) {
     body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message;
   }
 }
 
-function renderHistoryModal(body, runs, usage, isAdmin) {
+// Render the current page of the already-fetched (light) history list. Called on
+// open, page nav, and after a delete — no refetch, so paging is instant.
+function paintHistoryModal() {
+  const { body, runs, usage, isAdmin } = _histState;
+  if (!body) return;
   const usagePanel = (isAdmin && usage) ? renderUsagePanel(usage) : '';
   const scopeToggle = isAdmin
     ? `<div class="hist-scope">
@@ -1302,13 +1297,33 @@ function renderHistoryModal(body, runs, usage, isAdmin) {
          <button class="hs-btn ${historyScope === 'all' ? 'active' : ''}" data-scope="all" type="button">All users</button>
        </div>`
     : '';
-  const rows = runs.length
-    ? runs.map((h) => histRowHtml(h)).join('')
+  const total = runs.length;
+  const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
+  historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
+  const start = historyPage * HIST_PAGE_SIZE;
+  const pageRuns = runs.slice(start, start + HIST_PAGE_SIZE);
+  const rows = total
+    ? pageRuns.map((h) => histRowHtml(h)).join('')
     : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
-  body.innerHTML = usagePanel + scopeToggle + `<div class="hist-list">${rows}</div>`;
+  const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
+  body.innerHTML = usagePanel + scopeToggle + `<div class="hist-list">${rows}</div>` + pager;
   body.querySelectorAll('.hs-btn').forEach((b) => b.addEventListener('click', () => { historyScope = b.dataset.scope; openHistoryModal(); }));
   body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
   body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => deleteHistoryRun(b.dataset.id)));
+  const prev = body.querySelector('.hist-pg-prev');
+  if (prev) prev.addEventListener('click', () => { if (historyPage > 0) { historyPage--; paintHistoryModal(); } });
+  const next = body.querySelector('.hist-pg-next');
+  if (next) next.addEventListener('click', () => { if (historyPage < pageCount - 1) { historyPage++; paintHistoryModal(); } });
+}
+
+function histPagerHtml(page, pageCount, total, start, shown) {
+  const from = total ? start + 1 : 0;
+  const to = start + shown;
+  return `<div class="hist-pager">
+    <button class="hist-pg-btn hist-pg-prev" type="button" ${page === 0 ? 'disabled' : ''}>‹ Prev</button>
+    <span class="hist-pg-info">${from}–${to} of ${fmtInt(total)} · page ${page + 1} of ${pageCount}</span>
+    <button class="hist-pg-btn hist-pg-next" type="button" ${page >= pageCount - 1 ? 'disabled' : ''}>Next ›</button>
+  </div>`;
 }
 
 function histRowHtml(h) {
@@ -1363,7 +1378,8 @@ async function deleteHistoryRun(id) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error((j && j.error) || 'Could not delete.');
-    openHistoryModal();
+    _histState.runs = _histState.runs.filter((h) => h.id !== id);   // drop locally + repaint (keeps the current page)
+    paintHistoryModal();
   } catch (e) { window.alert(e.message); }
 }
 
@@ -1377,7 +1393,6 @@ function clearRunUI() {
   hideSavedBanner();
   $('#scorecard').classList.add('hidden');
   buildArena();                     // fresh empty columns (tiles → 0, status → Idle)
-  const rab = $('#runAllBtn'); if (rab) rab.disabled = true;
 }
 
 // On task switch: show the last saved run if there is one, else a fresh empty arena.
@@ -1428,7 +1443,6 @@ function applyResultToColumn(slot, r) {
   if (currentTask().executable && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;
-    const rab = $('#runAllBtn'); if (rab) rab.disabled = false;
   }
 }
 

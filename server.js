@@ -418,7 +418,7 @@ app.post('/api/run', async (req, res) => {
     }
     quotaInfo = quota;
   }
-  const iters = Math.max(1, Math.min(8, Number(maxIterations) || 4));
+  const iters = Math.max(1, Math.min(8, Number(maxIterations) || 1)); // single-shot by default (no self-debug retries)
 
   // NDJSON stream: one JSON object per line.
   res.setHeader('Content-Type', 'application/x-ndjson');
