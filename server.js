@@ -58,7 +58,9 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
-    "connect-src 'self'",
+    // allow the CDN script origins so DevTools can fetch their source maps
+    // (*.min.js.map) — without this, connect-src 'self' logs a blocked-request error.
+    "connect-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net",
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
