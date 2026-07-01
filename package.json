@@ -1,7 +1,7 @@
 {
-  "name": "llm-agent-arena",
+  "name": "llm-compare",
   "version": "1.0.0",
-  "description": "Run the same agentic coding task against three LLMs in parallel and compare quality, speed, tokens and cost.",
+  "description": "LLM Compare — race the same agentic task across multiple LLMs and compare correctness, speed, tokens and cost.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
