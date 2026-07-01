@@ -170,6 +170,12 @@ app.get('/auth/google/callback', async (req, res) => {
 app.use((req, res, next) => {
   const s = auth.getSession(req);
   if (s) { req.user = { username: s.username, role: s.role }; return next(); }
+  // pygbag fetches a game's bundle assets (.tar.gz / .apk / preloader files) with
+  // credentials:'omit' — no session cookie — so a gated /games/* would redirect
+  // them to /login and the game receives the login HTML instead of the archive
+  // ("BadGzipFile: not a gzip file (b'<!')"). Serve game assets unauthenticated:
+  // ids are unguessable sha256 prefixes and the content is generated game code.
+  if (req.path.startsWith('/games/')) return next();
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Authentication required.' });
   return res.redirect('/login');
 });
