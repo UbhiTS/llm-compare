@@ -61,7 +61,6 @@
         <select id="taskSelect"></select>
       </div>
       <button id="runBtn" class="ctl-btn primary">Run comparison ▸</button>
-      <button id="clearRunBtn" class="ctl-btn danger" type="button" title="Clear the current results and this task's saved run — back to a clean slate">⟲ Clear run</button>
       <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
       <button id="historyBtn" class="ctl-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
       <span id="quotaBadge" class="quota-badge"></span>
@@ -77,8 +76,6 @@
       <p class="hint">Pick from the preconfigured Google Model Garden catalog — <b>Gemini 3.5 Flash</b>, <b>Claude Opus 4.8</b>, <b>Gemini 3.1 Pro</b>. Model IDs and prices are fixed from public pricing and can’t be edited. Compare 1–3 at a time. Keys are read from <code>.env</code> on the server and never sent to the browser.</p>
     </details>
   </section>
-
-  <div id="savedBanner" class="saved-banner hidden"></div>
 
   <section id="arena" class="arena"></section>
 

@@ -11,8 +11,6 @@ let radarChart = null;
 let wallStartMs = 0;     // client-side wall clock (ticks even while a model is only thinking)
 let wallTimer = null;
 const wallFinished = new Set();
-let lastRunTaskId = null; // for persisting the last run per task
-let lastRunModels = [];
 
 // Slots are dynamic: derive ids/colors from MODELS rather than a fixed list.
 function slotIds() { return MODELS.map((m) => m.slot); }
@@ -94,7 +92,7 @@ async function init() {
   // task select \u2014 grouped by category (Coding / General)
   const ts = $('#taskSelect');
   const tag = (t) => t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
-  [['coding', 'Coding'], ['games', 'Games'], ['business', 'Business'], ['general', 'General']].forEach(([cat, label]) => {
+  [['business', 'Business'], ['coding', 'Coding'], ['games', 'Games'], ['general', 'General']].forEach(([cat, label]) => {
     const inCat = CONFIG.tasks.filter((t) => (t.category || 'general') === cat);
     if (!inCat.length) return;
     const og = el('optgroup'); og.label = label;
@@ -112,14 +110,13 @@ async function init() {
   customOpt.textContent = 'Custom prompt\u2026';
   og.appendChild(customOpt);
   ts.appendChild(og);
-  ts.addEventListener('change', () => { renderTaskPrompt(); restoreOrBuild(); });
+  ts.addEventListener('change', () => { renderTaskPrompt(); $('#scorecard').classList.add('hidden'); buildArena(); });
   renderTaskPrompt();
 
   renderModelEditors();
-  restoreOrBuild();
+  buildArena();
 
   $('#runBtn').addEventListener('click', run);
-  $('#clearRunBtn').addEventListener('click', clearRunUI);
   { const ar = $('#autoRun'); if (ar) ar.addEventListener('click', () => {
     const on = !ar.classList.contains('is-on');
     ar.classList.toggle('is-on', on);
@@ -770,11 +767,7 @@ async function run() {
   const btn = $('#runBtn');
   btn.disabled = true;
   btn.textContent = 'Running…';
-  { const cb = $('#clearRunBtn'); if (cb) cb.disabled = true; }
   $('#scorecard').classList.add('hidden');
-  hideSavedBanner();
-  lastRunTaskId = $('#taskSelect').value;
-  lastRunModels = MODELS.map((m) => ({ ...m, price: { ...m.price } }));
 
   buildArena();
   slotIds().forEach((s) => setStatus(s, 'Queued…', 'run'));
@@ -837,7 +830,6 @@ async function run() {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
     btn.disabled = false;
     btn.textContent = 'Run comparison ▸';
-    { const cb = $('#clearRunBtn'); if (cb) cb.disabled = false; }
   }
 }
 
@@ -934,7 +926,6 @@ function handleEvent(ev, results) {
       break;
     case 'all_done':
       finalize(results);
-      saveRun(lastRunTaskId, results, lastRunModels); // remember this task's last run (localStorage, for instant restore)
       // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
       // Bring the Model comparison scorecard to the top now that the run is done.
       setTimeout(() => {
@@ -1222,29 +1213,6 @@ function liveCodeView(text) {
   return s.trim() || '…';
 }
 
-// ---------- remember last run per task (localStorage) ----------
-const RUN_KEY = (taskId) => 'ullm.run.' + taskId;
-
-function saveRun(taskId, resultsMap, models) {
-  if (!taskId || !models || !models.length) return;
-  const snap = {
-    v: 1, taskId, savedAt: Date.now(),
-    models: models.map((m) => ({ slot: m.slot, catalogId: m.catalogId, label: m.label, provider: m.provider, model: m.model, publisher: m.publisher, price: m.price })),
-    slots: models.map((m) => ({ slot: m.slot, data: resultsMap[m.slot] || null })),
-  };
-  const set = (obj) => { try { localStorage.setItem(RUN_KEY(taskId), JSON.stringify(obj)); return true; } catch (e) { return false; } };
-  if (set(snap)) return;
-  // quota fallback: drop the (often huge) reasoning, then the code
-  const strip = (key) => ({ ...snap, slots: snap.slots.map((s) => s.data && !s.data.error ? { slot: s.slot, data: { ...s.data, [key]: '' } } : s) });
-  if (set(strip('reasoning'))) return;
-  const lite = strip('reasoning'); lite.slots = lite.slots.map((s) => s.data && !s.data.error ? { slot: s.slot, data: { ...s.data, code: '' } } : s);
-  set(lite);
-}
-function loadRun(taskId) {
-  try { const raw = localStorage.getItem(RUN_KEY(taskId)); if (!raw) return null; const o = JSON.parse(raw); return (o && o.v === 1 && Array.isArray(o.slots)) ? o : null; } catch (e) { return null; }
-}
-function clearRun(taskId) { try { localStorage.removeItem(RUN_KEY(taskId)); } catch (e) { /* ignore */ } }
-
 // ---------- run history / log (SERVER-backed; per-user, admins see everyone) ----------
 // The server logs every run (see /api/run) — the browser never writes history,
 // so it's durable, per-user and tamper-proof. A user sees only their own runs;
@@ -1353,7 +1321,6 @@ async function restoreHistory(id) {
     const j = await r.json();
     if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
     const snap = j.run;
-    snap.savedAt = snap.savedAt || snap.at; // renderSavedRun/showSavedBanner expect savedAt
     closeAuthModal();
     const sel = $('#taskSelect');
     if ([].slice.call(sel.options).some((o) => o.value === snap.taskId)) { sel.value = snap.taskId; renderTaskPrompt(); }
@@ -1376,24 +1343,7 @@ async function deleteHistoryRun(id) {
 
 // Wipe the current run from the UI → clean slate: clears results, scorecard, this
 // task's saved snapshot and any in-flight wall timer, then rebuilds empty columns.
-function clearRunUI() {
-  if ($('#runBtn').disabled) return; // a run is streaming — don't clear from under it
-  if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
-  wallFinished.clear();
-  clearRun($('#taskSelect').value); // forget this task's last saved run
-  hideSavedBanner();
-  $('#scorecard').classList.add('hidden');
-  buildArena();                     // fresh empty columns (tiles → 0, status → Idle)
-}
-
-// On task switch: show the last saved run if there is one, else a fresh empty arena.
-function restoreOrBuild() {
-  $('#scorecard').classList.add('hidden');
-  const snap = loadRun($('#taskSelect').value);
-  if (snap && snap.slots.some((s) => s.data)) renderSavedRun(snap);
-  else { hideSavedBanner(); buildArena(); }
-}
-
+// Repaint the arena + scorecard from a saved snapshot (used by History → Restore).
 function renderSavedRun(snap) {
   buildArena(snap.models);
   const resultsMap = {};
@@ -1404,7 +1354,6 @@ function renderSavedRun(snap) {
     applyResultToColumn(slot, data);
   });
   finalize(resultsMap, snap.models.map((m) => m.slot)); // rebuild the scorecard from saved results
-  showSavedBanner(snap);
 }
 
 // Repaint one column from a saved/finished result (mirrors the live 'done' handler; never auto-runs).
@@ -1435,13 +1384,6 @@ function applyResultToColumn(slot, r) {
   }
 }
 
-function showSavedBanner(snap) {
-  const b = $('#savedBanner'); if (!b) return;
-  b.innerHTML = `<span class="sb-icon">↺</span><span>Showing your last saved run for this task &mdash; <b>${esc(new Date(snap.savedAt).toLocaleString())}</b>. Press <b>Run comparison</b> to refresh.</span><button class="sb-clear" type="button">Clear saved</button>`;
-  b.classList.remove('hidden');
-  b.querySelector('.sb-clear').addEventListener('click', () => { clearRun(snap.taskId); hideSavedBanner(); buildArena(); });
-}
-function hideSavedBanner() { const b = $('#savedBanner'); if (b) b.classList.add('hidden'); }
 
 // ---------- full-page preview (magnifying glass) ----------
 function modelLabel(slot) { const m = MODELS.find((x) => x.slot === slot); return (m && m.label) || ('Model ' + slot); }

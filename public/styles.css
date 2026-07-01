@@ -241,15 +241,6 @@ select option { color: var(--text); background: var(--bg); }
 .hint { color: var(--faint); font-size: 12px; margin: 12px 2px 2px; }
 .hint code, .foot code, .disclaimer code { background: var(--well); padding: 1px 7px; border-radius: 0; border: 1px solid var(--border); color: var(--text); }
 
-/* ---------- saved-run banner ---------- */
-.saved-banner { max-width: var(--maxw); margin: 18px auto 0; display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px; border-radius: 0; font-size: 13px; color: var(--text);
-  background: linear-gradient(100deg, rgba(94,139,255,.14), rgba(47,217,166,.10)); border: 1px solid var(--border-hi);
-  backdrop-filter: blur(12px); }
-.saved-banner .sb-icon { font-size: 15px; }
-.saved-banner .sb-clear { margin-left: auto; background: transparent; border: 1px solid var(--border-hi); color: var(--muted);
-  border-radius: 0; padding: 5px 11px; font-size: 12px; cursor: pointer; }
-.saved-banner .sb-clear:hover { color: var(--bad); border-color: var(--bad); }
 
 /* ---------- arena columns ---------- */
 .arena { max-width: var(--maxw); margin: 22px auto 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
