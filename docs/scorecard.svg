@@ -1,0 +1,65 @@
+<svg width="1000" height="470" viewBox="0 0 1000 470" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0c1120"/><stop offset="1" stop-color="#121a2c"/></linearGradient>
+    <linearGradient id="gm" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#3f63c9"/><stop offset="1" stop-color="#7aa2ff"/></linearGradient>
+    <linearGradient id="cl" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#5a49b0"/><stop offset="1" stop-color="#a893f5"/></linearGradient>
+  </defs>
+
+  <rect width="1000" height="470" rx="14" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="999" height="469" rx="14" fill="none" stroke="#7aa2ff" stroke-opacity="0.16"/>
+
+  <!-- header -->
+  <text x="32" y="46" fill="#eef2fb" font-size="24" font-weight="800">Model comparison</text>
+  <text x="32" y="72" fill="#8b99b8" font-size="14" font-weight="500">Every number measured live from the provider APIs — nothing hardcoded.</text>
+  <g transform="translate(700,40)" font-size="13" font-weight="600">
+    <rect x="0" y="-13" width="13" height="13" rx="3" fill="url(#gm)"/><text x="20" y="-2" fill="#c4cfe6">Gemini 3.5 Flash</text>
+    <rect x="150" y="-13" width="13" height="13" rx="3" fill="url(#cl)"/><text x="170" y="-2" fill="#c4cfe6">Claude Opus 4.8</text>
+  </g>
+
+  <!-- panels -->
+  <!-- Correctness ↑ : 100% vs 90% -->
+  <g transform="translate(24,0)">
+    <text x="14" y="130" fill="#dbe3f5" font-size="14" font-weight="700" letter-spacing="0.5">CORRECTNESS</text>
+    <text x="14" y="150" fill="#6f7d99" font-size="12">↑ higher is better</text>
+    <line x1="12" y1="380" x2="208" y2="380" stroke="#33405f" stroke-width="1"/>
+    <rect x="52" y="230" width="48" height="150" rx="4" fill="url(#gm)"/>
+    <rect x="118" y="245" width="48" height="135" rx="4" fill="url(#cl)"/>
+    <text x="76"  y="222" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">100%</text>
+    <text x="142" y="237" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">90%</text>
+  </g>
+
+  <!-- Cost / task ↓ : $0.0021 vs $0.0089 -->
+  <g transform="translate(268,0)">
+    <text x="14" y="130" fill="#dbe3f5" font-size="14" font-weight="700" letter-spacing="0.5">COST / TASK</text>
+    <text x="14" y="150" fill="#6f7d99" font-size="12">↓ lower is better</text>
+    <line x1="12" y1="380" x2="208" y2="380" stroke="#33405f" stroke-width="1"/>
+    <rect x="52" y="345" width="48" height="35" rx="4" fill="url(#gm)"/>
+    <rect x="118" y="230" width="48" height="150" rx="4" fill="url(#cl)"/>
+    <text x="76"  y="337" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">$.0021</text>
+    <text x="142" y="222" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">$.0089</text>
+  </g>
+
+  <!-- Wall time ↓ : 2.4s vs 3.9s -->
+  <g transform="translate(512,0)">
+    <text x="14" y="130" fill="#dbe3f5" font-size="14" font-weight="700" letter-spacing="0.5">WALL TIME</text>
+    <text x="14" y="150" fill="#6f7d99" font-size="12">↓ lower is better</text>
+    <line x1="12" y1="380" x2="208" y2="380" stroke="#33405f" stroke-width="1"/>
+    <rect x="52" y="288" width="48" height="92" rx="4" fill="url(#gm)"/>
+    <rect x="118" y="230" width="48" height="150" rx="4" fill="url(#cl)"/>
+    <text x="76"  y="280" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">2.4s</text>
+    <text x="142" y="222" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">3.9s</text>
+  </g>
+
+  <!-- Tokens / sec ↑ : 171 vs 96 -->
+  <g transform="translate(756,0)">
+    <text x="14" y="130" fill="#dbe3f5" font-size="14" font-weight="700" letter-spacing="0.5">TOKENS / SEC</text>
+    <text x="14" y="150" fill="#6f7d99" font-size="12">↑ higher is better</text>
+    <line x1="12" y1="380" x2="208" y2="380" stroke="#33405f" stroke-width="1"/>
+    <rect x="52" y="230" width="48" height="150" rx="4" fill="url(#gm)"/>
+    <rect x="118" y="296" width="48" height="84" rx="4" fill="url(#cl)"/>
+    <text x="76"  y="222" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">171</text>
+    <text x="142" y="288" fill="#eef2fb" font-size="15" font-weight="800" text-anchor="middle">96</text>
+  </g>
+
+  <text x="32" y="440" fill="#6f7d99" font-size="12.5">Correctness = % of hidden edge-case tests the model’s single attempt passes · cost from live token counts × your configured prices.</text>
+</svg>

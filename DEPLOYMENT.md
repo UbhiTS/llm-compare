@@ -1,4 +1,4 @@
-# Deploying Ubhi's LLM Matrix to Google Cloud Run
+# Deploying LLM Compare to Google Cloud Run
 
 This app ships as a **container** and deploys to **Cloud Run** via a **GitHub Actions**
 pipeline that authenticates to Google Cloud **keylessly** (Workload Identity Federation —
@@ -18,11 +18,13 @@ Everything is parameterized — nothing project-specific is hard-coded in the im
 
 > ### One-command provisioning
 > **`scripts/gcp-setup.sh`** provisions everything below in one idempotent command
-> (safe to re-run): the project (default **`llm-matrix`**) + billing link, APIs
-> (run, artifactregistry, iam, sts, secretmanager, aiplatform), Artifact Registry
-> (`containers`), the runtime SA (`${SERVICE}-run@…` — Vertex AI User + Secret accessor)
-> and deployer SA (`${SERVICE}-deployer@…` — Artifact Registry writer + Run admin +
-> act-as), Workload Identity Federation, and the Secret Manager secrets. Fill in
+> (safe to re-run): the project (default **`llm-compare`**) + billing link, APIs
+> (run, artifactregistry, storage, iam, sts, secretmanager, aiplatform), Artifact
+> Registry (`containers`), a **GCS bucket for durable run history**, the runtime SA
+> (`${SERVICE}-run@…` — Vertex AI User + Secret accessor + bucket object admin) and
+> deployer SA (`${SERVICE}-deployer@…` — Artifact Registry writer + Run admin + act-as),
+> Workload Identity Federation, and the three Secret Manager secrets
+> (`AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD`). Fill in
 > `GITHUB_OWNER`/`GITHUB_REPO` and your billing/org IDs at the top, run it, then do the
 > OAuth client (Step 6). The steps below are the manual equivalent / reference.
 
@@ -39,10 +41,11 @@ Everything is parameterized — nothing project-specific is hard-coded in the im
 ## Step 0 — pick your parameters (used by the commands below)
 
 ```bash
-export PROJECT_ID="llm-matrix"                 # already created for you
+export PROJECT_ID="llm-compare"                # globally unique — add a suffix if taken
 export REGION="us-central1"                    # any Cloud Run region
-export SERVICE="llm-matrix"                     # Cloud Run service name
+export SERVICE="llm-compare"                    # Cloud Run service name
 export AR_REPO="containers"                     # Artifact Registry repo name
+export DATA_BUCKET="${PROJECT_ID}-appdata"     # GCS bucket for durable run history
 export GITHUB_OWNER="your-github-user-or-org"
 export GITHUB_REPO="llm-compare"
 export ALLOWED_DOMAINS="example.com"          # comma-separated Workspace domain(s)
@@ -54,7 +57,7 @@ export MAX_RUNS="20"                            # per-user comparisons per day
 
 ```bash
 cd llm-compare
-git init && git add -A && git commit -m "Ubhi's LLM Matrix"
+git init && git add -A && git commit -m "LLM Compare"
 gh repo create "$GITHUB_OWNER/$GITHUB_REPO" --private --source=. --push
 ```
 
@@ -64,7 +67,7 @@ gh repo create "$GITHUB_OWNER/$GITHUB_REPO" --private --source=. --push
 
 ```bash
 gcloud services enable \
-  run.googleapis.com artifactregistry.googleapis.com \
+  run.googleapis.com artifactregistry.googleapis.com storage.googleapis.com \
   iamcredentials.googleapis.com sts.googleapis.com \
   secretmanager.googleapis.com aiplatform.googleapis.com \
   --project "$PROJECT_ID"
@@ -85,7 +88,7 @@ This SA gives the app access to **Vertex AI (Claude)** via ADC — the durable f
 
 ```bash
 gcloud iam service-accounts create "${SERVICE}-run" \
-  --display-name="LLM Matrix runtime" --project "$PROJECT_ID"
+  --display-name="LLM Compare runtime" --project "$PROJECT_ID"
 export RUNTIME_SA="${SERVICE}-run@${PROJECT_ID}.iam.gserviceaccount.com"
 
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
@@ -96,19 +99,38 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
 
 > The GCP project must have the Anthropic Claude models enabled in Vertex Model Garden.
 
+## Step 4b — durable data bucket (per-user run history)
+
+Run history is written to a **GCS bucket** mounted into the container at `/data`, so it
+survives Cloud Run restarts (the filesystem is otherwise ephemeral). Create the bucket and
+let the runtime SA read/write it:
+
+```bash
+export DATA_BUCKET="${PROJECT_ID}-appdata"
+gcloud storage buckets create "gs://$DATA_BUCKET" \
+  --project "$PROJECT_ID" --location="$REGION" --uniform-bucket-level-access
+gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" \
+  --member="serviceAccount:$RUNTIME_SA" --role="roles/storage.objectAdmin"
+```
+
 ## Step 5 — secrets in Secret Manager
 
-The Gemini/Agent-Platform key and the OAuth client secret are injected at deploy time.
+The Gemini/Agent-Platform key, the OAuth client secret, and a **break-glass admin password**
+are injected at deploy time.
 
 ```bash
 printf '%s' "YOUR_AGENT_PLATFORM_API_KEY" | \
   gcloud secrets create AGENT_PLATFORM_API_KEY --data-file=- --project "$PROJECT_ID"
 printf '%s' "YOUR_GOOGLE_OAUTH_CLIENT_SECRET" | \
   gcloud secrets create GOOGLE_CLIENT_SECRET --data-file=- --project "$PROJECT_ID"
+printf '%s' "A-STRONG-BREAKGLASS-ADMIN-PASSWORD" | \
+  gcloud secrets create ADMIN_BOOTSTRAP_PASSWORD --data-file=- --project "$PROJECT_ID"
 ```
 
 (You'll get the OAuth client secret in Step 6. Re-run with `gcloud secrets versions add`
-to update a value later.)
+to update a value later.) **`ADMIN_BOOTSTRAP_PASSWORD`** re-creates a durable
+`admin` / username+password login on every startup — your way in if Google sign-in is ever
+down or your account is locked out. It survives the ephemeral filesystem; keep it strong.
 
 ## Step 6 — "Sign in with Google" OAuth client
 
@@ -136,7 +158,7 @@ Lets GitHub Actions authenticate to GCP with **no stored keys**.
 ```bash
 # Deployer SA (impersonated by GitHub Actions)
 gcloud iam service-accounts create "${SERVICE}-deployer" \
-  --display-name="LLM Matrix GitHub deployer" --project "$PROJECT_ID"
+  --display-name="LLM Compare GitHub deployer" --project "$PROJECT_ID"
 export DEPLOY_SA="${SERVICE}-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
 
 # What the deployer may do: push images, deploy Cloud Run, act as the runtime SA
@@ -179,6 +201,7 @@ gh variable set RUNTIME_SERVICE_ACCOUNT -b "$RUNTIME_SA"           -R "$GITHUB_O
 gh variable set ALLOWED_EMAIL_DOMAINS   -b "$ALLOWED_DOMAINS"      -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set ADMIN_EMAILS            -b "$ADMIN_EMAILS"         -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set MAX_RUNS_PER_DAY        -b "$MAX_RUNS"             -R "$GITHUB_OWNER/$GITHUB_REPO"
+gh variable set APP_DATA_BUCKET         -b "$DATA_BUCKET"          -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set GOOGLE_CLIENT_ID        -b "YOUR_OAUTH_CLIENT_ID"  -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set OAUTH_REDIRECT_BASE     -b "https://YOUR-APP-URL"  -R "$GITHUB_OWNER/$GITHUB_REPO"
 
@@ -222,11 +245,11 @@ Run the container locally (no Google sign-in needed — falls back to the userna
 admin, and Claude uses your `gcloud` login):
 
 ```bash
-docker build -t llm-matrix .
+docker build -t llm-compare .
 docker run --rm -p 8080:8080 \
   -e AGENT_PLATFORM_API_KEY="..." \
   -e GCP_PROJECT_ID="$PROJECT_ID" \
-  llm-matrix
+  llm-compare
 # open http://localhost:8080  (first visit prints a setup code in the container logs)
 ```
 
@@ -243,9 +266,10 @@ Or without Docker: `npm start` (see `README.md` / `.env.example`).
 | GH var | `ALLOWED_EMAIL_DOMAINS` | org domain(s) allowed to sign in |
 | GH var | `ADMIN_EMAILS` | emails granted the admin role (exempt from the daily limit) |
 | GH var | `MAX_RUNS_PER_DAY` | per-user comparison-run cap (0 = unlimited) |
+| GH var | `APP_DATA_BUCKET` | GCS bucket mounted at `/data` for durable run history |
 | GH var | `GOOGLE_CLIENT_ID`, `OAUTH_REDIRECT_BASE` | Google sign-in config |
 | GH secret | `WIF_PROVIDER`, `DEPLOY_SERVICE_ACCOUNT` | keyless CI auth |
-| Secret Mgr | `AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET` | runtime secrets |
+| Secret Mgr | `AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` | runtime secrets (API key, OAuth secret, break-glass admin) |
 
 All are also documented in `.env.example` for non-container runs.
 

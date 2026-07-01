@@ -8,12 +8,12 @@ name: Deploy to Cloud Run
 #   Repository VARIABLES (Settings ▸ Secrets and variables ▸ Actions ▸ Variables):
 #     GCP_PROJECT_ID, GCP_REGION, ARTIFACT_REPO, CLOUD_RUN_SERVICE,
 #     RUNTIME_SERVICE_ACCOUNT, ALLOWED_EMAIL_DOMAINS, ADMIN_EMAILS,
-#     MAX_RUNS_PER_DAY, GOOGLE_CLIENT_ID, OAUTH_REDIRECT_BASE
+#     MAX_RUNS_PER_DAY, APP_DATA_BUCKET, GOOGLE_CLIENT_ID, OAUTH_REDIRECT_BASE
 #   Repository SECRETS:
 #     WIF_PROVIDER (workload identity provider resource name),
 #     DEPLOY_SERVICE_ACCOUNT (deployer SA email)
 #   Secret Manager secrets referenced at deploy (see --set-secrets):
-#     AGENT_PLATFORM_API_KEY, GOOGLE_CLIENT_SECRET
+#     AGENT_PLATFORM_API_KEY, GOOGLE_CLIENT_SECRET, ADMIN_BOOTSTRAP_PASSWORD
 # See DEPLOYMENT.md for the one-time setup that creates all of the above.
 
 on:
