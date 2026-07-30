@@ -475,12 +475,29 @@ app.post('/api/run', async (req, res) => {
 
   emit({ type: 'quota', quota: quotaInfo }); // let the UI update the "runs left today" counter
 
+  // If the client goes away (closes the tab, or hits "Run again" to restart a
+  // slot) abort the upstream provider calls instead of letting them finish
+  // unseen — an abandoned run would otherwise keep generating billable tokens.
+  // The work is discarded, so the quota slot is handed back too.
+  const ac = new AbortController();
+  let finished = false;
+  let aborted = false;
+  req.on('close', () => {
+    if (finished) return;
+    aborted = true;
+    ac.abort();
+    if (!usingOwnKeys) auth.refundRun(req.user, kind);
+    console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
+  });
+
   let results = null;
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal });
   } catch (e) {
-    emit({ type: 'error', message: String((e && e.message) || e) });
+    if (!aborted) emit({ type: 'error', message: String((e && e.message) || e) });
   }
+  finished = true;
+  if (aborted) return res.end();   // nothing to log: the client threw this run away
   // Log this run to the durable per-user history. FIRE-AND-FORGET: saveRun is
   // async and never throws, so this never blocks res.end() or the event loop on
   // a slow gcsfuse write (which would otherwise stall other users on this single

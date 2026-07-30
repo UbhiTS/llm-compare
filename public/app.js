@@ -975,15 +975,17 @@ let LAST_RESULTS = {};
 let ARENA_MODELS = null;  // the model set currently rendered (may differ from MODELS after a history restore)
 let _busy = false;        // a full run or a single-slot re-run is streaming
 let _rerunSlot = null;    // slot being re-run (suppresses the scorecard auto-scroll)
+let _rerunAbort = null;   // AbortController for the in-flight re-run, so clicking again restarts it
 
 // POST /api/run and pump the NDJSON stream into `results`.
 // Returns 'ok' | 'auth' | 'quota'; throws on transport/HTTP failure.
-async function streamRun(payload, results) {
+async function streamRun(payload, results, signal) {
   const resp = await fetch('/api/run', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   });
   if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
   if (resp.status === 429) {                                                     // daily per-user run limit
@@ -1075,13 +1077,24 @@ async function run() {
 // The fresh result is merged into LAST_RESULTS and the scorecard is rebuilt from
 // the merged set, so you can retry a slow/failed model without redoing the rest.
 async function rerunSlot(slot) {
-  if (_busy) return;
   const model = (ARENA_MODELS || MODELS).find((m) => m.slot === slot);
   if (!model) return;
+  // Restart-in-place: if THIS slot is already running, abandon that request and
+  // start a fresh one immediately (the server aborts the upstream call and hands
+  // the quota slot back). A full comparison still has to finish first.
+  if (_busy) {
+    if (_rerunSlot !== slot || !_rerunAbort) return;
+    _rerunAbort.abort();
+    // let the aborted run's finally-block settle before taking over
+    await new Promise((r) => setTimeout(r, 60));
+  }
   _busy = true; _rerunSlot = slot;
+  const ac = new AbortController();
+  _rerunAbort = ac;
   const btn = document.querySelector(`.rerun-btn[data-slot="${slot}"]`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   setRerunEnabled(false);
+  // keep THIS slot's button live so it can be clicked again to restart
+  if (btn) { btn.disabled = false; btn.textContent = '↻ Restart'; btn.classList.add('running'); }
   { const rb = $('#runBtn'); if (rb) rb.disabled = true; }
 
   // Reset just this column.
@@ -1110,17 +1123,21 @@ async function rerunSlot(slot) {
       mode: 'single',            // draws on the separate single-model re-run budget
       customPrompt: $('#customPrompt').value,
       keys: loadKeys(),
-    }, LAST_RESULTS);
+    }, LAST_RESULTS, ac.signal);
     if (st === 'auth') return;
     if (st === 'quota') { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
   } catch (e) {
+    // AbortError just means the user restarted this slot — the new run owns the UI now.
+    if (e && e.name === 'AbortError') { clearInterval(timer); return; }
     if (!LAST_RESULTS[slot]) setStatus(slot, 'Error: ' + esc(e.message), 'err');
   } finally {
     clearInterval(timer);
-    if (btn) { btn.disabled = false; btn.textContent = '↻ Run again'; }
-    _busy = false; _rerunSlot = null;
-    setRerunEnabled(true);
-    { const rb = $('#runBtn'); if (rb) rb.disabled = false; }
+    if (_rerunAbort === ac) {          // only tear down if a restart hasn't taken over
+      if (btn) { btn.disabled = false; btn.textContent = '↻ Run again'; btn.classList.remove('running'); }
+      _busy = false; _rerunSlot = null; _rerunAbort = null;
+      setRerunEnabled(true);
+      { const rb = $('#runBtn'); if (rb) rb.disabled = false; }
+    }
   }
 }
 

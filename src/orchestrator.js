@@ -7,7 +7,7 @@
 
 const { runAgent } = require('./agent');
 
-async function runComparison({ task, models, maxIterations, emit, keys }) {
+async function runComparison({ task, models, maxIterations, emit, keys, signal }) {
   emit({
     type: 'start',
     task: { id: task.id, title: task.title, prompt: task.prompt, testCount: task.testCases.length, functionName: task.functionName },
@@ -19,7 +19,7 @@ async function runComparison({ task, models, maxIterations, emit, keys }) {
   const results = await Promise.all(
     models.map(async (m) => {
       try {
-        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys });
+        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys, signal });
         emit({ type: 'done', slot: m.slot, result });
         return result;
       } catch (e) {

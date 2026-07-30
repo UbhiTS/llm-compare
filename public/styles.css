@@ -337,6 +337,9 @@ select option { color: var(--text); background: var(--bg); }
   transition: color .15s ease, border-color .15s ease, box-shadow .15s ease; }
 .rerun-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
 .rerun-btn:disabled { opacity: .4; cursor: not-allowed; }
+/* live re-run: the button stays clickable and restarts the slot from scratch */
+.rerun-btn.running { color: var(--warn); border-color: var(--warn); animation: rerun-pulse 1.4s ease-in-out infinite; }
+@keyframes rerun-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 .exec-out { margin: 10px 0 0; background: var(--well-2); border: 1px solid var(--border); border-radius: 0; padding: 11px 13px; max-height: 260px; overflow: auto; }
 .exec-out code { font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 

@@ -26,7 +26,7 @@ function estimateTokens(messages, system = '') {
   return Math.ceil(chars / 4);
 }
 
-async function gemini({ model, system, messages, keys }) {
+async function gemini({ model, system, messages, keys, signal }) {
   const key = (keys && keys.gemini) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
 
@@ -50,6 +50,7 @@ async function gemini({ model, system, messages, keys }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -89,7 +90,7 @@ function compatKey(cfg, keys) {
   return key;
 }
 
-async function openaiCompat(cfg, { model, system, messages, keys }) {
+async function openaiCompat(cfg, { model, system, messages, keys, signal }) {
   const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const t0 = Date.now();
@@ -97,6 +98,7 @@ async function openaiCompat(cfg, { model, system, messages, keys }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({ model, messages: msgs }),
+    signal,
   });
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -118,7 +120,7 @@ async function openaiCompat(cfg, { model, system, messages, keys }) {
 
 // Streamed variant — same contract, emits onDelta so the UI gets a live feed
 // (without this an external model's column sits blank until it finishes).
-async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta }) {
+async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal }) {
   const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const body = { model, messages: msgs, stream: true };
@@ -128,6 +130,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta 
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify(body),
+    signal,
   });
   if (!r.ok) {
     let detail = '';
@@ -159,7 +162,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta 
 const openai = (args) => openaiCompat(OPENAI_COMPAT.openai, args);
 const moonshot = (args) => openaiCompat(OPENAI_COMPAT.moonshot, args);
 
-async function anthropic({ model, system, messages, keys }) {
+async function anthropic({ model, system, messages, keys, signal }) {
   const key = (keys && keys.anthropic) || process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment (.env)');
 
@@ -178,6 +181,7 @@ async function anthropic({ model, system, messages, keys }) {
       system: system || undefined,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     }),
+    signal,
   });
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -207,7 +211,7 @@ async function agentplatform({ publisher, model, system, messages, project, keys
   return agentPlatformGemini({ model, system, messages, keys });
 }
 
-async function agentPlatformGemini({ model, system, messages, keys }) {
+async function agentPlatformGemini({ model, system, messages, keys, signal }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
@@ -233,6 +237,7 @@ async function agentPlatformGemini({ model, system, messages, keys }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -255,7 +260,7 @@ async function agentPlatformGemini({ model, system, messages, keys }) {
   };
 }
 
-async function agentPlatformClaude({ model, system, messages, project, keys }) {
+async function agentPlatformClaude({ model, system, messages, project, keys, signal }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
 
@@ -329,7 +334,7 @@ async function readSSE(response, onEvent) {
   }
 }
 
-async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys }) {
+async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
   const contents = messages.map((m) => ({
@@ -345,7 +350,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${key}`;
 
   const t0 = Date.now();
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Agent Platform ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
 
   let answer = '', reasoning = '', usage = {};
@@ -373,7 +378,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   };
 }
 
-async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys }) {
+async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
   const body = {
@@ -390,7 +395,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(model)}:streamRawPredict`;
 
   const payload = JSON.stringify(body);
-  const send = (token) => fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: payload });
+  const send = (token) => fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: payload, signal });
 
   const t0 = Date.now();
   let r = await send(userToken || await getClaudeToken());
@@ -423,21 +428,23 @@ const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 
 // `keys` (optional) lets a user bring their own API credentials for a run; each
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
-async function complete({ provider, model, system, messages, publisher, project, onDelta, keys }) {
+// `signal` aborts the upstream request when the client goes away (or restarts a
+// slot) so an abandoned run stops burning tokens instead of finishing unseen.
+async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal }) {
   if (provider === 'agentplatform' && onDelta) {
     const pub = publisher || 'google';
     return pub === 'anthropic'
-      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys })
-      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys });
+      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal })
+      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal });
   }
   // OpenAI-compatible providers stream too, so an external model's column gets
   // the same live token feed as the Vertex ones.
   if (OPENAI_COMPAT[provider] && onDelta) {
-    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys });
+    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys, signal });
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
-  return fn({ model, system, messages, publisher, project, keys });
+  return fn({ model, system, messages, publisher, project, keys, signal });
 }
 
 module.exports = { complete, estimateTokens, ADAPTERS };

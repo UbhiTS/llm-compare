@@ -390,6 +390,16 @@ function consumeRun(user, kind) {
   return { ok: true, limited: true, limit, used: used + 1, remaining: limit - (used + 1), resetAt: nextUtcMidnightISO() };
 }
 
+// Give a run back. Used when the client abandons a run before it finishes (the
+// per-slot "Run again" restart): the work was thrown away, so charging for it
+// would burn the day's small allowance on nothing.
+function refundRun(user, kind) {
+  if (exemptFromQuota(user, kind)) return;
+  const key = qKey(user, kind);
+  const used = runCounts.get(key) || 0;
+  if (used > 0) runCounts.set(key, used - 1);
+}
+
 // ---------- periodic cleanup (bounds memory; never blocks shutdown) ----------
 setInterval(() => {
   const now = Date.now();
@@ -410,7 +420,7 @@ module.exports = {
   // brute force
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
   // per-user daily run quota
-  runQuota, consumeRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY,
+  runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)

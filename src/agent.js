@@ -63,7 +63,7 @@ function buildFixMessage(task, failing) {
   );
 }
 
-async function runAgent({ modelConfig, task, maxIterations, emit, keys }) {
+async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal }) {
   const slot = modelConfig.slot;
   const system = task.language
     ? CODE_SYSTEM_PROMPT
@@ -143,6 +143,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys }) {
       messages,
       onDelta,
       keys,
+      signal,
     });
 
     totals.promptTokens += resp.promptTokens;
