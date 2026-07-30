@@ -27,7 +27,9 @@
   --r-card: 0px;   /* corner (square) rectangles everywhere */
   --r-shell: 0px;
   --r-tile: 0px;
-  --maxw: 1320px;
+  /* Fluid shell: fills wide monitors (small side gutters) instead of sitting in a
+     narrow 1320px column, but stops growing on ultra-wide displays. */
+  --maxw: min(2200px, 95vw);
 }
 
 /* ---- Medium theme (lifted slate) ---- */
@@ -204,7 +206,8 @@ select option { color: var(--text); background: var(--bg); }
 .auth-check input[type="checkbox"]:checked::after { content: ""; position: absolute; left: 6px; top: 2px; width: 4px; height: 9px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .auth-check input[type="checkbox"]:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent); }
 
-.task-prompt { color: var(--muted); font-size: 13.5px; margin: 10px 2px 2px; white-space: pre-wrap; max-height: 220px; overflow: auto; }
+/* Prose stays readable: cap the LINE length even though the shell is full-width. */
+.task-prompt { color: var(--muted); font-size: 13.5px; margin: 10px 2px 2px; white-space: pre-wrap; max-height: 220px; overflow: auto; max-width: 110ch; }
 .task-meta { display: inline-block; margin: 14px 2px 0; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
   padding: 4px 11px; border-radius: 0; border: 1px solid var(--border); color: var(--muted); background: var(--well); }
 .task-meta:empty { display: none; }
@@ -238,7 +241,7 @@ select option { color: var(--text); background: var(--bg); }
 .add-model-chip .am-plus { color: var(--accent); font-weight: 700; }
 .add-model-chip .am-price { color: var(--faint); font-weight: 500; font-family: "JetBrains Mono", monospace; font-size: 11px; }
 .add-note { font-size: 12px; color: var(--faint); }
-.hint { color: var(--faint); font-size: 12px; margin: 12px 2px 2px; }
+.hint { color: var(--faint); font-size: 12px; margin: 12px 2px 2px; max-width: 130ch; }
 .hint code, .foot code, .disclaimer code { background: var(--well); padding: 1px 7px; border-radius: 0; border: 1px solid var(--border); color: var(--text); }
 
 
