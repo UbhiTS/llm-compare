@@ -150,9 +150,14 @@ so a tampered price or model ID is ignored.
 |---|---|---|
 | Gemini 3.6 Flash | Google (Vertex) | 1.50 / 7.50 |
 | Gemini 3.5 Flash | Google (Vertex) | 1.50 / 9.00 |
+| Gemini 3.5 Flash Lite | Google (Vertex) | 0.30 / 2.50 |
+| Gemini 3.1 Pro | Google (Vertex) | 2.00 / 12.00 |
+| Claude Fable 5 | Anthropic (Vertex) | 10.00 / 50.00 |
 | Claude Opus 5 | Anthropic (Vertex) | 5.00 / 25.00 |
 | Claude Opus 4.8 | Anthropic (Vertex) | 5.00 / 25.00 |
-| Gemini 3.1 Pro | Google (Vertex) | 2.00 / 12.00 |
+| Claude Sonnet 5 | Anthropic (Vertex) | 2.00 / 10.00 † |
+
+† Sonnet 5 introductory pricing through **2026-08-31**; it rises to 3.00 / 15.00 on 2026-09-01 — update `MODEL_CATALOG` then.
 
 > Prices are the shipped defaults from public 2026 pricing. **Verify current prices** and edit
 > `MODEL_CATALOG` before a customer demo. To add a model, add a catalog entry; to change the default
