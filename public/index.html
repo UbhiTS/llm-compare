@@ -82,8 +82,14 @@
 
   <section id="scorecard" class="scorecard glass hidden">
     <div class="sc-head">
-      <h2>Model comparison</h2>
-      <p class="sc-sub">Measured live from the provider APIs — the same task, side by side.</p>
+      <div>
+        <h2>Model comparison</h2>
+        <p class="sc-sub">Measured live from the provider APIs — the same task, side by side.</p>
+      </div>
+      <div id="metricViewToggle" class="mv-toggle hidden" role="group" aria-label="Chart style">
+        <button type="button" class="mv-btn active" data-view="bars" title="Vertical bars — height shows the value">▮ Bars</button>
+        <button type="button" class="mv-btn" data-view="scale" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
+      </div>
     </div>
 
     <div id="modelLegend" class="model-legend"></div>

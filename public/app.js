@@ -122,6 +122,12 @@ async function init() {
     ar.classList.toggle('is-on', on);
     ar.setAttribute('aria-pressed', String(on));
   }); }
+  { const mv = $('#metricViewToggle'); if (mv) mv.addEventListener('click', (e) => {
+    const b = e.target.closest('.mv-btn');
+    if (!b || !_lastScored) return;
+    setMetricView(b.dataset.view);
+    renderMetricGrid(_lastScored.scored, _lastScored.isCustom);
+  }); }
   $('#historyBtn').addEventListener('click', openHistoryModal);
   updateQuotaBadge();
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeAuthModal(); } });
@@ -984,10 +990,12 @@ function buildScorecard(results) {
     return { ...r, axes, overall };
   });
 
+  _lastScored = { scored, isCustom };   // so the Bars/Scale toggle can repaint without recomputing
   renderModelLegend(scored);
   renderMetricGrid(scored, isCustom);
   renderTable(scored, isCustom);
 }
+let _lastScored = null;
 
 // Neutral legend: one chip per model (icon + name + provider·model), equal weight.
 function renderModelLegend(scored) {
@@ -998,34 +1006,108 @@ function renderModelLegend(scored) {
   ).join('');
 }
 
-// Per-metric vertical bar charts — a fair, side-by-side comparison of each
-// parameter with big values and an explicit better-direction hint. No overall
-// "winner" is declared; the numbers speak for themselves.
+// ---------- per-metric comparison ----------
+// Two interchangeable views of the same numbers, switchable at runtime:
+//   'bars'  — vertical bars; HEIGHT is the value, and the fill climbs a
+//             green→red ramp so a bar deep in the red is visibly bad.
+//   'scale' — every model as a marker on one shared best→worst track. More
+//             compact and instantly rankable, but min/max-normalised, so it
+//             shows the ORDER, not the size of the gap.
+// The ramp is flipped per metric so green always sits at the good end. A metric
+// with no good/bad direction (output tokens) is neutral grey and ALWAYS renders
+// as a bar — a best→worst track would imply a judgement the data can't support.
+const MP_H = 150;                       // px; must match .mp-chart height in styles.css
+const METRIC_VIEW_KEY = 'ullm.metricView';
+function metricView() {
+  try { const v = localStorage.getItem(METRIC_VIEW_KEY); if (v === 'bars' || v === 'scale') return v; } catch (e) { /* ignore */ }
+  return 'bars';
+}
+function setMetricView(v) { try { localStorage.setItem(METRIC_VIEW_KEY, v); } catch (e) { /* ignore */ } }
+
+const MP_ICONS = {
+  correct: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg>',
+  cost: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M14.8 9.2a3 3 0 0 0-2.8-1.7c-1.6 0-2.6.9-2.6 2 0 3 5.6 1.6 5.6 4.6 0 1.2-1.1 2.2-2.9 2.2a3.2 3.2 0 0 1-3-1.8"/><path d="M12 6v12"/></svg>',
+  time: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M9 2h6"/></svg>',
+  speed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>',
+  len: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>',
+};
+
+// Vertical ramp for a bar/backdrop: green always at the metric's GOOD end.
+function mpGradient(dir, alpha) {
+  const g = `rgba(12,163,12,${alpha})`, w = `rgba(250,178,25,${alpha})`, b = `rgba(208,59,59,${alpha})`;
+  if (dir === 'neutral') return `linear-gradient(0deg, rgba(123,132,148,${alpha * 0.6}) 0%, rgba(123,132,148,${alpha * 0.6}) 100%)`;
+  return dir === 'lower'
+    ? `linear-gradient(0deg, ${g} 0%, ${w} 52%, ${b} 100%)`   // tall bar = red = bad
+    : `linear-gradient(0deg, ${b} 0%, ${w} 52%, ${g} 100%)`;  // tall bar = green = good
+}
+
+function metricList(isCustom) {
+  const metrics = [];
+  if (!isCustom) metrics.push({ label: 'Correctness', icon: 'correct', dir: 'higher', hint: '↑ higher is better', get: (r) => (r.correctness == null ? 0 : r.correctness), fmt: (v) => Math.round(v) + '%' });
+  metrics.push({ label: 'Cost / task', icon: 'cost', dir: 'lower', hint: '↓ lower is better', get: (r) => Math.max(r.costUsd || 0, 0), fmt: (v) => fmtCost(v) });
+  metrics.push({ label: 'Wall time', icon: 'time', dir: 'lower', hint: '↓ lower is better', get: (r) => (r.wallMs || 0) / 1000, fmt: (v) => v.toFixed(1) + 's' });
+  metrics.push({ label: 'Tokens / sec', icon: 'speed', dir: 'higher', hint: '↑ higher is better', get: (r) => r.tokensPerSec || 0, fmt: (v) => fmtInt(Math.round(v)) });
+  metrics.push({ label: 'Output tokens', icon: 'len', dir: 'neutral', hint: 'answer length · neutral', get: (r) => Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)), fmt: (v) => fmtInt(v) });
+  return metrics;
+}
+
+function mpHead(m) {
+  return `<div class="mp-head"><span class="mp-ic">${MP_ICONS[m.icon] || ''}</span>
+    <span class="mp-h-txt"><span class="mp-title">${esc(m.label)}</span><span class="mp-hint">${esc(m.hint)}</span></span></div>`;
+}
+
+function mpBars(m, vals, n) {
+  const max = Math.max(...vals.map((x) => x.v), 1e-9);
+  const fill = m.dir === 'neutral'
+    ? 'background:var(--mp-neutral)'
+    : `background-image:${mpGradient(m.dir, 1)};background-size:100% ${MP_H}px;background-position:left bottom;background-repeat:no-repeat`;
+  const cols = vals.map(({ r, v }) => {
+    const h = Math.max(5, Math.round((v / max) * 100));
+    return `<div class="mp-col" title="${esc(r.label)}: ${esc(m.fmt(v))}">
+      <div class="mp-val">${esc(m.fmt(v))}</div>
+      <div class="mp-bar" style="height:${h}%;${fill}"></div>
+    </div>`;
+  }).join('');
+  const names = vals.map(({ r }) => `<span class="mp-name">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></span>`).join('');
+  return `<div class="mp-chart" style="background-image:${mpGradient(m.dir, 0.10)}">${cols}</div>
+    <div class="mp-names">${names}</div>`;
+}
+
+function mpScale(m, vals) {
+  const nums = vals.map((x) => x.v);
+  const max = Math.max(...nums), min = Math.min(...nums);
+  const span = (max - min) || 1;
+  const track = m.dir === 'neutral'
+    ? 'linear-gradient(90deg, var(--mp-neutral), var(--mp-neutral))'
+    : 'linear-gradient(90deg, #0ca30c 0%, #fab219 52%, #d03b3b 100%)';
+  const rows = vals.map(({ r, v }) => {
+    let pct = ((v - min) / span) * 100;          // 0 = best end
+    if (m.dir === 'higher') pct = 100 - pct;
+    return `<div class="mp-row" title="${esc(r.label)}: ${esc(m.fmt(v))}">
+      <span class="mp-rname">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></span>
+      <span class="mp-track" style="background-image:${track}"><span class="mp-mark" style="left:calc(${pct.toFixed(1)}% - 3px)"></span></span>
+      <span class="mp-rval">${esc(m.fmt(v))}</span>
+    </div>`;
+  }).join('');
+  const ends = m.dir === 'neutral' ? ['shortest', 'longest'] : ['best', 'worst'];
+  return `<div class="mp-scale">${rows}<div class="mp-ends"><span>${ends[0]}</span><span>${ends[1]}</span></div></div>`;
+}
+
 function renderMetricGrid(scored, isCustom) {
   const wrap = $('#metricGrid');
   if (!wrap) return;
-  const metrics = [];
-  if (!isCustom) metrics.push({ label: 'Correctness', hint: '↑ higher is better', get: (r) => (r.correctness == null ? 0 : r.correctness), fmt: (v) => Math.round(v) + '%' });
-  metrics.push({ label: 'Cost / task', hint: '↓ lower is better', get: (r) => Math.max(r.costUsd || 0, 0), fmt: (v) => fmtCost(v) });
-  metrics.push({ label: 'Wall time', hint: '↓ lower is better', get: (r) => (r.wallMs || 0) / 1000, fmt: (v) => v.toFixed(1) + 's' });
-  metrics.push({ label: 'Tokens / sec', hint: '↑ higher is better', get: (r) => r.tokensPerSec || 0, fmt: (v) => fmtInt(Math.round(v)) });
-  metrics.push({ label: 'Output tokens', hint: 'answer length', get: (r) => Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)), fmt: (v) => fmtInt(v) });
-
-  wrap.innerHTML = metrics.map((m) => {
+  // A best→worst track needs something to compare against; with one model, bars only.
+  const view = scored.length < 2 ? 'bars' : metricView();
+  const toggle = $('#metricViewToggle');
+  if (toggle) {
+    toggle.classList.toggle('hidden', scored.length < 2);
+    toggle.querySelectorAll('.mv-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  }
+  wrap.innerHTML = metricList(isCustom).map((m) => {
     const vals = scored.map((r) => ({ r, v: m.get(r) }));
-    const max = Math.max(...vals.map((x) => x.v), 1e-9);
-    const cols = vals.map(({ r, v }) => {
-      const h = Math.max(4, Math.round((v / max) * 100));
-      return `<div class="mp-col" title="${esc(r.label)}: ${esc(m.fmt(v))}">
-        <div class="mp-val">${esc(m.fmt(v))}</div>
-        <div class="mp-track"><div class="mp-bar" style="height:${h}%;background:${slotColor(r.slot)}"></div></div>
-        <div class="mp-name">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></div>
-      </div>`;
-    }).join('');
-    return `<div class="metric-panel" data-n="${scored.length}">
-      <div class="mp-head"><span class="mp-title">${esc(m.label)}</span><span class="mp-hint">${esc(m.hint)}</span></div>
-      <div class="mp-chart">${cols}</div>
-    </div>`;
+    // Neutral metrics have no good/bad end — a scale would imply one. Always bars.
+    const body = (view === 'scale' && m.dir !== 'neutral') ? mpScale(m, vals) : mpBars(m, vals, scored.length);
+    return `<div class="metric-panel" data-n="${scored.length}">${mpHead(m)}${body}</div>`;
   }).join('');
 }
 

@@ -367,7 +367,7 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 .bar-row .name .mi { width: 15px; height: 15px; margin-right: 7px; }
 
 /* ---------- scorecard: header / winner hero / ranked cards ---------- */
-.sc-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.sc-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
 .sc-head h2 { margin: 0; }
 .sc-sub { color: var(--muted); font-size: 12.5px; margin: 0; }
 
@@ -414,25 +414,60 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 .ml-chip b { font-weight: 700; }
 .ml-sub { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 12px; }
 
-/* per-metric vertical bar charts (neutral comparison, no declared winner) */
-.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 16px; }
+/* ---------- per-metric comparison: Bars view + Scale view ----------
+   Green always sits at the metric's GOOD end (the ramp is flipped per metric in
+   app.js). Colour never carries the meaning alone — every mark is labelled with
+   its value and the model name. --mp-neutral is used for metrics with no
+   better/worse direction. */
+:root { --mp-neutral: #7b8494; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
 .metric-panel { border: 1px solid var(--border); background: var(--well); padding: 16px 16px 14px; }
-.mp-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
-.mp-title { font-family: "Space Grotesk", sans-serif; font-size: 14px; font-weight: 650; }
-.mp-hint { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
-.mp-chart { display: flex; align-items: flex-end; justify-content: space-around; gap: 12px; }
-.metric-panel[data-n="3"] .mp-chart { gap: 7px; }
-.mp-col { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; height: 184px; justify-content: flex-end; }
-.mp-val { font-family: "Space Grotesk", sans-serif; font-size: 20px; font-weight: 700; color: var(--text); margin-bottom: 8px; font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 100%; }
-.metric-panel[data-n="1"] .mp-val { font-size: 22px; }
+.mp-head { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; }
+.mp-ic { flex: 0 0 auto; display: grid; place-items: center; width: 40px; height: 40px; background: var(--bg);
+  border: 1px solid var(--border); color: var(--text); }
+.mp-ic svg { width: 22px; height: 22px; }
+.mp-h-txt { display: flex; flex-direction: column; min-width: 0; }
+.mp-title { font-family: "Space Grotesk", sans-serif; font-size: 14.5px; font-weight: 650; }
+.mp-hint { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+
+/* --- Bars: height = value, fill climbs the green→red ramp --- */
+.mp-chart { position: relative; display: flex; align-items: flex-end; justify-content: space-around; gap: 14px;
+  height: 150px; /* MP_H in app.js — keep in sync */ padding: 0 10px; }
+.metric-panel[data-n="3"] .mp-chart { gap: 10px; }
+.mp-col { flex: 1; min-width: 0; max-width: 92px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.mp-val { font-family: "Space Grotesk", sans-serif; font-size: 17px; font-weight: 700; color: var(--text);
+  margin-bottom: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; max-width: 100%; }
 .metric-panel[data-n="3"] .mp-val { font-size: 14px; }
-.mp-track { width: 100%; max-width: 66px; flex: 1; display: flex; align-items: flex-end; }
-.metric-panel[data-n="3"] .mp-track { max-width: 50px; }
-.mp-bar { width: 100%; min-height: 4px; box-shadow: 0 0 16px -6px currentColor; transform-origin: bottom; animation: bar-rise .6s cubic-bezier(.2,.8,.2,1); }
-.mp-name { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-top: 10px; height: 48px; overflow: hidden;
-  font-size: 12px; color: var(--muted); text-align: center; line-height: 1.15; }
-.mp-name .mi { width: 20px; height: 20px; flex: 0 0 auto; }
-.mp-name span { white-space: normal; word-break: break-word; display: block; }
+.mp-bar { width: 100%; min-height: 5px; border-radius: 5px 5px 0 0; transform-origin: bottom;
+  animation: bar-rise .6s cubic-bezier(.2,.8,.2,1); }
+.mp-names { display: flex; justify-content: space-around; gap: 14px; padding: 0 10px; margin-top: 9px; }
+.metric-panel[data-n="3"] .mp-names { gap: 10px; }
+.mp-name { flex: 1; min-width: 0; max-width: 92px; display: flex; align-items: center; justify-content: center; gap: 5px;
+  font-size: 11.5px; color: var(--muted); text-align: center; line-height: 1.15; }
+.mp-name .mi { width: 18px; height: 18px; flex: 0 0 auto; }
+.mp-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- Scale: position on one shared best→worst track --- */
+.mp-scale { margin-top: 2px; }
+.mp-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.mp-rname { display: flex; align-items: center; gap: 5px; width: 92px; flex: 0 0 auto; font-size: 11.5px; color: var(--muted); }
+.mp-rname .mi { width: 18px; height: 18px; flex: 0 0 auto; }
+.mp-rname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-track { position: relative; flex: 1; min-width: 60px; height: 22px; border-radius: 11px; }
+.mp-mark { position: absolute; top: -3px; width: 6px; height: 28px; border-radius: 3px; background: var(--text);
+  box-shadow: 0 0 0 2.5px var(--well); animation: bar-rise .5s cubic-bezier(.2,.8,.2,1); }
+.mp-rval { width: 76px; flex: 0 0 auto; text-align: right; font-family: "Space Grotesk", sans-serif; font-size: 14px;
+  font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mp-ends { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--faint);
+  text-transform: uppercase; letter-spacing: .07em; margin: 2px 76px 0 102px; }
+
+/* --- Bars / Scale switch --- */
+.mv-toggle { display: inline-flex; border: 1px solid var(--border-hi); flex: 0 0 auto; }
+.mv-btn { background: transparent; border: none; color: var(--muted); padding: 7px 14px; font-size: 12px;
+  font-weight: 600; cursor: pointer; font-family: inherit; white-space: nowrap; }
+.mv-btn + .mv-btn { border-left: 1px solid var(--border); }
+.mv-btn:hover { color: var(--text); }
+.mv-btn.active { background: var(--accent); color: #fff; }
 @keyframes bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 
 .foot { max-width: var(--maxw); margin: 32px auto 0; color: var(--faint); font-size: 12.5px; text-align: center; }
