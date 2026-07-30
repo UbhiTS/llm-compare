@@ -81,7 +81,10 @@ async function init() {
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   initUserMenu(CONFIG.me);
-  MODELS = CONFIG.models.map((m) => ({ ...m, price: { ...m.price } }));
+  // Seed the drag-and-drop slots from the server's default selection, then let
+  // MODELS be derived from the slots from here on.
+  CONFIG.models.forEach((m, i) => { const s = SLOT_IDS[i]; if (s) SLOT_ASSIGN[s] = m.catalogId || m.id; });
+  syncModelsFromSlots();
 
   // key status pills
   const ks = $('#keyStatus');
@@ -385,25 +388,59 @@ function openChangePwModal() {
 // ---------- model slots: add / remove from the fixed catalog ----------
 function catalog() { return (CONFIG && CONFIG.catalog) || []; }
 
-// Add a preconfigured catalog model (by its catalog id). Settings come straight
-// from the catalog — the user can't modify price/provider/model.
-function addModel(catalogId) {
-  if (MODELS.length >= MAX_SLOTS) return;
-  const c = catalog().find((x) => x.id === catalogId);
-  if (!c) return;
-  if (MODELS.some((m) => m.catalogId === c.id)) return; // each model at most once
-  const slot = nextSlotId();
-  MODELS.push({
+// ---------- slot assignment (drag & drop picker) ----------
+// Three fixed slots, each holding at most one catalog model. A model can only
+// occupy ONE slot, so dropping a model that is already placed MOVES it (and
+// swaps with whatever was in the destination) rather than duplicating it.
+const SLOT_IDS = ['A', 'B', 'C'].slice(0, MAX_SLOTS);
+const SLOT_ASSIGN = {};                  // slot -> catalogId | null
+SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; });
+
+function modelFromCatalogId(slot, id) {
+  const c = catalog().find((x) => x.id === id);
+  if (!c) return null;
+  return {
     slot, catalogId: c.id, label: c.label,
     provider: c.provider, publisher: c.publisher, model: c.model,
     price: { input: c.price.input, output: c.price.output },
-  });
-  renderModelEditors();
-  buildArena();
+    external: !!c.external,
+  };
 }
-function removeModel(i) {
-  if (MODELS.length <= MIN_SLOTS) return;
-  MODELS.splice(i, 1);
+// MODELS (what the rest of the app runs on) is derived from the slots.
+function syncModelsFromSlots() {
+  MODELS = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).map((s) => modelFromCatalogId(s, SLOT_ASSIGN[s])).filter(Boolean);
+}
+function slotOf(catalogId) { return SLOT_IDS.find((s) => SLOT_ASSIGN[s] === catalogId) || null; }
+
+// Place `catalogId` into `slot`. Moving between slots swaps; coming from the
+// palette displaces the current occupant back to the palette.
+function assignToSlot(catalogId, slot) {
+  if (!SLOT_IDS.includes(slot)) return;
+  const c = catalog().find((x) => x.id === catalogId);
+  if (!c) return;
+  const from = slotOf(catalogId);
+  if (from === slot) return;                       // dropped where it already is
+  const displaced = SLOT_ASSIGN[slot] || null;
+  SLOT_ASSIGN[slot] = catalogId;
+  if (from) SLOT_ASSIGN[from] = displaced;         // swap (displaced may be null → source empties)
+  afterSlotChange();
+}
+function clearSlot(slot) {
+  if (!SLOT_ASSIGN[slot]) return;
+  const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
+  if (filled <= MIN_SLOTS) return;                 // always keep at least one model
+  SLOT_ASSIGN[slot] = null;
+  afterSlotChange();
+}
+// Click fallback (and touch, where HTML5 drag&drop doesn't fire): fill the first
+// empty slot, else replace the last one.
+function placeInFirstFreeSlot(catalogId) {
+  if (slotOf(catalogId)) return;
+  const free = SLOT_IDS.find((s) => !SLOT_ASSIGN[s]);
+  assignToSlot(catalogId, free || SLOT_IDS[SLOT_IDS.length - 1]);
+}
+function afterSlotChange() {
+  syncModelsFromSlots();
   renderModelEditors();
   buildArena();
 }
@@ -438,49 +475,99 @@ function renderTaskPrompt() {
   renderTaskMeta();
 }
 
+function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
+function extBadge(c) { return c.external ? '<span class="ext-badge" title="Not on Vertex — needs its own API key; the prompt leaves Google infrastructure">EXT</span>' : ''; }
+
 function renderModelEditors() {
+  // ---- palette: every catalog model not currently in a slot ----
+  const pal = $('#modelPalette');
+  if (pal) {
+    pal.innerHTML = '';
+    const avail = catalog().filter((c) => !slotOf(c.id));
+    if (!avail.length) {
+      pal.appendChild(el('span', 'add-note', 'Every model is in a slot — drag one out or swap.'));
+    } else {
+      avail.forEach((c) => {
+        const chip = el('div', 'model-chip');
+        chip.draggable = true;
+        chip.dataset.id = c.id;
+        chip.title = `${c.label} (${c.model}) — drag into a slot, or click`;
+        chip.innerHTML = `<span class="am-ic">${modelIconSvg(c)}</span><b>${esc(c.label)}</b>${extBadge(c)}<span class="am-price">${priceTag(c)}</span>`;
+        chip.addEventListener('dragstart', (e) => {
+          e.dataTransfer.setData('text/plain', c.id);
+          e.dataTransfer.effectAllowed = 'move';
+          chip.classList.add('dragging');
+        });
+        chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+        chip.addEventListener('click', () => placeInFirstFreeSlot(c.id));
+        pal.appendChild(chip);
+      });
+    }
+  }
+
+  // ---- the three slots ----
   const wrap = $('#modelEditors');
   wrap.innerHTML = '';
-  // Selected models — read-only cards (settings are preconfigured & locked).
-  MODELS.forEach((m, i) => {
-    const price = `$${(+m.price.input).toFixed(2)} in · $${(+m.price.output).toFixed(2)} out`;
-    const card = el('div', 'model-card-locked');
-    card.style.borderTop = `3px solid ${slotColor(m.slot)}`;
-    card.innerHTML = `
-      <div class="card-head">
-        <h4><span class="mc-ic">${modelIconSvg(m)}</span>${esc(m.label)}</h4>
-        <button class="remove-slot" data-rm="${i}" type="button" title="Remove this model"${MODELS.length <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
-      </div>
-      <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(m.provider)} · ${esc(m.model)}</span></div>
-      <div class="mc-row"><span class="mc-key">Price</span><span class="mc-val">${price} <span class="mc-per">/ 1M tok</span></span></div>
-      <div class="mc-locked" title="Model settings are preconfigured from public pricing and can’t be edited">🔒 Preconfigured</div>`;
-    wrap.appendChild(card);
+  const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
+  SLOT_IDS.forEach((slot) => {
+    const id = SLOT_ASSIGN[slot];
+    const c = id ? catalog().find((x) => x.id === id) : null;
+    const box = el('div', 'slot-box' + (c ? ' filled' : ' empty'));
+    box.dataset.slot = slot;
+    box.style.setProperty('--accent', slotColor(slot));
+    if (c) {
+      box.innerHTML = `
+        <div class="slot-tag">Slot ${slot}</div>
+        <div class="model-card-locked" draggable="true" data-id="${esc(c.id)}">
+          <div class="card-head">
+            <h4><span class="mc-ic">${modelIconSvg(c)}</span>${esc(c.label)}${extBadge(c)}</h4>
+            <button class="remove-slot" data-slot="${slot}" type="button" title="Clear this slot"${filled <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
+          </div>
+          <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(c.provider)} · ${esc(c.model)}</span></div>
+          <div class="mc-row"><span class="mc-key">Price</span><span class="mc-val">${priceTag(c)} <span class="mc-per">/ 1M tok</span></span></div>
+          <div class="mc-locked">🔒 Preconfigured · drag to move</div>
+        </div>`;
+    } else {
+      box.innerHTML = `<div class="slot-tag">Slot ${slot}</div><div class="slot-empty">Drop a model here</div>`;
+    }
+    wrap.appendChild(box);
+  });
+
+  // card drag (moving a model between slots)
+  wrap.querySelectorAll('.model-card-locked[draggable]').forEach((card) => {
+    card.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', card.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      card.classList.add('dragging');
+    });
+    card.addEventListener('dragend', () => card.classList.remove('dragging'));
   });
   wrap.querySelectorAll('.remove-slot').forEach((b) =>
-    b.addEventListener('click', (e) => removeModel(+e.currentTarget.dataset.rm)));
+    b.addEventListener('click', (e) => { e.stopPropagation(); clearSlot(e.currentTarget.dataset.slot); }));
 
-  // Add-picker: one chip per catalog model not already selected.
-  const addWrap = $('#addModels');
-  if (!addWrap) return;
-  addWrap.innerHTML = '';
-  if (MODELS.length >= MAX_SLOTS) {
-    addWrap.appendChild(el('span', 'add-note', `Maximum ${MAX_SLOTS} models selected.`));
-    return;
-  }
-  const present = new Set(MODELS.map((m) => m.catalogId));
-  const avail = catalog().filter((c) => !present.has(c.id));
-  if (!avail.length) {
-    addWrap.appendChild(el('span', 'add-note', 'All available models are selected.'));
-    return;
-  }
-  avail.forEach((c) => {
-    const chip = el('button', 'add-model-chip',
-      `<span class="am-plus">+</span><span class="am-ic">${modelIconSvg(c)}</span> ${esc(c.label)} <span class="am-price">$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}</span>`);
-    chip.type = 'button';
-    chip.title = `Add ${c.label} (${c.model})`;
-    chip.addEventListener('click', () => addModel(c.id));
-    addWrap.appendChild(chip);
+  // drop targets
+  wrap.querySelectorAll('.slot-box').forEach((box) => {
+    box.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; box.classList.add('drag-over'); });
+    box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
+    box.addEventListener('drop', (e) => {
+      e.preventDefault();
+      box.classList.remove('drag-over');
+      const id = e.dataTransfer.getData('text/plain');
+      if (id) assignToSlot(id, box.dataset.slot);
+    });
   });
+  // dropping back onto the palette clears the model from its slot
+  if (pal) {
+    pal.addEventListener('dragover', (e) => { e.preventDefault(); pal.classList.add('drag-over'); });
+    pal.addEventListener('dragleave', () => pal.classList.remove('drag-over'));
+    pal.addEventListener('drop', (e) => {
+      e.preventDefault();
+      pal.classList.remove('drag-over');
+      const id = e.dataTransfer.getData('text/plain');
+      const s = id && slotOf(id);
+      if (s) clearSlot(s);
+    });
+  }
 }
 
 // ---------- arena scaffolding ----------
