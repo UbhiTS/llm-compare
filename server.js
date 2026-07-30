@@ -29,6 +29,7 @@ const { buildWebGame, gameDir, webGameEnabled } = require('./src/webGame');
 const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
+const globalKeys = require('./src/globalKeys');
 
 const app = express();
 app.disable('x-powered-by');
@@ -306,6 +307,26 @@ app.get('/api/usage', requireAdmin, (req, res) => {
   res.json(history.usageSummary());
 });
 
+// ---------- global (shared) provider keys — admin only ----------
+// These are the credentials every user runs on when they haven't brought their
+// own. Stored as Secret Manager versions (see src/globalKeys.js); the VALUES are
+// never returned here — only presence and a masked tail.
+app.get('/api/global-keys', requireAdmin, (req, res) => {
+  res.json({ keys: globalKeys.status(), enabled: globalKeys.enabled() });
+});
+
+app.put('/api/global-keys', requireAdmin, async (req, res) => {
+  const { name, value } = req.body || {};
+  try {
+    const keys = await globalKeys.set(String(name || ''), String(value || ''));
+    // Audit trail: a shared key change affects every user's runs and spend.
+    console.log(`[globalKeys] ${req.user.username} updated ${name}`);
+    res.json({ ok: true, keys });
+  } catch (e) {
+    res.status(400).json({ error: String((e && e.message) || e) });
+  }
+});
+
 // Execute an LLM-generated solution: python -> run the program; javascript ->
 // run the function against the task's hidden tests. taskId supplies the tests.
 app.post('/api/execute', async (req, res) => {
@@ -487,6 +508,8 @@ function lanAddresses() {
   }
   return ips;
 }
+
+globalKeys.start();   // warm the shared keys from Secret Manager + keep them fresh
 
 app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);

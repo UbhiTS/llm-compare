@@ -148,6 +148,7 @@ function initUserMenu(me) {
   $('#userAvatar').textContent = (ME.username[0] || '?').toUpperCase();
   $('#userChip').title = ME.username + ' · ' + ME.role;
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
+  { const gk = $('#globalKeysBtn'); if (gk) gk.hidden = ME.role !== 'admin'; }
 
   const chip = $('#userChip');
   const dd = $('#userDropdown');
@@ -158,6 +159,7 @@ function initUserMenu(me) {
   $('#logoutBtn').addEventListener('click', logout);
   $('#changePwBtn').addEventListener('click', () => { toggle(false); openChangePwModal(); });
   $('#manageUsersBtn').addEventListener('click', () => { toggle(false); openUsersModal(); });
+  { const gk = $('#globalKeysBtn'); if (gk) gk.addEventListener('click', () => { toggle(false); openGlobalKeysModal(); }); }
   $('#apiKeysBtn').addEventListener('click', () => { toggle(false); openKeysModal(); });
 }
 
@@ -291,6 +293,73 @@ function renderUsersModal(body, data) {
 
   body.querySelectorAll('.u-del').forEach((b) => b.addEventListener('click', () => deleteUser(b.dataset.user, body)));
   body.querySelector('#addUserForm').addEventListener('submit', (e) => { e.preventDefault(); addUser(body); });
+}
+
+// ---------- global (shared) API keys — admin only ----------
+// The credentials everyone runs on when they haven't brought their own. Stored
+// as Secret Manager versions server-side; this UI only ever sees presence + a
+// masked tail, never the value.
+async function openGlobalKeysModal() {
+  const body = openAuthModal('Global API keys');
+  body.innerHTML = '<p class="auth-loading">Loading…</p>';
+  let data;
+  try {
+    const r = await fetch('/api/global-keys', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed to load keys.');
+  } catch (e) { body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message; return; }
+  renderGlobalKeysModal(body, data);
+}
+
+function renderGlobalKeysModal(body, data) {
+  const limit = (CONFIG && CONFIG.maxRunsPerDay) || 5;
+  const rows = (data.keys || []).map((k) => {
+    const state = k.present
+      ? `<span class="gk-set">${esc(k.masked)}</span><span class="u-tag">${esc(k.source)}</span>`
+      : '<span class="gk-unset">not set</span>';
+    return `<div class="gk-row">
+      <div class="gk-meta"><b>${esc(k.label)}</b><span class="gk-hint">${esc(k.hint)}</span>
+        <code>${esc(k.name)}</code></div>
+      <div class="gk-state">${state}</div>
+      <div class="gk-edit">
+        <input type="password" autocomplete="off" spellcheck="false" data-key="${esc(k.name)}" placeholder="${k.present ? 'replace…' : 'paste key…'}" />
+        <button class="submit-btn gk-save" type="button" data-key="${esc(k.name)}">Save</button>
+      </div>
+    </div>`;
+  }).join('');
+  body.innerHTML =
+    '<p class="keys-intro">These are the <b>shared</b> credentials every user runs on when they haven\'t added their own. ' +
+    'Runs on these are capped at <b>' + limit + '/day per user</b>; a user who adds their own key under <em>Your API keys</em> runs <b>unlimited</b>.</p>' +
+    '<p class="keys-intro">Saving writes a new version to <b>Google Secret Manager</b> and takes effect within a minute — no redeploy. ' +
+    'Values are never sent back to this page, and every change is logged.</p>' +
+    (data.enabled ? '' : '<div class="auth-msg err">Secret Manager isn\'t configured on the server (GCP_PROJECT_ID unset), so keys can only be read from the deploy environment.</div>') +
+    '<div class="gk-list">' + rows + '</div>' +
+    '<div class="auth-msg" id="gkMsg"></div>';
+
+  body.querySelectorAll('.gk-save').forEach((b) => b.addEventListener('click', () => saveGlobalKey(body, b.dataset.key)));
+  body.querySelectorAll('.gk-edit input').forEach((i) => i.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveGlobalKey(body, i.dataset.key); }
+  }));
+}
+
+async function saveGlobalKey(body, name) {
+  const input = body.querySelector(`.gk-edit input[data-key="${name}"]`);
+  const msg = body.querySelector('#gkMsg');
+  const value = input ? input.value.trim() : '';
+  if (!value) { msg.className = 'auth-msg err'; msg.textContent = 'Paste a key first.'; return; }
+  msg.className = 'auth-msg'; msg.textContent = 'Saving to Secret Manager…';
+  try {
+    const r = await fetch('/api/global-keys', {
+      method: 'PUT', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, value }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Could not save.');
+    renderGlobalKeysModal(body, { keys: j.keys, enabled: true });
+    const m2 = body.querySelector('#gkMsg'); m2.className = 'auth-msg ok'; m2.textContent = name + ' updated for all users.';
+  } catch (e) { msg.className = 'auth-msg err'; msg.textContent = e.message; }
 }
 
 // Instructions for granting access to Google sign-in users. The accounts table

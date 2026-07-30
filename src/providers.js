@@ -12,6 +12,9 @@
 // omits usage data. Real usage is preferred and used whenever returned.
 // 0 = uncapped (let each model use its own max). Set MAX_OUTPUT_TOKENS in .env to clamp.
 const { getClaudeToken } = require('./gcloudToken');
+// Shared keys an admin can set at runtime (Secret Manager), falling back to the
+// deploy-time env vars. A user's own key always wins over these.
+const globalKeys = require('./globalKeys');
 
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS, 10) || 0;
 const CLAUDE_MAX_OUTPUT = MAX_OUTPUT_TOKENS || 128000; // Anthropic requires max_tokens; Opus 4.8 supports 128k
@@ -24,7 +27,7 @@ function estimateTokens(messages, system = '') {
 }
 
 async function gemini({ model, system, messages, keys }) {
-  const key = (keys && keys.gemini) || process.env.GEMINI_API_KEY;
+  const key = (keys && keys.gemini) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
 
   const contents = messages.map((m) => ({
@@ -81,7 +84,7 @@ const OPENAI_COMPAT = {
 };
 
 function compatKey(cfg, keys) {
-  const key = (keys && keys[cfg.keyField]) || process.env[cfg.env];
+  const key = (keys && keys[cfg.keyField]) || globalKeys.get(cfg.env);
   if (!key) throw new Error(`Missing ${cfg.env} — add it under "Your API keys" or set it on the server.`);
   return key;
 }
@@ -205,7 +208,7 @@ async function agentplatform({ publisher, model, system, messages, project, keys
 }
 
 async function agentPlatformGemini({ model, system, messages, keys }) {
-  const key = (keys && (keys.agentplatform || keys.gemini)) || process.env.AGENT_PLATFORM_API_KEY || process.env.GEMINI_API_KEY;
+  const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
   const contents = messages.map((m) => ({
@@ -327,7 +330,7 @@ async function readSSE(response, onEvent) {
 }
 
 async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys }) {
-  const key = (keys && (keys.agentplatform || keys.gemini)) || process.env.AGENT_PLATFORM_API_KEY || process.env.GEMINI_API_KEY;
+  const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
   const contents = messages.map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
