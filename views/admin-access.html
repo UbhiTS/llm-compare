@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="medium">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Granting access · LLM Compare (admin)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
+<style nonce="__NONCE__">
+  .doc-wrap { max-width: 940px; margin: 0 auto; padding: 28px 22px 80px; }
+  .doc-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; flex-wrap: wrap; }
+  .doc-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); padding: 5px 11px; }
+  .doc h1 { font-family: "Space Grotesk", sans-serif; font-size: 30px; margin: 4px 0 6px; }
+  .doc .lede { color: var(--muted); font-size: 15px; line-height: 1.6; margin: 0 0 24px; max-width: 70ch; }
+  .doc section { background: var(--well); border: 1px solid var(--border); padding: 20px 22px; margin-bottom: 18px; }
+  .doc h2 { font-family: "Space Grotesk", sans-serif; font-size: 19px; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
+  .doc h2 .n { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: 0 0 auto;
+    background: linear-gradient(135deg, var(--accent), #6d5bd0); color: #fff; font-size: 13px; font-weight: 700; }
+  .doc h3 { font-family: "Space Grotesk", sans-serif; font-size: 14px; margin: 20px 0 8px; color: var(--text); }
+  .doc p, .doc li { color: var(--muted); font-size: 14px; line-height: 1.65; }
+  .doc ol, .doc ul { margin: 8px 0 0; padding-left: 22px; }
+  .doc li { margin-bottom: 6px; }
+  .doc b, .doc strong { color: var(--text); font-weight: 600; }
+  .doc code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; background: var(--well-2, rgba(0,0,0,.28));
+    border: 1px solid var(--border); padding: 1px 6px; color: var(--text); }
+  .doc pre { background: var(--well-2, rgba(0,0,0,.32)); border: 1px solid var(--border); padding: 13px 15px; overflow-x: auto; margin: 10px 0 0; }
+  .doc pre code { background: none; border: none; padding: 0; font-size: 12.5px; line-height: 1.6; display: block; white-space: pre; }
+  .doc .rec { border-left: 3px solid var(--good); }
+  .doc .warn { border-left: 3px solid var(--warn); }
+  .callout { display: flex; gap: 11px; align-items: flex-start; background: color-mix(in srgb, var(--warn) 9%, transparent);
+    border: 1px solid color-mix(in srgb, var(--warn) 34%, transparent); padding: 12px 14px; margin: 14px 0 0; }
+  .callout .ci { font-size: 15px; line-height: 1.3; }
+  .callout p { margin: 0; font-size: 13px; }
+  .pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    padding: 3px 9px; border: 1px solid var(--border-hi); color: var(--muted); margin-left: 6px; }
+  .pill.best { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+  .doc table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 12px; }
+  .doc th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
+    padding: 0 10px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
+  .doc td { padding: 9px 10px; border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: top; }
+  .doc td b { color: var(--text); }
+  .doc a { color: var(--accent); }
+  .doc .facts { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+  .doc .fact { flex: 1; min-width: 170px; border: 1px solid var(--border); padding: 10px 12px; background: var(--bg); }
+  .doc .fact .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); font-weight: 600; }
+  .doc .fact .v { font-family: "JetBrains Mono", monospace; font-size: 13px; margin-top: 5px; color: var(--text); word-break: break-all; }
+  .invite-row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .invite-row input { flex: 1; min-width: 220px; background: var(--bg); border: 1px solid var(--border-hi); color: var(--text);
+    padding: 0 13px; height: 42px; font-size: 14px; font-family: inherit; outline: none; }
+  .invite-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .invite-msg { min-height: 18px; margin: 10px 0 0; font-size: 13px; }
+  .invite-msg.ok { color: var(--good); }
+  .invite-msg.err { color: var(--bad); }
+  .invite-list { margin-top: 12px; }
+  .invite-item { display: flex; align-items: center; gap: 12px; border: 1px solid var(--border); background: var(--bg);
+    padding: 9px 12px; margin-top: 8px; }
+  .invite-item .em { font-family: "JetBrains Mono", monospace; font-size: 13px; color: var(--text); word-break: break-all; }
+  .invite-item .meta { color: var(--faint); font-size: 11.5px; margin-left: auto; white-space: nowrap; }
+  .invite-item button { background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: pointer;
+    font-size: 12px; padding: 5px 11px; font-family: inherit; flex: 0 0 auto; }
+  .invite-item button:hover { color: var(--bad); border-color: var(--bad); }
+  .invite-empty { color: var(--faint); font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="aurora"></div>
+
+<div class="doc doc-wrap">
+  <div class="doc-top">
+    <span class="doc-badge">🔒 Admin only</span>
+    <a class="ctl-btn" href="/">← Back to LLM Compare</a>
+  </div>
+
+  <h1>Granting access to the demo</h1>
+  <p class="lede">
+    Sign-in is <b>Google SSO restricted to an allowed email domain</b>. There are two ways to let someone in:
+    add them as an <b>OAuth test user</b> (the durable, recommended path), or create a
+    <b>username/password</b> account in-app (quick, but wiped on the next deploy).
+  </p>
+
+  <div class="facts" id="facts">
+    <div class="fact"><div class="k">App URL</div><div class="v" id="f-url">—</div></div>
+    <div class="fact"><div class="k">Allowed domain(s)</div><div class="v" id="f-domains">—</div></div>
+    <div class="fact"><div class="k">Daily run limit / user</div><div class="v" id="f-quota">—</div></div>
+    <div class="fact"><div class="k">GCP project</div><div class="v" id="f-project">llm-compare-ubhits</div></div>
+  </div>
+
+  <section class="rec" id="invite">
+    <h2><span class="n">★</span> Invite someone by email <span class="pill best">No redeploy</span></h2>
+    <p>
+      Add an individual address here and this app will admit it at sign-in, even if the domain isn't on the allowed list —
+      no GitHub variable edit and no redeploy. The invite is stored durably and survives restarts.
+    </p>
+    <div class="invite-row">
+      <input id="inviteEmail" type="email" placeholder="person@example.com" autocomplete="off" spellcheck="false" />
+      <button id="inviteBtn" class="ctl-btn primary" type="button">Grant access</button>
+    </div>
+    <p id="inviteMsg" class="invite-msg"></p>
+    <div id="inviteList" class="invite-list"></div>
+    <div class="callout">
+      <span class="ci">⚠️</span>
+      <p><b>One catch while the consent screen is in Testing mode:</b> Google itself still blocks anyone who isn't a
+        <b>test user</b>, and there is <b>no API</b> to add test users — it is console-only. So today an invite here must be
+        paired with step 1. <b>Publish the consent screen</b> (step 1) and this box becomes the only thing you need.</p>
+    </div>
+  </section>
+
+  <section class="rec">
+    <h2><span class="n">1</span> Google sign-in <span class="pill best">Recommended · durable</span></h2>
+    <p>
+      The OAuth consent screen is in <b>Testing</b> mode, so only people on the <b>test-user list</b> can sign in — even if their
+      email is on the allowed domain. Adding a user is a console-only click-through:
+    </p>
+    <ol>
+      <li>Open the <a href="https://console.cloud.google.com/apis/credentials/consent?project=llm-compare-ubhits" target="_blank" rel="noopener">OAuth consent screen</a> for the project.</li>
+      <li>Under <b>Audience → Test users</b>, click <b>+ Add users</b>.</li>
+      <li>Enter their work email, then <b>Save</b>. (Limit: 100 test users.)</li>
+      <li>Send them the app URL — they click <b>Sign in with Google</b>. No password needed.</li>
+    </ol>
+
+    <h3>Opening it to everyone on the domain</h3>
+    <p>
+      To stop maintaining the list, click <b>Publish app</b> on that same screen (Testing → In production). After that,
+      <b>anyone</b> whose email is on an allowed domain can sign in without being listed individually.
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span> Someone outside the allowed domain</h2>
+    <p>
+      Add their domain to <code>ALLOWED_EMAIL_DOMAINS</code>, then redeploy — these values are injected at deploy time, so a
+      variable change only takes effect on the next deploy.
+    </p>
+    <pre><code>gh variable set ALLOWED_EMAIL_DOMAINS -b "google.com,partner.com" -R UbhiTS/llm-compare
+gh workflow run "Deploy to Cloud Run" -R UbhiTS/llm-compare</code></pre>
+    <p style="margin-top:10px">They still need to be a test user (or the app must be published).</p>
+    <div class="callout">
+      <span class="ci">⚠️</span>
+      <p>Don't add a broad consumer domain like <code>gmail.com</code> unless you genuinely want anyone with such an
+        address to be able to run the demo on your API budget.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span> Making someone an admin</h2>
+    <p>
+      Admins see <b>everyone's</b> run history plus the usage dashboard, and are exempt from the daily run limit.
+      Add their email to <code>ADMIN_EMAILS</code> (comma-separated) and redeploy:
+    </p>
+    <pre><code>gh variable set ADMIN_EMAILS -b "you@example.com,them@example.com" -R UbhiTS/llm-compare
+gh workflow run "Deploy to Cloud Run" -R UbhiTS/llm-compare</code></pre>
+  </section>
+
+  <section class="warn">
+    <h2><span class="n">4</span> Username / password account <span class="pill">Quick · temporary</span></h2>
+    <p>
+      For someone without an account on the allowed domain, or a one-off guest: open the <b>user menu</b> (top-right) →
+      <b>Manage users</b> → add a username + password, optionally ticking <b>admin</b>. Share those credentials directly.
+    </p>
+    <div class="callout">
+      <span class="ci">⚠️</span>
+      <p><b>These accounts do not survive a deploy.</b> They live on the container's ephemeral disk, so every push to
+        <code>main</code> (which redeploys) wipes them. The only durable password login is the break-glass
+        <code>admin</code>, re-seeded on each start from the <code>ADMIN_BOOTSTRAP_PASSWORD</code> secret.
+        <b>For lasting access, use Google sign-in (option 1).</b></p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">5</span> Run limits &amp; keys</h2>
+    <table>
+      <thead><tr><th>Situation</th><th>What to do</th></tr></thead>
+      <tbody>
+        <tr><td><b>A user hits the daily cap</b></td><td>Raise <code>MAX_RUNS_PER_DAY</code> (0 = unlimited) and redeploy, or have them add their own API key in the app — own-key runs are never capped.</td></tr>
+        <tr><td><b>They want to use their own key</b></td><td>User menu → <b>Your API keys</b>. Keys stay in their browser and are never persisted on the server.</td></tr>
+        <tr><td><b>Admins</b></td><td>Exempt from the daily limit by default (<code>RATE_LIMIT_EXEMPT_ADMINS</code>).</td></tr>
+        <tr><td><b>Revoking access</b></td><td>Remove them from the OAuth test-user list (or from <code>ALLOWED_EMAIL_DOMAINS</code> + redeploy). For a password account, user menu → <b>Manage users</b> → <b>Remove</b>.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <p class="lede" style="margin-top:22px; font-size:13px">
+    Full deployment reference lives in <code>DEPLOYMENT.md</code> in the repo. Variable changes always require a redeploy
+    to take effect.
+  </p>
+</div>
+
+<script nonce="__NONCE__">
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const when = (ms) => { try { return new Date(ms).toLocaleDateString(); } catch (e) { return ''; } };
+
+  $('f-url').textContent = window.location.origin;
+
+  // Quick facts from the live server config.
+  fetch('/api/config', { credentials: 'same-origin' })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((c) => {
+      const q = c && c.me && c.me.quota;
+      $('f-quota').textContent = (q && q.limit) ? (q.limit + ' runs') : 'unlimited / admin';
+    })
+    .catch(() => {});
+
+  // ---- invite console ----
+  function setMsg(text, kind) {
+    const m = $('inviteMsg');
+    m.textContent = text || '';
+    m.className = 'invite-msg' + (kind ? ' ' + kind : '');
+  }
+
+  function renderInvites(invites) {
+    const host = $('inviteList');
+    if (!invites || !invites.length) {
+      host.innerHTML = '<p class="invite-empty">No individual invites yet — everyone signs in via the allowed domain.</p>';
+      return;
+    }
+    host.innerHTML = invites.map((i) =>
+      '<div class="invite-item"><span class="em">' + esc(i.email) + '</span>' +
+      '<span class="meta">added ' + esc(when(i.at)) + (i.addedBy ? ' by ' + esc(i.addedBy) : '') + '</span>' +
+      '<button type="button" data-email="' + esc(i.email) + '">Revoke</button></div>'
+    ).join('');
+    host.querySelectorAll('button[data-email]').forEach((b) => {
+      b.addEventListener('click', () => revoke(b.dataset.email));
+    });
+  }
+
+  function loadAccess() {
+    fetch('/api/access', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('Could not load the invite list.'))))
+      .then((d) => {
+        renderInvites(d.invites);
+        const dom = d.allowedDomains || [];
+        $('f-domains').textContent = dom.length ? dom.join(', ') : 'any (no domain restriction)';
+      })
+      .catch((e) => setMsg(e.message, 'err'));
+  }
+
+  function invite() {
+    const input = $('inviteEmail');
+    const email = input.value.trim();
+    if (!email) { setMsg('Enter an email address.', 'err'); return; }
+    const btn = $('inviteBtn');
+    btn.disabled = true; setMsg('Adding…');
+    fetch('/api/access', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => {
+        if (!ok) throw new Error(j.error || 'Could not add that address.');
+        input.value = '';
+        setMsg(email + ' can now sign in.', 'ok');
+        renderInvites(j.invites);
+      })
+      .catch((e) => setMsg(e.message, 'err'))
+      .finally(() => { btn.disabled = false; });
+  }
+
+  function revoke(email) {
+    if (!window.confirm('Revoke access for ' + email + '?')) return;
+    fetch('/api/access/' + encodeURIComponent(email), { method: 'DELETE', credentials: 'same-origin' })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => {
+        if (!ok) throw new Error(j.error || 'Could not revoke that invite.');
+        setMsg('Access revoked for ' + email + '.', 'ok');
+        renderInvites(j.invites);
+      })
+      .catch((e) => setMsg(e.message, 'err'));
+  }
+
+  $('inviteBtn').addEventListener('click', invite);
+  $('inviteEmail').addEventListener('keydown', (e) => { if (e.key === 'Enter') invite(); });
+  loadAccess();
+</script>
+</body>
+</html>

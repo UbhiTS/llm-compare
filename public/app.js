@@ -138,6 +138,7 @@ function initUserMenu(me) {
   $('#userAvatar').textContent = (ME.username[0] || '?').toUpperCase();
   $('#userChip').title = ME.username + ' · ' + ME.role;
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
+  { const al = $('#accessDocLink'); if (al) al.hidden = ME.role !== 'admin'; }
 
   const chip = $('#userChip');
   const dd = $('#userDropdown');

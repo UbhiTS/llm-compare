@@ -29,6 +29,7 @@ const { buildWebGame, gameDir, webGameEnabled } = require('./src/webGame');
 const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
+const allowlist = require('./src/allowlist');
 
 const app = express();
 app.disable('x-powered-by');
@@ -43,6 +44,9 @@ app.set('trust proxy', (TP == null || TP === '' || TP === '0' || TP.toLowerCase(
 
 // Cached login page (inline CSS/JS, served with a per-request CSP nonce).
 const LOGIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'login.html'), 'utf8');
+// Admin-only access doc + invite console. Kept out of public/ so only the
+// /admin/access route (which checks the admin role) can serve it.
+const ADMIN_ACCESS_HTML = fs.readFileSync(path.join(__dirname, 'views', 'admin-access.html'), 'utf8');
 
 // ---------- security headers (applied to every response) ----------
 app.use((req, res, next) => {
@@ -227,6 +231,60 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
   } catch (e) {
     res.status(400).json({ error: String((e && e.message) || e) });
   }
+});
+
+// ---------- access management: invite individual emails (admin only) ----------
+// Lets an admin grant access to one address without a redeploy. See
+// src/allowlist.js for what this can and cannot do (it does NOT touch the GCP
+// OAuth consent screen's test-user list — Google exposes no API for that).
+app.get('/api/access', requireAdmin, (req, res) => {
+  res.json({ invites: allowlist.list(), allowedDomains: googleAuth.allowedDomains() });
+});
+
+app.post('/api/access', requireAdmin, async (req, res) => {
+  try {
+    await allowlist.add(String((req.body && req.body.email) || ''), req.user.username);
+    res.json({ ok: true, invites: allowlist.list() });
+  } catch (e) {
+    res.status(400).json({ error: String((e && e.message) || e) });
+  }
+});
+
+app.delete('/api/access/:email', requireAdmin, async (req, res) => {
+  try {
+    const removed = await allowlist.remove(req.params.email);
+    if (!removed) return res.status(404).json({ error: 'That invite was not found.' });
+    res.json({ ok: true, invites: allowlist.list() });
+  } catch (e) {
+    res.status(400).json({ error: String((e && e.message) || e) });
+  }
+});
+
+// Admin-only "how to grant access" doc + invite console. Lives OUTSIDE public/
+// (which is served to every signed-in user) so this route is the only way in.
+app.get('/admin/access', (req, res) => {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).type('html').send(
+      '<!doctype html><meta charset="utf-8"><title>Admin only</title>' +
+      '<body style="font:15px system-ui;background:#0e1420;color:#eef2fb;padding:48px">' +
+      '<h1 style="font-size:20px">Admin access required</h1>' +
+      '<p style="color:#a6b3cb">This page is only available to administrators.</p>' +
+      '<p><a style="color:#5e8bff" href="/">← Back to LLM Compare</a></p></body>');
+  }
+  const nonce = crypto.randomBytes(16).toString('base64');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'none'",
+    `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
+    `script-src 'nonce-${nonce}'`,
+    "font-src https://fonts.gstatic.com",
+    "connect-src 'self'",
+    "img-src 'self' data:",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '));
+  res.setHeader('Cache-Control', 'no-store');
+  res.type('html').send(ADMIN_ACCESS_HTML.replace(/__NONCE__/g, nonce));
 });
 
 // ---------- static UI (authenticated) ----------
