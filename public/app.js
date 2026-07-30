@@ -166,7 +166,66 @@ function initUserMenu(me) {
 // ---------- bring-your-own API keys (stored only in this browser) ----------
 function loadKeys() { try { return JSON.parse(localStorage.getItem('ullm.keys') || '{}') || {}; } catch (e) { return {}; } }
 function saveKeys(k) { try { localStorage.setItem('ullm.keys', JSON.stringify(k)); } catch (e) { /* ignore */ } }
-function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gemini || k.openai || k.anthropic || k.claudeBearerToken); }
+function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gemini || k.openai || k.anthropic || k.claudeBearerToken || k.moonshot); }
+
+// Which credential each selected model will actually run on. Mirrors
+// modelUsesOwnKey() in server.js — the quota is only skipped when EVERY model in
+// the run uses the caller's own key, so this is what decides "unlimited".
+function keySourceFor(m, k) {
+  const pub = m.publisher || 'google';
+  if (m.provider === 'agentplatform' && pub === 'anthropic') {
+    // Vertex Claude authenticates with the server's service account — no key to bring.
+    return k.claudeBearerToken
+      ? { group: 'Claude (Vertex)', state: 'own' }
+      : { group: 'Claude (Vertex)', state: 'service', present: true };
+  }
+  if (m.provider === 'agentplatform' || m.provider === 'gemini') {
+    const own = !!(k.agentplatform || k.gemini);
+    return { group: 'Gemini', state: own ? 'own' : 'shared', present: own || !!(CONFIG.keysPresent || {}).agentplatform };
+  }
+  if (m.provider === 'openai') {
+    const own = !!k.openai;
+    return { group: 'OpenAI', state: own ? 'own' : 'shared', present: own || !!(CONFIG.keysPresent || {}).openai };
+  }
+  if (m.provider === 'moonshot') {
+    const own = !!k.moonshot;
+    return { group: 'Moonshot', state: own ? 'own' : 'shared', present: own || !!(CONFIG.keysPresent || {}).moonshot };
+  }
+  if (m.provider === 'anthropic') {
+    const own = !!k.anthropic;
+    return { group: 'Anthropic', state: own ? 'own' : 'shared', present: own || !!(CONFIG.keysPresent || {}).anthropic };
+  }
+  return { group: m.provider, state: 'shared', present: true };
+}
+
+// True only when every selected model runs on the user's OWN credential — the
+// same condition the server uses before skipping the quota.
+function allModelsUseOwnKeys() {
+  const k = loadKeys();
+  const list = (ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS;
+  return list.length > 0 && list.every((m) => keySourceFor(m, k).state === 'own');
+}
+
+// One pill per provider the CURRENT selection needs, showing whose key it uses.
+function renderProviderKeys() {
+  const host = $('#providerKeys');
+  if (!host) return;
+  const k = loadKeys();
+  const list = (ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS;
+  const seen = new Map();
+  list.forEach((m) => { const s = keySourceFor(m, k); if (!seen.has(s.group)) seen.set(s.group, s); });
+  const LBL = {
+    own: { t: 'your key', cls: 'own', tip: 'Runs on the key you saved in this browser — no daily limit for this provider.' },
+    shared: { t: 'shared key', cls: 'shared', tip: 'Runs on the shared server key, which is subject to the daily limit.' },
+    service: { t: 'service acct', cls: 'svc', tip: 'Authenticates with the server’s service account — no API key needed.' },
+    missing: { t: 'no key', cls: 'missing', tip: 'No key available for this provider — add one under “Your API keys”.' },
+  };
+  host.innerHTML = [...seen.entries()].map(([group, s]) => {
+    const state = (!s.present && s.state !== 'own') ? 'missing' : s.state;
+    const d = LBL[state];
+    return `<span class="pk-pill ${d.cls}" title="${esc(group)}: ${esc(d.tip)}"><span class="pk-dot"></span>${esc(group)}<span class="pk-src">${d.t}</span></span>`;
+  }).join('');
+}
 
 // Live "runs left today" state (authoritative value comes from the server on
 // /api/config load and on each run's `quota` event).
@@ -175,11 +234,16 @@ let mySingleQuota = null;  // separate daily budget for single-model re-runs
 
 // Badge near Run: your-keys (unlimited), or a live shared-key counter.
 function updateQuotaBadge() {
+  renderProviderKeys();
   const b = $('#quotaBadge'); if (!b) return;
   const limit = (CONFIG && CONFIG.maxRunsPerDay) || 0;
   const isAdmin = ME && ME.role === 'admin';
-  if (hasOwnKeys()) { b.textContent = '🔑 Your keys · no daily limit'; b.className = 'quota-badge own'; b.title = ''; return; }
-  if (isAdmin || !limit) { b.textContent = ''; b.className = 'quota-badge'; b.title = ''; return; }
+  // "Unlimited" only when EVERY selected model runs on the user's own key —
+  // matching the server. One own key alongside a shared slot is still capped.
+  if (allModelsUseOwnKeys()) { b.textContent = 'no daily limit'; b.className = 'quota-badge own';
+    b.title = 'Every selected model runs on your own key, so this run is not counted against the daily limit.'; return; }
+  if (isAdmin) { b.textContent = 'admin · no limit'; b.className = 'quota-badge own'; b.title = 'Admins are exempt from the daily run limit.'; return; }
+  if (!limit) { b.textContent = ''; b.className = 'quota-badge'; b.title = ''; return; }
   const remaining = (myQuota && typeof myQuota.remaining === 'number') ? myQuota.remaining : limit;
   const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || 0;
   const sRemaining = (mySingleQuota && typeof mySingleQuota.remaining === 'number') ? mySingleQuota.remaining : sLimit;
@@ -189,7 +253,7 @@ function updateQuotaBadge() {
   b.title = `Comparison runs: ${remaining}/${limit} left`
     + (sLimit ? `. Single-model re-runs: ${sRemaining}/${sLimit} left (separate budget)` : '')
     + ((myQuota && myQuota.resetAt) ? `. Resets at ${new Date(myQuota.resetAt).toLocaleString()}` : '')
-    + '. Add your own API keys to remove the limit.';
+    + '. Add your own key for EVERY provider above to run without a limit.';
 }
 
 function openKeysModal() {
@@ -512,6 +576,7 @@ function afterSlotChange() {
   syncModelsFromSlots();
   renderModelEditors();
   buildArena();
+  updateQuotaBadge();   // the key pills depend on which providers are selected
 }
 
 function currentTask() {

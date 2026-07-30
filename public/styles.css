@@ -653,7 +653,24 @@ a.ud-item[hidden] { display: none; }
 .submit-btn:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ---------- controls: quota badge + API keys (buttons use .ctl-btn above) ---------- */
-.quota-badge { font-size: 12px; color: var(--muted); cursor: default; }
+/* status line under the controls: which key each provider runs on + the quota.
+   Lives on its own row so it stops fighting the 42px buttons for baseline. */
+.run-status-row { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-top: 12px;
+  padding-top: 11px; border-top: 1px solid var(--border); }
+.provider-keys { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.pk-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600;
+  color: var(--muted); border: 1px solid var(--border); background: var(--well); padding: 4px 10px; cursor: default; }
+.pk-pill .pk-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
+.pk-pill .pk-src { font-weight: 500; color: var(--faint); }
+.pk-pill.own { color: var(--text); border-color: color-mix(in srgb, var(--good) 42%, var(--border)); }
+.pk-pill.own .pk-dot { background: var(--good); box-shadow: 0 0 7px var(--good); }
+.pk-pill.own .pk-src { color: var(--good); }
+.pk-pill.svc .pk-dot { background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+.pk-pill.svc .pk-src { color: var(--accent); }
+.pk-pill.missing { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.pk-pill.missing .pk-dot { background: var(--bad); box-shadow: 0 0 7px var(--bad); }
+.pk-pill.missing .pk-src { color: var(--bad); }
+.quota-badge { font-size: 12px; color: var(--muted); cursor: default; margin-left: auto; white-space: nowrap; }
 .quota-badge.own { color: var(--good); }
 .quota-badge.shared { color: var(--muted); }
 .quota-badge.low { color: var(--warn); font-weight: 600; }
