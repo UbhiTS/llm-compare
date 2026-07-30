@@ -321,7 +321,12 @@ app.get('/api/config', (req, res) => {
     codeExec: executionEnabled(),
     webGame: webGameEnabled(),
     maxRunsPerDay: auth.MAX_RUNS_PER_DAY,
-    me: { username: req.user.username, role: req.user.role, quota: auth.runQuota(req.user) },
+    maxSingleRunsPerDay: auth.MAX_SINGLE_RUNS_PER_DAY,
+    me: {
+      username: req.user.username, role: req.user.role,
+      quota: auth.runQuota(req.user, 'compare'),
+      singleQuota: auth.runQuota(req.user, 'single'),
+    },
   });
 });
 
@@ -464,13 +469,20 @@ app.post('/api/run', async (req, res) => {
   // If the user brought their own credentials for every model, they're on their own
   // quota, so we don't throttle (configurable via MAX_RUNS_PER_DAY; admins exempt).
   const usingOwnKeys = chosenModels.length > 0 && chosenModels.every((m) => modelUsesOwnKey(m, keys));
+  // Two daily budgets. A re-run of ONE model draws on the smaller 'single' bucket
+  // so retrying a slot can't burn the full-comparison allowance. The client asks
+  // for 'single', but we only honour it when exactly one model is actually being
+  // run — otherwise a crafted request could get a full comparison out of the
+  // cheaper bucket.
+  const kind = (req.body && req.body.mode === 'single' && chosenModels.length === 1) ? 'single' : 'compare';
   let quotaInfo = { limited: false }; // surfaced to the client so it can show the live counter
   if (!usingOwnKeys) {
-    const quota = auth.consumeRun(req.user);
+    const quota = auth.consumeRun(req.user, kind);
     if (!quota.ok) {
+      const what = kind === 'single' ? 'single-model re-runs' : 'comparison runs';
       return res.status(429).json({
         type: 'error',
-        error: `Daily limit reached — you've used all ${quota.limit} comparison runs for today. Resets at ${quota.resetAt}. Add your own API keys to run without this limit.`,
+        error: `Daily limit reached — you've used all ${quota.limit} ${what} for today. Resets at ${quota.resetAt}. Add your own API keys to run without this limit.`,
         quota,
       });
     }

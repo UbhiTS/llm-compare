@@ -78,7 +78,8 @@ async function init() {
   const cfgResp = await fetch('/api/config', { credentials: 'same-origin' });
   if (cfgResp.status === 401) { window.location.replace('/login'); return; } // session expired/absent
   CONFIG = await cfgResp.json();
-  myQuota = CONFIG.me && CONFIG.me.quota; // seed the daily-runs counter
+  myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
+  mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   initUserMenu(CONFIG.me);
   MODELS = CONFIG.models.map((m) => ({ ...m, price: { ...m.price } }));
 
@@ -165,7 +166,8 @@ function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gem
 
 // Live "runs left today" state (authoritative value comes from the server on
 // /api/config load and on each run's `quota` event).
-let myQuota = null;
+let myQuota = null;        // daily budget for full comparison runs
+let mySingleQuota = null;  // separate daily budget for single-model re-runs
 
 // Badge near Run: your-keys (unlimited), or a live shared-key counter.
 function updateQuotaBadge() {
@@ -175,10 +177,15 @@ function updateQuotaBadge() {
   if (hasOwnKeys()) { b.textContent = '🔑 Your keys · no daily limit'; b.className = 'quota-badge own'; b.title = ''; return; }
   if (isAdmin || !limit) { b.textContent = ''; b.className = 'quota-badge'; b.title = ''; return; }
   const remaining = (myQuota && typeof myQuota.remaining === 'number') ? myQuota.remaining : limit;
-  b.textContent = `${remaining} of ${limit} free runs left today`;
-  b.className = 'quota-badge ' + (remaining <= 0 ? 'out' : remaining <= 3 ? 'low' : 'shared');
-  b.title = (myQuota && myQuota.resetAt) ? ('Resets at ' + new Date(myQuota.resetAt).toLocaleString() + '. Add your own API keys to remove the limit.')
-    : 'Add your own API keys to remove the daily limit.';
+  const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || 0;
+  const sRemaining = (mySingleQuota && typeof mySingleQuota.remaining === 'number') ? mySingleQuota.remaining : sLimit;
+  b.textContent = `${remaining} of ${limit} runs left today`
+    + (sLimit ? ` · ${sRemaining} re-runs` : '');
+  b.className = 'quota-badge ' + (remaining <= 0 ? 'out' : remaining <= 2 ? 'low' : 'shared');
+  b.title = `Comparison runs: ${remaining}/${limit} left`
+    + (sLimit ? `. Single-model re-runs: ${sRemaining}/${sLimit} left (separate budget)` : '')
+    + ((myQuota && myQuota.resetAt) ? `. Resets at ${new Date(myQuota.resetAt).toLocaleString()}` : '')
+    + '. Add your own API keys to remove the limit.';
 }
 
 function openKeysModal() {
@@ -453,7 +460,11 @@ function buildArena(models) {
   const arena = $('#arena');
   arena.innerHTML = '';
   const task = currentTask();
-  (models || MODELS).forEach((m) => {
+  // What is actually on screen right now. A restored history run can render a
+  // different model set than the current selection, and "Run again" must re-run
+  // the model in THAT column, not whatever is selected in the editor.
+  ARENA_MODELS = (models || MODELS).slice();
+  ARENA_MODELS.forEach((m) => {
     const col = el('div', 'col');
     col.dataset.slot = m.slot;
     col.id = `col-${m.slot}`;
@@ -466,6 +477,8 @@ function buildArena(models) {
           <div class="col-title">${esc(m.label)}</div>
           <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}</div>
         </div>
+        <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
+          title="Re-run just this model on the current task — the other columns are left alone">↻ Run again</button>
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
       <div class="progress">
@@ -494,6 +507,8 @@ function buildArena(models) {
   });
   arena.querySelectorAll('.exec-btn').forEach((b) =>
     b.addEventListener('click', () => execSlotCode(b.dataset.slot)));
+  arena.querySelectorAll('.rerun-btn').forEach((b) =>
+    b.addEventListener('click', () => rerunSlot(b.dataset.slot)));
   arena.querySelectorAll('.md-magnify').forEach((b) =>
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openMagnify(b.dataset.slot, b.dataset.kind); }));
 }
@@ -770,14 +785,66 @@ function markWin(slot, key, win) {
 }
 
 // ---------- run ----------
+// Results of the most recent comparison, kept so a single slot can be re-run
+// and merged back in without disturbing the others (see rerunSlot).
+let LAST_RESULTS = {};
+let ARENA_MODELS = null;  // the model set currently rendered (may differ from MODELS after a history restore)
+let _busy = false;        // a full run or a single-slot re-run is streaming
+let _rerunSlot = null;    // slot being re-run (suppresses the scorecard auto-scroll)
+
+// POST /api/run and pump the NDJSON stream into `results`.
+// Returns 'ok' | 'auth' | 'quota'; throws on transport/HTTP failure.
+async function streamRun(payload, results) {
+  const resp = await fetch('/api/run', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
+  if (resp.status === 429) {                                                     // daily per-user run limit
+    const j = await resp.json().catch(() => ({}));
+    if (j && j.quota) {
+      if (payload.mode === 'single') mySingleQuota = j.quota; else myQuota = j.quota;
+      updateQuotaBadge();
+    }
+    window._lastQuotaMsg = (j && j.error) || 'Daily limit reached. Try again tomorrow.';
+    return 'quota';
+  }
+  if (!resp.ok || !resp.body) throw new Error('Request failed: ' + resp.status);
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) handleEvent(JSON.parse(line), results);
+    }
+  }
+  return 'ok';
+}
+
+// Enable/disable the per-column "Run again" buttons.
+function setRerunEnabled(on) {
+  document.querySelectorAll('.rerun-btn').forEach((b) => { b.disabled = !on; });
+}
+
 async function run() {
   const btn = $('#runBtn');
   btn.disabled = true;
   btn.textContent = 'Running…';
+  _busy = true;
   $('#scorecard').classList.add('hidden');
 
   buildArena();
   slotIds().forEach((s) => setStatus(s, 'Queued…', 'run'));
+  setRerunEnabled(false);
   $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' }); // bring the model cards to the top
 
   // Wall clock starts ticking immediately — keeps running while a model is only
@@ -798,38 +865,16 @@ async function run() {
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
   };
 
-  const results = {};
+  LAST_RESULTS = {};
+  const results = LAST_RESULTS;
   try {
-    const resp = await fetch('/api/run', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (resp.status === 401) { window.location.replace('/login'); return; } // session expired mid-use
-    if (resp.status === 429) { // daily per-user run limit reached
-      const j = await resp.json().catch(() => ({}));
-      if (j && j.quota) { myQuota = j.quota; updateQuotaBadge(); }
-      const m = (j && j.error) || 'Daily comparison limit reached. Try again tomorrow.';
+    const st = await streamRun(payload, results);
+    if (st === 'auth') return;
+    if (st === 'quota') {
+      const m = window._lastQuotaMsg;
       slotIds().forEach((s) => setStatus(s, m, 'err'));
       window.alert(m);
       return;
-    }
-    if (!resp.ok || !resp.body) throw new Error('Request failed: ' + resp.status);
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (line) handleEvent(JSON.parse(line), results);
-      }
     }
   } catch (e) {
     slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
@@ -837,6 +882,61 @@ async function run() {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
     btn.disabled = false;
     btn.textContent = 'Run comparison ▸';
+    _busy = false;
+    setRerunEnabled(true);
+  }
+}
+
+// Re-run ONE model on the current task, leaving the other columns untouched.
+// The fresh result is merged into LAST_RESULTS and the scorecard is rebuilt from
+// the merged set, so you can retry a slow/failed model without redoing the rest.
+async function rerunSlot(slot) {
+  if (_busy) return;
+  const model = (ARENA_MODELS || MODELS).find((m) => m.slot === slot);
+  if (!model) return;
+  _busy = true; _rerunSlot = slot;
+  const btn = document.querySelector(`.rerun-btn[data-slot="${slot}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  setRerunEnabled(false);
+  { const rb = $('#runBtn'); if (rb) rb.disabled = true; }
+
+  // Reset just this column.
+  delete LAST_RESULTS[slot];
+  wallFinished.delete(slot);
+  ['tok', 'think', 'tps', 'cost'].forEach((k) => setTileVal(slot, k, 0));
+  setTileVal(slot, 'time', '0.0s');
+  { const c = $(`#code-${slot}`); if (c) c.textContent = '// generated solution will appear here'; }
+  setThink(slot, '', null);
+  { const pf = $(`#pf-${slot}`); if (pf) pf.style.width = '0%'; }
+  { const pl = $(`#pl-${slot}`); if (pl) pl.textContent = `0 / ${currentTask().testCount} tests`; }
+  { const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`); if (eb) eb.disabled = true; }
+  setStatus(slot, 'Queued…', 'run');
+
+  // Wall clock for this slot only.
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    if (!wallFinished.has(slot)) setTileVal(slot, 'time', ((performance.now() - t0) / 1000).toFixed(1) + 's');
+  }, 100);
+
+  try {
+    const st = await streamRun({
+      taskId: $('#taskSelect').value,
+      maxIterations: 1,
+      models: [model],
+      mode: 'single',            // draws on the separate single-model re-run budget
+      customPrompt: $('#customPrompt').value,
+      keys: loadKeys(),
+    }, LAST_RESULTS);
+    if (st === 'auth') return;
+    if (st === 'quota') { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
+  } catch (e) {
+    if (!LAST_RESULTS[slot]) setStatus(slot, 'Error: ' + esc(e.message), 'err');
+  } finally {
+    clearInterval(timer);
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Run again'; }
+    _busy = false; _rerunSlot = null;
+    setRerunEnabled(true);
+    { const rb = $('#runBtn'); if (rb) rb.disabled = false; }
   }
 }
 
@@ -845,7 +945,10 @@ function handleEvent(ev, results) {
     case 'start':
       break;
     case 'quota': // server's authoritative daily-runs count for this run
-      if (ev.quota && ev.quota.limited) { myQuota = ev.quota; updateQuotaBadge(); }
+      if (ev.quota && ev.quota.limited) {
+        if (_rerunSlot) mySingleQuota = ev.quota; else myQuota = ev.quota;
+        updateQuotaBadge();
+      }
       break;
     case 'status': {
       const phase = ev.phase === 'thinking'
@@ -911,6 +1014,7 @@ function handleEvent(ev, results) {
       setTileVal(ev.slot, 'tps', ev.result.tokensPerSec);
       setTileVal(ev.slot, 'cost', fmtCost(ev.result.costUsd));
       setTileVal(ev.slot, 'time', (ev.result.wallMs / 1000).toFixed(1) + 's');
+      { const rb = document.querySelector(`.rerun-btn[data-slot="${ev.slot}"]`); if (rb && !_busy) rb.disabled = false; }
       if (currentTask().executable && ev.result.code) {
         const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
         if (eb) eb.disabled = false;
@@ -932,10 +1036,11 @@ function handleEvent(ev, results) {
       setStatus(ev.slot, 'Error: ' + esc(ev.message), 'err');
       break;
     case 'all_done':
-      finalize(results);
+      finalize(results);   // re-runs merge into LAST_RESULTS, so the scorecard reflects every slot
       // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
-      // Bring the Model comparison scorecard to the top now that the run is done.
-      setTimeout(() => {
+      // Bring the scorecard to the top after a FULL run; a single-slot re-run keeps
+      // you where you are (you were looking at that column).
+      if (!_rerunSlot) setTimeout(() => {
         const sc = $('#scorecard');
         if (sc && !sc.classList.contains('hidden')) sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 80);
@@ -1461,6 +1566,7 @@ function applyResultToColumn(slot, r) {
   }
   const secs = (r.wallMs / 1000).toFixed(1);
   setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
+  { const rb = document.querySelector(`.rerun-btn[data-slot="${slot}"]`); if (rb) rb.disabled = false; }
   if (currentTask().executable && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;

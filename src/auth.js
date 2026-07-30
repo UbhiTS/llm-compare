@@ -32,7 +32,9 @@ const SESSION_TTL_MS = (Number(process.env.SESSION_TTL_HOURS) || 8) * 3600 * 100
 const SESSION_ABSOLUTE_TTL_MS = (Number(process.env.SESSION_ABSOLUTE_TTL_HOURS) || 24) * 3600 * 1000; // hard cap regardless of activity
 const MAX_SESSIONS_PER_USER = Math.max(1, Number(process.env.MAX_SESSIONS_PER_USER) || 10);  // bounds memory + stale tokens
 // Per-user daily comparison-run quota (abuse guardrail). 0 = unlimited. Admins exempt by default.
-const MAX_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_RUNS_PER_DAY) || 20));
+const MAX_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_RUNS_PER_DAY) || 5));
+// Separate daily budget for re-running a SINGLE model (the per-column "Run again").
+const MAX_SINGLE_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_SINGLE_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_SINGLE_RUNS_PER_DAY) || 5));
 const RATE_EXEMPT_ADMINS = process.env.RATE_LIMIT_EXEMPT_ADMINS !== '0';
 
 // scrypt cost params. N=2^15 ⇒ ~32MB per hash; bump maxmem so it doesn't throw.
@@ -351,31 +353,41 @@ function verifySetupCode(code) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// ---------- per-user daily run quota (abuse guardrail) ----------
-const runCounts = new Map(); // `${username}|${utcDay}` -> count
+// ---------- per-user daily run quotas (abuse guardrail) ----------
+// Two independent daily buckets so retrying one model can't eat the budget for
+// full comparisons (and vice versa):
+//   'compare' — a full side-by-side run           (MAX_RUNS_PER_DAY)
+//   'single'  — re-running ONE model on its own   (MAX_SINGLE_RUNS_PER_DAY)
+// Admins are exempt from both unless RATE_LIMIT_EXEMPT_ADMINS=0.
+const runCounts = new Map(); // `${kind}|${username}|${utcDay}` -> count
 function utcDay() { return new Date().toISOString().slice(0, 10); }
 function nextUtcMidnightISO() {
   const d = new Date();
   d.setUTCHours(24, 0, 0, 0);
   return d.toISOString();
 }
-function exemptFromQuota(user) {
-  return !MAX_RUNS_PER_DAY || (RATE_EXEMPT_ADMINS && user && user.role === 'admin');
+function limitFor(kind) { return kind === 'single' ? MAX_SINGLE_RUNS_PER_DAY : MAX_RUNS_PER_DAY; }
+function exemptFromQuota(user, kind) {
+  return !limitFor(kind) || (RATE_EXEMPT_ADMINS && user && user.role === 'admin');
 }
+const qKey = (user, kind) => (kind === 'single' ? 'single' : 'compare') + '|' + user.username + '|' + utcDay();
+
 // Peek at the caller's remaining quota without consuming it.
-function runQuota(user) {
-  if (exemptFromQuota(user)) return { limited: false, limit: MAX_RUNS_PER_DAY, remaining: Infinity };
-  const used = runCounts.get(user.username + '|' + utcDay()) || 0;
-  return { limited: true, limit: MAX_RUNS_PER_DAY, used, remaining: Math.max(0, MAX_RUNS_PER_DAY - used), resetAt: nextUtcMidnightISO() };
+function runQuota(user, kind) {
+  const limit = limitFor(kind);
+  if (exemptFromQuota(user, kind)) return { limited: false, limit, remaining: Infinity };
+  const used = runCounts.get(qKey(user, kind)) || 0;
+  return { limited: true, limit, used, remaining: Math.max(0, limit - used), resetAt: nextUtcMidnightISO() };
 }
-// Consume one run; returns {ok:false,...} when the daily limit is already reached.
-function consumeRun(user) {
-  if (exemptFromQuota(user)) return { ok: true, limited: false, remaining: Infinity };
-  const key = user.username + '|' + utcDay();
+// Consume one run of `kind`; returns {ok:false,...} when that daily limit is reached.
+function consumeRun(user, kind) {
+  const limit = limitFor(kind);
+  if (exemptFromQuota(user, kind)) return { ok: true, limited: false, remaining: Infinity };
+  const key = qKey(user, kind);
   const used = runCounts.get(key) || 0;
-  if (used >= MAX_RUNS_PER_DAY) return { ok: false, limited: true, limit: MAX_RUNS_PER_DAY, used, remaining: 0, resetAt: nextUtcMidnightISO() };
+  if (used >= limit) return { ok: false, limited: true, kind: kind === 'single' ? 'single' : 'compare', limit, used, remaining: 0, resetAt: nextUtcMidnightISO() };
   runCounts.set(key, used + 1);
-  return { ok: true, limited: true, limit: MAX_RUNS_PER_DAY, used: used + 1, remaining: MAX_RUNS_PER_DAY - (used + 1), resetAt: nextUtcMidnightISO() };
+  return { ok: true, limited: true, limit, used: used + 1, remaining: limit - (used + 1), resetAt: nextUtcMidnightISO() };
 }
 
 // ---------- periodic cleanup (bounds memory; never blocks shutdown) ----------
@@ -398,7 +410,7 @@ module.exports = {
   // brute force
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
   // per-user daily run quota
-  runQuota, consumeRun, MAX_RUNS_PER_DAY,
+  runQuota, consumeRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)
