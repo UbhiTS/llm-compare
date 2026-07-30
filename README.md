@@ -148,6 +148,7 @@ so a tampered price or model ID is ignored.
 
 | Model | Publisher | Price in / out ($/1M) |
 |---|---|---|
+| Gemini 3.6 Flash | Google (Vertex) | 1.50 / 7.50 |
 | Gemini 3.5 Flash | Google (Vertex) | 1.50 / 9.00 |
 | Claude Opus 4.8 | Anthropic (Vertex) | 5.00 / 25.00 |
 | Gemini 3.1 Pro | Google (Vertex) | 2.00 / 12.00 |
