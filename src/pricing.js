@@ -11,6 +11,7 @@
 // Prices are USD per 1,000,000 tokens, taken from public 2026 pricing:
 //   • Gemini 3.6 Flash  — $1.50 in / $7.50 out  (Vertex, launched 2026-07-21)
 //   • Gemini 3.5 Flash  — $1.50 in / $9.00 out  (Vertex, launched 2026-05-19)
+//   • Claude Opus 5     — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8   — $5.00 in / $25.00 out (Anthropic list price)
 //   • Gemini 3.1 Pro    — $2.00 in / $12.00 out (Vertex, ≤200K context)
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ const PRICING = {
 const MODEL_CATALOG = [
   { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 1.50, output: 7.50 } },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 } },
+  { id: 'claude-opus-5',    label: 'Claude Opus 5',    provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5',          price: { input: 5.00, output: 25.00 } },
   { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 } },
   { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro',   provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 } },
 ];
