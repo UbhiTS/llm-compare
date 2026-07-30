@@ -64,33 +64,97 @@ async function gemini({ model, system, messages, keys }) {
   };
 }
 
-async function openai({ model, system, messages, keys }) {
-  const key = (keys && keys.openai) || process.env.OPENAI_API_KEY;
-  if (!key) throw new Error('Missing OPENAI_API_KEY in environment (.env)');
+// ---------------------------------------------------------------------------
+// OpenAI-compatible providers (OpenAI itself + Moonshot / Kimi).
+//
+// Both speak the same /chat/completions contract, so one implementation serves
+// both — only the base URL, env var and BYOK key field differ. These are the
+// only NON-Vertex models in the catalog, so unlike the Agent Platform path the
+// prompt leaves Google infrastructure.
+//
+// `temperature` is deliberately NOT sent: several newer models (GPT-5.x among
+// them) reject any non-default value with a 400.
+// ---------------------------------------------------------------------------
+const OPENAI_COMPAT = {
+  openai:   { label: 'OpenAI',   base: 'https://api.openai.com/v1',   env: 'OPENAI_API_KEY',   keyField: 'openai',   usageOpt: true },
+  moonshot: { label: 'Moonshot', base: 'https://api.moonshot.ai/v1', env: 'MOONSHOT_API_KEY', keyField: 'moonshot', usageOpt: false },
+};
 
+function compatKey(cfg, keys) {
+  const key = (keys && keys[cfg.keyField]) || process.env[cfg.env];
+  if (!key) throw new Error(`Missing ${cfg.env} — add it under "Your API keys" or set it on the server.`);
+  return key;
+}
+
+async function openaiCompat(cfg, { model, system, messages, keys }) {
+  const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
-
   const t0 = Date.now();
-  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+  const r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    // Note: some newer models only accept default temperature. If you hit a
-    // 400 about `temperature`, remove the field below.
-    body: JSON.stringify({ model, messages: msgs, temperature: 0.2 }),
+    body: JSON.stringify({ model, messages: msgs }),
   });
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
+  if (!r.ok) throw new Error(`${cfg.label} ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
 
-  const text = j.choices?.[0]?.message?.content || '';
+  const msg = j.choices?.[0]?.message || {};
+  const text = msg.content || '';
+  const reasoning = msg.reasoning_content || '';          // Kimi/DeepSeek-style thinking
   const u = j.usage || {};
+  const think = u.completion_tokens_details?.reasoning_tokens ?? (reasoning ? estimateTokens([{ content: reasoning }]) : 0);
   return {
-    text,
+    text, reasoning,
     promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
-    completionTokens: u.completion_tokens ?? estimateTokens([{ content: text }]),
+    completionTokens: u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]),
+    reasoningTokens: think,
     latencyMs,
   };
 }
+
+// Streamed variant — same contract, emits onDelta so the UI gets a live feed
+// (without this an external model's column sits blank until it finishes).
+async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta }) {
+  const key = compatKey(cfg, keys);
+  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  const body = { model, messages: msgs, stream: true };
+  if (cfg.usageOpt) body.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
+  const t0 = Date.now();
+  const r = await fetch(`${cfg.base}/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    let detail = '';
+    try { detail = JSON.stringify(await r.json()); } catch (e) { try { detail = await r.text(); } catch (_) { detail = ''; } }
+    throw new Error(`${cfg.label} ${r.status}: ${String(detail).slice(0, 400)}`);
+  }
+
+  let text = '', reasoning = '', usage = null;
+  await readSSE(r, (ev) => {
+    if (ev.usage) usage = ev.usage;
+    const d = ev.choices?.[0]?.delta;
+    if (!d) return;
+    if (d.content) text += d.content;
+    if (d.reasoning_content) reasoning += d.reasoning_content;
+    if (onDelta) onDelta({ answer: text, reasoning, runningOut: estimateTokens([{ content: text }]), runningThink: estimateTokens([{ content: reasoning }]) });
+  });
+  const latencyMs = Date.now() - t0;
+  const u = usage || {};
+  const think = u.completion_tokens_details?.reasoning_tokens ?? (reasoning ? estimateTokens([{ content: reasoning }]) : 0);
+  return {
+    text, reasoning,
+    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    completionTokens: u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]),
+    reasoningTokens: think,
+    latencyMs,
+  };
+}
+
+const openai = (args) => openaiCompat(OPENAI_COMPAT.openai, args);
+const moonshot = (args) => openaiCompat(OPENAI_COMPAT.moonshot, args);
 
 async function anthropic({ model, system, messages, keys }) {
   const key = (keys && keys.anthropic) || process.env.ANTHROPIC_API_KEY;
@@ -352,7 +416,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
   };
 }
 
-const ADAPTERS = { agentplatform, gemini, openai, anthropic };
+const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 
 // `keys` (optional) lets a user bring their own API credentials for a run; each
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
@@ -362,6 +426,11 @@ async function complete({ provider, model, system, messages, publisher, project,
     return pub === 'anthropic'
       ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys })
       : agentPlatformGeminiStream({ model, system, messages, onDelta, keys });
+  }
+  // OpenAI-compatible providers stream too, so an external model's column gets
+  // the same live token feed as the Vertex ones.
+  if (OPENAI_COMPAT[provider] && onDelta) {
+    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys });
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);

@@ -14,7 +14,6 @@
 // ---------------------------------------------------------------------------
 
 const crypto = require('crypto');
-const allowlist = require('./allowlist');
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -104,9 +103,8 @@ async function handleCallback(req, code, state) {
   const email = String(claims.email || '').trim().toLowerCase();
   const domain = email.split('@')[1] || '';
   const hd = String(claims.hd || '').trim().toLowerCase();
-  // Domain match OR an individual invite added by an admin in-app (src/allowlist.js).
   const domainOk = ALLOWED_DOMAINS.includes(domain) || (hd && ALLOWED_DOMAINS.includes(hd));
-  if (ALLOWED_DOMAINS.length && !domainOk && !allowlist.isAllowed(email)) {
+  if (ALLOWED_DOMAINS.length && !domainOk) {
     throw new Error(`Access is restricted to ${ALLOWED_DOMAINS.join(', ')}. The account ${email} is not permitted.`);
   }
 

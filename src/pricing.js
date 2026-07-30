@@ -39,6 +39,11 @@ const MODEL_CATALOG = [
   { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 } },
   // Sonnet 5 introductory pricing ends 2026-08-31 → then { input: 3.00, output: 15.00 }.
   { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 2.00, output: 10.00 } },
+  // --- External models (NOT on Vertex). These call the vendor's own API, so a
+  // run on these sends the prompt outside Google infrastructure, and they need
+  // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY). ---
+  { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },
+  { id: 'kimi-k3',          label: 'Kimi K3',          provider: 'moonshot',      publisher: 'moonshot',  model: 'kimi-k3',                price: { input: 3.00, output: 15.00 }, external: true },
 ];
 
 function catalogEntry(id) {
@@ -50,7 +55,7 @@ function catalogEntry(id) {
 function modelFromCatalog(slot, id) {
   const c = catalogEntry(id);
   if (!c) return null;
-  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output } };
+  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external };
 }
 
 // The default slots shown in the UI on first load (a subset of the catalog).

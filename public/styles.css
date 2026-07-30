@@ -589,6 +589,14 @@ a.ud-item[hidden] { display: none; }
 .u-del { background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px 10px; font-family: inherit; }
 .u-del:hover { color: var(--bad); border-color: var(--bad); }
 .add-user-form { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+/* admin help: how to grant Google sign-in access (console-only, so it's guidance) */
+.access-help { margin-top: 22px; padding: 16px 18px; border: 1px solid var(--border-hi); background: var(--well); }
+.access-help h4 { margin: 0 0 8px; font-family: "Space Grotesk", sans-serif; font-size: 13px; color: var(--text); }
+.access-help p { margin: 0 0 8px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+.access-help ol { margin: 8px 0 0; padding-left: 20px; }
+.access-help li { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 5px; }
+.access-help b { color: var(--text); }
+.access-help code { font-family: "JetBrains Mono", monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--border); padding: 1px 6px; color: var(--text); }
 .add-user-form h4 { margin: 0 0 12px; font-family: "Space Grotesk", sans-serif; font-size: 13px; color: var(--text); }
 .auth-field { margin-bottom: 12px; }
 .auth-field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 5px; }

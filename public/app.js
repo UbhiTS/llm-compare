@@ -145,7 +145,6 @@ function initUserMenu(me) {
   $('#userAvatar').textContent = (ME.username[0] || '?').toUpperCase();
   $('#userChip').title = ME.username + ' · ' + ME.role;
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
-  { const al = $('#accessDocLink'); if (al) al.hidden = ME.role !== 'admin'; }
 
   const chip = $('#userChip');
   const dd = $('#userDropdown');
@@ -196,7 +195,10 @@ function openKeysModal() {
     '<p class="keys-intro">Add your own API keys to run comparisons <b>without the daily limit</b>. Keys are stored only in <b>this browser</b> and sent to the server just for your runs — never persisted server-side. Leave blank to use the shared keys (capped at ' + limit + '/day).</p>' +
     '<form class="add-user-form" id="keysForm">' +
       '<div class="auth-field"><label>Gemini / Agent Platform API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
-      '<div class="auth-field"><label>OpenAI API key</label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
+      '<h4 style="margin:18px 0 10px">External models</h4>' +
+      '<p class="keys-intro" style="margin-bottom:12px">These are <b>not</b> on Vertex, so they need their own key and the prompt leaves Google infrastructure when you run them.</p>' +
+      '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT-5.6 Luna</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
+      '<div class="auth-field"><label>Moonshot API key <span class="u-tag">Kimi K3</span></label><input id="k-moonshot" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (platform.moonshot.ai)" value="' + esc(k.moonshot || '') + '" /></div>' +
       '<div class="auth-field"><label>Anthropic API key</label><input id="k-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-… (for a direct Anthropic slot)" value="' + esc(k.anthropic || '') + '" /></div>' +
       '<details class="keys-adv"><summary>Advanced — Claude via Google Vertex</summary>' +
         '<div class="auth-field"><label>Claude Vertex bearer token</label><input id="k-claude" type="password" autocomplete="off" spellcheck="false" value="' + esc(k.claudeBearerToken || '') + '" /></div>' +
@@ -211,7 +213,8 @@ function openKeysModal() {
     const nk = {};
     if (gem) { nk.agentplatform = gem; nk.gemini = gem; } // covers agentplatform + direct gemini slots
     const set = (id, key) => { const v = body.querySelector(id).value.trim(); if (v) nk[key] = v; };
-    set('#k-openai', 'openai'); set('#k-anthropic', 'anthropic'); set('#k-claude', 'claudeBearerToken'); set('#k-proj', 'gcpProject');
+    set('#k-openai', 'openai'); set('#k-moonshot', 'moonshot'); set('#k-anthropic', 'anthropic');
+    set('#k-claude', 'claudeBearerToken'); set('#k-proj', 'gcpProject');
     saveKeys(nk);
     const m = body.querySelector('#keysMsg'); m.className = 'auth-msg ok'; m.textContent = 'Saved to this browser.';
     updateQuotaBadge();
@@ -280,10 +283,35 @@ function renderUsersModal(body, data) {
       '<label class="auth-check"><input id="nuAdmin" type="checkbox" /> Make this user an admin (can manage users)</label>' +
       '<div class="auth-msg" id="nuMsg"></div>' +
       '<button class="submit-btn" type="submit">+ Add user</button>' +
-    '</form>';
+    '</form>' +
+    googleAccessHelp();
 
   body.querySelectorAll('.u-del').forEach((b) => b.addEventListener('click', () => deleteUser(b.dataset.user, body)));
   body.querySelector('#addUserForm').addEventListener('submit', (e) => { e.preventDefault(); addUser(body); });
+}
+
+// Instructions for granting access to Google sign-in users. The accounts table
+// above only covers username/password logins, which do NOT survive a redeploy
+// in the cloud — everyone real signs in with Google, and that list lives on the
+// OAuth consent screen in the Cloud Console. There is no API to add test users
+// (console-only), which is why this is written guidance rather than a form.
+function googleAccessHelp() {
+  const proj = (CONFIG && CONFIG.gcpProject) || 'your project';
+  const domains = (CONFIG && CONFIG.allowedDomains && CONFIG.allowedDomains.length)
+    ? CONFIG.allowedDomains.join(', ') : 'your allowed domain';
+  return '<div class="access-help">' +
+    '<h4>Giving someone Google sign-in access</h4>' +
+    '<p>The table above is only for username/password accounts, and in the cloud those are wiped on every deploy. ' +
+    'Anyone real should sign in with Google, which is managed in the Cloud Console:</p>' +
+    '<ol>' +
+      '<li>Open <b>APIs &amp; Services ▸ OAuth consent screen</b> for <code>' + esc(proj) + '</code>.</li>' +
+      '<li>Under <b>Audience ▸ Test users</b>, click <b>+ Add users</b>, enter their address and Save.</li>' +
+      '<li>Send them the app link. They click <b>Sign in with Google</b> — no password needed.</li>' +
+    '</ol>' +
+    '<p class="hint" style="margin-top:10px"><b>Tired of adding people one at a time?</b> Click <b>Publish app</b> on that same screen. ' +
+    'After that anyone on <b>' + esc(domains) + '</b> can sign in without being listed, and you never touch this again.</p>' +
+    '<p class="hint">Note: Google provides no API for the test-user list, so this step cannot be automated from inside the app.</p>' +
+  '</div>';
 }
 
 async function addUser(body) {
