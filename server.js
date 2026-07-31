@@ -482,8 +482,12 @@ app.post('/api/run', async (req, res) => {
   const ac = new AbortController();
   let finished = false;
   let aborted = false;
-  req.on('close', () => {
-    if (finished) return;
+  // NOTE: this must be res 'close', NOT req 'close'. The request stream closes as
+  // soon as its body has been read, which is long before the run ends — listening
+  // there aborts every run the instant it starts. res 'close' fires either when
+  // the response completes (guarded by `finished`) or when the peer really goes away.
+  res.on('close', () => {
+    if (finished || res.writableFinished) return;
     aborted = true;
     ac.abort();
     if (!usingOwnKeys) auth.refundRun(req.user, kind);
