@@ -106,7 +106,14 @@ function status() {
   });
 }
 
-// Add a new secret version. Creates the secret first if it doesn't exist yet.
+// Add a new secret version.
+//
+// Goes STRAIGHT to :addVersion rather than probing with a GET first. A GET needs
+// `secretmanager.secrets.get`, which is in neither of the roles the runtime SA
+// holds (secretAccessor grants versions.access; secretVersionAdder grants
+// versions.add) — probing therefore 403'd before the write was ever attempted.
+// Keeping least privilege means the secret must already exist; if it doesn't,
+// say so with the exact command to create it.
 async function set(name, value) {
   if (!MANAGED_NAMES.has(name)) throw new Error('Unknown key.');
   const v = String(value == null ? '' : value).trim();
@@ -114,26 +121,22 @@ async function set(name, value) {
   if (!enabled()) throw new Error('Global keys need GCP_PROJECT_ID set on the server.');
 
   try {
-    await smFetch(`${encodeURIComponent(name)}`); // exists?
-  } catch (e) {
-    if (e.status !== 404) throw e;
-    // create with automatic replication
-    const token = await getClaudeToken();
-    const r = await fetch(`https://secretmanager.googleapis.com/v1/projects/${PROJECT()}/secrets?secretId=${encodeURIComponent(name)}`, {
+    await smFetch(`${encodeURIComponent(name)}:addVersion`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ replication: { automatic: {} } }),
+      body: JSON.stringify({ payload: { data: Buffer.from(v, 'utf8').toString('base64') } }),
     });
-    if (!r.ok) {
-      const j = await r.json().catch(() => ({}));
-      throw new Error((j && j.error && j.error.message) || `Could not create secret (HTTP ${r.status})`);
+  } catch (e) {
+    if (e.status === 404) {
+      throw new Error(`Secret "${name}" doesn't exist in project ${PROJECT()}. Create it once with:  `
+        + `gcloud secrets create ${name} --replication-policy=automatic --project ${PROJECT()}`);
     }
+    if (e.status === 403) {
+      throw new Error(`The server's service account can't write "${name}". Grant it once with:  `
+        + `gcloud secrets add-iam-policy-binding ${name} --member=serviceAccount:<runtime-sa> `
+        + `--role=roles/secretmanager.secretVersionAdder --project ${PROJECT()}  (${e.message})`);
+    }
+    throw e;
   }
-
-  await smFetch(`${encodeURIComponent(name)}:addVersion`, {
-    method: 'POST',
-    body: JSON.stringify({ payload: { data: Buffer.from(v, 'utf8').toString('base64') } }),
-  });
   cache.set(name, { value: v, at: Date.now() });
   meta.set(name, { source: 'secret-manager', updatedAt: Date.now() });
   return status();
