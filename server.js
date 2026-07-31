@@ -254,13 +254,16 @@ app.get('/api/config', (req, res) => {
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
+    // Booleans only — never the values. Uses globalKeys.has() so a key an admin
+    // set in Secret Manager counts, not just the deploy-time env vars; the UI
+    // greys out (and refuses to place) models with no usable key.
     keysPresent: {
-      agentplatform: !!(process.env.AGENT_PLATFORM_API_KEY || process.env.GEMINI_API_KEY),
+      agentplatform: globalKeys.has('AGENT_PLATFORM_API_KEY') || globalKeys.has('GEMINI_API_KEY'),
       claude: autoMintEnabled() || !!process.env.CLAUDE_BEARER_TOKEN,
-      gemini: !!process.env.GEMINI_API_KEY,
-      openai: !!process.env.OPENAI_API_KEY,
+      gemini: globalKeys.has('GEMINI_API_KEY'),
+      openai: globalKeys.has('OPENAI_API_KEY'),
       anthropic: !!process.env.ANTHROPIC_API_KEY,
-      moonshot: !!process.env.MOONSHOT_API_KEY,
+      moonshot: globalKeys.has('MOONSHOT_API_KEY'),
     },
     codeExec: executionEnabled(),
     webGame: webGameEnabled(),

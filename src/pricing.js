@@ -41,9 +41,18 @@ const MODEL_CATALOG = [
   { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 2.00, output: 10.00 } },
   // --- External models (NOT on Vertex). These call the vendor's own API, so a
   // run on these sends the prompt outside Google infrastructure, and they need
-  // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY). ---
+  // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY).
+  // Without a key the UI shows them greyed out and refuses to place them.
+  //
+  // Anthropic note: only the four Claude models above resolve on this project's
+  // Vertex Model Garden. Haiku 4.5, Sonnet 4.6 and Opus 4.7/4.6 were probed on
+  // global, us-east5 and us-central1 and 404 in every region, so they are
+  // deliberately NOT listed — a catalog entry that always fails is worse than none. ---
+  { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
+  { id: 'gpt-5.6-terra',    label: 'GPT-5.6 Terra',    provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-terra',          price: { input: 2.00, output: 12.00 }, external: true },
   { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },
   { id: 'kimi-k3',          label: 'Kimi K3',          provider: 'moonshot',      publisher: 'moonshot',  model: 'kimi-k3',                price: { input: 3.00, output: 15.00 }, external: true },
+  { id: 'kimi-k2.6',        label: 'Kimi K2.6',        provider: 'moonshot',      publisher: 'moonshot',  model: 'kimi-k2.6',              price: { input: 0.95, output: 4.00 },  external: true },
 ];
 
 function catalogEntry(id) {

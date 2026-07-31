@@ -567,6 +567,9 @@ function assignToSlot(catalogId, slot) {
   if (!SLOT_IDS.includes(slot)) return;
   const c = catalog().find((x) => x.id === catalogId);
   if (!c) return;
+  // A model with no usable key can never occupy a slot, whatever route got us
+  // here (drag, click, or a hand-crafted drop event).
+  if (!modelAvailability(c).ok) return;
   const from = slotOf(catalogId);
   if (from === slot) return;                       // dropped where it already is
   const displaced = SLOT_ASSIGN[slot] || null;
@@ -585,6 +588,7 @@ function clearSlot(slot) {
 // empty slot, else replace the last one.
 function placeInFirstFreeSlot(catalogId) {
   if (slotOf(catalogId)) return;
+  { const c = catalog().find((x) => x.id === catalogId); if (!c || !modelAvailability(c).ok) return; }
   const free = SLOT_IDS.find((s) => !SLOT_ASSIGN[s]);
   assignToSlot(catalogId, free || SLOT_IDS[SLOT_IDS.length - 1]);
 }
@@ -626,6 +630,26 @@ function renderTaskPrompt() {
 }
 
 function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
+
+// Can this catalog model actually be run right now? True when either the user
+// has a personal key for its provider or the server has a shared one. Models
+// that fail this are shown greyed out and cannot be dragged into a slot —
+// better than letting someone build a comparison that errors on Run.
+function modelAvailability(c) {
+  const k = loadKeys();
+  const present = (CONFIG && CONFIG.keysPresent) || {};
+  const pub = c.publisher || 'google';
+  if (c.provider === 'agentplatform' && pub === 'anthropic') {
+    return { ok: present.claude || !!k.claudeBearerToken, need: 'Claude on Vertex', how: 'the server’s service account' };
+  }
+  if (c.provider === 'agentplatform' || c.provider === 'gemini') {
+    return { ok: !!(k.agentplatform || k.gemini) || !!present.agentplatform, need: 'a Gemini / Agent Platform key', how: 'Your API keys' };
+  }
+  if (c.provider === 'openai') return { ok: !!k.openai || !!present.openai, need: 'an OpenAI key', how: 'Your API keys' };
+  if (c.provider === 'moonshot') return { ok: !!k.moonshot || !!present.moonshot, need: 'a Moonshot key', how: 'Your API keys' };
+  if (c.provider === 'anthropic') return { ok: !!k.anthropic || !!present.anthropic, need: 'an Anthropic key', how: 'Your API keys' };
+  return { ok: true };
+}
 function extBadge(c) { return c.external ? '<span class="ext-badge" title="Not on Vertex — needs its own API key; the prompt leaves Google infrastructure">EXT</span>' : ''; }
 
 function renderModelEditors() {
@@ -638,18 +662,33 @@ function renderModelEditors() {
       pal.appendChild(el('span', 'add-note', 'Every model is in a slot — drag one out or swap.'));
     } else {
       avail.forEach((c) => {
-        const chip = el('div', 'model-chip');
-        chip.draggable = true;
+        const av = modelAvailability(c);
+        const chip = el('div', 'model-chip' + (av.ok ? '' : ' unavailable'));
+        chip.draggable = av.ok;                       // no key ⇒ not draggable at all
         chip.dataset.id = c.id;
-        chip.title = `${c.label} (${c.model}) — drag into a slot, or click`;
-        chip.innerHTML = `<span class="am-ic">${modelIconSvg(c)}</span><b>${esc(c.label)}</b>${extBadge(c)}<span class="am-price">${priceTag(c)}</span>`;
-        chip.addEventListener('dragstart', (e) => {
-          e.dataTransfer.setData('text/plain', c.id);
-          e.dataTransfer.effectAllowed = 'move';
-          chip.classList.add('dragging');
-        });
-        chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
-        chip.addEventListener('click', () => placeInFirstFreeSlot(c.id));
+        if (!av.ok) chip.dataset.locked = '1';
+        chip.title = av.ok
+          ? `${c.label} (${c.model}) — drag into a slot, or click`
+          : `${c.label} needs ${av.need}. Add one under “${av.how}” to enable it.`;
+        chip.innerHTML = `<span class="am-ic">${modelIconSvg(c)}</span><b>${esc(c.label)}</b>${extBadge(c)}`
+          + (av.ok ? `<span class="am-price">${priceTag(c)}</span>`
+                   : `<span class="am-nokey">🔒 no key</span>`);
+        if (av.ok) {
+          chip.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('text/plain', c.id);
+            e.dataTransfer.effectAllowed = 'move';
+            chip.classList.add('dragging');
+          });
+          chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
+          chip.addEventListener('click', () => placeInFirstFreeSlot(c.id));
+        } else {
+          // belt and braces: even a synthesised dragstart carries nothing
+          chip.addEventListener('dragstart', (e) => e.preventDefault());
+          chip.addEventListener('click', () => {
+            const m = $('#providerKeys');
+            if (m) { m.classList.remove('nudge'); void m.offsetWidth; m.classList.add('nudge'); }
+          });
+        }
         pal.appendChild(chip);
       });
     }
