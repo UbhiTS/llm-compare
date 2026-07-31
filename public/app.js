@@ -261,7 +261,17 @@ function openKeysModal() {
   const k = loadKeys();
   const limit = (CONFIG && CONFIG.maxRunsPerDay) || 20;
   body.innerHTML =
-    '<p class="keys-intro">Add your own API keys to run comparisons <b>without the daily limit</b>. Keys are stored only in <b>this browser</b> and sent to the server just for your runs — never persisted server-side. Leave blank to use the shared keys (capped at ' + limit + '/day).</p>' +
+    '<div class="key-scope personal">' +
+      '<div class="ks-head">🔒 Personal keys — this browser only</div>' +
+      '<ul class="ks-facts">' +
+        '<li><b>Stored only in this browser</b> (localStorage). They are never written to the server\'s database, disk or logs, and no other user — not even an admin — can see them.</li>' +
+        '<li><b>Sent with each of your runs</b> over HTTPS, because the server has to hold the key to call the provider. It is used in memory for that run and then discarded.</li>' +
+        '<li>Clearing your browser data — or pressing <b>Clear all</b> below — removes them completely.</li>' +
+      '</ul>' +
+    '</div>' +
+    '<p class="keys-intro">A run where <b>every</b> selected model uses your own key is <b>not counted</b> against the daily limit. ' +
+    'Leave a field blank to fall back to the shared key for that provider (capped at ' + limit + '/day)' +
+    ((ME && ME.role === 'admin') ? ' — shared keys are managed under <b>Global API keys</b>.' : '.') + '</p>' +
     '<form class="add-user-form" id="keysForm">' +
       '<div class="auth-field"><label>Gemini / Agent Platform API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
       '<h4 style="margin:18px 0 10px">External models</h4>' +
@@ -393,10 +403,16 @@ function renderGlobalKeysModal(body, data) {
     </div>`;
   }).join('');
   body.innerHTML =
-    '<p class="keys-intro">These are the <b>shared</b> credentials every user runs on when they haven\'t added their own. ' +
-    'Runs on these are capped at <b>' + limit + '/day per user</b>; a user who adds their own key under <em>Your API keys</em> runs <b>unlimited</b>.</p>' +
-    '<p class="keys-intro">Saving writes a new version to <b>Google Secret Manager</b> and takes effect within a minute — no redeploy. ' +
-    'Values are never sent back to this page, and every change is logged.</p>' +
+    '<div class="key-scope global">' +
+      '<div class="ks-head">🌐 Global keys — shared by EVERY user</div>' +
+      '<ul class="ks-facts">' +
+        '<li>Anyone who hasn\'t added a personal key runs on these, so usage and spend land on <b>your</b> account.</li>' +
+        '<li>Stored as versions in <b>Google Secret Manager</b> — server-side, versioned and audited. Saving takes effect within a minute, <b>no redeploy</b>.</li>' +
+        '<li>Values are <b>never sent back to this page</b> (you only ever see a masked tail), and every change is logged with the admin who made it.</li>' +
+      '</ul>' +
+    '</div>' +
+    '<p class="keys-intro">Runs on these shared keys are capped at <b>' + limit + '/day per user</b>. ' +
+    'A user who adds their own key for every model they select — under <em>Your API keys</em>, which stays in their browser — runs <b>unlimited</b>.</p>' +
     (data.enabled ? '' : '<div class="auth-msg err">Secret Manager isn\'t configured on the server (GCP_PROJECT_ID unset), so keys can only be read from the deploy environment.</div>') +
     '<div class="gk-list">' + rows + '</div>' +
     '<div class="auth-msg" id="gkMsg"></div>';

@@ -614,6 +614,16 @@ a.ud-item[hidden] { display: none; }
 .u-del { background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px 10px; font-family: inherit; }
 .u-del:hover { color: var(--bad); border-color: var(--bad); }
 .add-user-form { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+/* scope banner: makes "this browser only" vs "shared by everyone" unmissable */
+.key-scope { border: 1px solid var(--border-hi); padding: 13px 15px; margin-bottom: 14px; }
+.key-scope.personal { border-left: 3px solid var(--good); background: color-mix(in srgb, var(--good) 7%, transparent); }
+.key-scope.global { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.ks-head { font-family: "Space Grotesk", sans-serif; font-size: 13.5px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+.ks-facts { margin: 0; padding-left: 18px; }
+.ks-facts li { font-size: 12.5px; color: var(--muted); line-height: 1.6; margin-bottom: 5px; }
+.ks-facts li:last-child { margin-bottom: 0; }
+.ks-facts b { color: var(--text); }
+
 /* admin: global (shared) API keys */
 .gk-list { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
 .gk-row { border: 1px solid var(--border); background: var(--well); padding: 12px 14px; }
