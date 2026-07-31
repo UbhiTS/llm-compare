@@ -18,6 +18,35 @@ const globalKeys = require('./globalKeys');
 
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS, 10) || 0;
 const CLAUDE_MAX_OUTPUT = MAX_OUTPUT_TOKENS || 128000; // Anthropic requires max_tokens; Opus 4.8 supports 128k
+const CLAUDE_MAX_OUTPUT_LEGACY = MAX_OUTPUT_TOKENS || 32000; // pre-4.6 models cap well below 128k
+
+// Claude's thinking API changed at 4.6. From 4.6 onward it is
+// `thinking:{type:'adaptive'}` plus `output_config.effort`; BEFORE 4.6 only
+// 'enabled'/'disabled' exist and 'adaptive' is rejected outright:
+//   400 "thinking: input tag 'adaptive' ... does not match ... 'disabled', 'enabled'"
+// The version is read off the model id (claude-opus-4-5 → 4.5, claude-opus-5 → 5.0)
+// so newly added models default to the modern form without another code change.
+function claudeModelVersion(model) {
+  const m = String(model || '').match(/-(\d+)(?:-(\d+))?$/);
+  if (!m) return 99;                                  // unknown → assume modern
+  return Number(m[1]) + (m[2] != null ? Number(m[2]) / 10 : 0);
+}
+// Returns the request fields that differ between the two thinking APIs.
+function claudeThinkingFields(model) {
+  if (claudeModelVersion(model) >= 4.6) {
+    return {
+      max_tokens: CLAUDE_MAX_OUTPUT,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: process.env.CLAUDE_EFFORT || 'high' },
+    };
+  }
+  // Legacy: an explicit budget, which must stay below max_tokens.
+  const max = CLAUDE_MAX_OUTPUT_LEGACY;
+  return {
+    max_tokens: max,
+    thinking: { type: 'enabled', budget_tokens: Math.max(1024, Math.min(8192, Math.floor(max / 2))) },
+  };
+}
 
 function estimateTokens(messages, system = '') {
   const chars =
@@ -266,9 +295,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
 
   const body = {
     anthropic_version: 'vertex-2023-10-16',
-    max_tokens: CLAUDE_MAX_OUTPUT,
-    thinking: { type: 'adaptive' },          // Opus 4.8 uses adaptive thinking
-    output_config: { effort: process.env.CLAUDE_EFFORT || 'high' }, // engage adaptive thinking
+    ...claudeThinkingFields(model),          // adaptive on 4.6+, enabled+budget below
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
   if (system) body.system = system;
@@ -383,9 +410,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
   const userToken = keys && keys.claudeBearerToken;
   const body = {
     anthropic_version: 'vertex-2023-10-16',
-    max_tokens: CLAUDE_MAX_OUTPUT,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: process.env.CLAUDE_EFFORT || 'high' },
+    ...claudeThinkingFields(model),          // adaptive on 4.6+, enabled+budget below
     stream: true,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
