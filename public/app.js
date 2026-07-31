@@ -1145,13 +1145,27 @@ function markWin(slot, key, win) {
 // and merged back in without disturbing the others (see rerunSlot).
 let LAST_RESULTS = {};
 let ARENA_MODELS = null;  // the model set currently rendered (may differ from MODELS after a history restore)
-let _busy = false;        // a full run or a single-slot re-run is streaming
-let _rerunSlot = null;    // slot being re-run (suppresses the scorecard auto-scroll)
-let _rerunAbort = null;   // AbortController for the in-flight re-run, so clicking again restarts it
+// ---- per-slot ownership -----------------------------------------------------
+// Each column is independently owned. A "generation" is bumped whenever someone
+// takes over a slot, and a stream's events are applied only while it still owns
+// that slot — so hitting Run again on one column mid-comparison takes that
+// column over cleanly while the others keep streaming, and late events from the
+// abandoned owner are ignored instead of overwriting the new run.
+const SLOT_GEN = {};                      // slot -> generation counter
+const SLOT_RUNS = {};                     // slot -> { abort, timer } for a single-slot re-run
+let _fullRun = false;                     // a full comparison is streaming
+let _busy = false;                        // kept for updateRunButton(): any run in flight
+function claimSlots(slots) {              // take ownership; returns the snapshot to validate against
+  const snap = {};
+  slots.forEach((s) => { SLOT_GEN[s] = (SLOT_GEN[s] || 0) + 1; snap[s] = SLOT_GEN[s]; });
+  return snap;
+}
+const ownsSlot = (snap, slot) => snap && snap[slot] != null && snap[slot] === SLOT_GEN[slot];
+const slotIsRunning = (slot) => !!SLOT_RUNS[slot] || (_fullRun && !wallFinished.has(slot));
 
 // POST /api/run and pump the NDJSON stream into `results`.
 // Returns 'ok' | 'auth' | 'quota'; throws on transport/HTTP failure.
-async function streamRun(payload, results, signal) {
+async function streamRun(payload, results, signal, own) {
   const resp = await fetch('/api/run', {
     method: 'POST',
     credentials: 'same-origin',
@@ -1182,28 +1196,47 @@ async function streamRun(payload, results, signal) {
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
-      if (line) handleEvent(JSON.parse(line), results);
+      if (line) {
+        const ev = JSON.parse(line);
+        // Drop events for a slot this stream no longer owns (someone hit Run
+        // again on that column) — otherwise a stale run would clobber the new one.
+        if (!ev.slot || ownsSlot(own, ev.slot)) handleEvent(ev, results, own);
+      }
     }
   }
   return 'ok';
 }
 
-// Enable/disable the per-column "Run again" buttons.
-function setRerunEnabled(on) {
-  document.querySelectorAll('.rerun-btn').forEach((b) => { b.disabled = !on; });
+// Reflect a slot's run state on its own button. Buttons are NEVER disabled —
+// a re-run can be started (or restarted) on any column at any time.
+function paintRerunButton(slot) {
+  const b = document.querySelector(`.rerun-btn[data-slot="${slot}"]`);
+  if (!b) return;
+  const running = slotIsRunning(slot);
+  b.disabled = false;
+  b.textContent = running ? '↻ Restart' : '↻ Run again';
+  b.classList.toggle('running', running);
+  b.title = running
+    ? 'Abandon this model’s current attempt and start it again — other columns keep going'
+    : 'Re-run just this model on the current task — the other columns are left alone';
 }
+function paintAllRerunButtons() { (ARENA_MODELS || MODELS).forEach((m) => paintRerunButton(m.slot)); }
 
 async function run() {
   if (!MODELS.length) return;   // nothing selected — the button is disabled anyway
   const btn = $('#runBtn');
   btn.disabled = true;
   btn.textContent = 'Running…';
-  _busy = true;
+  _busy = true; _fullRun = true;
   $('#scorecard').classList.add('hidden');
 
   buildArena();
-  slotIds().forEach((s) => setStatus(s, 'Queued…', 'run'));
-  setRerunEnabled(false);
+  const slots = slotIds();
+  slots.forEach((s) => setStatus(s, 'Queued…', 'run'));
+  // Taking over every column cancels any single-slot re-run still in flight.
+  slots.forEach((s) => { const r = SLOT_RUNS[s]; if (r) { r.abort.abort(); clearInterval(r.timer); delete SLOT_RUNS[s]; } });
+  const own = claimSlots(slots);
+  paintAllRerunButtons();
   $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' }); // bring the model cards to the top
 
   // Wall clock starts ticking immediately — keeps running while a model is only
@@ -1213,7 +1246,8 @@ async function run() {
   if (wallTimer) clearInterval(wallTimer);
   wallTimer = setInterval(() => {
     const secs = ((performance.now() - wallStartMs) / 1000).toFixed(1) + 's';
-    slotIds().forEach((s) => { if (!wallFinished.has(s)) setTileVal(s, 'time', secs); });
+    // skip any column a re-run has taken over — it runs its own clock
+    slots.forEach((s) => { if (!wallFinished.has(s) && ownsSlot(own, s)) setTileVal(s, 'time', secs); });
   }, 100);
 
   const payload = {
@@ -1227,22 +1261,23 @@ async function run() {
   LAST_RESULTS = {};
   const results = LAST_RESULTS;
   try {
-    const st = await streamRun(payload, results);
+    const st = await streamRun(payload, results, undefined, own);
     if (st === 'auth') return;
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
-      slotIds().forEach((s) => setStatus(s, m, 'err'));
+      slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, m, 'err'); });
       window.alert(m);
       return;
     }
   } catch (e) {
-    slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
+    slots.forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
   } finally {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
     btn.textContent = 'Run comparison ▸';
-    _busy = false;
+    _fullRun = false;
+    _busy = Object.keys(SLOT_RUNS).length > 0;   // re-runs may still be going
     updateRunButton();          // stays disabled if every slot was cleared meanwhile
-    setRerunEnabled(true);
+    paintAllRerunButtons();
   }
 }
 
@@ -1252,23 +1287,22 @@ async function run() {
 async function rerunSlot(slot) {
   const model = (ARENA_MODELS || MODELS).find((m) => m.slot === slot);
   if (!model) return;
-  // Restart-in-place: if THIS slot is already running, abandon that request and
-  // start a fresh one immediately (the server aborts the upstream call and hands
-  // the quota slot back). A full comparison still has to finish first.
-  if (_busy) {
-    if (_rerunSlot !== slot || !_rerunAbort) return;
-    _rerunAbort.abort();
-    // let the aborted run's finally-block settle before taking over
-    await new Promise((r) => setTimeout(r, 60));
-  }
-  _busy = true; _rerunSlot = slot;
+  // Clickable at ANY time. Whatever currently owns this column — an in-flight
+  // re-run of it, or a full comparison still streaming — is taken over: bumping
+  // the generation makes the old owner's events for this slot get dropped, and
+  // its own re-run request (if any) is aborted so the server stops billing it.
+  { const prev = SLOT_RUNS[slot]; if (prev) { prev.abort.abort(); clearInterval(prev.timer); } }
+  const own = claimSlots([slot]);
   const ac = new AbortController();
-  _rerunAbort = ac;
-  const btn = document.querySelector(`.rerun-btn[data-slot="${slot}"]`);
-  setRerunEnabled(false);
-  // keep THIS slot's button live so it can be clicked again to restart
-  if (btn) { btn.disabled = false; btn.textContent = '↻ Restart'; btn.classList.add('running'); }
-  { const rb = $('#runBtn'); if (rb) rb.disabled = true; }
+  const t0 = performance.now();
+  const timer = setInterval(() => {
+    if (!wallFinished.has(slot) && ownsSlot(own, slot)) {
+      setTileVal(slot, 'time', ((performance.now() - t0) / 1000).toFixed(1) + 's');
+    }
+  }, 100);
+  SLOT_RUNS[slot] = { abort: ac, timer };
+  _busy = true;
+  paintRerunButton(slot);
 
   // Reset just this column.
   delete LAST_RESULTS[slot];
@@ -1282,12 +1316,6 @@ async function rerunSlot(slot) {
   { const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`); if (eb) eb.disabled = true; }
   setStatus(slot, 'Queued…', 'run');
 
-  // Wall clock for this slot only.
-  const t0 = performance.now();
-  const timer = setInterval(() => {
-    if (!wallFinished.has(slot)) setTileVal(slot, 'time', ((performance.now() - t0) / 1000).toFixed(1) + 's');
-  }, 100);
-
   try {
     const st = await streamRun({
       taskId: $('#taskSelect').value,
@@ -1296,31 +1324,33 @@ async function rerunSlot(slot) {
       mode: 'single',            // draws on the separate single-model re-run budget
       customPrompt: $('#customPrompt').value,
       keys: loadKeys(),
-    }, LAST_RESULTS, ac.signal);
+    }, LAST_RESULTS, ac.signal, own);
     if (st === 'auth') return;
-    if (st === 'quota') { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
+    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
   } catch (e) {
-    // AbortError just means the user restarted this slot — the new run owns the UI now.
-    if (e && e.name === 'AbortError') { clearInterval(timer); return; }
-    if (!LAST_RESULTS[slot]) setStatus(slot, 'Error: ' + esc(e.message), 'err');
+    // AbortError just means this column was taken over — the new owner has the UI.
+    if (e && e.name === 'AbortError') return;
+    if (!LAST_RESULTS[slot] && ownsSlot(own, slot)) setStatus(slot, 'Error: ' + esc(e.message), 'err');
   } finally {
     clearInterval(timer);
-    if (_rerunAbort === ac) {          // only tear down if a restart hasn't taken over
-      if (btn) { btn.disabled = false; btn.textContent = '↻ Run again'; btn.classList.remove('running'); }
-      _busy = false; _rerunSlot = null; _rerunAbort = null;
-      setRerunEnabled(true);
+    // Only tear down if a newer owner hasn't already replaced us.
+    if (SLOT_RUNS[slot] && SLOT_RUNS[slot].abort === ac) {
+      delete SLOT_RUNS[slot];
+      _busy = _fullRun || Object.keys(SLOT_RUNS).length > 0;
+      paintRerunButton(slot);
       updateRunButton();
     }
   }
 }
 
-function handleEvent(ev, results) {
+function handleEvent(ev, results, own) {
   switch (ev.type) {
     case 'start':
       break;
     case 'quota': // server's authoritative daily-runs count for this run
       if (ev.quota && ev.quota.limited) {
-        if (_rerunSlot) mySingleQuota = ev.quota; else myQuota = ev.quota;
+        // a stream that owns exactly one slot is a single-model re-run
+        if (own && Object.keys(own).length === 1) mySingleQuota = ev.quota; else myQuota = ev.quota;
         updateQuotaBadge();
       }
       break;
@@ -1388,7 +1418,7 @@ function handleEvent(ev, results) {
       setTileVal(ev.slot, 'tps', ev.result.tokensPerSec);
       setTileVal(ev.slot, 'cost', fmtCost(ev.result.costUsd));
       setTileVal(ev.slot, 'time', (ev.result.wallMs / 1000).toFixed(1) + 's');
-      { const rb = document.querySelector(`.rerun-btn[data-slot="${ev.slot}"]`); if (rb && !_busy) rb.disabled = false; }
+      paintRerunButton(ev.slot);
       if (currentTask().executable && ev.result.code) {
         const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
         if (eb) eb.disabled = false;
@@ -1414,13 +1444,13 @@ function handleEvent(ev, results) {
       // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
       // Bring the scorecard to the top after a FULL run; a single-slot re-run keeps
       // you where you are (you were looking at that column).
-      if (!_rerunSlot) setTimeout(() => {
+      if (own && Object.keys(own).length > 1) setTimeout(() => {
         const sc = $('#scorecard');
         if (sc && !sc.classList.contains('hidden')) sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 80);
       break;
     case 'error':
-      slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(ev.message), 'err'); });
+      slotIds().forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(ev.message), 'err'); });
       break;
   }
 }
