@@ -631,6 +631,17 @@ function renderTaskPrompt() {
 
 function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
 
+// Vendor heading for the palette — a flat list of ~18 chips is hard to scan.
+function paletteGroup(c) {
+  const pub = c.publisher || 'google';
+  if (c.provider === 'agentplatform') return pub === 'anthropic' ? 'Claude · Vertex' : 'Gemini · Vertex';
+  if (c.provider === 'gemini') return 'Gemini · direct';
+  if (c.provider === 'openai') return 'OpenAI · external';
+  if (c.provider === 'moonshot') return 'Moonshot · external';
+  if (c.provider === 'anthropic') return 'Anthropic · direct';
+  return c.provider;
+}
+
 // Can this catalog model actually be run right now? True when either the user
 // has a personal key for its provider or the server has a shared one. Models
 // that fail this are shown greyed out and cannot be dragged into a slot —
@@ -661,7 +672,15 @@ function renderModelEditors() {
     if (!avail.length) {
       pal.appendChild(el('span', 'add-note', 'Every model is in a slot — drag one out or swap.'));
     } else {
+      // Group by vendor — with 18 models a flat list is hard to scan.
+      const groups = new Map();
       avail.forEach((c) => {
+        const g = paletteGroup(c);
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(c);
+      });
+      let host = pal;
+      const addTo = (c) => {
         const av = modelAvailability(c);
         const chip = el('div', 'model-chip' + (av.ok ? '' : ' unavailable'));
         chip.draggable = av.ok;                       // no key ⇒ not draggable at all
@@ -689,8 +708,18 @@ function renderModelEditors() {
             if (m) { m.classList.remove('nudge'); void m.offsetWidth; m.classList.add('nudge'); }
           });
         }
-        pal.appendChild(chip);
+        host.appendChild(chip);
+      };
+      groups.forEach((models, name) => {
+        const grp = el('div', 'palette-group');
+        grp.innerHTML = `<div class="pg-label">${esc(name)}</div>`;
+        const row = el('div', 'pg-chips');
+        grp.appendChild(row);
+        host = row;
+        models.forEach(addTo);
+        pal.appendChild(grp);
       });
+      host = pal;
     }
   }
 

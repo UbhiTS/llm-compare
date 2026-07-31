@@ -37,17 +37,24 @@ const MODEL_CATALOG = [
   { id: 'claude-fable-5',   label: 'Claude Fable 5',   provider: 'agentplatform', publisher: 'anthropic', model: 'claude-fable-5',         price: { input: 10.00, output: 50.00 } },
   { id: 'claude-opus-5',    label: 'Claude Opus 5',    provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5',          price: { input: 5.00, output: 25.00 } },
   { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 } },
+  { id: 'claude-opus-4-7',  label: 'Claude Opus 4.7',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-7',        price: { input: 5.00, output: 25.00 } },
+  { id: 'claude-opus-4-6',  label: 'Claude Opus 4.6',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-6',        price: { input: 5.00, output: 25.00 } },
+  { id: 'claude-opus-4-5',  label: 'Claude Opus 4.5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-5',        price: { input: 5.00, output: 25.00 } },
   // Sonnet 5 introductory pricing ends 2026-08-31 → then { input: 3.00, output: 15.00 }.
   { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 2.00, output: 10.00 } },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-6',    price: { input: 3.00, output: 15.00 } },
+  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-5',    price: { input: 3.00, output: 15.00 } },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-haiku-4-5',       price: { input: 1.00, output: 5.00 } },
   // --- External models (NOT on Vertex). These call the vendor's own API, so a
   // run on these sends the prompt outside Google infrastructure, and they need
   // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY).
   // Without a key the UI shows them greyed out and refuses to place them.
   //
-  // Anthropic note: only the four Claude models above resolve on this project's
-  // Vertex Model Garden. Haiku 4.5, Sonnet 4.6 and Opus 4.7/4.6 were probed on
-  // global, us-east5 and us-central1 and 404 in every region, so they are
-  // deliberately NOT listed — a catalog entry that always fails is worse than none. ---
+  // Anthropic note: every Claude model listed above was probed against this
+  // project's Vertex Model Garden and returns 200. One is deliberately absent —
+  // claude-mythos-5, which IS enabled but 403s until data sharing is consented
+  // for the anthropic publisher (same setPublisherModelConfig call Fable 5 needed).
+  // Re-probe before adding it; an entry that always fails is worse than none. ---
   { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
   { id: 'gpt-5.6-terra',    label: 'GPT-5.6 Terra',    provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-terra',          price: { input: 2.00, output: 12.00 }, external: true },
   { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },

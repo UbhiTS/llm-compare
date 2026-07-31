@@ -236,7 +236,13 @@ select option { color: var(--text); background: var(--bg); }
 .picker-palette-row { margin-top: 12px; }
 .picker-label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .14em; font-weight: 600; margin-bottom: 8px; }
 .picker-hint { text-transform: none; letter-spacing: .02em; color: var(--faint); font-weight: 500; margin-left: 8px; }
-.model-palette { display: flex; gap: 8px; flex-wrap: wrap; min-height: 46px; padding: 8px;
+/* grouped by vendor — a flat list of ~19 chips is hard to scan */
+.palette-group { width: 100%; }
+.palette-group + .palette-group { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--border); }
+.pg-label { font-size: 10px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--faint); margin-bottom: 7px; }
+.pg-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.model-palette { display: flex; gap: 8px; flex-wrap: wrap; min-height: 46px; padding: 10px;
   border: 1px dashed var(--border); background: color-mix(in srgb, var(--well) 55%, transparent);
   transition: border-color .15s ease, background .15s ease; }
 .model-palette.drag-over { border-color: var(--bad); border-style: solid; background: color-mix(in srgb, var(--bad) 8%, transparent); }
