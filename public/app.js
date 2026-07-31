@@ -730,7 +730,11 @@ function renderModelEditors() {
       };
       groups.forEach((models, name) => {
         const grp = el('div', 'palette-group');
-        grp.innerHTML = `<div class="pg-label">${esc(name)}</div>`;
+        // Groups share the row proportionally to how many models they hold, so a
+        // 10-model vendor gets the width it needs while a 2-model one doesn't
+        // reserve a whole line. They re-flow as the window resizes.
+        grp.style.flex = `${models.length} 1 ${Math.min(240 + models.length * 40, 560)}px`;
+        grp.innerHTML = `<div class="pg-label">${esc(name)} <span class="pg-count">${models.length}</span></div>`;
         const row = el('div', 'pg-chips');
         grp.appendChild(row);
         host = row;
@@ -741,57 +745,10 @@ function renderModelEditors() {
     }
   }
 
-  // ---- the three slots ----
-  const wrap = $('#modelEditors');
-  wrap.innerHTML = '';
-  const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
-  SLOT_IDS.forEach((slot) => {
-    const id = SLOT_ASSIGN[slot];
-    const c = id ? catalog().find((x) => x.id === id) : null;
-    const box = el('div', 'slot-box' + (c ? ' filled' : ' empty'));
-    box.dataset.slot = slot;
-    box.style.setProperty('--accent', slotColor(slot));
-    if (c) {
-      // The card IS the drop target — no separate slot label or nested box.
-      box.innerHTML = `
-        <div class="model-card-locked" draggable="true" data-id="${esc(c.id)}">
-          <div class="card-head">
-            <h4><span class="mc-ic">${modelIconSvg(c)}</span>${esc(c.label)}${extBadge(c)}</h4>
-            <button class="remove-slot" data-slot="${slot}" type="button" title="Remove this model"${filled <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
-          </div>
-          <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(c.provider)} · ${esc(c.model)}</span></div>
-          <div class="mc-row"><span class="mc-key">Price</span><span class="mc-val">${priceTag(c)} <span class="mc-per">/ 1M tok</span></span></div>
-        </div>`;
-    } else {
-      box.innerHTML = '<div class="slot-empty">Drop a model here</div>';
-    }
-    wrap.appendChild(box);
-  });
+  // The comparison cards in the arena ARE the drop targets — there is no separate
+  // slot row (it just duplicated what the arena already shows). See buildArena().
 
-  // card drag (moving a model between slots)
-  wrap.querySelectorAll('.model-card-locked[draggable]').forEach((card) => {
-    card.addEventListener('dragstart', (e) => {
-      e.dataTransfer.setData('text/plain', card.dataset.id);
-      e.dataTransfer.effectAllowed = 'move';
-      card.classList.add('dragging');
-    });
-    card.addEventListener('dragend', () => card.classList.remove('dragging'));
-  });
-  wrap.querySelectorAll('.remove-slot').forEach((b) =>
-    b.addEventListener('click', (e) => { e.stopPropagation(); clearSlot(e.currentTarget.dataset.slot); }));
-
-  // drop targets
-  wrap.querySelectorAll('.slot-box').forEach((box) => {
-    box.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; box.classList.add('drag-over'); });
-    box.addEventListener('dragleave', () => box.classList.remove('drag-over'));
-    box.addEventListener('drop', (e) => {
-      e.preventDefault();
-      box.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain');
-      if (id) assignToSlot(id, box.dataset.slot);
-    });
-  });
-  // dropping back onto the palette clears the model from its slot
+  // dropping back onto the palette clears the model from its card
   if (pal) {
     pal.addEventListener('dragover', (e) => { e.preventDefault(); pal.classList.add('drag-over'); });
     pal.addEventListener('dragleave', () => pal.classList.remove('drag-over'));
@@ -814,26 +771,37 @@ function buildArena(models) {
   // different model set than the current selection, and "Run again" must re-run
   // the model in THAT column, not whatever is selected in the editor.
   ARENA_MODELS = (models || MODELS).slice();
-  if (!ARENA_MODELS.length) {
-    arena.appendChild(el('div', 'arena-empty',
-      'No models selected — drag one from <b>Available models</b> into a slot above to start a comparison.'));
-    return;
-  }
-  ARENA_MODELS.forEach((m) => {
+  // A restored history run renders exactly its own models; otherwise every slot
+  // gets a column, empty ones included, so they can be dropped onto directly.
+  const isRestore = !!models;
+  // Cells in slot order, so empty drop targets sit in their proper position.
+  const cells = isRestore
+    ? ARENA_MODELS.map((m) => ({ slot: m.slot, m }))
+    : SLOT_IDS.map((slot) => ({ slot, m: ARENA_MODELS.find((x) => x.slot === slot) || null }));
+  cells.forEach(({ slot: cellSlot, m }) => {
+    if (!m) {
+      const drop = el('div', 'col is-empty');
+      drop.dataset.slot = cellSlot;
+      drop.style.setProperty('--accent', slotColor(cellSlot));
+      drop.innerHTML = '<div class="col-drop"><span>＋</span>Drop a model here</div>';
+      arena.appendChild(drop);
+      return;
+    }
     const col = el('div', 'col');
     col.dataset.slot = m.slot;
     col.id = `col-${m.slot}`;
     col.style.setProperty('--accent', slotColor(m.slot)); // CSS drives the identity strip, edge-light, glows
     col.innerHTML = `
-      <div class="col-head">
+      <div class="col-head"${isRestore ? '' : ` draggable="true" data-id="${esc(m.catalogId || '')}"`}>
         <span class="col-accent" style="background:${slotColor(m.slot)}"></span>
         <span class="col-ic">${modelIconSvg(m)}</span>
-        <div>
-          <div class="col-title">${esc(m.label)}</div>
-          <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}</div>
+        <div class="col-id">
+          <div class="col-title">${esc(m.label)}${m.external ? '<span class="ext-badge">EXT</span>' : ''}</div>
+          <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}${m.price ? ` <span class="col-price">${priceTag(m)} / 1M</span>` : ''}</div>
         </div>
         <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
           title="Re-run just this model on the current task — the other columns are left alone">↻ Run again</button>
+        ${isRestore ? '' : `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove this model">&times;</button>`}
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
       <div class="progress">
@@ -866,6 +834,34 @@ function buildArena(models) {
     b.addEventListener('click', () => rerunSlot(b.dataset.slot)));
   arena.querySelectorAll('.md-magnify').forEach((b) =>
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openMagnify(b.dataset.slot, b.dataset.kind); }));
+
+  if (isRestore) return;   // a restored run is a snapshot, not the live selection
+
+  // The comparison cards are the drop targets: drop a palette model onto one to
+  // load it there, or drag a card's header onto another card to move/swap.
+  arena.querySelectorAll('.col-remove').forEach((b) =>
+    b.addEventListener('click', (e) => { e.stopPropagation(); clearSlot(e.currentTarget.dataset.slot); }));
+  arena.querySelectorAll('.col-head[draggable="true"]').forEach((head) => {
+    head.addEventListener('dragstart', (e) => {
+      if (!head.dataset.id) return;
+      e.dataTransfer.setData('text/plain', head.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      head.closest('.col').classList.add('dragging');
+    });
+    head.addEventListener('dragend', () => {
+      const c = head.closest('.col'); if (c) c.classList.remove('dragging');
+    });
+  });
+  arena.querySelectorAll('.col').forEach((col) => {
+    col.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('drag-over'); });
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drag-over'); });
+    col.addEventListener('drop', (e) => {
+      e.preventDefault();
+      col.classList.remove('drag-over');
+      const id = e.dataTransfer.getData('text/plain');
+      if (id) assignToSlot(id, col.dataset.slot);
+    });
+  });
 }
 
 // ---------- execute generated code (Python) from the UI ----------
