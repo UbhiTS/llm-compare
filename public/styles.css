@@ -213,7 +213,8 @@ select option { color: var(--text); background: var(--bg); }
    scrollbar.) Vertical scroll only. */
 .task-prompt { color: var(--muted); font-size: 13.5px; margin: 10px 2px 2px; white-space: pre-wrap;
   max-height: 260px; overflow-y: auto; overflow-x: hidden; }
-.task-meta { display: inline-block; margin: 14px 2px 0; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+/* sits inline in .run-status-row alongside the quota badge — no stacking margin */
+.task-meta { display: inline-block; margin: 0; font-size: 10.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
   padding: 4px 11px; border-radius: 0; border: 1px solid var(--border); color: var(--muted); background: var(--well); }
 .task-meta:empty { display: none; }
 .task-meta.is-coding { color: var(--accent); border-color: rgba(94,139,255,.4); }
