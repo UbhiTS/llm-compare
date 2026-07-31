@@ -746,6 +746,20 @@ a.ud-item[hidden] { display: none; }
 .ustat { flex: 1; min-width: 96px; border: 1px solid var(--border); padding: 10px 12px; background: var(--bg); }
 .ustat .uk { font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); font-weight: 600; }
 .ustat .uv { font-family: "Space Grotesk", sans-serif; font-size: 22px; font-weight: 700; margin-top: 4px; }
+/* clicking a user row filters the run list to that user */
+.usage-table .u-row { cursor: pointer; transition: background .12s ease; }
+.usage-table .u-row:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.usage-table .u-row.active { background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent); }
+.users-pager { margin-top: 10px; padding-top: 10px; }
+.hist-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border)); padding: 9px 12px; margin: 0 0 12px; }
+.hist-filter b { color: var(--text); }
+.hf-clear { margin-left: auto; background: transparent; border: 1px solid var(--border-hi); color: var(--muted);
+  padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: inherit; }
+.hf-clear:hover { color: var(--text); border-color: var(--accent); }
+/* nudge the "Your API keys" menu item when a locked model is clicked */
+.ud-item.nudge { animation: pk-nudge 1.1s ease; background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .usage-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .usage-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; padding: 6px 8px; border-bottom: 1px solid var(--border); }
 .usage-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); }

@@ -86,12 +86,6 @@ async function init() {
   CONFIG.models.forEach((m, i) => { const s = SLOT_IDS[i]; if (s) SLOT_ASSIGN[s] = m.catalogId || m.id; });
   syncModelsFromSlots();
 
-  // key status pills
-  const ks = $('#keyStatus');
-  const pill = (label, ok) => ks.appendChild(el('span', 'key-pill' + (ok ? ' ok' : ''),
-    `<span class="dot"></span>${label} ${ok ? 'ready' : 'missing'}`));
-  pill('Agent Platform key', !!CONFIG.keysPresent.agentplatform);
-  pill('Claude OAuth token', !!CONFIG.keysPresent.claude);
 
   // task select \u2014 grouped by category (Coding / General)
   const ts = $('#taskSelect');
@@ -207,26 +201,6 @@ function allModelsUseOwnKeys() {
   return list.length > 0 && list.every((m) => keySourceFor(m, k).state === 'own');
 }
 
-// One pill per provider the CURRENT selection needs, showing whose key it uses.
-function renderProviderKeys() {
-  const host = $('#providerKeys');
-  if (!host) return;
-  const k = loadKeys();
-  const list = (ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS;
-  const seen = new Map();
-  list.forEach((m) => { const s = keySourceFor(m, k); if (!seen.has(s.group)) seen.set(s.group, s); });
-  const LBL = {
-    own: { t: 'your key', cls: 'own', tip: 'Runs on the key you saved in this browser — no daily limit for this provider.' },
-    shared: { t: 'shared key', cls: 'shared', tip: 'Runs on the shared server key, which is subject to the daily limit.' },
-    service: { t: 'service acct', cls: 'svc', tip: 'Authenticates with the server’s service account — no API key needed.' },
-    missing: { t: 'no key', cls: 'missing', tip: 'No key available for this provider — add one under “Your API keys”.' },
-  };
-  host.innerHTML = [...seen.entries()].map(([group, s]) => {
-    const state = (!s.present && s.state !== 'own') ? 'missing' : s.state;
-    const d = LBL[state];
-    return `<span class="pk-pill ${d.cls}" title="${esc(group)}: ${esc(d.tip)}"><span class="pk-dot"></span>${esc(group)}<span class="pk-src">${d.t}</span></span>`;
-  }).join('');
-}
 
 // Live "runs left today" state (authoritative value comes from the server on
 // /api/config load and on each run's `quota` event).
@@ -235,7 +209,6 @@ let mySingleQuota = null;  // separate daily budget for single-model re-runs
 
 // Badge near Run: your-keys (unlimited), or a live shared-key counter.
 function updateQuotaBadge() {
-  renderProviderKeys();
   const b = $('#quotaBadge'); if (!b) return;
   const limit = (CONFIG && CONFIG.maxRunsPerDay) || 0;
   const isAdmin = ME && ME.role === 'admin';
@@ -722,7 +695,8 @@ function renderModelEditors() {
           // belt and braces: even a synthesised dragstart carries nothing
           chip.addEventListener('dragstart', (e) => e.preventDefault());
           chip.addEventListener('click', () => {
-            const m = $('#providerKeys');
+            // no key for this provider — point the user at where to add one
+            const m = $('#apiKeysBtn');
             if (m) { m.classList.remove('nudge'); void m.offsetWidth; m.classList.add('nudge'); }
           });
         }
@@ -1810,7 +1784,8 @@ function liveCodeView(text) {
 // The server logs every run (see /api/run) — the browser never writes history,
 // so it's durable, per-user and tamper-proof. A user sees only their own runs;
 // admins can toggle to all users and get an at-a-glance usage summary.
-let historyScope = 'me';
+let historyScope = 'me';          // 'all' for admins — they always see everyone
+let historyUserFilter = null;     // set by clicking a user in the usage table
 let historyPage = 0;
 const HIST_PAGE_SIZE = 6;           // rows rendered at once — keeps the DOM small however big history grows
 let _histState = { body: null, runs: [], usage: null, isAdmin: false };
@@ -1818,7 +1793,7 @@ function fmtWhen(ms) { try { return new Date(ms).toLocaleString(); } catch (e) {
 
 async function openHistoryModal() {
   const isAdmin = ME && ME.role === 'admin';
-  if (!isAdmin) historyScope = 'me';
+  historyScope = isAdmin ? 'all' : 'me';
   const body = openAuthModal('Run history', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
@@ -1830,7 +1805,7 @@ async function openHistoryModal() {
     const data = await histResp.json();
     if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
     _histState = { body, runs: data.runs || [], usage, isAdmin };
-    historyPage = 0;                 // reset to first page on (re)open / scope change
+    historyPage = 0; usersPage = 0; historyUserFilter = null;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
     body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message;
@@ -1843,23 +1818,38 @@ function paintHistoryModal() {
   const { body, runs, usage, isAdmin } = _histState;
   if (!body) return;
   const usagePanel = (isAdmin && usage) ? renderUsagePanel(usage) : '';
-  const scopeToggle = isAdmin
-    ? `<div class="hist-scope">
-         <button class="hs-btn ${historyScope === 'me' ? 'active' : ''}" data-scope="me" type="button">My runs</button>
-         <button class="hs-btn ${historyScope === 'all' ? 'active' : ''}" data-scope="all" type="button">All users</button>
-       </div>`
+  // Filtering is driven by clicking a user in the usage table above, so there's
+  // no My-runs/All-users toggle any more — admins see everyone by default.
+  const activeName = historyUserFilter
+    ? (((usage && usage.users) || []).find((x) => (x.user || x.userName) === historyUserFilter) || {}).userName || historyUserFilter
     : '';
-  const total = runs.length;
+  const filterChip = historyUserFilter
+    ? `<div class="hist-filter">Showing runs by <b>${esc(activeName)}</b>
+         <button class="hf-clear" type="button">✕ show everyone</button></div>`
+    : '';
+  const runs_ = historyUserFilter ? runs.filter((r) => (r.user || r.userName) === historyUserFilter) : runs;
+  const total = runs_.length;
   const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
   historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
   const start = historyPage * HIST_PAGE_SIZE;
-  const pageRuns = runs.slice(start, start + HIST_PAGE_SIZE);
+  const pageRuns = runs_.slice(start, start + HIST_PAGE_SIZE);
   const rows = total
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
-  body.innerHTML = usagePanel + scopeToggle + `<div class="hist-list">${rows}</div>` + pager;
-  body.querySelectorAll('.hs-btn').forEach((b) => b.addEventListener('click', () => { historyScope = b.dataset.scope; openHistoryModal(); }));
+  body.innerHTML = usagePanel + filterChip + `<div class="hist-list">${rows}</div>` + pager;
+  // click a user row → show only their runs; click again (or the chip) → everyone
+  body.querySelectorAll('.u-row').forEach((r) => r.addEventListener('click', () => {
+    historyUserFilter = (historyUserFilter === r.dataset.user) ? null : r.dataset.user;
+    historyPage = 0;
+    paintHistoryModal();
+  }));
+  { const c = body.querySelector('.hf-clear');
+    if (c) c.addEventListener('click', () => { historyUserFilter = null; historyPage = 0; paintHistoryModal(); }); }
+  { const p = body.querySelector('.u-pg-prev');
+    if (p) p.addEventListener('click', () => { if (usersPage > 0) { usersPage--; paintHistoryModal(); } }); }
+  { const nx = body.querySelector('.u-pg-next');
+    if (nx) nx.addEventListener('click', () => { usersPage++; paintHistoryModal(); }); }
   body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
   body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => deleteHistoryRun(b.dataset.id)));
   const prev = body.querySelector('.hist-pg-prev');
@@ -1884,26 +1874,46 @@ function histRowHtml(h) {
     const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
     return `<span class="hist-chip"><b>${esc(s.label)}</b> ${stat}${cost}</span>`;
   }).join('');
-  const who = (historyScope === 'all' && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
+  const who = (historyScope === 'all' && !historyUserFilter && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
   return `<div class="hist-row">
     <div class="hist-main"><div class="hist-title">${esc(h.title)}${who}</div><div class="hist-when">${esc(fmtWhen(h.at))}</div><div class="hist-chips">${chips}</div></div>
     <div class="hist-act"><button class="submit-btn hist-restore" data-id="${esc(h.id)}">Restore ▸</button><button class="u-del hist-del" data-id="${esc(h.id)}">Delete</button></div>
   </div>`;
 }
 
+// Admin usage table. Paginated — it used to render only the first 15 users and
+// silently drop the rest, so a busy deployment hid most of its users.
+const USER_PAGE_SIZE = 8;
+let usersPage = 0;
 function renderUsagePanel(u) {
   const t = u.totals || {};
-  const rows = (u.users || []).slice(0, 15).map((x) =>
-    `<tr><td class="u-name">${esc(x.userName || x.user)}</td><td>${fmtInt(x.runs)}</td><td>${fmtInt(x.runsToday)}</td><td>${esc(fmtCost(x.costUsd))}</td><td class="hist-when">${esc(x.lastAt ? fmtWhen(x.lastAt) : '—')}</td></tr>`
-  ).join('');
+  const all = u.users || [];
+  const pageCount = Math.max(1, Math.ceil(all.length / USER_PAGE_SIZE));
+  usersPage = Math.min(Math.max(0, usersPage), pageCount - 1);
+  const start = usersPage * USER_PAGE_SIZE;
+  const page = all.slice(start, start + USER_PAGE_SIZE);
+  const rows = page.map((x) => {
+    const id = x.user || x.userName;
+    const on = historyUserFilter === id;
+    return `<tr class="u-row${on ? ' active' : ''}" data-user="${esc(id)}" title="Show only this user's runs">
+      <td class="u-name">${esc(x.userName || x.user)}${on ? ' <span class="u-tag">filtered</span>' : ''}</td>
+      <td>${fmtInt(x.runs)}</td><td>${fmtInt(x.runsToday)}</td><td>${esc(fmtCost(x.costUsd))}</td>
+      <td class="hist-when">${esc(x.lastAt ? fmtWhen(x.lastAt) : '—')}</td></tr>`;
+  }).join('');
+  const pager = all.length > USER_PAGE_SIZE
+    ? `<div class="hist-pager users-pager">
+         <button class="hist-pg-btn u-pg-prev" type="button" ${usersPage === 0 ? 'disabled' : ''}>‹ Prev</button>
+         <span class="hist-pg-info">${start + 1}–${start + page.length} of ${fmtInt(all.length)} users · page ${usersPage + 1} of ${pageCount}</span>
+         <button class="hist-pg-btn u-pg-next" type="button" ${usersPage >= pageCount - 1 ? 'disabled' : ''}>Next ›</button>
+       </div>` : '';
   return `<div class="usage-panel">
     <div class="usage-stats">
       <div class="ustat"><div class="uk">Active users</div><div class="uv">${fmtInt(t.users || 0)}</div></div>
       <div class="ustat"><div class="uk">Runs today</div><div class="uv">${fmtInt(t.runsToday || 0)}</div></div>
       <div class="ustat"><div class="uk">Runs total</div><div class="uv">${fmtInt(t.totalRuns || 0)}</div></div>
     </div>
-    ${rows ? `<table class="usage-table"><thead><tr><th>User</th><th>Runs</th><th>Today</th><th>Cost</th><th>Last run</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
-    <p class="hint">Usage across all users (today = since 00:00 UTC).</p>
+    ${rows ? `<table class="usage-table"><thead><tr><th>User</th><th>Runs</th><th>Today</th><th>Cost</th><th>Last run</th></tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
+    <p class="hint">Click a user to see only their runs. Today = since 00:00 UTC.</p>
   </div>`;
 }
 
