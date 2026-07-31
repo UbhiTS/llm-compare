@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 const PALETTE = ['#5e8bff', '#2fd9a6', '#ff9e6d', '#b388ff', '#ffcb5e', '#22e0ff']; // Aurora accents
-const MIN_SLOTS = 1;
+const MIN_SLOTS = 0; // every slot can be cleared; Run is disabled while none are filled
 const MAX_SLOTS = 3; // compare at most 3 models at a time
 let CONFIG = null;       // from /api/config
 let MODELS = [];         // current editable model configs (the dynamic source of truth)
@@ -119,6 +119,7 @@ async function init() {
 
   renderModelEditors();
   buildArena();
+  updateRunButton();
 
   $('#runBtn').addEventListener('click', run);
   { const ar = $('#autoRun'); if (ar) ar.addEventListener('click', () => {
@@ -580,7 +581,7 @@ function assignToSlot(catalogId, slot) {
 function clearSlot(slot) {
   if (!SLOT_ASSIGN[slot]) return;
   const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
-  if (filled <= MIN_SLOTS) return;                 // always keep at least one model
+  if (filled <= MIN_SLOTS) return;
   SLOT_ASSIGN[slot] = null;
   afterSlotChange();
 }
@@ -597,6 +598,18 @@ function afterSlotChange() {
   renderModelEditors();
   buildArena();
   updateQuotaBadge();   // the key pills depend on which providers are selected
+  updateRunButton();
+}
+
+// Running with zero models would post an empty list, and the server falls back
+// to DEFAULT_MODELS for that — i.e. it would quietly run models the user just
+// removed. So the button is disabled until at least one slot is filled.
+function updateRunButton() {
+  const btn = $('#runBtn');
+  if (!btn || _busy) return;
+  const none = MODELS.length === 0;
+  btn.disabled = none;
+  btn.title = none ? 'Drag at least one model into a slot to run a comparison.' : '';
 }
 
 function currentTask() {
@@ -802,6 +815,11 @@ function buildArena(models) {
   // different model set than the current selection, and "Run again" must re-run
   // the model in THAT column, not whatever is selected in the editor.
   ARENA_MODELS = (models || MODELS).slice();
+  if (!ARENA_MODELS.length) {
+    arena.appendChild(el('div', 'arena-empty',
+      'No models selected — drag one from <b>Available models</b> into a slot above to start a comparison.'));
+    return;
+  }
   ARENA_MODELS.forEach((m) => {
     const col = el('div', 'col');
     col.dataset.slot = m.slot;
@@ -1176,6 +1194,7 @@ function setRerunEnabled(on) {
 }
 
 async function run() {
+  if (!MODELS.length) return;   // nothing selected — the button is disabled anyway
   const btn = $('#runBtn');
   btn.disabled = true;
   btn.textContent = 'Running…';
@@ -1220,9 +1239,9 @@ async function run() {
     slotIds().forEach((s) => { if (!results[s]) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
   } finally {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
-    btn.disabled = false;
     btn.textContent = 'Run comparison ▸';
     _busy = false;
+    updateRunButton();          // stays disabled if every slot was cleared meanwhile
     setRerunEnabled(true);
   }
 }
@@ -1290,7 +1309,7 @@ async function rerunSlot(slot) {
       if (btn) { btn.disabled = false; btn.textContent = '↻ Run again'; btn.classList.remove('running'); }
       _busy = false; _rerunSlot = null; _rerunAbort = null;
       setRerunEnabled(true);
-      { const rb = $('#runBtn'); if (rb) rb.disabled = false; }
+      updateRunButton();
     }
   }
 }

@@ -272,6 +272,10 @@ select option { color: var(--text); background: var(--bg); }
 .slot-tag { font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
   color: var(--accent); margin-bottom: 8px; }
 .slot-empty { flex: 1; display: grid; place-items: center; color: var(--faint); font-size: 12.5px; text-align: center; }
+/* every slot cleared — the arena explains what to do instead of sitting blank */
+.arena-empty { grid-column: 1 / -1; border: 1px dashed var(--border); padding: 34px 20px; text-align: center;
+  color: var(--muted); font-size: 13.5px; background: color-mix(in srgb, var(--well) 45%, transparent); }
+.arena-empty b { color: var(--text); }
 .slot-box .model-card-locked { cursor: grab; }
 .slot-box .model-card-locked:active { cursor: grabbing; }
 .slot-box .model-card-locked.dragging { opacity: .45; }
