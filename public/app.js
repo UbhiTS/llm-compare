@@ -752,19 +752,18 @@ function renderModelEditors() {
     box.dataset.slot = slot;
     box.style.setProperty('--accent', slotColor(slot));
     if (c) {
+      // The card IS the drop target — no separate slot label or nested box.
       box.innerHTML = `
-        <div class="slot-tag">Slot ${slot}</div>
         <div class="model-card-locked" draggable="true" data-id="${esc(c.id)}">
           <div class="card-head">
             <h4><span class="mc-ic">${modelIconSvg(c)}</span>${esc(c.label)}${extBadge(c)}</h4>
-            <button class="remove-slot" data-slot="${slot}" type="button" title="Clear this slot"${filled <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
+            <button class="remove-slot" data-slot="${slot}" type="button" title="Remove this model"${filled <= MIN_SLOTS ? ' disabled' : ''}>&times;</button>
           </div>
           <div class="mc-row"><span class="mc-key">Model</span><span class="mc-val mono">${esc(c.provider)} · ${esc(c.model)}</span></div>
           <div class="mc-row"><span class="mc-key">Price</span><span class="mc-val">${priceTag(c)} <span class="mc-per">/ 1M tok</span></span></div>
-          <div class="mc-locked">🔒 Preconfigured · drag to move</div>
         </div>`;
     } else {
-      box.innerHTML = `<div class="slot-tag">Slot ${slot}</div><div class="slot-empty">Drop a model here</div>`;
+      box.innerHTML = '<div class="slot-empty">Drop a model here</div>';
     }
     wrap.appendChild(box);
   });
