@@ -51,10 +51,15 @@ const MODEL_CATALOG = [
   // Without a key the UI shows them greyed out and refuses to place them.
   //
   // Anthropic note: every Claude model listed above was probed against this
-  // project's Vertex Model Garden and returns 200. One is deliberately absent —
-  // claude-mythos-5, which IS enabled but 403s until data sharing is consented
-  // for the anthropic publisher (same setPublisherModelConfig call Fable 5 needed).
-  // Re-probe before adding it; an entry that always fails is worse than none. ---
+  // project's Vertex Model Garden and returns 200.
+  //
+  // claude-mythos-5 is deliberately absent. Data sharing HAS been consented for
+  // the anthropic publisher (verified: dataSharingEnabledProvider=ANTHROPIC), so
+  // the old 403 is gone — but it now returns 429 "Quota exceeded for
+  // global_online_prediction_requests_per_base_model" on every attempt, i.e. the
+  // project has no serving quota for it. That matches Mythos 5 being limited
+  // availability (Project Glasswing). Adding it would ship a guaranteed failure;
+  // re-probe if a quota grant lands. ---
   { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
   { id: 'gpt-5.6-terra',    label: 'GPT-5.6 Terra',    provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-terra',          price: { input: 2.00, output: 12.00 }, external: true },
   { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },
