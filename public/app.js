@@ -1429,15 +1429,16 @@ function finalize(resultsMap, slots) {
   const results = (slots || slotIds()).map((s) => resultsMap[s]).filter((r) => r && !r.error);
   if (!results.length) return;
 
-  // Star the best live tile for each metric (lower cost/time/tokens = better,
-  // higher tokens/sec = better).
-  const answerOf = (r) => Math.max(0, r.completionTokens - (r.reasoningTokens || 0));
+  // Star the best live tile for each metric that HAS a better direction: cheapest,
+  // fastest, highest throughput. Output tokens is deliberately excluded — a shorter
+  // answer is not automatically a better one, so crowning a "winner" there would
+  // assert a judgement the data doesn't support (it's neutral in the scorecard too).
   const bestTps = Math.max(...results.map((r) => r.tokensPerSec));
   const bestCost = Math.min(...results.map((r) => r.costUsd));
   const bestTime = Math.min(...results.map((r) => r.wallMs));
-  const bestTok = Math.min(...results.map(answerOf));        // fewest answer tokens = most concise
   results.forEach((r) => {
-    markWin(r.slot, 'tok', answerOf(r) === bestTok);
+    markWin(r.slot, 'tok', false);          // neutral: never highlighted
+    markWin(r.slot, 'think', false);        // ditto — thinking length isn't good or bad
     markWin(r.slot, 'tps', r.tokensPerSec === bestTps);
     markWin(r.slot, 'cost', r.costUsd === bestCost);
     markWin(r.slot, 'time', r.wallMs === bestTime);
