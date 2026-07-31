@@ -453,8 +453,8 @@ function googleAccessHelp() {
     ? CONFIG.allowedDomains.join(', ') : 'your allowed domain';
   return '<div class="access-help">' +
     '<h4>Giving someone Google sign-in access</h4>' +
-    '<p>The table above is only for username/password accounts, and in the cloud those are wiped on every deploy. ' +
-    'Anyone real should sign in with Google, which is managed in the Cloud Console:</p>' +
+    '<p>The table above is for username/password accounts, which persist across restarts and deploys. ' +
+    'For anyone in your organisation, Google sign-in is easier — no password to manage — and is set up in the Cloud Console:</p>' +
     '<ol>' +
       '<li>Open <b>APIs &amp; Services ▸ OAuth consent screen</b> for <code>' + esc(proj) + '</code>.</li>' +
       '<li>Under <b>Audience ▸ Test users</b>, click <b>+ Add users</b>, enter their address and Save.</li>' +

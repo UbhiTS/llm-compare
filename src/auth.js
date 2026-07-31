@@ -89,11 +89,21 @@ function loadUsers() {
   } catch (e) { return {}; }
 }
 
+// In the cloud DATA_DIR points at the mounted GCS bucket so accounts survive a
+// restart. gcsfuse doesn't honour POSIX modes and its rename is a copy+delete,
+// so fall back to a direct write if the atomic swap isn't supported — losing
+// atomicity there is far better than losing the ability to add a user.
 function saveUsers() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const payload = JSON.stringify(users, null, 2);
   const tmp = USERS_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(users, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, USERS_FILE); // atomic replace
+  try {
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, USERS_FILE); // atomic replace on a normal filesystem
+  } catch (e) {
+    fs.writeFileSync(USERS_FILE, payload);
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean up */ }
+  }
 }
 
 // ---------- password hashing (scrypt) ----------

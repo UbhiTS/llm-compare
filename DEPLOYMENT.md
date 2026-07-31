@@ -278,9 +278,11 @@ All are also documented in `.env.example` for non-container runs.
 - **Single warm instance** (`--min/--max-instances=1`) keeps sessions and the per-user daily
   counter consistent (they live in memory). Scaling wider would need shared storage
   (Firestore/Redis) for sessions + counters — fine to add later; unnecessary for a demo.
-- **Ephemeral filesystem**: `.auth/` (password users) does not persist across Cloud Run
-  restarts — that's intentional here since org users sign in with Google and admins come
-  from `ADMIN_EMAILS`. Don't rely on the password path in the cloud.
+- **User accounts persist**: the container's own filesystem is ephemeral, so `AUTH_DATA_DIR`
+  is pointed at `/data/auth` on the mounted GCS bucket (same volume as run history).
+  Username/password accounts therefore survive restarts and deploys. If you ever unset that
+  variable it falls back to the image's `/tmp/auth`, where accounts are wiped on every
+  restart. Sessions are still in memory, so everyone is logged out by a redeploy.
 - **`/api/execute`** runs LLM-generated Python inside the container; it's isolated per
   instance and ephemeral, but it is still executing model output. Set `ENABLE_CODE_EXEC=0`
   to disable if you don't want it.
