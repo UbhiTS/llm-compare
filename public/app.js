@@ -650,6 +650,9 @@ function modelAvailability(c) {
   const k = loadKeys();
   const present = (CONFIG && CONFIG.keysPresent) || {};
   const pub = c.publisher || 'google';
+  // Known-unrunnable on this project (e.g. no Vertex serving quota). Listed so
+  // it's visibly accounted for, but never selectable.
+  if (c.blocked) return { ok: false, blocked: true, need: c.blocked, how: c.blockedHow || 'Google Cloud console' };
   if (c.provider === 'agentplatform' && pub === 'anthropic') {
     return { ok: present.claude || !!k.claudeBearerToken, need: 'Claude on Vertex', how: 'the server’s service account' };
   }
@@ -688,10 +691,12 @@ function renderModelEditors() {
         if (!av.ok) chip.dataset.locked = '1';
         chip.title = av.ok
           ? `${c.label} (${c.model}) — drag into a slot, or click`
-          : `${c.label} needs ${av.need}. Add one under “${av.how}” to enable it.`;
+          : av.blocked
+            ? `${c.label} can't run on this project: needs ${av.need}. Fix it in ${av.how}.`
+            : `${c.label} needs ${av.need}. Add one under “${av.how}” to enable it.`;
         chip.innerHTML = `<span class="am-ic">${modelIconSvg(c)}</span><b>${esc(c.label)}</b>${extBadge(c)}`
           + (av.ok ? `<span class="am-price">${priceTag(c)}</span>`
-                   : `<span class="am-nokey">🔒 no key</span>`);
+                   : `<span class="am-nokey">${av.blocked ? '🚫 no quota' : '🔒 no key'}</span>`);
         if (av.ok) {
           chip.addEventListener('dragstart', (e) => {
             e.dataTransfer.setData('text/plain', c.id);

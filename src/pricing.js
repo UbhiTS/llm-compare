@@ -50,16 +50,17 @@ const MODEL_CATALOG = [
   // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY).
   // Without a key the UI shows them greyed out and refuses to place them.
   //
-  // Anthropic note: every Claude model listed above was probed against this
-  // project's Vertex Model Garden and returns 200.
-  //
-  // claude-mythos-5 is deliberately absent. Data sharing HAS been consented for
-  // the anthropic publisher (verified: dataSharingEnabledProvider=ANTHROPIC), so
-  // the old 403 is gone — but it now returns 429 "Quota exceeded for
-  // global_online_prediction_requests_per_base_model" on every attempt, i.e. the
-  // project has no serving quota for it. That matches Mythos 5 being limited
-  // availability (Project Glasswing). Adding it would ship a guaranteed failure;
-  // re-probe if a quota grant lands. ---
+  // Mythos 5 is LISTED but flagged `blocked`, so the UI shows it greyed out and
+  // refuses to place it (rather than hiding it and looking like an oversight).
+  // Data sharing is already consented (verified dataSharingEnabledProvider=
+  // ANTHROPIC, so the old 403 is gone), but every call returns 429 "Quota
+  // exceeded for global_online_prediction_requests_per_base_model" on base model
+  // anthropic-claude-mythos-5 — the project has no serving quota, consistent with
+  // Mythos 5 being limited availability (Project Glasswing). Clear `blocked` once
+  // a quota grant lands and re-probe. ---
+  { id: 'claude-mythos-5',  label: 'Claude Mythos 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-mythos-5',        price: { input: 10.00, output: 50.00 },
+    blocked: 'a Vertex quota grant (base model anthropic-claude-mythos-5 has no serving quota on this project)', blockedHow: 'Google Cloud console ▸ IAM & Admin ▸ Quotas' },
+
   { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
   { id: 'gpt-5.6-terra',    label: 'GPT-5.6 Terra',    provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-terra',          price: { input: 2.00, output: 12.00 }, external: true },
   { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },
@@ -76,7 +77,7 @@ function catalogEntry(id) {
 function modelFromCatalog(slot, id) {
   const c = catalogEntry(id);
   if (!c) return null;
-  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external };
+  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external, blocked: c.blocked || null };
 }
 
 // The default slots shown in the UI on first load (a subset of the catalog).
@@ -98,7 +99,8 @@ function resolveModels(requested) {
   list.forEach((m, idx) => {
     if (!m) return;
     const c = catalogEntry(m.catalogId || m.id || m.model);
-    if (!c) return; // not in the catalog → cannot be run
+    if (!c) return;       // not in the catalog → cannot be run
+    if (c.blocked) return; // listed for visibility, but known-unrunnable on this project
     let slot = (typeof m.slot === 'string' && m.slot.trim()) ? m.slot.trim() : String.fromCharCode(65 + idx);
     if (usedSlots.has(slot)) slot = String.fromCharCode(65 + out.length); // keep slots unique
     usedSlots.add(slot);
