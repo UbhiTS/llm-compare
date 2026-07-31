@@ -1448,19 +1448,25 @@ function mpScale(m, vals) {
   const nums = vals.map((x) => x.v);
   const max = Math.max(...nums), min = Math.min(...nums);
   const span = (max - min) || 1;
+  // Position ALWAYS follows the value — low left, high right — exactly like the
+  // bars view, where height is the value. It's the GRADIENT that flips so green
+  // sits at the good end. (Ranking by position instead would put the biggest
+  // number on the left for higher-is-better metrics, contradicting the bars.)
   const track = m.dir === 'neutral'
     ? 'linear-gradient(90deg, var(--mp-neutral), var(--mp-neutral))'
-    : 'linear-gradient(90deg, #0ca30c 0%, #fab219 52%, #d03b3b 100%)';
+    : m.dir === 'higher'
+      ? 'linear-gradient(90deg, #d03b3b 0%, #fab219 52%, #0ca30c 100%)'  // high = good = green on the right
+      : 'linear-gradient(90deg, #0ca30c 0%, #fab219 52%, #d03b3b 100%)'; // low = good = green on the left
   const rows = vals.map(({ r, v }) => {
-    let pct = ((v - min) / span) * 100;          // 0 = best end
-    if (m.dir === 'higher') pct = 100 - pct;
+    const pct = ((v - min) / span) * 100;        // 0% = lowest value, 100% = highest
     return `<div class="mp-row" title="${esc(r.label)}: ${esc(m.fmt(v))}">
       <span class="mp-rname">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></span>
       <span class="mp-track" style="background-image:${track}"><span class="mp-mark" style="left:calc(${pct.toFixed(1)}% - 3px)"></span></span>
       <span class="mp-rval">${esc(m.fmt(v))}</span>
     </div>`;
   }).join('');
-  const ends = m.dir === 'neutral' ? ['shortest', 'longest'] : ['best', 'worst'];
+  const ends = m.dir === 'neutral' ? ['shortest', 'longest']
+    : m.dir === 'higher' ? ['worst', 'best'] : ['best', 'worst'];
   return `<div class="mp-scale">${rows}<div class="mp-ends"><span>${ends[0]}</span><span>${ends[1]}</span></div></div>`;
 }
 
