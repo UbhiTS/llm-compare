@@ -104,7 +104,12 @@ function resolveModels(requested) {
     let slot = (typeof m.slot === 'string' && m.slot.trim()) ? m.slot.trim() : String.fromCharCode(65 + idx);
     if (usedSlots.has(slot)) slot = String.fromCharCode(65 + out.length); // keep slots unique
     usedSlots.add(slot);
-    out.push(modelFromCatalog(slot, c.id));
+    const resolved = modelFromCatalog(slot, c.id);
+    // The one client-supplied field we honour — and only after the provider
+    // layer confirms the level is legal for this exact model.
+    const effort = require('./providers').validateEffort(resolved, m.effort);
+    if (effort) resolved.effort = effort;
+    out.push(resolved);
   });
   return out.length ? out : DEFAULT_MODELS.map((m) => modelFromCatalog(m.slot, m.catalogId));
 }

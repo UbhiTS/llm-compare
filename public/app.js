@@ -31,8 +31,11 @@ const el = (tag, cls, html) => {
   if (html != null) n.innerHTML = html;
   return n;
 };
+// Every call site interpolates into innerHTML, including attribute values, so
+// the double quote must be escaped too — without it a quote in a model label or
+// a tooltip closes the attribute early and the rest leaks into the markup.
 const esc = (s) =>
-  String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const MAGNIFY_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.4"/><line x1="10.1" y1="10.1" x2="14" y2="14"/></svg>';
 
 // ---------- model icons (brand marks used across arena, editor, scorecard) ----------
@@ -517,7 +520,8 @@ function catalog() { return (CONFIG && CONFIG.catalog) || []; }
 // swaps with whatever was in the destination) rather than duplicating it.
 const SLOT_IDS = ['A', 'B', 'C'].slice(0, MAX_SLOTS);
 const SLOT_ASSIGN = {};                  // slot -> catalogId | null
-SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; });
+const SLOT_EFFORT = {};                  // slot -> chosen thinking level | null
+SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
 
 function modelFromCatalogId(slot, id) {
   const c = catalog().find((x) => x.id === id);
@@ -527,6 +531,9 @@ function modelFromCatalogId(slot, id) {
     provider: c.provider, publisher: c.publisher, model: c.model,
     price: { input: c.price.input, output: c.price.output },
     external: !!c.external,
+    thinking: c.thinking || null,          // reasoning level this model gets sent
+    thinkingOptions: c.thinkingOptions || null,
+    effort: SLOT_EFFORT[slot] || undefined, // per-card override, validated again server-side
   };
 }
 // MODELS (what the rest of the app runs on) is derived from the slots.
@@ -547,8 +554,12 @@ function assignToSlot(catalogId, slot) {
   const from = slotOf(catalogId);
   if (from === slot) return;                       // dropped where it already is
   const displaced = SLOT_ASSIGN[slot] || null;
+  const movedEffort = from ? SLOT_EFFORT[from] : null;
   SLOT_ASSIGN[slot] = catalogId;
-  if (from) SLOT_ASSIGN[from] = displaced;         // swap (displaced may be null → source empties)
+  // The level belongs to the model, not the card — carry it when a model moves,
+  // and drop any level the displaced model had chosen.
+  SLOT_EFFORT[slot] = from ? movedEffort : null;
+  if (from) { SLOT_ASSIGN[from] = displaced; SLOT_EFFORT[from] = null; }
   afterSlotChange();
 }
 function clearSlot(slot) {
@@ -556,6 +567,7 @@ function clearSlot(slot) {
   const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
   if (filled <= MIN_SLOTS) return;
   SLOT_ASSIGN[slot] = null;
+  SLOT_EFFORT[slot] = null;
   afterSlotChange();
 }
 // Click fallback (and touch, where HTML5 drag&drop doesn't fire): fill the first
@@ -616,6 +628,32 @@ function renderTaskPrompt() {
 }
 
 function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
+
+// The reasoning level this model is actually sent. Computed on the server from
+// the same code that builds the request, so it can't drift from the wire.
+// `mode` drives the colour: an explicit effort/budget reads stronger than a
+// model-chosen "auto", which in turn reads stronger than nothing being sent.
+function thinkTag(t) {
+  if (!t || !t.label) return '';
+  return `<div class="col-think think-${esc(t.mode || 'unknown')}" title="${esc(t.detail || '')}">`
+       + `<span class="ti">◈</span>${esc(t.label)}</div>`;
+}
+
+// On a live card the badge becomes a picker: the levels come from the server's
+// per-model list, and each option carries the exact request it produces, so the
+// tooltip always matches what will be sent. Restored history runs stay read-only.
+function thinkControl(m, isRestore) {
+  const o = m.thinkingOptions;
+  if (isRestore || !o || !o.configurable || !o.options.length) return thinkTag(m.thinking);
+  const cur = m.effort || '';
+  const sel = o.options.find((x) => x.value === cur) || o.options[0];
+  const opts = o.options.map((x) =>
+    `<option value="${esc(x.value)}"${x.value === cur ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
+  return `<div class="col-think think-ctl${cur ? ' is-set' : ''}" title="${esc((sel && sel.detail) || o.note || '')}">`
+       + `<span class="ti">◈</span>`
+       + `<select class="think-select" draggable="false" data-slot="${esc(m.slot)}" `
+       + `aria-label="Thinking level for ${esc(m.label)}">${opts}</select></div>`;
+}
 
 // Vendor heading for the palette — a flat list of ~18 chips is hard to scan.
 function paletteGroup(c) {
@@ -772,6 +810,7 @@ function buildArena(models) {
         <div class="col-id">
           <div class="col-title">${esc(m.label)}${m.external ? '<span class="ext-badge">EXT</span>' : ''}</div>
           <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}${m.price ? ` <span class="col-price">${priceTag(m)} / 1M</span>` : ''}</div>
+          ${thinkControl(m, isRestore)}
         </div>
         <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
           title="Re-run just this model on the current task — the other columns are left alone">↻ Run again</button>
@@ -808,6 +847,32 @@ function buildArena(models) {
     b.addEventListener('click', () => rerunSlot(b.dataset.slot)));
   arena.querySelectorAll('.md-magnify').forEach((b) =>
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openMagnify(b.dataset.slot, b.dataset.kind); }));
+
+  // Per-card thinking level. The header is draggable, and a <select> inside a
+  // draggable element starts a drag instead of opening — so the parent's
+  // draggable is switched off while the picker is in use.
+  arena.querySelectorAll('.think-select').forEach((sel) => {
+    const head = sel.closest('.col-head');
+    const wrap = sel.closest('.col-think');
+    const undrag = () => { if (head) head.setAttribute('draggable', 'false'); };
+    const redrag = () => { if (head && head.dataset.id) head.setAttribute('draggable', 'true'); };
+    sel.addEventListener('mousedown', undrag);
+    sel.addEventListener('focus', undrag);
+    sel.addEventListener('blur', redrag);
+    sel.addEventListener('click', (e) => e.stopPropagation());
+    sel.addEventListener('change', () => {
+      const slot = sel.dataset.slot;
+      SLOT_EFFORT[slot] = sel.value || null;
+      syncModelsFromSlots();                       // MODELS is what gets POSTed
+      const m = MODELS.find((x) => x.slot === slot);
+      const opt = m && m.thinkingOptions && m.thinkingOptions.options.find((x) => x.value === (sel.value || ''));
+      if (wrap) {
+        wrap.title = (opt && opt.detail) || '';
+        wrap.classList.toggle('is-set', !!sel.value);
+      }
+      redrag();
+    });
+  });
 
   if (isRestore) return;   // a restored run is a snapshot, not the live selection
 
@@ -1645,6 +1710,7 @@ function renderModelCards(scored, isCustom) {
       </div>
       <div class="mcc-overall"><b>${r.overall}</b><span>/ 100</span><i>balanced score</i></div>
       <div class="mcc-stats">${statHtml}</div>
+      ${thinkTag(r.thinking)}
     </div>`;
   }).join('');
 }
@@ -1720,6 +1786,7 @@ function renderTable(scored, isCustom) {
     const tr = el('tr');
     tr.innerHTML =
       `<td><span class="row-ic">${modelIconSvg(r)}</span>${esc(r.label)}</td>` +
+      `<td class="td-think" title="${esc((r.thinking && r.thinking.detail) || '')}">${esc((r.thinking && r.thinking.label) || '\u2014')}</td>` +
       `<td class="${!isCustom && r.correctness === bestCorr ? 'best' : ''}">${isCustom || r.correctness == null ? '\u2014' : r.correctness + '%'}</td>` +
       `<td class="${r.wallMs === bestWall ? 'best' : ''}">${(r.wallMs / 1000).toFixed(1)}s</td>` +
       `<td>${fmtInt(r.promptTokens)} / ${fmtInt(Math.max(0, r.completionTokens - (r.reasoningTokens || 0)))} / ${fmtInt(r.reasoningTokens || 0)}</td>` +

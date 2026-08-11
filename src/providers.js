@@ -31,21 +31,196 @@ function claudeModelVersion(model) {
   if (!m) return 99;                                  // unknown → assume modern
   return Number(m[1]) + (m[2] != null ? Number(m[2]) / 10 : 0);
 }
+// --- Reasoning-depth controls, per the official docs -----------------------
+// Anthropic `output_config.effort` (platform.claude.com/docs/en/build-with-claude/effort):
+// the ladder is low < medium < high < xhigh < max, the API default is `high`,
+// and support is NOT uniform — `xhigh` is only on Fable 5 / Mythos 5 / Opus 5 /
+// Opus 4.8 / Opus 4.7 / Sonnet 5, and Opus 4.5 has effort but neither xhigh nor
+// max. Sending an unsupported level is a 400, so each model lists its own set.
+const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const CLAUDE_EFFORT_SUPPORT = {
+  'claude-fable-5':    ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-mythos-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-5':     ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-8':   ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-7':   ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-6':   ['low', 'medium', 'high', 'max'],           // no xhigh
+  'claude-sonnet-4-6': ['low', 'medium', 'high', 'max'],           // no xhigh
+  'claude-opus-4-5':   ['low', 'medium', 'high'],                  // effort AND budget_tokens
+};
+// Sonnet 4.5 / Haiku 4.5 and earlier: no effort at all, budget_tokens only.
+// Note the docs are explicit that budget_tokens is "a target rather than a
+// strict cap" — max_tokens stays the only hard ceiling.
+const CLAUDE_BUDGETS = { low: 1024, medium: 4096, high: 8192, xhigh: 16384, max: 24576 };
+
+function claudeEffortsFor(model) { return CLAUDE_EFFORT_SUPPORT[String(model || '')] || null; }
+
+function claudeDefaultEffort(model) {
+  const supported = claudeEffortsFor(model);
+  const e = String(process.env.CLAUDE_EFFORT || 'high').toLowerCase();
+  if (supported && supported.includes(e)) return e;
+  return 'high';                                          // the documented API default
+}
+
 // Returns the request fields that differ between the two thinking APIs.
-function claudeThinkingFields(model) {
+// `effort` is the optional per-slot override chosen in the UI.
+function claudeThinkingFields(model, effort) {
+  const supported = claudeEffortsFor(model);
+  const level = supported && supported.includes(effort) ? effort : null;
   if (claudeModelVersion(model) >= 4.6) {
     return {
       max_tokens: CLAUDE_MAX_OUTPUT,
       thinking: { type: 'adaptive' },
-      output_config: { effort: process.env.CLAUDE_EFFORT || 'high' },
+      output_config: { effort: level || claudeDefaultEffort(model) },
     };
   }
-  // Legacy: an explicit budget, which must stay below max_tokens.
+  // Pre-4.6: manual budget. Minimum 1,024 and it must stay below max_tokens.
   const max = CLAUDE_MAX_OUTPUT_LEGACY;
-  return {
+  const wanted = level ? CLAUDE_BUDGETS[level] : Math.floor(max / 2);
+  const fields = {
     max_tokens: max,
-    thinking: { type: 'enabled', budget_tokens: Math.max(1024, Math.min(8192, Math.floor(max / 2))) },
+    thinking: { type: 'enabled', budget_tokens: Math.max(1024, Math.min(level ? max - 1024 : 8192, wanted)) },
   };
+  // Opus 4.5 is the one extended-thinking-only model that also takes effort;
+  // the docs say to set both. Only added when a level is explicitly chosen, so
+  // the default request on this path stays byte-identical to what already works
+  // on Vertex — this model rejected `adaptive` and is worth not disturbing.
+  if (supported && level) fields.output_config = { effort: level };
+  return fields;
+}
+
+// Gemini 3.x uses `thinkingConfig.thinkingLevel`, not the 2.5-era thinkingBudget
+// (ai.google.dev/gemini-api/docs/thinking). Verified live on Agent Platform:
+// minimal → 0 thought tokens in 2.7s, low → 236, medium → 898, high → 899, and an
+// invalid value is rejected with an enum error. `minimal` is unsupported on the
+// 3.1 Pro preview, so the levels are listed per model.
+const GEMINI_LEVELS = {
+  'gemini-3.6-flash':       ['minimal', 'low', 'medium', 'high'],
+  'gemini-3.5-flash':       ['minimal', 'low', 'medium', 'high'],
+  'gemini-3.5-flash-lite':  ['minimal', 'low', 'medium', 'high'],
+  'gemini-3.1-pro-preview': ['low', 'medium', 'high'],
+};
+const GEMINI_DEFAULT_LEVEL = {
+  'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
+  'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro-preview': 'high',
+};
+function geminiLevelsFor(model) { return GEMINI_LEVELS[String(model || '')] || ['low', 'medium', 'high']; }
+
+function geminiThinkingConfig(model, effort) {
+  const cfg = { includeThoughts: true };                  // always ask for the reasoning back
+  if (geminiLevelsFor(model).includes(effort)) cfg.thinkingLevel = effort;
+  return cfg;
+}
+
+// The choices a given slot may offer in the UI, and what each one means.
+// `configurable:false` means the request carries no reasoning parameter we own.
+function thinkingOptions({ provider, publisher, model } = {}) {
+  if (provider === 'agentplatform' && publisher === 'anthropic') {
+    const supported = claudeEffortsFor(model);
+    if (!supported) {
+      return {
+        configurable: false, kind: 'budget-fixed',
+        note: 'This model predates the effort parameter, so only a fixed thinking budget is sent.',
+        options: [],
+      };
+    }
+    const modern = claudeModelVersion(model) >= 4.6;
+    return {
+      configurable: true,
+      kind: 'effort',
+      note: modern
+        ? 'Sets output_config.effort. Effort is a behavioural signal, not a hard token cap.'
+        : 'Opus 4.5 takes both an effort level and a thinking budget, so this sets each of them.',
+      options: [{ value: '', label: `Default (${claudeDefaultEffort(model)})` }]
+        .concat(supported.map((e) => ({ value: e, label: e }))),
+    };
+  }
+  if (provider === 'agentplatform') {
+    const levels = geminiLevelsFor(model);
+    const def = GEMINI_DEFAULT_LEVEL[String(model || '')] || 'model default';
+    return {
+      configurable: true,
+      kind: 'level',
+      note: 'Sets thinkingConfig.thinkingLevel. "minimal" effectively turns thinking off on the Flash models.',
+      options: [{ value: '', label: `Default (${def})` }]
+        .concat(levels.map((l) => ({ value: l, label: l }))),
+    };
+  }
+  return {
+    configurable: false,
+    kind: 'none',
+    note: 'No reasoning parameter is sent for this provider, so there is nothing to override here.',
+    options: [],
+  };
+}
+
+// Is `effort` a legal choice for this model? Used server-side so a hand-crafted
+// request cannot smuggle an arbitrary value into the provider call.
+function validateEffort(cfg, effort) {
+  if (!effort) return null;
+  const opts = thinkingOptions(cfg);
+  const ok = opts.configurable && opts.options.some((o) => o.value && o.value === effort);
+  return ok ? effort : null;
+}
+
+// What reasoning configuration a given slot will ACTUALLY be sent. Derived from
+// the same helpers/constants that build the requests below, so the badge in the
+// UI cannot drift from what goes on the wire. `detail` names the real request
+// fields — it is what the tooltip shows.
+function thinkingProfile({ provider, publisher, model, effort } = {}) {
+  const chosen = validateEffort({ provider, publisher, model }, effort);
+  const mark = chosen ? ' (set on this card)' : '';
+  if (provider === 'agentplatform' && publisher === 'anthropic') {
+    const f = claudeThinkingFields(model, chosen);
+    // Branch on the thinking mode actually being sent, not on the presence of
+    // output_config — Opus 4.5 carries BOTH a manual budget and an effort level.
+    if (f.thinking.type === 'adaptive') {
+      const level = f.output_config.effort;
+      return {
+        mode: 'effort', level, overridden: !!chosen, label: `effort · ${level}`,
+        detail: `thinking: {type:"adaptive"} · output_config.effort: "${level}" · max_tokens: ${f.max_tokens}${mark}`,
+      };
+    }
+    const budget = f.thinking.budget_tokens;
+    const eff = f.output_config && f.output_config.effort;
+    return {
+      mode: eff ? 'effort' : 'budget', level: eff || `${Math.round(budget / 1024)}k`, overridden: !!chosen,
+      label: eff ? `effort · ${eff} · ${budget.toLocaleString('en-US')} tok` : `budget · ${budget.toLocaleString('en-US')} tok`,
+      detail: `pre-4.6 thinking API — thinking: {type:"enabled", budget_tokens: ${budget}}`
+        + (eff ? ` · output_config.effort: "${eff}"` : '')
+        + ` · max_tokens: ${f.max_tokens}${mark}`,
+    };
+  }
+  if (provider === 'agentplatform') {                     // Gemini on Agent Platform
+    const cfg = geminiThinkingConfig(model, chosen);
+    if (cfg.thinkingLevel) {
+      return {
+        mode: chosen === 'minimal' ? 'off' : 'level', level: cfg.thinkingLevel, overridden: true,
+        label: `thinking · ${cfg.thinkingLevel}`,
+        detail: `generationConfig.thinkingConfig: {thinkingLevel:"${cfg.thinkingLevel}", includeThoughts:true}${mark}`,
+      };
+    }
+    const def = GEMINI_DEFAULT_LEVEL[String(model || '')];
+    return {
+      mode: 'auto', level: def || 'auto', overridden: false,
+      label: `thinking · ${def ? `${def} (default)` : 'auto'}`,
+      detail: 'generationConfig.thinkingConfig: {includeThoughts:true} — no thinkingLevel is set, so the model default applies',
+    };
+  }
+  if (OPENAI_COMPAT[provider]) {
+    return {
+      mode: 'default', level: 'default', label: 'thinking · provider default',
+      detail: `no reasoning parameter is sent to ${OPENAI_COMPAT[provider].label}, so the model's own default applies`,
+    };
+  }
+  if (provider === 'anthropic') {
+    return { mode: 'off', level: 'off', label: 'thinking · off', detail: 'the direct Anthropic adapter sends no thinking parameter' };
+  }
+  if (provider === 'gemini') {
+    return { mode: 'off', level: 'off', label: 'thinking · off', detail: 'the direct Gemini adapter sends no thinkingConfig' };
+  }
+  return { mode: 'unknown', level: '—', label: 'thinking · unknown', detail: '' };
 }
 
 function estimateTokens(messages, system = '') {
@@ -234,13 +409,13 @@ async function anthropic({ model, system, messages, keys, signal }) {
 // Both can return reasoning ("thinking"); we separate it from the answer and
 // count reasoning tokens as output for accurate cost.
 
-async function agentplatform({ publisher, model, system, messages, project, keys }) {
+async function agentplatform({ publisher, model, system, messages, project, keys, effort }) {
   const pub = publisher || 'google';
-  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys });
-  return agentPlatformGemini({ model, system, messages, keys });
+  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, effort });
+  return agentPlatformGemini({ model, system, messages, keys, effort });
 }
 
-async function agentPlatformGemini({ model, system, messages, keys, signal }) {
+async function agentPlatformGemini({ model, system, messages, keys, signal, effort }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
@@ -252,7 +427,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal }) {
     contents,
     generationConfig: {
       temperature: 0.2,
-      thinkingConfig: { includeThoughts: true }, // ask the model to return its reasoning
+      thinkingConfig: geminiThinkingConfig(model, effort), // reasoning on, at the level this card asked for
     },
   };
   if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
@@ -289,13 +464,13 @@ async function agentPlatformGemini({ model, system, messages, keys, signal }) {
   };
 }
 
-async function agentPlatformClaude({ model, system, messages, project, keys, signal }) {
+async function agentPlatformClaude({ model, system, messages, project, keys, signal, effort }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
 
   const body = {
     anthropic_version: 'vertex-2023-10-16',
-    ...claudeThinkingFields(model),          // adaptive on 4.6+, enabled+budget below
+    ...claudeThinkingFields(model, effort),          // adaptive on 4.6+, enabled+budget below
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
   if (system) body.system = system;
@@ -361,7 +536,7 @@ async function readSSE(response, onEvent) {
   }
 }
 
-async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal }) {
+async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
   const contents = messages.map((m) => ({
@@ -370,7 +545,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   }));
   const body = {
     contents,
-    generationConfig: { temperature: 0.2, thinkingConfig: { includeThoughts: true } },
+    generationConfig: { temperature: 0.2, thinkingConfig: geminiThinkingConfig(model, effort) },
   };
   if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
   if (system) body.systemInstruction = { parts: [{ text: system }] };
@@ -405,12 +580,12 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   };
 }
 
-async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal }) {
+async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
   const body = {
     anthropic_version: 'vertex-2023-10-16',
-    ...claudeThinkingFields(model),          // adaptive on 4.6+, enabled+budget below
+    ...claudeThinkingFields(model, effort),          // adaptive on 4.6+, enabled+budget below
     stream: true,
     messages: messages.map((m) => ({ role: m.role, content: m.content })),
   };
@@ -455,12 +630,12 @@ const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
 // `signal` aborts the upstream request when the client goes away (or restarts a
 // slot) so an abandoned run stops burning tokens instead of finishing unseen.
-async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal }) {
+async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort }) {
   if (provider === 'agentplatform' && onDelta) {
     const pub = publisher || 'google';
     return pub === 'anthropic'
-      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal })
-      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal });
+      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort })
+      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort });
   }
   // OpenAI-compatible providers stream too, so an external model's column gets
   // the same live token feed as the Vertex ones.
@@ -469,7 +644,7 @@ async function complete({ provider, model, system, messages, publisher, project,
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
-  return fn({ model, system, messages, publisher, project, keys, signal });
+  return fn({ model, system, messages, publisher, project, keys, signal, effort });
 }
 
-module.exports = { complete, estimateTokens, ADAPTERS };
+module.exports = { complete, estimateTokens, thinkingProfile, thinkingOptions, validateEffort, ADAPTERS };

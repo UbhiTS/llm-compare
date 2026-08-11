@@ -6,12 +6,13 @@
 // ---------------------------------------------------------------------------
 
 const { runAgent } = require('./agent');
+const { thinkingProfile } = require('./providers');
 
 async function runComparison({ task, models, maxIterations, emit, keys, signal }) {
   emit({
     type: 'start',
     task: { id: task.id, title: task.title, prompt: task.prompt, testCount: task.testCases.length, functionName: task.functionName },
-    models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, price: m.price })),
+    models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, price: m.price, thinking: thinkingProfile(m) })),
     maxIterations,
     startedAt: Date.now(),
   });

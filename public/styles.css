@@ -317,6 +317,35 @@ select option { color: var(--text); background: var(--bg); }
 .col-title { font-family: "Space Grotesk", sans-serif; font-weight: 700; font-size: 21px; }
 .col-sub { font-size: 13px; color: var(--muted); font-family: "JetBrains Mono", monospace; }
 
+/* Reasoning level actually sent in the request. Weight tracks how explicit the
+   setting is: an effort/budget we set > a model-chosen "auto" > nothing sent. */
+.col-think { margin-top: 5px; display: inline-flex; align-items: center; gap: 5px; cursor: help;
+  font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: .02em;
+  padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); }
+.col-think .ti { font-size: 9px; opacity: .85; }
+.col-think.think-effort { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.col-think.think-budget { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.col-think.think-auto   { color: var(--muted); }
+.col-think.think-default,
+.col-think.think-off,
+.col-think.think-unknown { color: var(--faint); }
+.mc-card .col-think { margin-top: 10px; }
+
+/* The badge doubles as the picker on a live card. The <select> is transparent
+   and inherits the pill's type so it reads as one control, not a form field. */
+.col-think.think-ctl { cursor: default; padding-right: 4px; }
+.col-think.think-ctl:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.think-select { appearance: none; -webkit-appearance: none; cursor: pointer;
+  background: transparent; border: 0; color: inherit; font: inherit; padding: 0 15px 0 0; margin: 0;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 5px center, right 1px center; background-size: 4px 4px, 4px 4px; background-repeat: no-repeat; }
+.think-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.think-select option { background: var(--well); color: var(--text); }   /* native menu needs real colors */
+.col-think.is-set { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.td-think { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: help; }
+
 .col-status { padding: 11px 17px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .spinner { width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; box-shadow: 0 0 8px -2px var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }

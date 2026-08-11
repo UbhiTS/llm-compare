@@ -6,7 +6,7 @@
 // from. We accumulate tokens, latency and cost across the whole loop.
 // ---------------------------------------------------------------------------
 
-const { complete } = require('./providers');
+const { complete, thinkingProfile } = require('./providers');
 const { runTests } = require('./runner');
 const { priceFor } = require('./pricing');
 
@@ -139,6 +139,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal }
       publisher: modelConfig.publisher,
       project: modelConfig.project,
       model: modelConfig.model,
+      effort: modelConfig.effort,        // per-card reasoning level, already validated server-side
       system,
       messages,
       onDelta,
@@ -217,6 +218,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal }
     provider: modelConfig.provider,
     model: modelConfig.model,
     price,
+    thinking: thinkingProfile(modelConfig),   // what reasoning config this run was sent
     iterations,
     passed,
     total,
