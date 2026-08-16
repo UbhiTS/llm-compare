@@ -16,9 +16,44 @@ process.env.GEMINI_API_KEY = 'mock-key';
 const assert = require('assert');
 const { runTests } = require('../src/runner');
 const { runComparison } = require('../src/orchestrator');
+const { MODEL_CATALOG, modelFromCatalog, resolveModels } = require('../src/pricing');
+const { complete, thinkingOptions, thinkingProfile } = require('../src/providers');
 const { TASKS } = require('../src/tasks');
 
 const fence = (code) => '```javascript\n' + code + '\n```';
+
+// ---- 0) server-authoritative catalog + thinking metadata ----
+const gemini37 = MODEL_CATALOG.find((m) => m.id === 'gemini-3.7-flash');
+assert(gemini37, 'Gemini 3.7 Flash should be present in the model catalog');
+assert.deepStrictEqual(gemini37.price, { input: 0.75, output: 3.75 }, 'Gemini 3.7 Flash introductory pricing');
+assert.deepStrictEqual(
+  MODEL_CATALOG.find((m) => m.id === 'gemini-3.6-flash').price,
+  { input: 0.75, output: 3.75 },
+  'Gemini 3.6 Flash should use the same introductory pricing'
+);
+
+const gemini37Slot = modelFromCatalog('A', 'gemini-3.7-flash');
+assert.strictEqual(gemini37Slot.model, 'gemini-3.7-flash', 'Gemini 3.7 Flash should use its stable API model id');
+assert.deepStrictEqual(
+  thinkingOptions(gemini37Slot).options.map((o) => o.value),
+  ['', 'low', 'medium', 'high'],
+  'Gemini 3.7 Flash should expose exactly its supported thinking levels'
+);
+assert.strictEqual(thinkingProfile(gemini37Slot).level, 'medium', 'Gemini 3.7 Flash should show its medium default');
+
+const resolvedGemini37 = resolveModels([{
+  slot: 'A', catalogId: 'gemini-3.7-flash', model: 'tampered-model', provider: 'tampered-provider',
+  price: { input: 0, output: 0 }, effort: 'high',
+}])[0];
+assert.strictEqual(resolvedGemini37.model, 'gemini-3.7-flash', 'catalog resolution should restore the real model id');
+assert.strictEqual(resolvedGemini37.provider, 'agentplatform', 'catalog resolution should restore the real provider');
+assert.deepStrictEqual(resolvedGemini37.price, { input: 0.75, output: 3.75 }, 'catalog resolution should restore the real price');
+assert.strictEqual(resolvedGemini37.effort, 'high', 'catalog resolution should retain a supported thinking level');
+assert.strictEqual(
+  resolveModels([{ slot: 'A', catalogId: 'gemini-3.7-flash', effort: 'minimal' }])[0].effort,
+  undefined,
+  'catalog resolution should reject unsupported minimal thinking'
+);
 
 // Buggy: frees a room only when a meeting ENDS STRICTLY before the next starts,
 // so touching intervals ([1,5] & [5,9]) are wrongly counted as overlapping.
@@ -61,8 +96,10 @@ assert(buggyRes.passed < task.testCases.length, 'buggy solution should fail at l
 assert(buggyRes.failing.length > 0 && buggyRes.failing[0].expectedStr, 'failing details should be populated');
 
 // ---- 2) mock the network ----
+let lastRequestBody;
 global.fetch = async (url, opts) => {
   const body = JSON.parse(opts.body);
+  lastRequestBody = body;
   const text = JSON.stringify(body.contents);
   const isFix = text.includes('failed these hidden test cases');
   const reply = isFix ? CORRECT : BUGGY;
@@ -85,6 +122,13 @@ const models = [
 ];
 
 (async () => {
+  // The 3.7 migration contract rejects deprecated sampling parameters.
+  await complete({
+    provider: 'agentplatform', publisher: 'google', model: 'gemini-3.7-flash',
+    messages: [{ role: 'user', content: 'Return a test response.' }],
+  });
+  assert.strictEqual(lastRequestBody.generationConfig.temperature, undefined, 'Gemini 3.7 Flash request should omit temperature');
+
   const events = [];
   const results = await runComparison({
     task, models, maxIterations: 4, emit: (e) => events.push(e),

@@ -93,16 +93,17 @@ function claudeThinkingFields(model, effort) {
 // Gemini 3.x uses `thinkingConfig.thinkingLevel`, not the 2.5-era thinkingBudget
 // (ai.google.dev/gemini-api/docs/thinking). Verified live on Agent Platform:
 // minimal → 0 thought tokens in 2.7s, low → 236, medium → 898, high → 899, and an
-// invalid value is rejected with an enum error. `minimal` is unsupported on the
-// 3.1 Pro preview, so the levels are listed per model.
+// invalid value is rejected with an enum error. `minimal` is unsupported on
+// Gemini 3.7 Flash and the 3.1 Pro preview, so levels are listed per model.
 const GEMINI_LEVELS = {
+  'gemini-3.7-flash':       ['low', 'medium', 'high'],
   'gemini-3.6-flash':       ['minimal', 'low', 'medium', 'high'],
   'gemini-3.5-flash':       ['minimal', 'low', 'medium', 'high'],
   'gemini-3.5-flash-lite':  ['minimal', 'low', 'medium', 'high'],
   'gemini-3.1-pro-preview': ['low', 'medium', 'high'],
 };
 const GEMINI_DEFAULT_LEVEL = {
-  'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
+  'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
   'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro-preview': 'high',
 };
 function geminiLevelsFor(model) { return GEMINI_LEVELS[String(model || '')] || ['low', 'medium', 'high']; }
@@ -110,6 +111,15 @@ function geminiLevelsFor(model) { return GEMINI_LEVELS[String(model || '')] || [
 function geminiThinkingConfig(model, effort) {
   const cfg = { includeThoughts: true };                  // always ask for the reasoning back
   if (geminiLevelsFor(model).includes(effort)) cfg.thinkingLevel = effort;
+  return cfg;
+}
+
+// Gemini 3.6+ Flash rejects or ignores custom sampling values; the 3.7
+// migration contract explicitly requires temperature/top-p/top-k to be absent.
+// Keep this shared so streaming and non-streaming requests stay identical.
+function geminiGenerationConfig(model, effort) {
+  const cfg = { thinkingConfig: geminiThinkingConfig(model, effort) };
+  if (!['gemini-3.7-flash', 'gemini-3.6-flash'].includes(String(model || ''))) cfg.temperature = 0.2;
   return cfg;
 }
 
@@ -142,7 +152,7 @@ function thinkingOptions({ provider, publisher, model } = {}) {
     return {
       configurable: true,
       kind: 'level',
-      note: 'Sets thinkingConfig.thinkingLevel. "minimal" effectively turns thinking off on the Flash models.',
+      note: 'Sets thinkingConfig.thinkingLevel. On models that support it, "minimal" effectively turns thinking off.',
       options: [{ value: '', label: `Default (${def})` }]
         .concat(levels.map((l) => ({ value: l, label: l }))),
     };
@@ -425,10 +435,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   }));
   const body = {
     contents,
-    generationConfig: {
-      temperature: 0.2,
-      thinkingConfig: geminiThinkingConfig(model, effort), // reasoning on, at the level this card asked for
-    },
+    generationConfig: geminiGenerationConfig(model, effort), // reasoning on, at the level this card asked for
   };
   if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
   if (system) body.systemInstruction = { parts: [{ text: system }] };
@@ -545,7 +552,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   }));
   const body = {
     contents,
-    generationConfig: { temperature: 0.2, thinkingConfig: geminiThinkingConfig(model, effort) },
+    generationConfig: geminiGenerationConfig(model, effort),
   };
   if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
   if (system) body.systemInstruction = { parts: [{ text: system }] };

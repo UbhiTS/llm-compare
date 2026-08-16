@@ -9,7 +9,9 @@
 // price or model id is ignored.
 //
 // Prices are USD per 1,000,000 tokens, taken from public 2026 pricing:
-//   • Gemini 3.6 Flash      — $1.50 in / $7.50 out  (Vertex, launched 2026-07-21)
+//   • Gemini 3.7 Flash      — $0.75 in / $3.75 out (introductory through 2026-12-31)
+//   • Gemini 3.6 Flash      — $0.75 in / $3.75 out (same introductory rate;
+//       ⚠ both rise to $1.50 / $7.50 on 2027-01-01 — update the catalog then)
 //   • Gemini 3.5 Flash      — $1.50 in / $9.00 out  (Vertex, launched 2026-05-19)
 //   • Gemini 3.5 Flash Lite — $0.30 in / $2.50 out  (Vertex, cheapest option here)
 //   • Gemini 3.1 Pro        — $2.00 in / $12.00 out (Vertex, ≤200K context)
@@ -30,7 +32,9 @@ const PRICING = {
 // (Vertex); `publisher` = google | anthropic. `id` is the stable catalog key
 // (== `model` except where the API id differs, e.g. Gemini 3.1 Pro's preview id).
 const MODEL_CATALOG = [
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 1.50, output: 7.50 } },
+  // Gemini 3.7 / 3.6 Flash introductory pricing ends 2026-12-31 → then { input: 1.50, output: 7.50 }.
+  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.7-flash',      price: { input: 0.75, output: 3.75 } },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 0.75, output: 3.75 } },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 } },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 } },
   { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro',   provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 } },
