@@ -19,16 +19,27 @@
 
 const { complete } = require('./providers');
 
-// Answers go to the judge IN FULL. Context is not the binding constraint — the
-// judge models carry 1M-token windows, and input tokens are cheap next to the
-// run that produced these answers. Fairness is the constraint: an answer that
-// arrives silently clipped reads as incomplete and gets marked down for it,
-// which would penalise precisely the models that wrote the most. So nothing is
-// trimmed unless the whole set is genuinely enormous, and if that ever happens
-// the judge is told explicitly and the UI says so too.
-const TOTAL_BUDGET_CHARS = 600000;  // ~150k tokens across every answer combined
+// Answers go to the judge IN FULL. The only real ceiling is the JUDGE'S OWN
+// context window, which is not a single number — it is 1M tokens on the Gemini 3.x
+// and Claude 4.6+ models, but 200K on Opus 4.5 / Sonnet 4.5 / Haiku 4.5 and
+// unknown on the external ones. So the budget is derived per judge rather than
+// hardcoded, and only ~55% of the window is spent on answers, leaving room for
+// the task prompt, the rubric, and the judge's own reasoning and output.
+//
+// Fairness is why this matters: an answer that arrives silently clipped reads as
+// incomplete and gets marked down for it, which would penalise precisely the
+// models that wrote the most. Trimming is a last resort, applied evenly, and
+// always declared — to the judge in its prompt and to the user in the UI.
+const CHARS_PER_TOKEN = 4;          // matches estimateTokens() in providers.js
+const CONTEXT_SHARE = 0.55;         // of the window, spent on the answers
+const DEFAULT_CONTEXT = 200000;     // conservative when a model's window is unknown
 const MIN_PER_RESPONSE = 20000;     // no answer is ever trimmed below this
 const MAX_TASK_CHARS = 20000;       // the longest shipped task prompt is ~3.7k
+
+function budgetFor(judge) {
+  const ctx = (judge && judge.context) || DEFAULT_CONTEXT;
+  return Math.floor(ctx * CONTEXT_SHARE * CHARS_PER_TOKEN);
+}
 
 // Scored 1-10 each. Deliberately four axes that mean something for a business
 // deliverable — not a single vague "quality" number nobody can argue with.
@@ -54,10 +65,10 @@ const letter = (i) => String.fromCharCode(65 + i);
 
 // Only ever trims when the combined set would blow the budget, and then evenly
 // rather than punishing whoever happens to be longest.
-function fitToBudget(list) {
+function fitToBudget(list, budget) {
   const total = list.reduce((a, e) => a + e.text.length, 0);
-  if (total <= TOTAL_BUDGET_CHARS) return list.map((e) => ({ ...e, truncated: false }));
-  const share = Math.max(MIN_PER_RESPONSE, Math.floor(TOTAL_BUDGET_CHARS / list.length));
+  if (total <= budget) return list.map((e) => ({ ...e, truncated: false }));
+  const share = Math.max(MIN_PER_RESPONSE, Math.floor(budget / list.length));
   return list.map((e) => (e.text.length <= share
     ? { ...e, truncated: false }
     : { ...e, text: e.text.slice(0, share), truncated: true }));
@@ -121,7 +132,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     slot: e.slot,
     label: e.label,
     text: String(e.text),            // full answer — see the budget note at the top
-  })));
+  })), budgetFor(judge));
 
   const resp = await complete({
     provider: judge.provider,
@@ -168,6 +179,8 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     blindOrder: blinded.map((b) => b.id + '=' + b.label),   // audit trail: what the judge actually saw
     truncated: blinded.some((b) => b.truncated),
     charsSent: blinded.reduce((a, b) => a + b.text.length, 0),
+    budgetChars: budgetFor(judge),
+    judgeContext: (judge && judge.context) || null,
     results,
     winnerSlot: winner ? winner.slot : null,
     why: String(parsed.why || '').slice(0, 600),

@@ -33,22 +33,22 @@ const PRICING = {
 // (== `model` except where the API id differs, e.g. Gemini 3.1 Pro's preview id).
 const MODEL_CATALOG = [
   // Gemini 3.7 / 3.6 Flash introductory pricing ends 2026-12-31 → then { input: 1.50, output: 7.50 }.
-  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.7-flash',      price: { input: 0.75, output: 3.75 } },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 0.75, output: 3.75 } },
-  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 } },
-  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 } },
-  { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro',   provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 } },
-  { id: 'claude-fable-5',   label: 'Claude Fable 5',   provider: 'agentplatform', publisher: 'anthropic', model: 'claude-fable-5',         price: { input: 10.00, output: 50.00 } },
-  { id: 'claude-opus-5',    label: 'Claude Opus 5',    provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5',          price: { input: 5.00, output: 25.00 } },
-  { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 } },
-  { id: 'claude-opus-4-7',  label: 'Claude Opus 4.7',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-7',        price: { input: 5.00, output: 25.00 } },
-  { id: 'claude-opus-4-6',  label: 'Claude Opus 4.6',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-6',        price: { input: 5.00, output: 25.00 } },
-  { id: 'claude-opus-4-5',  label: 'Claude Opus 4.5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-5',        price: { input: 5.00, output: 25.00 } },
+  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.7-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 }, context: 1000000 },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 }, context: 1000000 },
+  { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro',   provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 }, context: 200000 },
+  { id: 'claude-fable-5',   label: 'Claude Fable 5',   provider: 'agentplatform', publisher: 'anthropic', model: 'claude-fable-5',         price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'claude-opus-5',    label: 'Claude Opus 5',    provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5',          price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-7',  label: 'Claude Opus 4.7',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-7',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-6',  label: 'Claude Opus 4.6',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-6',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-5',  label: 'Claude Opus 4.5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-5',        price: { input: 5.00, output: 25.00 }, context: 200000 },
   // Sonnet 5 introductory pricing ends 2026-08-31 → then { input: 3.00, output: 15.00 }.
-  { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 2.00, output: 10.00 } },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-6',    price: { input: 3.00, output: 15.00 } },
-  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-5',    price: { input: 3.00, output: 15.00 } },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-haiku-4-5',       price: { input: 1.00, output: 5.00 } },
+  { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 2.00, output: 10.00 }, context: 1000000 },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-6',    price: { input: 3.00, output: 15.00 }, context: 1000000 },
+  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-5',    price: { input: 3.00, output: 15.00 }, context: 200000 },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-haiku-4-5',       price: { input: 1.00, output: 5.00 }, context: 200000 },
   // --- External models (NOT on Vertex). These call the vendor's own API, so a
   // run on these sends the prompt outside Google infrastructure, and they need
   // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY).
@@ -62,7 +62,7 @@ const MODEL_CATALOG = [
   // anthropic-claude-mythos-5 — the project has no serving quota, consistent with
   // Mythos 5 being limited availability (Project Glasswing). Clear `blocked` once
   // a quota grant lands and re-probe. ---
-  { id: 'claude-mythos-5',  label: 'Claude Mythos 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-mythos-5',        price: { input: 10.00, output: 50.00 },
+  { id: 'claude-mythos-5',  label: 'Claude Mythos 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-mythos-5',        price: { input: 10.00, output: 50.00 }, context: 1000000,
     blocked: 'a Vertex quota grant (base model anthropic-claude-mythos-5 has no serving quota on this project)', blockedHow: 'Google Cloud console ▸ IAM & Admin ▸ Quotas' },
 
   { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
@@ -81,7 +81,7 @@ function catalogEntry(id) {
 function modelFromCatalog(slot, id) {
   const c = catalogEntry(id);
   if (!c) return null;
-  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external, blocked: c.blocked || null };
+  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external, blocked: c.blocked || null, context: c.context || null };
 }
 
 // The default slots shown in the UI on first load (a subset of the catalog).
