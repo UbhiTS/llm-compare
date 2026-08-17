@@ -86,7 +86,7 @@ async function init() {
   initUserMenu(CONFIG.me);
   // Seed the drag-and-drop slots from the server's default selection, then let
   // MODELS be derived from the slots from here on.
-  CONFIG.models.forEach((m, i) => { const s = SLOT_IDS[i]; if (s) SLOT_ASSIGN[s] = m.catalogId || m.id; });
+  seedSlots();
   syncModelsFromSlots();
 
 
@@ -526,6 +526,28 @@ const SLOT_IDS = ['A', 'B', 'C'].slice(0, MAX_SLOTS);
 const SLOT_ASSIGN = {};                  // slot -> catalogId | null
 const SLOT_EFFORT = {};                  // slot -> chosen thinking level | null
 SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
+
+// Open on whatever this user last compared, falling back to the shipped
+// defaults. The remembered set comes from the server (their run history), so it
+// follows them across browsers and machines. Anything no longer selectable —
+// dropped from the catalog, blocked, or missing a key — is skipped rather than
+// silently loading a dead card, and if that leaves nothing we use the defaults.
+function seedSlots() {
+  const remembered = (CONFIG.me && CONFIG.me.lastModels) || null;
+  const usable = (list) => (list || [])
+    .map((m) => ({ id: m.catalogId || m.id, effort: m.effort || null }))
+    .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
+    .slice(0, SLOT_IDS.length);
+
+  const chosen = usable(remembered);
+  const list = chosen.length ? chosen : usable(CONFIG.models);
+  list.forEach((m, i) => {
+    const s = SLOT_IDS[i];
+    if (!s) return;
+    SLOT_ASSIGN[s] = m.id;
+    SLOT_EFFORT[s] = m.effort;          // the thinking level they last ran it at
+  });
+}
 
 function modelFromCatalogId(slot, id) {
   const c = catalog().find((x) => x.id === id);

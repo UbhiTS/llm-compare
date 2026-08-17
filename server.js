@@ -293,6 +293,7 @@ app.get('/api/config', (req, res) => {
       username: req.user.username, role: req.user.role,
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
+      lastModels: history.lastModels(req.user.username),   // reopen on their last selection
     },
   });
 });
@@ -578,7 +579,7 @@ app.post('/api/run', async (req, res) => {
   // instance). The server is the source of truth (the browser never writes
   // history), so a user cannot forge or tamper with the log.
   if (Array.isArray(results)) {
-    history.saveRun({ user: req.user.username, userName: req.user.username, task, models: chosenModels, results }).catch(() => {});
+    history.saveRun({ user: req.user.username, userName: req.user.username, task, models: chosenModels, results, kind }).catch(() => {});
   }
   res.end();
 });

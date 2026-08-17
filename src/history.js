@@ -58,7 +58,7 @@ function summarize(models, results) {
 // a network round-trip, so doing it synchronously inline would block the single
 // Node event loop and stall every other user's request. Returns a Promise of the
 // stored record's light summary (or null on failure); never throws.
-async function saveRun({ user, userName, task, models, results }) {
+async function saveRun({ user, userName, task, models, results, kind }) {
   try {
     const id = newId();
     const at = Date.now();
@@ -67,9 +67,11 @@ async function saveRun({ user, userName, task, models, results }) {
       user: norm(user), userName: userName || user,
       taskId: (task && task.id) || 'unknown',
       title: (task && task.title) || (task && task.id) || 'Run',
+      kind: kind === 'single' ? 'single' : 'compare',   // a single re-run is not a model selection
       models: (models || []).map((m) => ({
         slot: m.slot, catalogId: m.catalogId, label: m.label,
         provider: m.provider, model: m.model, publisher: m.publisher, price: m.price,
+        effort: m.effort || null,
       })),
       slots: (models || []).map((m) => ({ slot: m.slot, data: (results || []).find((r) => r && r.slot === m.slot) || null })),
       summary: summarize(models, results),
@@ -104,6 +106,25 @@ function recordsForKey(key, cap) {
     if (rec && rec.id) out.push(rec);
   }
   return out;
+}
+
+// The model line-up this user last ran, so the app opens on their selection
+// instead of the shipped defaults. Read off run history rather than a separate
+// preferences store: history is already keyed by username, which means it works
+// for Google SSO users too — they get a synthetic session and are never written
+// to the users file, so anything stored there would not survive for them.
+//
+// Single-model re-runs are skipped: re-running one column is not a statement
+// about which three models you want next time.
+function lastModels(username) {
+  const recs = recordsForKey(userKey(username), 20);
+  const pick = recs.find((r) => r.kind !== 'single' && Array.isArray(r.models) && r.models.length)
+    || recs.find((r) => Array.isArray(r.models) && r.models.length);
+  if (!pick) return null;
+  const out = pick.models
+    .filter((m) => m && m.catalogId)
+    .map((m) => ({ catalogId: m.catalogId, effort: m.effort || null }));
+  return out.length ? out : null;
 }
 
 // A user's own runs (light list, newest first).
@@ -176,4 +197,4 @@ function usageSummary() {
   return { generatedAt: Date.now(), dayStartUtc: startOfDay, totals: { users: users.length, totalRuns, runsToday }, users };
 }
 
-module.exports = { saveRun, listRuns, listAllRuns, getRun, deleteRun, usageSummary, BASE_DIR };
+module.exports = { saveRun, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, BASE_DIR };
