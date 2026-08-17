@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/node-%E2%89%A518-3c873a" alt="Node >= 18">
   <img src="https://img.shields.io/badge/deploy-Cloud%20Run-4285F4" alt="Deploys to Cloud Run">
   <img src="https://img.shields.io/badge/auth-Google%20SSO-ea4335" alt="Google SSO">
-  <img src="https://img.shields.io/badge/models-Gemini%20%2B%20Claude-5e8bff" alt="Gemini + Claude on Vertex AI">
+  <img src="https://img.shields.io/badge/models-Gemini%20%2B%20Claude%20%2B%20GPT-5e8bff" alt="Gemini, Claude, and GPT">
 </p>
 
 ---
@@ -39,7 +39,7 @@ merits and the result holds up under scrutiny.
 - ⚡ **Live, parallel runs** — all models run concurrently; results stream token-by-token over NDJSON (thinking, per-round metrics, pass/fail).
 - 🎯 **Single-shot correctness** — one attempt per model; correctness = % of hidden edge-case tests it passes.
 - 📊 **Neutral scorecard** — per-metric vertical bars for correctness, cost, speed, and tokens. No hardcoded "winner".
-- 🔒 **Locked model catalog** — users pick from a server-authoritative catalog (Gemini + Claude); prices and model IDs can't be tampered with from the browser.
+- 🔒 **Locked model catalog** — users pick from a server-authoritative multi-provider catalog; prices and model IDs can't be tampered with from the browser.
 - 🧩 **File-based tasks** — 16 tasks across **Business / Coding / Games / General**; add one by dropping a Markdown file in `prompts/`.
 - 🕹️ **Runnable code & in-browser games** — coding tasks run against their tests; Pygame tasks (Mario, Pac-Man) build to WebAssembly via **pygbag** and play in the browser.
 - 🗂️ **Per-user run history** — durable, server-side, per user; admins see everyone plus a usage dashboard.
@@ -56,16 +56,18 @@ cp .env.example .env      # then fill in the values below
 npm start                 # → http://localhost:8080
 ```
 
-Minimum `.env` for the default (Gemini + Claude via Google Vertex) path:
+Minimum `.env` for the default Gemini 3.7 Flash + Claude Opus 5 + GPT-5.6 Sol lineup:
 
 ```ini
 AGENT_PLATFORM_API_KEY=your-gemini/agent-platform-api-key
 GCP_PROJECT_ID=your-gcp-project-with-claude-enabled-in-vertex
+OPENAI_API_KEY=your-openai-api-key
 ```
 
 - **Gemini** slots use `AGENT_PLATFORM_API_KEY`. **Claude** runs through Vertex AI — the server
   **auto-mints** a token from your `gcloud` login (`gcloud auth login`), so no key is needed as long as
-  the project has the Anthropic models enabled in Vertex Model Garden.
+  the project has the Anthropic models enabled in Vertex Model Garden. **GPT-5.6 Sol** calls OpenAI
+  directly with `OPENAI_API_KEY`, so its prompts leave Google infrastructure.
 - Login is always on. On first visit the server prints a one-time **SETUP CODE** in the console — use it
   to create the `admin` password. After that, sign in normally.
 - No keys handy? `npm test` runs the whole loop against a mocked provider and checks the scoring.
@@ -82,6 +84,7 @@ flowchart LR
   ga -->|"WIF · keyless"| img["Build image → Artifact Registry"]
   img --> run["Deploy → Cloud Run (1 warm instance)"]
   run --> vertex["Vertex AI · Gemini + Claude"]
+  run --> openai["OpenAI API · GPT-5.6 Sol"]
   run --> gcs[("GCS bucket · run history")]
   run --> sso["Google SSO · domain-restricted"]
 ```
@@ -105,7 +108,7 @@ flowchart LR
    ```
 
    It creates the project + APIs, Artifact Registry, a **GCS bucket for durable history**, the runtime &
-   deployer service accounts + IAM, **Workload Identity Federation**, and the three Secret Manager secrets
+   deployer service accounts + IAM, **Workload Identity Federation**, and the four Secret Manager secrets
    (it prompts for their values). At the end it prints the exact `gh variable set` / `gh secret set`
    commands to configure the repo.
 
@@ -136,7 +139,7 @@ flowchart LR
 | **Cloud Run** service | 1 warm instance (`--min/--max-instances=1`) so in-memory sessions + the per-user daily counter stay consistent. |
 | **Runtime service account** | The app's identity — calls **Vertex AI** (Gemini + Claude) via ADC (no `gcloud`, no reauth) and reads secrets. |
 | **GCS bucket** (`/data`) | Durable per-user **run history** that survives restarts. |
-| **Secret Manager** | `AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` (break-glass admin login). |
+| **Secret Manager** | `AGENT_PLATFORM_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` (break-glass admin login). |
 | **Workload Identity Federation** | Lets GitHub Actions deploy with **no stored keys**. |
 
 ## Models & pricing
@@ -153,6 +156,7 @@ so a tampered price or model ID is ignored.
 | Gemini 3.5 Flash | Google (Vertex) | 1.50 / 9.00 |
 | Gemini 3.5 Flash Lite | Google (Vertex) | 0.30 / 2.50 |
 | Gemini 3.1 Pro | Google (Vertex) | 2.00 / 12.00 |
+| GPT-5.6 Sol | OpenAI (external) | 5.00 / 30.00 |
 | Claude Fable 5 | Anthropic (Vertex) | 10.00 / 50.00 |
 | Claude Opus 5 | Anthropic (Vertex) | 5.00 / 25.00 |
 | Claude Opus 4.8 | Anthropic (Vertex) | 5.00 / 25.00 |
@@ -185,6 +189,7 @@ All settings are environment variables, documented in [`.env.example`](.env.exam
 | Var | Purpose |
 |---|---|
 | `AGENT_PLATFORM_API_KEY` | API key for the Gemini (Vertex) slots. |
+| `OPENAI_API_KEY` | API key for GPT-5.6 Sol and other external OpenAI models. |
 | `GCP_PROJECT_ID` | Project with Claude enabled in Vertex Model Garden. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `ALLOWED_EMAIL_DOMAINS` | Google org SSO. |
 | `ADMIN_EMAILS` / `ADMIN_BOOTSTRAP_PASSWORD` | Admin role by email; durable break-glass admin login. |
@@ -199,7 +204,7 @@ flowchart LR
   U["Browser UI"] -->|"POST /api/run"| S["server.js"]
   S --> O["orchestrator"]
   O --> A["Agent · per model"]
-  A -->|generate| P["providers · Vertex / Gemini / Claude"]
+  A -->|generate| P["providers · Vertex / Gemini / Claude / OpenAI"]
   A -->|"run tests"| R["runner · sandboxed vm"]
   O -->|"NDJSON stream"| U
 ```

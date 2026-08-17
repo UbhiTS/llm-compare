@@ -26,7 +26,7 @@ const { getClaudeToken } = require('./gcloudToken');
 // with the runtime service account itself, so there is no key to store.
 const MANAGED = [
   { name: 'AGENT_PLATFORM_API_KEY', label: 'Gemini / Agent Platform', hint: 'Gemini models on Vertex' },
-  { name: 'OPENAI_API_KEY',         label: 'OpenAI',                  hint: 'GPT-5.6 Luna (external)' },
+  { name: 'OPENAI_API_KEY',         label: 'OpenAI',                  hint: 'GPT-5.6 models (external)' },
   { name: 'MOONSHOT_API_KEY',       label: 'Moonshot',                hint: 'Kimi K3 (external)' },
 ];
 const MANAGED_NAMES = new Set(MANAGED.map((m) => m.name));

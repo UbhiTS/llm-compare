@@ -87,9 +87,9 @@ function modelFromCatalog(slot, id) {
 // The default slots shown in the UI on first load (a subset of the catalog).
 // Three slots = MAX_SLOTS in public/app.js, so this fills the arena on open.
 const DEFAULT_MODELS = [
-  modelFromCatalog('A', 'gemini-3.6-flash'),
+  modelFromCatalog('A', 'gemini-3.7-flash'),
   modelFromCatalog('B', 'claude-opus-5'),
-  modelFromCatalog('C', 'claude-fable-5'),
+  modelFromCatalog('C', 'gpt-5.6-sol'),
 ];
 
 // Server-authoritative model resolution for a run. Takes whatever the client

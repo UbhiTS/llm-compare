@@ -23,8 +23,9 @@ Everything is parameterized — nothing project-specific is hard-coded in the im
 > Registry (`containers`), a **GCS bucket for durable run history**, the runtime SA
 > (`${SERVICE}-run@…` — Vertex AI User + Secret accessor + bucket object admin) and
 > deployer SA (`${SERVICE}-deployer@…` — Artifact Registry writer + Run admin + act-as),
-> Workload Identity Federation, and the three Secret Manager secrets
-> (`AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD`). Fill in
+> Workload Identity Federation, and the four Secret Manager secrets
+> (`AGENT_PLATFORM_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_CLIENT_SECRET`,
+> `ADMIN_BOOTSTRAP_PASSWORD`). Fill in
 > `GITHUB_OWNER`/`GITHUB_REPO` and your billing/org IDs at the top, run it, then do the
 > OAuth client (Step 6). The steps below are the manual equivalent / reference.
 
@@ -115,12 +116,15 @@ gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" \
 
 ## Step 5 — secrets in Secret Manager
 
-The Gemini/Agent-Platform key, the OAuth client secret, and a **break-glass admin password**
-are injected at deploy time.
+The Gemini/Agent-Platform key, OpenAI key, OAuth client secret, and a **break-glass admin
+password** live in Secret Manager. The OpenAI key is loaded by the app's shared-key manager;
+the other three are injected at deploy time.
 
 ```bash
 printf '%s' "YOUR_AGENT_PLATFORM_API_KEY" | \
   gcloud secrets create AGENT_PLATFORM_API_KEY --data-file=- --project "$PROJECT_ID"
+printf '%s' "YOUR_OPENAI_API_KEY" | \
+  gcloud secrets create OPENAI_API_KEY --data-file=- --project "$PROJECT_ID"
 printf '%s' "YOUR_GOOGLE_OAUTH_CLIENT_SECRET" | \
   gcloud secrets create GOOGLE_CLIENT_SECRET --data-file=- --project "$PROJECT_ID"
 printf '%s' "A-STRONG-BREAKGLASS-ADMIN-PASSWORD" | \
@@ -248,6 +252,7 @@ admin, and Claude uses your `gcloud` login):
 docker build -t llm-compare .
 docker run --rm -p 8080:8080 \
   -e AGENT_PLATFORM_API_KEY="..." \
+  -e OPENAI_API_KEY="..." \
   -e GCP_PROJECT_ID="$PROJECT_ID" \
   llm-compare
 # open http://localhost:8080  (first visit prints a setup code in the container logs)
@@ -269,7 +274,7 @@ Or without Docker: `npm start` (see `README.md` / `.env.example`).
 | GH var | `APP_DATA_BUCKET` | GCS bucket mounted at `/data` for durable run history |
 | GH var | `GOOGLE_CLIENT_ID`, `OAUTH_REDIRECT_BASE` | Google sign-in config |
 | GH secret | `WIF_PROVIDER`, `DEPLOY_SERVICE_ACCOUNT` | keyless CI auth |
-| Secret Mgr | `AGENT_PLATFORM_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` | runtime secrets (API key, OAuth secret, break-glass admin) |
+| Secret Mgr | `AGENT_PLATFORM_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` | runtime secrets (provider keys, OAuth secret, break-glass admin) |
 
 All are also documented in `.env.example` for non-container runs.
 

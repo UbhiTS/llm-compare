@@ -105,6 +105,7 @@ ensure_secret() {
   fi
 }
 ensure_secret AGENT_PLATFORM_API_KEY   "Enter your Agent Platform / Gemini API key"
+ensure_secret OPENAI_API_KEY           "Enter your OpenAI API key for the default GPT-5.6 Sol slot"
 ensure_secret GOOGLE_CLIENT_SECRET     "Enter your Google OAuth client secret"
 ensure_secret ADMIN_BOOTSTRAP_PASSWORD "Enter a break-glass admin password (>= 10 chars)"
 

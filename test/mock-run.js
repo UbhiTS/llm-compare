@@ -16,13 +16,23 @@ process.env.GEMINI_API_KEY = 'mock-key';
 const assert = require('assert');
 const { runTests } = require('../src/runner');
 const { runComparison } = require('../src/orchestrator');
-const { MODEL_CATALOG, modelFromCatalog, resolveModels } = require('../src/pricing');
+const { MODEL_CATALOG, DEFAULT_MODELS, modelFromCatalog, resolveModels } = require('../src/pricing');
 const { complete, thinkingOptions, thinkingProfile } = require('../src/providers');
 const { TASKS } = require('../src/tasks');
 
 const fence = (code) => '```javascript\n' + code + '\n```';
 
 // ---- 0) server-authoritative catalog + thinking metadata ----
+assert.deepStrictEqual(
+  DEFAULT_MODELS.map((m) => ({ slot: m.slot, catalogId: m.catalogId })),
+  [
+    { slot: 'A', catalogId: 'gemini-3.7-flash' },
+    { slot: 'B', catalogId: 'claude-opus-5' },
+    { slot: 'C', catalogId: 'gpt-5.6-sol' },
+  ],
+  'default slots should use the release lineup in the configured order'
+);
+
 const gemini37 = MODEL_CATALOG.find((m) => m.id === 'gemini-3.7-flash');
 assert(gemini37, 'Gemini 3.7 Flash should be present in the model catalog');
 assert.deepStrictEqual(gemini37.price, { input: 0.75, output: 3.75 }, 'Gemini 3.7 Flash introductory pricing');
