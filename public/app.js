@@ -1005,8 +1005,13 @@ function renderJudge(r) {
       `<td class="jr-note">${esc(res.note)}</td></tr>`;
   }).join('');
   const heads = r.criteria.map((c) => `<th>${esc(c.label)}</th>`).join('');
+  const sent = r.charsSent ? ` · ${fmtInt(r.charsSent)} chars sent in full` : '';
+  const trim = r.truncated
+    ? `<p class="jp-warn">⚠ The combined answers exceeded the transport budget, so the longest were shortened. The judge was told which ones and instructed not to penalise them for it — but scores here are less reliable than on a run that fits.</p>`
+    : '';
   out.innerHTML =
-    `<div class="jp-meta">Judged by <b>${esc(r.judge.label)}</b> · ${esc(r.judge.model)} · blind order ${esc(r.blindOrder.map((s) => s.split('=')[0]).join(' → '))}</div>` +
+    `<div class="jp-meta">Judged by <b>${esc(r.judge.label)}</b> · ${esc(r.judge.model)} · blind order ${esc(r.blindOrder.map((s) => s.split('=')[0]).join(' → '))}${sent}</div>` +
+    trim +
     `<div class="table-wrap"><table class="judge-table"><thead><tr><th>Model</th><th>Overall</th>${heads}<th>Judge’s comment</th></tr></thead><tbody>${rows}</tbody></table></div>` +
     (r.why ? `<p class="jp-why"><b>Why:</b> ${esc(r.why)}</p>` : '') +
     `<p class="jp-fine">Scores are one model’s opinion, not a measurement. ${best ? '' : ''}The judge saw the answers in a shuffled order with all model names removed.</p>`;

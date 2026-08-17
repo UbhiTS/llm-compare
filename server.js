@@ -381,7 +381,7 @@ app.post('/api/judge', async (req, res) => {
   const clean = (Array.isArray(entries) ? entries : [])
     .filter((e) => e && typeof e.text === 'string' && e.text.trim())
     .slice(0, 6)
-    .map((e) => ({ slot: String(e.slot || '').slice(0, 4), label: String(e.label || '').slice(0, 80), text: e.text.slice(0, 20000) }));
+    .map((e) => ({ slot: String(e.slot || '').slice(0, 4), label: String(e.label || '').slice(0, 80), text: e.text.slice(0, 250000) }));
   if (clean.length < 2) return res.status(400).json({ error: 'Need at least two model outputs to compare.' });
 
   const rawKeys = (req.body && req.body.keys) || {};
