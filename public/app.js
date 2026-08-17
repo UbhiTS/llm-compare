@@ -119,11 +119,15 @@ async function init() {
   updateRunButton();
 
   $('#runBtn').addEventListener('click', run);
-  { const ar = $('#autoRun'); if (ar) ar.addEventListener('click', () => {
-    const on = !ar.classList.contains('is-on');
-    ar.classList.toggle('is-on', on);
-    ar.setAttribute('aria-pressed', String(on));
-  }); }
+  ['#autoRun', '#autoFix'].forEach((sel) => {
+    const b = $(sel);
+    if (!b) return;
+    b.addEventListener('click', () => {
+      const on = !b.classList.contains('is-on');
+      b.classList.toggle('is-on', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
+  });
   { const mv = $('#metricViewToggle'); if (mv) mv.addEventListener('click', (e) => {
     const b = e.target.closest('.mv-btn');
     if (!b || !_lastScored) return;
@@ -903,6 +907,220 @@ function buildArena(models) {
   });
 }
 
+// ---------- LLM-as-judge (ungraded tasks) -----------------------------------
+// Business and general tasks ship no hidden tests, so a run gives no quality
+// signal at all. This scores the answers themselves. Blinding and shuffling
+// happen on the server (src/judge.js); the UI's job is to make the setup
+// legible — who is judging, and that they judged blind.
+let _judgeScored = null;
+
+function judgeableEntries() {
+  return (ARENA_MODELS || MODELS)
+    .map((m) => ({ slot: m.slot, label: m.label, text: (LAST_RESULTS[m.slot] || {}).code || '' }))
+    .filter((e) => e.text.trim());
+}
+
+function setupJudgePanel(scored, isCustom) {
+  const panel = $('#judgePanel');
+  if (!panel) return;
+  // Only worth offering where there is no correctness number already.
+  const entries = judgeableEntries();
+  if (!isCustom || entries.length < 2) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+
+  const sel = $('#judgeModel');
+  const contestants = new Set(entries.map((e) => e.label));
+  const usable = catalog().filter((c) => modelAvailability(c).ok);
+  if (sel && !sel.options.length) {
+    sel.innerHTML = usable.map((c) =>
+      `<option value="${esc(c.id)}">${esc(c.label)}${contestants.has(c.label) ? ' — also competing' : ''}</option>`).join('');
+    // Prefer a judge that is NOT one of the models being judged.
+    const neutral = usable.find((c) => !contestants.has(c.label));
+    if (neutral) sel.value = neutral.id;
+  }
+  paintJudgeWarning(contestants);
+  if (sel && !sel._wired) {
+    sel._wired = true;
+    sel.addEventListener('change', () => paintJudgeWarning(new Set(judgeableEntries().map((e) => e.label))));
+  }
+  const btn = $('#judgeBtn');
+  if (btn && !btn._wired) { btn._wired = true; btn.addEventListener('click', runJudge); }
+}
+
+function paintJudgeWarning(contestants) {
+  const warn = $('#judgeWarn');
+  const sel = $('#judgeModel');
+  if (!warn || !sel) return;
+  const c = catalog().find((x) => x.id === sel.value);
+  const selfJudging = c && contestants.has(c.label);
+  warn.classList.toggle('hidden', !selfJudging);
+  if (selfJudging) {
+    warn.textContent = `⚠ ${c.label} is scoring a set of answers that includes its own. Models tend to favour their own output, so pick a judge that is not competing if you want this to hold up.`;
+  }
+}
+
+async function runJudge() {
+  const btn = $('#judgeBtn');
+  const out = $('#judgeOut');
+  const entries = judgeableEntries();
+  if (entries.length < 2 || !out) return;
+  const judgeId = $('#judgeModel').value;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Scoring…';
+  out.innerHTML = '<p class="jp-status">The judge is reading all answers…</p>';
+  try {
+    const resp = await fetch('/api/judge', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taskId: currentTask().id, prompt: $('#customPrompt').value, judge: judgeId, entries, keys: loadKeys() }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const r = await resp.json();
+    if (!resp.ok || !r.ok) throw new Error(r.error || 'Judging failed.');
+    _judgeScored = r;
+    renderJudge(r);
+  } catch (e) {
+    out.innerHTML = `<p class="jp-status jp-err">⚠ ${esc(e.message)}</p>`;
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
+}
+
+function renderJudge(r) {
+  const out = $('#judgeOut');
+  if (!out) return;
+  const ranked = r.results.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
+  const best = ranked.length ? ranked[0].overall : 0;
+  const rows = ranked.map((res) => {
+    const cells = r.criteria.map((c) => {
+      const v = res.scores[c.key];
+      return `<td class="jr-score"><span class="jr-bar" style="width:${v ? v * 10 : 0}%"></span><b>${v == null ? '—' : v}</b></td>`;
+    }).join('');
+    const win = res.slot === r.winnerSlot;
+    return `<tr class="${win ? 'jr-win' : ''}" style="--accent:${slotColor(res.slot)}">` +
+      `<td class="jr-name"><span class="jr-dot"></span>${esc(res.label)}` +
+      `${win ? '<span class="jr-badge">judge’s pick</span>' : ''}` +
+      `<span class="jr-blind">seen as ${esc(res.blindId)}</span></td>` +
+      `<td class="jr-overall"><b>${res.overall == null ? '—' : res.overall}</b><i>/10</i></td>` +
+      cells +
+      `<td class="jr-note">${esc(res.note)}</td></tr>`;
+  }).join('');
+  const heads = r.criteria.map((c) => `<th>${esc(c.label)}</th>`).join('');
+  out.innerHTML =
+    `<div class="jp-meta">Judged by <b>${esc(r.judge.label)}</b> · ${esc(r.judge.model)} · blind order ${esc(r.blindOrder.map((s) => s.split('=')[0]).join(' → '))}</div>` +
+    `<div class="table-wrap"><table class="judge-table"><thead><tr><th>Model</th><th>Overall</th>${heads}<th>Judge’s comment</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+    (r.why ? `<p class="jp-why"><b>Why:</b> ${esc(r.why)}</p>` : '') +
+    `<p class="jp-fine">Scores are one model’s opinion, not a measurement. ${best ? '' : ''}The judge saw the answers in a shuffled order with all model names removed.</p>`;
+}
+
+// ---------- crash detection & repair ----------------------------------------
+// A slot's code can fail in four ways we can actually observe: the WASM build
+// rejects it, the program exits non-zero / times out, the game page reports a
+// traceback or JS error, or the game never initialises its canvas. Any of those
+// parks a record here; the card then offers a repair round, which auto-fires
+// once per slot per run when the toggle is on.
+const CRASH = {};          // slot -> { error, code, source }
+const AUTOFIXED = {};      // slot -> true once a repair has been spent
+
+function autoFixOn() { const b = $('#autoFix'); return !!(b && b.classList.contains('is-on')); }
+
+function slotCode(slot) {
+  let code = (($(`#code-${slot}`) || {}).textContent) || '';
+  const fence = code.match(/```[a-zA-Z0-9+#.-]*[ \t]*\r?\n?([\s\S]*?)```/);
+  return (fence ? fence[1] : code).trim();
+}
+
+// Decide whether an /api/execute result represents a real failure. A GUI task
+// hitting the time limit is NOT a crash — that's just a game loop running.
+function crashFromExec(r, task) {
+  if (!r || r.error) return r && r.error ? { error: r.error, source: 'run' } : null;
+  if (r.kind === 'tests') {
+    return r.passed === r.total ? null
+      : { error: formatTestResult(r), source: 'tests' };
+  }
+  if (r.kind === 'launched') return r.launched ? null : { error: r.message || 'The program exited immediately.', source: 'launch' };
+  if (r.kind === 'program') {
+    const trace = /Traceback \(most recent call last\)|SyntaxError|IndentationError/.test(r.stderr || '');
+    if (trace || (r.exitCode != null && r.exitCode !== 0)) {
+      return { error: (r.stderr || '').trim() || `The program exited with code ${r.exitCode}.`, source: 'run' };
+    }
+    if (r.timedOut && !(task && task.gui)) {
+      return { error: 'The program hit the time limit without finishing. It may be stuck in an infinite loop.', source: 'timeout' };
+    }
+  }
+  return null;
+}
+
+// Record a crash for a slot and surface the offer. Auto-repair fires at most
+// once per slot per run so a model that keeps crashing can't loop or run up cost.
+function noteCrash(slot, crash) {
+  if (!crash || !crash.error) return;
+  const code = slotCode(slot);
+  if (!code) return;                       // nothing to repair
+  CRASH[slot] = { error: crash.error, code, source: crash.source || 'run' };
+  renderCrashBar(slot);
+  if (autoFixOn() && !AUTOFIXED[slot] && !slotIsRunning(slot)) {
+    AUTOFIXED[slot] = true;
+    repairSlot(slot, true);
+  }
+}
+function clearCrash(slot) {
+  delete CRASH[slot];
+  const bar = $(`#crash-${slot}`);
+  if (bar) bar.remove();
+}
+
+function renderCrashBar(slot) {
+  const c = CRASH[slot];
+  const host = $(`#exec-out-${slot}`);
+  if (!c || !host || !host.parentNode) return;
+  let bar = $(`#crash-${slot}`);
+  if (!bar) {
+    bar = el('div');
+    bar.className = 'crash-bar';
+    bar.id = `crash-${slot}`;
+    host.parentNode.insertBefore(bar, host);
+  }
+  const what = { tests: 'failed its hidden tests', nostart: 'never started',
+                 timeout: 'never finished', python: 'crashed', js: 'crashed',
+                 build: 'failed to build', launch: 'exited immediately' }[c.source] || 'crashed';
+  bar.innerHTML =
+    `<span class="cb-ic">⚠</span><span class="cb-txt">This code ${esc(what)}.</span>` +
+    `<button type="button" class="cb-fix" data-slot="${esc(slot)}">🔧 Fix it</button>` +
+    `<button type="button" class="cb-dismiss" data-slot="${esc(slot)}" title="Dismiss">&times;</button>`;
+  bar.querySelector('.cb-fix').addEventListener('click', () => repairSlot(slot, false));
+  bar.querySelector('.cb-dismiss').addEventListener('click', () => clearCrash(slot));
+}
+
+// One repair round: hand the model back its own code plus the real failure and
+// re-render the column from its corrected answer. Reuses the single-slot re-run
+// path, so streaming, quota, abort and history all behave identically.
+async function repairSlot(slot, automatic) {
+  const c = CRASH[slot];
+  if (!c) return;
+  const bar = $(`#crash-${slot}`);
+  if (bar) {
+    bar.classList.add('is-fixing');
+    bar.innerHTML = `<span class="cb-ic">🔧</span><span class="cb-txt">${automatic ? 'Auto-fixing' : 'Fixing'} — sending the failure back to this model…</span>`;
+  }
+  clearCrash(slot);
+  await rerunSlot(slot, { code: c.code, error: c.error });
+}
+
+// The framed game page posts its own failures up to us. Match the reporting
+// window back to a slot by comparing it with each column's iframe.
+window.addEventListener('message', (e) => {
+  const d = e && e.data;
+  if (!d || d.__ullm !== 'game-error' || e.origin !== window.location.origin) return;
+  const frames = document.querySelectorAll('.game-frame');
+  for (const f of frames) {
+    if (f.contentWindow === e.source) {
+      const slot = (f.closest('.col') || {}).dataset && f.closest('.col').dataset.slot;
+      if (slot) noteCrash(slot, { error: d.message, source: d.kind });
+      return;
+    }
+  }
+});
+
 // ---------- execute generated code (Python) from the UI ----------
 async function execSlotCode(slot) {
   const task = currentTask();
@@ -937,6 +1155,8 @@ async function execSlotCode(slot) {
     });
     if (resp.status === 401) { window.location.replace('/login'); return; }
     const r = await resp.json();
+    const crash = crashFromExec(r, task);
+    if (crash) noteCrash(slot, crash); else clearCrash(slot);
     if (r.error) {
       out.querySelector('code').textContent = '⚠ ' + r.error;
     } else if (r.kind === 'tests') {
@@ -982,6 +1202,7 @@ async function runWebGame(slot, code, btn, out, viz) {
     if (resp.status === 401) { window.location.replace('/login'); return; }
     const r = await resp.json();
     if (!resp.ok || !r.ok) throw new Error(r.error || 'Build failed.');
+    clearCrash(slot);      // a clean build supersedes any earlier failure
     out.classList.add('hidden');
     if (viz) {
       viz.classList.remove('hidden');
@@ -994,6 +1215,7 @@ async function runWebGame(slot, code, btn, out, viz) {
   } catch (e) {
     out.classList.remove('hidden');
     out.querySelector('code').textContent = '⚠ ' + e.message;
+    noteCrash(slot, { error: e.message, source: 'build' });
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
   }
@@ -1262,6 +1484,11 @@ async function run() {
   btn.disabled = true;
   btn.textContent = 'Running…';
   _busy = true; _fullRun = true;
+  // A new comparison gets a fresh repair allowance per slot.
+  Object.keys(AUTOFIXED).forEach((k) => delete AUTOFIXED[k]);
+  _judgeScored = null;
+  { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
+  Object.keys(CRASH).forEach((k) => clearCrash(k));
   $('#scorecard').classList.add('hidden');
 
   buildArena();
@@ -1318,7 +1545,7 @@ async function run() {
 // Re-run ONE model on the current task, leaving the other columns untouched.
 // The fresh result is merged into LAST_RESULTS and the scorecard is rebuilt from
 // the merged set, so you can retry a slow/failed model without redoing the rest.
-async function rerunSlot(slot) {
+async function rerunSlot(slot, repair) {
   const model = (ARENA_MODELS || MODELS).find((m) => m.slot === slot);
   if (!model) return;
   // Clickable at ANY time. Whatever currently owns this column — an in-flight
@@ -1339,6 +1566,7 @@ async function rerunSlot(slot) {
   paintRerunButton(slot);
 
   // Reset just this column.
+  clearCrash(slot);
   delete LAST_RESULTS[slot];
   wallFinished.delete(slot);
   ['tok', 'think', 'tps', 'cost'].forEach((k) => setTileVal(slot, k, 0));
@@ -1356,6 +1584,7 @@ async function rerunSlot(slot) {
       maxIterations: 1,
       models: [model],
       mode: 'single',            // draws on the separate single-model re-run budget
+      repair: repair || undefined,   // crash-repair round: same model, its code + the failure
       customPrompt: $('#customPrompt').value,
       keys: loadKeys(),
     }, LAST_RESULTS, ac.signal, own);
@@ -1465,7 +1694,8 @@ function handleEvent(ev, results, own) {
         const msg = rr.total === 0
           ? `Done · ${secs}s`
           : (rr.solved ? `Solved · ${secs}s` : `Finished ${rr.correctness}% · ${secs}s`);
-        setStatus(ev.slot, msg, 'done');
+        // Never let a repair pass as a clean first attempt.
+        setStatus(ev.slot, msg + (rr.repaired ? ' · after 1 fix round' : ''), 'done');
       }
       break;
     case 'model_error':
@@ -1537,6 +1767,7 @@ function buildScorecard(results) {
   _lastScored = { scored, isCustom };   // so the Bars/Scale toggle can repaint without recomputing
   renderModelLegend(scored);
   renderMetricGrid(scored, isCustom);
+  setupJudgePanel(scored, isCustom);
   renderTable(scored, isCustom);
 }
 let _lastScored = null;

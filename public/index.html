@@ -62,6 +62,7 @@
       </div>
       <button id="runBtn" class="ctl-btn primary">Run comparison ▸</button>
       <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
+      <button id="autoFix" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="When a model's code crashes, send the failure back to that model once for a fix. Repaired results are labelled."><span class="ar-led"></span>Auto-fix crashes</button>
       <button id="historyBtn" class="ctl-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
     </div>
     <div class="run-status-row">
@@ -97,6 +98,23 @@
 
     <div id="modelLegend" class="model-legend"></div>
     <div id="metricGrid" class="metric-grid"></div>
+
+    <section id="judgePanel" class="judge-panel hidden">
+      <div class="jp-head">
+        <div>
+          <h3>Quality score</h3>
+          <p class="jp-sub">This task has no hidden tests, so speed and cost are the only hard numbers above. Have a model score the actual answers.</p>
+        </div>
+        <div class="jp-controls">
+          <label for="judgeModel">Judge</label>
+          <select id="judgeModel"></select>
+          <button id="judgeBtn" class="ctl-btn primary" type="button">Evaluate blind ▸</button>
+        </div>
+      </div>
+      <p class="jp-note">The judge is shown the answers only &mdash; model names are removed and the order is shuffled before it sees them. It never learns who wrote what.</p>
+      <p id="judgeWarn" class="jp-warn hidden"></p>
+      <div id="judgeOut" class="jp-out"></div>
+    </section>
 
     <details class="sc-details">
       <summary>Full metrics table</summary>

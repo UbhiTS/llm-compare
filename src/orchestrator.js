@@ -8,7 +8,7 @@
 const { runAgent } = require('./agent');
 const { thinkingProfile } = require('./providers');
 
-async function runComparison({ task, models, maxIterations, emit, keys, signal }) {
+async function runComparison({ task, models, maxIterations, emit, keys, signal, repair }) {
   emit({
     type: 'start',
     task: { id: task.id, title: task.title, prompt: task.prompt, testCount: task.testCases.length, functionName: task.functionName },
@@ -20,7 +20,7 @@ async function runComparison({ task, models, maxIterations, emit, keys, signal }
   const results = await Promise.all(
     models.map(async (m) => {
       try {
-        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys, signal });
+        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys, signal, repair });
         emit({ type: 'done', slot: m.slot, result });
         return result;
       } catch (e) {

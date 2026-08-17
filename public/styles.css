@@ -346,6 +346,67 @@ select option { color: var(--text); background: var(--bg); }
   background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .td-think { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: help; }
 
+/* LLM-as-judge panel. Deliberately quieter than the measured metrics above it —
+   these are one model's opinions, and the design should not imply otherwise. */
+.judge-panel { margin: 22px 0 4px; padding: 18px 20px; border: 1px solid var(--border); background: var(--well); }
+.jp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.jp-head h3 { margin: 0 0 4px; font-family: "Space Grotesk", sans-serif; font-size: 18px; }
+.jp-sub { margin: 0; font-size: 13px; color: var(--muted); max-width: 62ch; }
+.jp-controls { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.jp-controls label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.jp-controls select { height: 42px; padding: 0 10px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); font: inherit; font-size: 13px; }
+.jp-note { margin: 12px 0 0; font-size: 12.5px; color: var(--faint); max-width: 78ch; }
+.jp-warn { margin: 10px 0 0; padding: 8px 11px; font-size: 12.5px; color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.jp-out { margin-top: 14px; }
+.jp-status { font-size: 13px; color: var(--muted); margin: 0; }
+.jp-status.jp-err { color: var(--bad); }
+.jp-meta { font-size: 12px; color: var(--muted); margin-bottom: 10px; font-family: "JetBrains Mono", monospace; }
+.jp-why { margin: 12px 0 0; font-size: 13.5px; color: var(--text); max-width: 82ch; }
+.jp-fine { margin: 10px 0 0; font-size: 12px; color: var(--faint); }
+
+.judge-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.judge-table th { text-align: left; padding: 7px 10px; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint); border-bottom: 1px solid var(--border); font-weight: 600; }
+.judge-table td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.judge-table tr.jr-win { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.jr-name { white-space: nowrap; font-weight: 600; }
+.jr-dot { display: inline-block; width: 8px; height: 8px; background: var(--accent); margin-right: 7px; }
+.jr-badge { margin-left: 8px; font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  padding: 2px 6px; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.jr-blind { display: block; font-size: 10.5px; color: var(--faint); font-weight: 400;
+  font-family: "JetBrains Mono", monospace; margin-top: 2px; }
+.jr-overall { white-space: nowrap; font-family: "JetBrains Mono", monospace; }
+.jr-overall b { font-size: 19px; }
+.jr-overall i { color: var(--faint); font-style: normal; font-size: 11px; margin-left: 2px; }
+.jr-score { position: relative; font-family: "JetBrains Mono", monospace; min-width: 62px; }
+.jr-score .jr-bar { position: absolute; left: 10px; right: 10px; bottom: 4px; height: 3px;
+  background: var(--accent); opacity: .55; max-width: calc(100% - 20px); }
+.jr-note { color: var(--muted); font-size: 12.5px; min-width: 220px; }
+
+/* Crash offer: a model's code failed when it was actually run. Warning-coloured,
+   not error-coloured — this is an actionable state, not a dead end. */
+.crash-bar { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 13px; color: var(--text); }
+.crash-bar .cb-ic { flex: 0 0 auto; color: var(--warn); }
+.crash-bar .cb-txt { flex: 1 1 auto; min-width: 0; }
+.crash-bar .cb-fix { flex: 0 0 auto; cursor: pointer; font: inherit; font-weight: 600; padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border));
+  background: var(--well); color: var(--text); }
+.crash-bar .cb-fix:hover { border-color: var(--warn); }
+.crash-bar .cb-fix:focus-visible,
+.crash-bar .cb-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.crash-bar .cb-dismiss { flex: 0 0 auto; cursor: pointer; background: none; border: 0; color: var(--muted);
+  font-size: 18px; line-height: 1; padding: 0 2px; }
+.crash-bar .cb-dismiss:hover { color: var(--text); }
+.crash-bar.is-fixing { border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.crash-bar.is-fixing .cb-ic { color: var(--accent); }
+
 .col-status { padding: 11px 17px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); border-bottom: 1px solid var(--border); }
 .spinner { width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; box-shadow: 0 0 8px -2px var(--accent); }
 @keyframes spin { to { transform: rotate(360deg); } }

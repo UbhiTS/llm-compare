@@ -26,6 +26,7 @@ const { DEFAULT_MODELS, MODEL_CATALOG, resolveModels } = require('./src/pricing'
 const { TASKS } = require('./src/tasks');
 const { autoMintEnabled } = require('./src/gcloudToken');
 const { runCode, executionEnabled } = require('./src/codeRunner');
+const { judgeOutputs } = require('./src/judge');
 const { buildWebGame, gameDir, webGameEnabled } = require('./src/webGame');
 const history = require('./src/history');
 const auth = require('./src/auth');
@@ -366,6 +367,45 @@ app.post('/api/execute', async (req, res) => {
   }
 });
 
+// Score a finished run's outputs with an LLM judge. Only meaningful for the
+// ungraded (business / general) tasks, which have no hidden tests and therefore
+// no quality signal of their own. Blinding and shuffling happen in src/judge.js.
+app.post('/api/judge', async (req, res) => {
+  const { taskId, judge: judgeId, entries } = req.body || {};
+  const task = TASKS.find((t) => t.id === taskId)
+    || { id: 'custom', title: 'Custom prompt', prompt: String((req.body && req.body.prompt) || ''), testCases: [] };
+
+  const judge = resolveModels([{ catalogId: judgeId, slot: 'J' }])[0];
+  if (!judge || judge.catalogId !== judgeId) return res.status(400).json({ error: 'Pick a judge model from the catalog.' });
+
+  const clean = (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && typeof e.text === 'string' && e.text.trim())
+    .slice(0, 6)
+    .map((e) => ({ slot: String(e.slot || '').slice(0, 4), label: String(e.label || '').slice(0, 80), text: e.text.slice(0, 20000) }));
+  if (clean.length < 2) return res.status(400).json({ error: 'Need at least two model outputs to compare.' });
+
+  const rawKeys = (req.body && req.body.keys) || {};
+  const keys = {};
+  for (const k of ['agentplatform', 'gemini', 'openai', 'anthropic', 'claudeBearerToken', 'gcpProject']) {
+    if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
+  }
+
+  // A judgement is one more LLM call on the server's keys, so it is metered like
+  // any other. Own-key users and admins are exempt, same as everywhere else.
+  if (!modelUsesOwnKey(judge, keys)) {
+    const quota = auth.consumeRun(req.user, 'single');
+    if (!quota.ok) return res.status(429).json({ error: `Daily limit reached for single-model calls (${quota.limit}/day). Judging uses the same budget.` });
+  }
+
+  try {
+    const verdict = await judgeOutputs({ task, entries: clean, judge, keys });
+    console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
+    res.json({ ok: true, ...verdict });
+  } catch (e) {
+    res.status(400).json({ error: String((e && e.message) || e) });
+  }
+});
+
 // Build an LLM-generated Pygame program into a browser-runnable WASM bundle so a
 // GUI task renders in the user's browser (works for remote clients). Returns a URL
 // under /games/<id>/ that the client embeds in an <iframe>.
@@ -460,6 +500,18 @@ app.post('/api/run', async (req, res) => {
   // run — otherwise a crafted request could get a full comparison out of the
   // cheaper bucket.
   const kind = (req.body && req.body.mode === 'single' && chosenModels.length === 1) ? 'single' : 'compare';
+
+  // Crash-repair round: the client hands back the code it actually ran and the
+  // failure it produced, and the model gets one chance to fix it. Only ever for
+  // a single model — repairing a whole comparison at once would silently give
+  // every slot an extra attempt and make the correctness numbers meaningless.
+  // Both fields are hard-capped here; the prompt builder truncates again.
+  const rawRepair = (req.body && req.body.repair) || null;
+  const repair = (rawRepair && chosenModels.length === 1
+    && typeof rawRepair.code === 'string' && rawRepair.code.trim()
+    && typeof rawRepair.error === 'string' && rawRepair.error.trim())
+    ? { code: rawRepair.code.slice(0, 20000), error: rawRepair.error.slice(0, 4000) }
+    : null;
   let quotaInfo = { limited: false }; // surfaced to the client so it can show the live counter
   if (!usingOwnKeys) {
     const quota = auth.consumeRun(req.user, kind);
@@ -512,7 +564,7 @@ app.post('/api/run', async (req, res) => {
 
   let results = null;
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: String((e && e.message) || e) });
   }

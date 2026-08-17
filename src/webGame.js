@@ -102,18 +102,39 @@ function patchIndexHtml(idxPath) {
     // never hands off, drop its "Loading…" overlay after a grace period so a
     // running or frozen game is visible instead of a perpetual spinner.
     if (html.indexOf('ullm-diag') < 0) {
-      const nl = '\\n';
-      const diag =
-        '<script>(function(){' +
-        'function box(){var e=document.getElementById("ullm-diag");if(!e){e=document.createElement("div");e.id="ullm-diag";' +
-        'e.style.cssText="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(30,0,0,.92);color:#ff9b9b;font:12px/1.4 monospace;padding:8px 10px;white-space:pre-wrap;max-height:45%;overflow:auto";' +
-        'document.body.appendChild(e);}return e;}' +
-        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0;}' +
-        'window.addEventListener("error",function(e){var src=(e&&e.filename)||"";if(noise(src)||noise(e&&e.message))return;box().textContent+="JS error: "+((e&&e.message)||e)+(src?(" @ "+src+":"+(e.lineno||"")):"")+"' + nl + '";});' +
-        'window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason;var m=(r&&r.message)||r;if(noise(m))return;box().textContent+="Promise rejected: "+m+"' + nl + '";});' +
-        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";' +
-        'var c=document.getElementById("canvas");if(c&&c.width<=1){var pc=document.getElementById("pyconsole");if(pc){pc.hidden=false;pc.style.cssText="position:fixed;left:0;right:0;bottom:0;height:45%;z-index:2147483646;background:#000;color:#ddd;overflow:auto;font:11px monospace";}}},15000);' +
-        '})();</script>';
+      // The page is served from our own origin and framed by the arena, so it can
+      // post failures straight up to the parent, which turns them into a "Fix it"
+      // offer. Three signals, in descending confidence:
+      //   python  — a real traceback scraped out of pygbag's console element
+      //   js      — a window error / unhandled rejection (extension noise filtered)
+      //   nostart — the canvas was never sized, i.e. it died during import or setup
+      const diag = [
+        '<script>(function(){',
+        'var seen={};',
+        'function report(kind,text){text=String(text||"").slice(0,2000);var k=kind+"|"+text;',
+        'if(seen[k])return;seen[k]=1;',
+        'try{parent.postMessage({__ullm:"game-error",kind:kind,message:text},location.origin);}catch(e){}}',
+        'function box(){var e=document.getElementById("ullm-diag");if(!e){e=document.createElement("div");e.id="ullm-diag";',
+        'e.style.cssText="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(30,0,0,.92);color:#ff9b9b;font:12px/1.4 monospace;padding:8px 10px;white-space:pre-wrap;max-height:45%;overflow:auto";',
+        'document.body.appendChild(e);}return e;}',
+        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0;}',
+        'window.addEventListener("error",function(e){var src=(e&&e.filename)||"";var m=(e&&e.message)||String(e);',
+        'if(noise(src)||noise(m))return;box().textContent+="JS error: "+m+(src?(" @ "+src+":"+(e.lineno||"")):"")+"\\n";',
+        'report("js",m+(src?(" @ "+src):""));});',
+        'window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason;var m=(r&&r.message)||r;',
+        'if(noise(m))return;box().textContent+="Promise rejected: "+m+"\\n";report("js","Unhandled rejection: "+m);});',
+        // pygbag prints Python tracebacks into #pyconsole (a textarea in 0.9.x).
+        'function scanPy(){var pc=document.getElementById("pyconsole");if(!pc)return;',
+        'var t=pc.value||pc.textContent||"";var i=t.lastIndexOf("Traceback (most recent call last)");',
+        'if(i>=0)report("python",t.slice(i));}',
+        'setInterval(scanPy,2000);',
+        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";',
+        'var c=document.getElementById("canvas");if(c&&c.width<=1){var pc=document.getElementById("pyconsole");',
+        'if(pc){pc.hidden=false;pc.style.cssText="position:fixed;left:0;right:0;bottom:0;height:45%;z-index:2147483646;background:#000;color:#ddd;overflow:auto;font:11px monospace";}',
+        'scanPy();',
+        'report("nostart","The game never started: after 15 seconds its canvas had still not been initialised. This usually means an exception was raised during import or setup, before the display was created.");}},15000);',
+        '})();</script>',
+      ].join('');
       if (html.indexOf('</body>') >= 0) html = html.replace('</body>', diag + '\n</body>');
       else html += diag;
     }

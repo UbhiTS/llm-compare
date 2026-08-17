@@ -47,6 +47,33 @@ function buildInitialMessages(task) {
   return [{ role: 'user', content: `${task.prompt}${tail}` }];
 }
 
+// A repair round: the model's own program crashed when it was actually run, so
+// hand it back its code plus the real failure output and ask for a corrected
+// version. Kept to ONE round by the caller — this is a demo, not an agent loop.
+const MAX_REPAIR_CHARS = 6000;      // enough for a full program without blowing the prompt
+const MAX_REPAIR_ERR = 2000;        // a traceback's tail is the useful part
+
+function buildRepairMessages(task, repair) {
+  const code = String((repair && repair.code) || '').slice(0, MAX_REPAIR_CHARS);
+  const err = String((repair && repair.error) || '').slice(-MAX_REPAIR_ERR);
+  const lang = task.language === 'python' ? 'python' : task.language === 'javascript' ? 'javascript' : '';
+  const fence = lang || '';
+  return [{
+    role: 'user',
+    content:
+      `${task.prompt}\n\n` +
+      `---\n\n` +
+      `You already answered this, but the program you produced FAILED when it was run. ` +
+      `Here is the code you returned:\n\n\`\`\`${fence}\n${code}\n\`\`\`\n\n` +
+      `And here is what happened when it ran:\n\n\`\`\`\n${err}\n\`\`\`\n\n` +
+      `Diagnose the failure and return the COMPLETE corrected program. Do not return a patch, ` +
+      `a diff, or only the changed lines — return the whole file, ready to run. ` +
+      (fence
+        ? `Return ONLY a single fenced \`\`\`${fence} code block with no prose before or after it.`
+        : `Return only the corrected output.`),
+  }];
+}
+
 function buildFixMessage(task, failing) {
   const shown = failing.slice(0, 5);
   const lines = shown
@@ -63,12 +90,15 @@ function buildFixMessage(task, failing) {
   );
 }
 
-async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal }) {
+async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, repair }) {
   const slot = modelConfig.slot;
   const system = task.language
     ? CODE_SYSTEM_PROMPT
     : 'You are a helpful assistant. When the user asks for a detailed plan or analysis, be thorough and well-structured.';
-  const messages = buildInitialMessages(task);
+  // A repair run replaces the opening turn with the crash report; everything
+  // downstream (streaming, metrics, cost) is identical to a normal run.
+  const isRepair = !!(repair && repair.code && repair.error);
+  const messages = isRepair ? buildRepairMessages(task, repair) : buildInitialMessages(task);
 
   // completionTokens = ALL output tokens (answer + thinking, which is how output is billed);
   // reasoningTokens = the thinking subset. answer-only = completionTokens - reasoningTokens.
@@ -219,6 +249,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal }
     model: modelConfig.model,
     price,
     thinking: thinkingProfile(modelConfig),   // what reasoning config this run was sent
+    repaired: isRepair,                       // this output followed a crash-repair round
     iterations,
     passed,
     total,
