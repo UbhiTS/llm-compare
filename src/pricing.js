@@ -9,6 +9,9 @@
 // price or model id is ignored.
 //
 // Prices are USD per 1,000,000 tokens, taken from public 2026 pricing:
+//   • Gemini 3.8 Flash      — $0.75 in / $3.75 out (introductory through 2026-12-31;
+//       1M context / 64k output. Thinking levels: low | medium | high — it REJECTS
+//       'minimal' with a 400, unlike 3.6/3.5 Flash. Verified live 2026-09-02.)
 //   • Gemini 3.7 Flash      — $0.75 in / $3.75 out (introductory through 2026-12-31)
 //   • Gemini 3.6 Flash      — $0.75 in / $3.75 out (same introductory rate;
 //       ⚠ both rise to $1.50 / $7.50 on 2027-01-01 — update the catalog then)
@@ -32,7 +35,8 @@ const PRICING = {
 // (Vertex); `publisher` = google | anthropic. `id` is the stable catalog key
 // (== `model` except where the API id differs, e.g. Gemini 3.1 Pro's preview id).
 const MODEL_CATALOG = [
-  // Gemini 3.7 / 3.6 Flash introductory pricing ends 2026-12-31 → then { input: 1.50, output: 7.50 }.
+  // Gemini 3.8 / 3.7 / 3.6 Flash introductory pricing ends 2026-12-31 → then { input: 1.50, output: 7.50 }.
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.8-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
   { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.7-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
   { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 }, context: 1000000 },

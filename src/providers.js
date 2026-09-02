@@ -93,9 +93,16 @@ function claudeThinkingFields(model, effort) {
 // Gemini 3.x uses `thinkingConfig.thinkingLevel`, not the 2.5-era thinkingBudget
 // (ai.google.dev/gemini-api/docs/thinking). Verified live on Agent Platform:
 // minimal → 0 thought tokens in 2.7s, low → 236, medium → 898, high → 899, and an
-// invalid value is rejected with an enum error. `minimal` is unsupported on
-// Gemini 3.7 Flash and the 3.1 Pro preview, so levels are listed per model.
+// invalid value is rejected with an enum error.
+//
+// Support is NOT uniform across the family, so every entry below was probed live
+// rather than inferred from the name: Gemini 3.8 Flash, 3.7 Flash and the 3.1 Pro
+// preview all reject 'minimal' with a 400 ("Thinking level is unsupported:
+// THINKING_LEVEL_MINIMAL") while 3.6, 3.5 Flash and 3.5 Flash Lite accept it.
+// Offering a level a model rejects turns the picker into a hard failure — probe a
+// new model before listing it here.
 const GEMINI_LEVELS = {
+  'gemini-3.8-flash':       ['low', 'medium', 'high'],          // no minimal (verified)
   'gemini-3.7-flash':       ['low', 'medium', 'high'],
   'gemini-3.6-flash':       ['minimal', 'low', 'medium', 'high'],
   'gemini-3.5-flash':       ['minimal', 'low', 'medium', 'high'],
@@ -117,9 +124,16 @@ function geminiThinkingConfig(model, effort) {
 // Gemini 3.6+ Flash rejects or ignores custom sampling values; the 3.7
 // migration contract explicitly requires temperature/top-p/top-k to be absent.
 // Keep this shared so streaming and non-streaming requests stay identical.
+function geminiVersion(model) {
+  const m = String(model || '').match(/^gemini-(\d+)(?:\.(\d+))?/);
+  return m ? Number(m[1]) + (m[2] ? Number(m[2]) / 10 : 0) : 0;
+}
 function geminiGenerationConfig(model, effort) {
   const cfg = { thinkingConfig: geminiThinkingConfig(model, effort) };
-  if (!['gemini-3.7-flash', 'gemini-3.6-flash'].includes(String(model || ''))) cfg.temperature = 0.2;
+  // Version-gated rather than an allowlist, so a newly added 3.x Flash is handled
+  // without a second edit — the previous hardcoded list would silently have sent
+  // temperature to 3.8.
+  if (geminiVersion(model) < 3.6) cfg.temperature = 0.2;
   return cfg;
 }
 
