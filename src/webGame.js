@@ -123,6 +123,37 @@ function patchIndexHtml(idxPath) {
     // reads "Loading…", the user has no idea they need to make. ume_block:0 starts
     // the game immediately; the audio context simply resumes on the first click.
     html = html.replace(/ume_block\s*:\s*1/g, 'ume_block : 0');
+    // pygbag's loader resolves PACKAGE wheels (pygame_ce, numpy, ...) against its
+    // own dev-server default, http://localhost:8000/cdn/, not the "-CDN-" base
+    // declared in its package index. Nothing serves :8000 here and our CSP blocks
+    // it, so the wheel fetch fails, pygame never imports, and the loader sits
+    // there with the tab pinned — the "frozen game" symptom. The URL is built at
+    // runtime, so it cannot be patched statically; rewrite it on the way out
+    // instead. Injected into <head> so it is installed before any fetch happens.
+    if (html.indexOf('ullm-cdn-fix') < 0) {
+      // Plain prefix matching, deliberately no regex literal: a regex here has to
+      // survive being written into a JS string and then into HTML, and an escaping
+      // slip silently produces an invalid literal that throws at parse time — which
+      // would leave the rewrite silently doing nothing.
+      const fix = [
+        '<script id="ullm-cdn-fix">(function(){',
+        'var BAD=["http://localhost:8000/","https://localhost:8000/"];',
+        'var GOOD="https://pygame-web.github.io/";',
+        'function fx(u){u=String(u);for(var i=0;i<BAD.length;i++){',
+        'if(u.slice(0,BAD[i].length)===BAD[i])return GOOD+u.slice(BAD[i].length);}',
+        'return u;}',
+        'var of=window.fetch;',
+        'window.fetch=function(i,o){',
+        'if(typeof i==="string")i=fx(i);',
+        'else if(i&&i.url){var n=fx(i.url);if(n!==i.url)i=new Request(n,i);}',
+        'return of.call(this,i,o);};',
+        'var oo=XMLHttpRequest.prototype.open;',
+        'XMLHttpRequest.prototype.open=function(m,u){',
+        'var a=[].slice.call(arguments);a[1]=fx(u);return oo.apply(this,a);};',
+        '})();<' + '/script>',
+      ].join('');
+      html = html.replace(/<head>/i, '<head>' + fix);
+    }
     // Make the game page self-diagnosing: surface real errors (ignoring browser-
     // extension noise like the injected share-modal.js), and if pygbag's loader
     // never hands off, drop its "Loading…" overlay after a grace period so a
@@ -173,7 +204,14 @@ function runPygbag(appDir) {
     const args = ['-m', 'pygbag', '--build', path.join(appDir, 'main.py')];
     let child;
     try {
-      child = spawn(PYTHON_CMD, args, { cwd: appDir, windowsHide: true });
+      // PEP 540 UTF-8 mode. pygbag opens main.py with the interpreter's default
+      // encoding, which on Windows is cp1252 — so a single non-ASCII character in
+      // the generated source (models routinely emit arrows in a controls legend:
+      // "Left/Right ← →") crashes the build with UnicodeDecodeError before any
+      // bundle is produced. Forcing UTF-8 makes the build locale-independent and
+      // identical to the Linux container.
+      const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+      child = spawn(PYTHON_CMD, args, { cwd: appDir, windowsHide: true, env });
     } catch (e) { return reject(new Error('Failed to start pygbag: ' + e.message)); }
     let log = '';
     const timer = setTimeout(() => { try { child.kill(); } catch (_) {} reject(new Error('pygbag build timed out')); }, BUILD_TIMEOUT_MS);

@@ -53,6 +53,14 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  // COOP alone is not enough: a document is only cross-origin ISOLATED (and only
+  // then gets SharedArrayBuffer) with COEP as well, and an iframe can never be
+  // isolated unless its top-level page already is. Without SharedArrayBuffer
+  // pygbag falls back to a blocking main-thread mode that pins the renderer, so
+  // running a game froze the whole tab. 'credentialless' rather than
+  // 'require-corp' because our CDN subresources (cdnjs, jsdelivr, Google Fonts)
+  // do not send CORP headers and require-corp would block them outright.
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
   // HSTS only over HTTPS (harmless/ignored on plain HTTP; req.secure honors trust proxy).
   if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
   res.setHeader('Content-Security-Policy', [
@@ -434,6 +442,12 @@ app.get('/games/:id/*', (req, res) => {
   const fp = path.normalize(path.join(dir, rel));
   if (fp !== dir && !fp.startsWith(dir + path.sep)) return res.status(400).end(); // no path traversal
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  // Cross-origin isolation for the game document itself. Verified: with these
+  // headers the Tetris bundle runs and the page stays responsive; without them
+  // the identical bundle hard-freezes the renderer.
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   res.setHeader('Content-Security-Policy', [
     "default-src 'self' https://pygame-web.github.io https://cdn.jsdelivr.net",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://pygame-web.github.io https://cdn.jsdelivr.net",
