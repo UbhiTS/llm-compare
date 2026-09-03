@@ -57,11 +57,13 @@ function sanitizeForPygbag(code) {
 }
 
 // Build (or reuse a cached build of) the given Python/Pygame source. Returns
-// { id, cached }. Concurrent requests for identical code share one build.
 async function buildWebGame(code) {
   const id = idFor(code);
   const webDir = webDirFor(id);
-  if (games.has(id) && fs.existsSync(path.join(webDir, 'index.html'))) return { id, cached: true };
+  if (fs.existsSync(path.join(webDir, 'index.html'))) {
+    games.set(id, { dir: webDir, builtAt: Date.now() });
+    return { id, cached: true };
+  }
   if (building.has(id)) { await building.get(id); return { id, cached: true }; }
 
   const p = (async () => {

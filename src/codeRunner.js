@@ -49,7 +49,15 @@ function runPython(code) {
     // -I = isolated mode (ignore env-derived sys.path / user site) for a bit of hygiene.
     const child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { windowsHide: true, env });
 
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, EXEC_TIMEOUT_MS);
+    const killProcessTree = () => {
+      if (!child.pid) return;
+      if (process.platform === 'win32') {
+        try { spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true }); } catch (_) { child.kill(); }
+      } else {
+        child.kill('SIGKILL');
+      }
+    };
+    const timer = setTimeout(() => { timedOut = true; killProcessTree(); }, EXEC_TIMEOUT_MS);
     if (child.stdin) { try { child.stdin.end(); } catch (_) { /* ignore */ } }
     child.stdout.on('data', (d) => { if (stdout.length < MAX_OUTPUT) stdout += d.toString(); });
     child.stderr.on('data', (d) => { if (stderr.length < MAX_OUTPUT) stderr += d.toString(); });

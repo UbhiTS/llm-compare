@@ -413,7 +413,9 @@ function refundRun(user, kind) {
 // ---------- periodic cleanup (bounds memory; never blocks shutdown) ----------
 setInterval(() => {
   const now = Date.now();
-  for (const [t, s] of sessions) if (now > s.expiresAt) sessions.delete(t);
+  for (const [t, s] of sessions) {
+    if (now > s.expiresAt || (now - s.createdAt > SESSION_ABSOLUTE_TTL_MS)) sessions.delete(t);
+  }
   for (const [k, e] of loginAttempts) if (e.lockedUntil < now && now - e.last > 60 * 60 * 1000) loginAttempts.delete(k);
   const today = utcDay();
   for (const k of runCounts.keys()) if (!k.endsWith('|' + today)) runCounts.delete(k); // drop prior days

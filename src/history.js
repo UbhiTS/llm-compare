@@ -35,7 +35,47 @@ function safeId(id) { return /^[a-z0-9-]{1,80}$/.test(String(id || '')) ? String
 function newId() { return `${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`; }
 
 function ensureDir(dir) { fs.mkdirSync(dir, { recursive: true }); }
-function readJson(fp) { try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (e) { return null; } }
+
+// In-memory caches: avoid re-reading and re-parsing immutable run files on Cloud Run (GCS FUSE)
+const recordCache = new Map(); // fp -> record
+const dirCache = new Map();    // dir -> { files, at }
+const DIR_CACHE_TTL_MS = 10 * 1000;
+const MAX_RECORD_CACHE = 2000;
+
+function readJson(fp) {
+  if (recordCache.has(fp)) return recordCache.get(fp);
+  try {
+    const data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    if (data) {
+      if (recordCache.size >= MAX_RECORD_CACHE) {
+        const firstKey = recordCache.keys().next().value;
+        recordCache.delete(firstKey);
+      }
+      recordCache.set(fp, data);
+    }
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function readDirSafe(dir) {
+  const cached = dirCache.get(dir);
+  const now = Date.now();
+  if (cached && now - cached.at < DIR_CACHE_TTL_MS) return cached.files;
+  try {
+    const files = fs.readdirSync(dir);
+    dirCache.set(dir, { files, at: now });
+    return files;
+  } catch (e) {
+    return [];
+  }
+}
+
+function invalidateDirCache(dir) {
+  dirCache.delete(dir);
+  dirCache.delete(BASE_DIR);
+}
 
 // Derive the compact per-slot summary shown in lists / usage (no code/reasoning).
 function summarize(models, results) {
@@ -79,8 +119,10 @@ async function saveRun({ user, userName, task, models, results, kind }) {
     const dir = path.join(BASE_DIR, userKey(user));
     await fsp.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, id + '.json.tmp');
-    await fsp.writeFile(tmp, JSON.stringify(record));
-    await fsp.rename(tmp, path.join(dir, id + '.json'));
+    const finalPath = path.join(dir, id + '.json');
+    await fsp.rename(tmp, finalPath);
+    recordCache.set(finalPath, record);
+    invalidateDirCache(dir);
     return listItem(record);
   } catch (e) {
     console.warn('[history] saveRun failed:', (e && e.message) || e);
@@ -92,8 +134,6 @@ async function saveRun({ user, userName, task, models, results, kind }) {
 function listItem(rec) {
   return { id: rec.id, at: rec.at, user: rec.user, userName: rec.userName, taskId: rec.taskId, title: rec.title, summary: rec.summary };
 }
-
-function readDirSafe(dir) { try { return fs.readdirSync(dir); } catch (e) { return []; } }
 
 // All run records under a single owner directory (newest first), full objects.
 function recordsForKey(key, cap) {
@@ -169,7 +209,14 @@ function deleteRun(id, { username, isAdmin }) {
     }
   }
   for (const fp of candidates) {
-    try { if (fs.existsSync(fp)) { fs.unlinkSync(fp); return true; } } catch (e) { /* keep trying */ }
+    try {
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
+        recordCache.delete(fp);
+        invalidateDirCache(path.dirname(fp));
+        return true;
+      }
+    } catch (e) { /* keep trying */ }
   }
   return false;
 }

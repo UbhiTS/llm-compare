@@ -45,7 +45,11 @@ ${code}
   for (var i = 0; i < tests.length; i++) {
     try {
       var r = ${functionName}.apply(null, tests[i].input);
-      out.push({ ok: __dq(r, tests[i].expected), got: r });
+      if (r && typeof r.then === 'function') {
+        out.push({ ok: false, error: 'Function returned a Promise — expected a synchronous return value.' });
+      } else {
+        out.push({ ok: __dq(r, tests[i].expected), got: r });
+      }
     } catch (e) {
       out.push({ ok: false, error: String((e && e.message) || e) });
     }

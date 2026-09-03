@@ -37,13 +37,31 @@ function parseTaskFile(raw) {
   const body = m ? m[2] : raw;
 
   const task = {};
-  metaBlock.split(/\r?\n/).forEach((line) => {
+  const lines = metaBlock.split(/\r?\n/);
+  let currentKey = null;
+  let currentRaw = '';
+
+  const flush = () => {
+    if (currentKey) {
+      task[currentKey] = parseValue(currentRaw);
+      currentKey = null;
+      currentRaw = '';
+    }
+  };
+
+  lines.forEach((line) => {
     const t = line.trim();
     if (!t || t.startsWith('#')) return;
-    const idx = line.indexOf(':');
-    if (idx < 0) return;
-    task[line.slice(0, idx).trim()] = parseValue(line.slice(idx + 1));
+    const topKeyMatch = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
+    if (topKeyMatch) {
+      flush();
+      currentKey = topKeyMatch[1].trim();
+      currentRaw = topKeyMatch[2] || '';
+    } else if (currentKey) {
+      currentRaw += '\n' + line;
+    }
   });
+  flush();
 
   task.prompt = body.trim();
   if (task.language === undefined) task.language = null;
