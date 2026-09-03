@@ -56,11 +56,26 @@ function sanitizeForPygbag(code) {
   return shim + out;
 }
 
+// A build is only reusable once pygbag has finished AND patchIndexHtml has run.
+// pygbag writes index.html partway through, so "index.html exists" is NOT the
+// same as "this bundle works": an unpatched loader still points at the dead
+// browserfs CDN and sits on "Loading..." forever. A build that times out, fails
+// or is interrupted after pygbag emits index.html would otherwise leave that
+// broken file on disk and be served as a cache hit for every later request with
+// the same code -- which is exactly what makes replaying a history item hang,
+// since the same source always hashes to the same id.
+const READY_FILE = '.ullm-ready';
+
+function isBuilt(webDir) {
+  return fs.existsSync(path.join(webDir, 'index.html')) && fs.existsSync(path.join(webDir, READY_FILE));
+}
+
 // Build (or reuse a cached build of) the given Python/Pygame source. Returns
+// { id, cached }. Concurrent requests for identical code share one build.
 async function buildWebGame(code) {
   const id = idFor(code);
   const webDir = webDirFor(id);
-  if (fs.existsSync(path.join(webDir, 'index.html'))) {
+  if (isBuilt(webDir)) {
     games.set(id, { dir: webDir, builtAt: Date.now() });
     return { id, cached: true };
   }
@@ -68,6 +83,9 @@ async function buildWebGame(code) {
 
   const p = (async () => {
     const appDir = path.join(ROOT, id);
+    // Clear anything a previous failed attempt left behind, so we never build on
+    // top of a half-written bundle.
+    try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
     fs.mkdirSync(appDir, { recursive: true });
     fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(code), 'utf8'); // pygbag entry point must be main.py
     await runPygbag(appDir);
@@ -76,6 +94,12 @@ async function buildWebGame(code) {
       throw new Error('pygbag finished but produced no build/web/index.html');
     }
     patchIndexHtml(idxPath);
+    // patchIndexHtml swallows its own errors, so confirm the marker it always
+    // appends actually landed. Failing loudly beats serving a page that hangs.
+    if (!fs.readFileSync(idxPath, 'utf8').includes('ullm-diag')) {
+      throw new Error('pygbag output could not be patched (the loader would hang)');
+    }
+    fs.writeFileSync(path.join(webDir, READY_FILE), String(Date.now()), 'utf8');
     games.set(id, { dir: webDir, builtAt: Date.now() });
   })();
   building.set(id, p);
@@ -177,7 +201,7 @@ function gameDir(id) {
   if (g) return g.dir;
   // survive a server restart: re-adopt a build that's still on disk
   const dir = webDirFor(id);
-  if (fs.existsSync(path.join(dir, 'index.html'))) { games.set(id, { dir, builtAt: Date.now() }); return dir; }
+  if (isBuilt(dir)) { games.set(id, { dir, builtAt: Date.now() }); return dir; }
   return null;
 }
 

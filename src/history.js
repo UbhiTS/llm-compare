@@ -120,6 +120,7 @@ async function saveRun({ user, userName, task, models, results, kind }) {
     await fsp.mkdir(dir, { recursive: true });
     const tmp = path.join(dir, id + '.json.tmp');
     const finalPath = path.join(dir, id + '.json');
+    await fsp.writeFile(tmp, JSON.stringify(record));   // write BEFORE the atomic swap
     await fsp.rename(tmp, finalPath);
     recordCache.set(finalPath, record);
     invalidateDirCache(dir);

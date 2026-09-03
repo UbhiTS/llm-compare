@@ -26,17 +26,52 @@ assert.strictEqual(tr.passed, 0, 'Async function should be caught');
 assert(tr.failing[0].error.includes('Promise'), 'Error should mention Promise return');
 console.log('✓ Runner catches async Promise return with clear message');
 
-// 4. Check history cache and retrieval
+// 4. History must actually PERSIST, not just return an array. An earlier version
+// renamed the temp file without writing it first, so every save failed with
+// ENOENT and no run was ever recorded — invisible to a test that only called
+// listRuns(). Round-trip through a scratch dir instead.
+const os = require('os');
+process.env.APP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ullm-hist-test-'));
+delete require.cache[require.resolve('../src/history')];
 const history = require('../src/history');
-const initialRuns = history.listRuns('test-user');
-assert(Array.isArray(initialRuns), 'listRuns should return an array');
-console.log('✓ History operations work with in-memory caching');
+const HUSER = 'verify@example.com';
+assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array');
 
-// 5. Check webGame caching
-const { idFor } = require('../src/webGame');
-const dummyId = idFor('import pygame');
-assert.strictEqual(typeof dummyId, 'string');
-assert.strictEqual(dummyId.length, 16);
-console.log('✓ WebGame idFor works as expected');
+(async () => {
+  const saved = await history.saveRun({
+    user: HUSER, userName: HUSER, task: { id: 't', title: 'T' }, kind: 'compare',
+    models: [{ slot: 'A', catalogId: 'gemini-3.8-flash', label: 'G', effort: 'high' }],
+    results: [{ slot: 'A', code: 'print(1)', costUsd: 0.01, wallMs: 100 }],
+  });
+  assert(saved && saved.id, 'saveRun must return the stored record (it writes then renames)');
+  assert.strictEqual(history.listRuns(HUSER).length, 1, 'the saved run must be readable back');
+  const full = history.getRun(saved.id, { username: HUSER, isAdmin: false });
+  assert(full && full.slots[0].data.code === 'print(1)', 'the run must restore its generated code');
+  assert.deepStrictEqual(history.lastModels(HUSER), [{ catalogId: 'gemini-3.8-flash', effort: 'high' }],
+    'lastModels must read the remembered line-up back');
+  console.log('✓ History round-trips: save → list → restore → lastModels');
 
-console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
+  // 5. A web-game build counts as cached ONLY when it completed AND was patched.
+  // pygbag writes index.html partway through, so trusting that file alone serves
+  // an unpatched loader that hangs forever on "Loading…".
+  const crypto = require('crypto');
+  const { idFor, gameDir } = require('../src/webGame');
+  const dummyId = idFor('import pygame');
+  assert.strictEqual(typeof dummyId, 'string');
+  assert.strictEqual(dummyId.length, 16);
+
+  const poisonCode = 'import pygame  # verify-enhancements poisoned-cache probe';
+  const pid = crypto.createHash('sha256').update(poisonCode).digest('hex').slice(0, 16);
+  const proot = path.join(os.tmpdir(), 'ullm-webgames', pid);
+  const pweb = path.join(proot, 'build', 'web');
+  fs.rmSync(proot, { recursive: true, force: true });
+  fs.mkdirSync(pweb, { recursive: true });
+  fs.writeFileSync(path.join(pweb, 'index.html'), '<html>unpatched</html>');
+  assert.strictEqual(gameDir(pid), null, 'an unpatched build must NOT be served as a finished one');
+  fs.writeFileSync(path.join(pweb, '.ullm-ready'), '1');
+  assert(gameDir(pid), 'a completed build must be re-adopted from disk');
+  fs.rmSync(proot, { recursive: true, force: true });
+  console.log('✓ WebGame cache rejects a half-built bundle and reuses a finished one');
+
+  console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
+})().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
