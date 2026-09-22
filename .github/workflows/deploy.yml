@@ -35,6 +35,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js & run regression tests
+        run: |
+          npm ci
+          npm test
+
       - name: Authenticate to Google Cloud (keyless)
         uses: google-github-actions/auth@v2
         with:
