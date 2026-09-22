@@ -1,0 +1,26 @@
+{
+  "constraints": [
+    {
+      "constraint": "iam.allowedPolicyMemberDomains",
+      "policy_type": "list",
+      "allow_all": true,
+      "deny_all": false,
+      "allowed_values": [],
+      "denied_values": [],
+      "restore_post_deployment": false
+    }
+  ],
+  "apis_to_enable": [
+    "orgpolicy.googleapis.com",
+    "serviceusage.googleapis.com",
+    "run.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "storage.googleapis.com",
+    "iam.googleapis.com",
+    "iamcredentials.googleapis.com",
+    "sts.googleapis.com",
+    "secretmanager.googleapis.com",
+    "aiplatform.googleapis.com"
+  ]
+}

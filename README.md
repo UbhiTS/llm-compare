@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://youtu.be/mrylqpgjiVI"><img src="https://img.shields.io/badge/%E2%96%B6_Watch_Walkthrough-YouTube-FF0000?logo=youtube&logoColor=white" alt="Watch Walkthrough on YouTube"></a>
+  <a href="https://ssh.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FUbhiTS%2Fllm-compare.git&cloudshell_tutorial=click-to-deploy%2FREADME.md"><img src="https://img.shields.io/badge/%E2%98%81%EF%B8%8F_Deploy_to_Argolis_%2F_GCP-Cloud_Shell-4285F4?logo=googlecloud&logoColor=white" alt="Open in Google Cloud Shell"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A518-3c873a" alt="Node >= 18">
   <img src="https://img.shields.io/badge/deploy-Cloud%20Run-4285F4" alt="Deploys to Cloud Run">
   <img src="https://img.shields.io/badge/auth-Google%20SSO-ea4335" alt="Google SSO">
@@ -82,9 +83,23 @@ OPENAI_API_KEY=your-openai-api-key
   to create the `admin` password. After that, sign in normally.
 - No keys handy? `npm test` runs the full regression and enhancement suite offline against mocked providers.
 
-## Deploy to your own Google Cloud
+## Deploy to your own Google Cloud (Argolis & GCP)
 
-The app ships as a **container** and deploys to **Cloud Run** via a **GitHub Actions** pipeline that
+### 🚀 Easiest Path: 1-Command Deploy (Argolis or Google Cloud Shell)
+
+Run a single command in **[Google Cloud Shell](https://ssh.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FUbhiTS%2Fllm-compare.git&cloudshell_tutorial=click-to-deploy%2FREADME.md)** or your local terminal (logged into `gcloud` as your Argolis `admin@<ldap>.altostrat.com` or GCP project owner):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/UbhiTS/llm-compare/main/click-to-deploy/quickstart-deploy.sh | bash
+```
+
+It automatically enables APIs, relaxes `iam.allowedPolicyMemberDomains` on the project (for Argolis public Cloud Run ingress), creates the runtime Service Account and durable GCS bucket, generates a 16-character break-glass `admin` password in Secret Manager, deploys to Cloud Run from source, and prints your live URL + login credentials in ~90 seconds. (Full **go/demos Terraform Click-to-Deploy** modules are also included in [`click-to-deploy/`](click-to-deploy/).)
+
+---
+
+### Automated CI/CD Path (GitHub Actions + Workload Identity Federation)
+
+The app also ships with a **GitHub Actions** pipeline that
 runs `npm test`, authenticates to Google Cloud **keylessly** (Workload Identity Federation — no JSON keys),
 and deploys to Cloud Run. Org users sign in with **Google (OIDC)**, restricted to your allowed Workspace domain(s).
 
