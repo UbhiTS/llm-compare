@@ -9,6 +9,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-compare-e2e-'));
 process.env.APP_DATA_DIR = tmpDir;
 process.env.AUTH_DATA_DIR = path.join(tmpDir, 'auth');
 process.env.AGENT_PLATFORM_API_KEY = 'test-shared-vertex-key';
+process.env.CLAUDE_BEARER_TOKEN = 'test-shared-claude-bearer';
 process.env.GCP_PROJECT_ID = 'llm-compare-ubhits';
 process.env.OPENAI_API_KEY = 'sk-test-shared-openai-key';
 process.env.ADMIN_BOOTSTRAP_PASSWORD = 'admin-test-password-123';
