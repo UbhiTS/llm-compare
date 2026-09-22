@@ -208,39 +208,60 @@ function allModelsUseOwnKeys() {
   return list.length > 0 && list.every((m) => keySourceFor(m, k).state === 'own');
 }
 
+// True when at least one selected model uses a non-Vertex external provider
+// (e.g. OpenAI / Moonshot / direct Anthropic) on the server's shared personal key.
+// Models on Google Vertex AI (Agent Platform: Gemini & Claude) are sponsored by
+// the GCP org and do NOT consume or get blocked by the 3/day OpenAI limit.
+function usesSharedPersonalKeyModels() {
+  const k = loadKeys();
+  const list = (MODELS && MODELS.length) ? MODELS : (ARENA_MODELS || []);
+  return list.some((m) => m.provider !== 'agentplatform' && keySourceFor(m, k).state !== 'own');
+}
+
 
 // Live "runs left today" state (authoritative value comes from the server on
 // /api/config load and on each run's `quota` event).
 let myQuota = null;        // daily budget for full comparison runs
 let mySingleQuota = null;  // separate daily budget for single-model re-runs
 
-// Badge near Run: your-keys (unlimited), or a live shared-key counter.
+// Badge near Run: your-keys (unlimited), Vertex AI (unlimited), or live 3/day OpenAI counter.
 function updateQuotaBadge() {
   const b = $('#quotaBadge'); if (!b) return;
-  const limit = (CONFIG && CONFIG.maxRunsPerDay) || 0;
+  const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
   const isAdmin = ME && ME.role === 'admin';
-  // "Unlimited" only when EVERY selected model runs on the user's own key —
-  // matching the server. One own key alongside a shared slot is still capped.
-  if (allModelsUseOwnKeys()) { b.textContent = 'no daily limit'; b.className = 'quota-badge own';
-    b.title = 'Every selected model runs on your own key, so this run is not counted against the daily limit.'; return; }
-  if (isAdmin) { b.textContent = 'admin · no limit'; b.className = 'quota-badge own'; b.title = 'Admins are exempt from the daily run limit.'; return; }
-  if (!limit) { b.textContent = ''; b.className = 'quota-badge'; b.title = ''; return; }
+  if (allModelsUseOwnKeys()) {
+    b.textContent = 'your keys · no limit';
+    b.className = 'quota-badge own';
+    b.title = 'Every selected model runs on your own personal key, so this run is not counted against any daily limit.';
+    return;
+  }
+  if (isAdmin) {
+    b.textContent = 'admin · no limit';
+    b.className = 'quota-badge own';
+    b.title = 'Admins are exempt from the daily OpenAI run limit.';
+    return;
+  }
   const remaining = (myQuota && typeof myQuota.remaining === 'number') ? myQuota.remaining : limit;
-  const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || 0;
+  const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || limit;
   const sRemaining = (mySingleQuota && typeof mySingleQuota.remaining === 'number') ? mySingleQuota.remaining : sLimit;
-  b.textContent = `${remaining} of ${limit} runs left today`
-    + (sLimit ? ` · ${sRemaining} re-runs` : '');
-  b.className = 'quota-badge ' + (remaining <= 0 ? 'out' : remaining <= 2 ? 'low' : 'shared');
-  b.title = `Comparison runs: ${remaining}/${limit} left`
-    + (sLimit ? `. Single-model re-runs: ${sRemaining}/${sLimit} left (separate budget)` : '')
+  if (!usesSharedPersonalKeyModels()) {
+    b.textContent = `Vertex AI · Unlimited (OpenAI: ${remaining}/${limit} left)`;
+    b.className = 'quota-badge own';
+    b.title = `Gemini & Claude run on org-sponsored Google Vertex AI (Agent Platform) with UNLIMITED daily runs! Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`;
+    return;
+  }
+  b.textContent = `OpenAI: ${remaining} of ${limit} left today · Vertex: Unlimited`;
+  b.className = 'quota-badge ' + (remaining <= 0 ? 'out' : remaining <= 1 ? 'low' : 'shared');
+  b.title = `Shared OpenAI runs: ${remaining}/${limit} left today`
+    + (sLimit ? ` (${sRemaining}/${sLimit} single-model re-runs left)` : '')
     + ((myQuota && myQuota.resetAt) ? `. Resets at ${new Date(myQuota.resetAt).toLocaleString()}` : '')
-    + '. Add your own key for EVERY provider above to run without a limit.';
+    + '. Gemini & Claude on Vertex AI are ALWAYS unlimited — deselect OpenAI or add your own OpenAI API key to run without limits.';
 }
 
 function openKeysModal() {
   const body = openAuthModal('Your API keys');
   const k = loadKeys();
-  const limit = (CONFIG && CONFIG.maxRunsPerDay) || 20;
+  const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
   body.innerHTML =
     '<div class="key-scope personal">' +
       '<div class="ks-head">🔒 Personal keys — this browser only</div>' +
@@ -250,14 +271,14 @@ function openKeysModal() {
         '<li>Clearing your browser data — or pressing <b>Clear all</b> below — removes them completely.</li>' +
       '</ul>' +
     '</div>' +
-    '<p class="keys-intro">A run where <b>every</b> selected model uses your own key is <b>not counted</b> against the daily limit. ' +
-    'Leave a field blank to fall back to the shared key for that provider (capped at ' + limit + '/day)' +
-    ((ME && ME.role === 'admin') ? ' — shared keys are managed under <b>Global API keys</b>.' : '.') + '</p>' +
+    '<p class="keys-intro"><b>Gemini &amp; Claude (Google Vertex AI) are UNLIMITED</b> for all users (sponsored by the GCP org). ' +
+    'Shared <b>OpenAI</b> models are capped at <b>' + limit + ' runs/day</b> to protect personal API key billing — add your own OpenAI key below for unlimited OpenAI runs' +
+    ((ME && ME.role === 'admin') ? ' (shared keys are managed under <b>Global API keys</b>).' : '.') + '</p>' +
     '<form class="add-user-form" id="keysForm">' +
       '<div class="auth-field"><label>Gemini / Agent Platform API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
       '<h4 style="margin:18px 0 10px">External models</h4>' +
       '<p class="keys-intro" style="margin-bottom:12px">These are <b>not</b> on Vertex, so they need their own key and the prompt leaves Google infrastructure when you run them.</p>' +
-      '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT-5.6 Luna</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
+      '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT-5.4 / GPT-5.6 Luna</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
       '<div class="auth-field"><label>Moonshot API key <span class="u-tag">Kimi K3</span></label><input id="k-moonshot" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (platform.moonshot.ai)" value="' + esc(k.moonshot || '') + '" /></div>' +
       '<div class="auth-field"><label>Anthropic API key</label><input id="k-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-… (for a direct Anthropic slot)" value="' + esc(k.anthropic || '') + '" /></div>' +
       '<details class="keys-adv"><summary>Advanced — Claude via Google Vertex</summary>' +
@@ -1394,12 +1415,21 @@ function setThink(slot, text, rtok) {
     if (rtok != null) node.dataset.rtok = rtok; // remember the latest known reasoning-token count
     let val = text && text.length ? text : '';
     if (!val) {
-      // No readable thinking text came back. Distinguish "thought, but the text is
-      // withheld" from "didn't think at all" — they look identical without the count.
+      // No readable thinking text came back yet. Distinguish active thinking vs
+      // encrypted/withheld reasoning trace vs 0 thinking tokens.
       const tok = rtok != null ? rtok : Number(node.dataset.rtok || 0);
-      val = tok > 0
-        ? `This model used ${fmtInt(tok)} thinking tokens, but returned no readable reasoning text. Claude Opus 4.8 streams its chain-of-thought as an encrypted, signed trace — the API exposes the thinking-token count but not the words, so there is nothing to display here even though the model genuinely did reason. (Gemini streams its actual thoughts, which is why you can read those.)`
-        : 'No measurable thinking on this task — the model answered directly (0 thinking tokens reported).';
+      const m = (ARENA_MODELS || MODELS || []).find((x) => x.slot === slot);
+      const label = (m && m.label) ? m.label : 'This model';
+      const isRunning = typeof slotIsRunning === 'function' && slotIsRunning(slot);
+      if (tok > 0) {
+        val = isRunning
+          ? `⏳ ${label} is actively reasoning… (${fmtInt(tok)} thinking tokens generated so far)`
+          : `${label} used ${fmtInt(tok)} thinking tokens during hidden chain-of-thought reasoning. The provider API metered ${fmtInt(tok)} internal reasoning tokens for this task without emitting an unencrypted text summary.`;
+      } else {
+        val = isRunning
+          ? `⏳ Waiting for ${label} reasoning stream…`
+          : 'No measurable thinking on this task — the model answered directly (0 thinking tokens reported).';
+      }
     }
     stick(node.parentElement, () => { node.textContent = val; }); // parent .think-pre is the scroller
   }
@@ -1457,13 +1487,14 @@ async function streamRun(payload, results, signal, own) {
     signal,
   });
   if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
-  if (resp.status === 429) {                                                     // daily per-user run limit
+  if (resp.status === 429) {                                                     // daily per-user OpenAI run limit
     const j = await resp.json().catch(() => ({}));
     if (j && j.quota) {
       if (payload.mode === 'single') mySingleQuota = j.quota; else myQuota = j.quota;
       updateQuotaBadge();
     }
-    window._lastQuotaMsg = (j && j.error) || 'Daily limit reached. Try again tomorrow.';
+    window._lastQuotaObj = j || {};
+    window._lastQuotaMsg = (j && j.error) || 'Daily OpenAI limit reached. Switch to Gemini & Claude (Vertex AI) for unlimited runs!';
     return 'quota';
   }
   if (!resp.ok || !resp.body) throw new Error('Request failed: ' + resp.status);
@@ -1554,7 +1585,29 @@ async function run() {
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
       slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, m, 'err'); });
-      window.alert(m);
+      if (window._lastQuotaObj && window._lastQuotaObj.openaiQuotaExhausted) {
+        const switchToVertex = window.confirm(
+          `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Sonnet 5.0 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
+        );
+        if (switchToVertex) {
+          const vertexFallbacks = ['claude-sonnet-5', 'gemini-3.8-flash', 'claude-opus-4-8', 'gemini-3.8-pro', 'claude-haiku-4-5'];
+          const k = loadKeys();
+          MODELS = MODELS.map((mod) => {
+            if (mod.provider === 'agentplatform' || keySourceFor(mod, k).state === 'own') return mod;
+            const usedIds = new Set(MODELS.map((x) => x.id));
+            const repId = vertexFallbacks.find((id) => !usedIds.has(id)) || 'claude-sonnet-5';
+            const preset = (CONFIG.modelPresets || []).find((p) => p.id === repId);
+            if (preset) return Object.assign({}, preset, { slot: mod.slot });
+            return mod;
+          });
+          renderModelPicker();
+          updateQuotaBadge();
+          setTimeout(() => run(), 50);
+          return;
+        }
+      } else {
+        window.alert(m);
+      }
       return;
     }
   } catch (e) {
@@ -1657,7 +1710,9 @@ function handleEvent(ev, results, own) {
         const t = currentTask();
         setCode(ev.slot, t.language ? liveCodeView(ev.answer) : (ev.answer || '…'));
       }
-      if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, null);
+      if (ev.reasoning !== undefined || ev.reasoningTokens !== undefined) {
+        setThink(ev.slot, ev.reasoning, ev.reasoningTokens);
+      }
       const secs = (ev.wallMs || 0) / 1000;
       const think = ev.reasoningTokens || 0;
       setTileVal(ev.slot, 'tok', fmtInt(Math.max(0, (ev.estOutTokens || 0) - think))); // answer only
@@ -1692,7 +1747,7 @@ function handleEvent(ev, results, own) {
         $(`#pl-${ev.slot}`).textContent = `${ev.passed} / ${ev.total} tests`;
       }
       if (ev.code) setCode(ev.slot, ev.code);
-      if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, null);
+      if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, ev.reasoningTokens != null ? ev.reasoningTokens : null);
       break;
     }
     case 'done':

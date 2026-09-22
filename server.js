@@ -431,11 +431,11 @@ app.post('/api/judge', async (req, res) => {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
 
-  // A judgement is one more LLM call on the server's keys, so it is metered like
-  // any other. Own-key users and admins are exempt, same as everywhere else.
-  if (!modelUsesOwnKey(judge, keys)) {
+  // Only external/OpenAI judge models on the shared personal key consume the 3/day OpenAI quota.
+  // Gemini and Claude on Vertex AI (agentplatform) are org-sponsored and run without this cap.
+  if (judge.provider !== 'agentplatform' && !modelUsesOwnKey(judge, keys)) {
     const quota = auth.consumeRun(req.user, 'single');
-    if (!quota.ok) return res.status(429).json({ error: `Daily limit reached for single-model calls (${quota.limit}/day). Judging uses the same budget.` });
+    if (!quota.ok) return res.status(429).json({ error: `Daily OpenAI limit reached (${quota.limit}/day). Switch the Judge model to Gemini or Claude (Vertex AI) to score without a limit.` });
   }
 
   try {
@@ -537,10 +537,10 @@ app.post('/api/run', async (req, res) => {
   // add/remove catalog models, never modify their settings.
   const chosenModels = resolveModels(models);
 
-  // Per-user daily abuse guardrail — but ONLY when the run uses the SERVER's keys.
-  // If the user brought their own credentials for every model, they're on their own
-  // quota, so we don't throttle (configurable via MAX_RUNS_PER_DAY; admins exempt).
-  const usingOwnKeys = chosenModels.length > 0 && chosenModels.every((m) => modelUsesOwnKey(m, keys));
+  // Per-user daily OpenAI guardrail: ONLY runs that include an OpenAI (or external non-Vertex)
+  // model on the server's shared personal key consume the 3/day allowance.
+  // Gemini & Claude run on org-sponsored Vertex AI (agentplatform) and remain available all day.
+  const usesSharedExternalKey = chosenModels.some((m) => m.provider !== 'agentplatform' && !modelUsesOwnKey(m, keys));
   // Two daily budgets. A re-run of ONE model draws on the smaller 'single' bucket
   // so retrying a slot can't burn the full-comparison allowance. The client asks
   // for 'single', but we only honour it when exactly one model is actually being
@@ -559,14 +559,15 @@ app.post('/api/run', async (req, res) => {
     && typeof rawRepair.error === 'string' && rawRepair.error.trim())
     ? { code: rawRepair.code.slice(0, 20000), error: rawRepair.error.slice(0, 4000) }
     : null;
-  let quotaInfo = { limited: false }; // surfaced to the client so it can show the live counter
-  if (!usingOwnKeys) {
+  let quotaInfo = auth.runQuota(req.user, kind); // surfaced to the client so it can show the live OpenAI counter
+  if (usesSharedExternalKey) {
     const quota = auth.consumeRun(req.user, kind);
     if (!quota.ok) {
-      const what = kind === 'single' ? 'single-model re-runs' : 'comparison runs';
+      const what = kind === 'single' ? 'single-model OpenAI re-runs' : 'OpenAI comparison runs';
       return res.status(429).json({
         type: 'error',
-        error: `Daily limit reached — you've used all ${quota.limit} ${what} for today. Resets at ${quota.resetAt}. Add your own API keys to run without this limit.`,
+        openaiQuotaExhausted: true,
+        error: `Daily OpenAI limit reached — you've used all ${quota.limit} ${what} for today (shared OpenAI key). Gemini & Claude run on org-sponsored Vertex AI with no 3-run limit! Swap the OpenAI slot to a Gemini or Claude model (or add your own OpenAI key in Settings) to keep running.`,
         quota,
       });
     }
@@ -605,7 +606,7 @@ app.post('/api/run', async (req, res) => {
     if (finished || res.writableFinished) return;
     aborted = true;
     ac.abort();
-    if (!usingOwnKeys) auth.refundRun(req.user, kind);
+    if (usesSharedExternalKey) auth.refundRun(req.user, kind);
     console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
   });
 

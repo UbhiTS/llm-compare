@@ -31,10 +31,12 @@ const MIN_PASSWORD_LEN = Math.max(8, Number(process.env.MIN_PASSWORD_LEN) || 10)
 const SESSION_TTL_MS = (Number(process.env.SESSION_TTL_HOURS) || 8) * 3600 * 1000;           // idle (sliding) timeout
 const SESSION_ABSOLUTE_TTL_MS = (Number(process.env.SESSION_ABSOLUTE_TTL_HOURS) || 24) * 3600 * 1000; // hard cap regardless of activity
 const MAX_SESSIONS_PER_USER = Math.max(1, Number(process.env.MAX_SESSIONS_PER_USER) || 10);  // bounds memory + stale tokens
-// Per-user daily comparison-run quota (abuse guardrail). 0 = unlimited. Admins exempt by default.
-const MAX_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_RUNS_PER_DAY) || 5));
-// Separate daily budget for re-running a SINGLE model (the per-column "Run again").
-const MAX_SINGLE_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_SINGLE_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_SINGLE_RUNS_PER_DAY) || 5));
+// Per-user daily OpenAI / external comparison-run quota (protects personal OpenAI API key).
+// Vertex AI (Agent Platform: Gemini & Claude) runs are org-sponsored and do not consume this 3/day budget.
+const MAX_OPENAI_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_OPENAI_RUNS_PER_DAY) || 3));
+const MAX_RUNS_PER_DAY = MAX_OPENAI_RUNS_PER_DAY;
+// Separate daily budget for re-running a SINGLE OpenAI model (the per-column "Run again").
+const MAX_SINGLE_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) || 3));
 const RATE_EXEMPT_ADMINS = process.env.RATE_LIMIT_EXEMPT_ADMINS !== '0';
 
 // scrypt cost params. N=2^15 ⇒ ~32MB per hash; bump maxmem so it doesn't throw.
@@ -432,7 +434,7 @@ module.exports = {
   // brute force
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
   // per-user daily run quota
-  runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY,
+  runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, MAX_OPENAI_RUNS_PER_DAY,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)

@@ -65,13 +65,15 @@ function claudeDefaultEffort(model) {
 
 // Returns the request fields that differ between the two thinking APIs.
 // `effort` is the optional per-slot override chosen in the UI.
-function claudeThinkingFields(model, effort) {
+function claudeThinkingFields(model, effort, { omitDisplay = false } = {}) {
   const supported = claudeEffortsFor(model);
   const level = supported && supported.includes(effort) ? effort : null;
   if (claudeModelVersion(model) >= 4.6) {
     return {
       max_tokens: CLAUDE_MAX_OUTPUT,
-      thinking: { type: 'adaptive' },
+      // Claude 4.7+/4.8/5.0 default `display` to "omitted" in adaptive mode, which
+      // suppresses `thinking_delta` text chunks unless `display: "summarized"` is requested.
+      thinking: omitDisplay ? { type: 'adaptive' } : { type: 'adaptive', display: 'summarized' },
       output_config: { effort: level || claudeDefaultEffort(model) },
     };
   }
@@ -88,6 +90,12 @@ function claudeThinkingFields(model, effort) {
   // on Vertex — this model rejected `adaptive` and is worth not disturbing.
   if (supported && level) fields.output_config = { effort: level };
   return fields;
+}
+
+const OPENAI_EFFORTS = ['low', 'medium', 'high'];
+function openaiDefaultEffort() {
+  const e = String(process.env.OPENAI_EFFORT || 'medium').toLowerCase();
+  return OPENAI_EFFORTS.includes(e) ? e : 'medium';
 }
 
 // Gemini 3.x uses `thinkingConfig.thinkingLevel`, not the 2.5-era thinkingBudget
@@ -154,7 +162,7 @@ function thinkingOptions({ provider, publisher, model } = {}) {
       configurable: true,
       kind: 'effort',
       note: modern
-        ? 'Sets output_config.effort. Effort is a behavioural signal, not a hard token cap.'
+        ? 'Sets output_config.effort and thinking.display="summarized" so reasoning thoughts and token counts stream live.'
         : 'Opus 4.5 takes both an effort level and a thinking budget, so this sets each of them.',
       options: [{ value: '', label: `Default (${claudeDefaultEffort(model)})` }]
         .concat(supported.map((e) => ({ value: e, label: e }))),
@@ -169,6 +177,16 @@ function thinkingOptions({ provider, publisher, model } = {}) {
       note: 'Sets thinkingConfig.thinkingLevel. On models that support it, "minimal" effectively turns thinking off.',
       options: [{ value: '', label: `Default (${def})` }]
         .concat(levels.map((l) => ({ value: l, label: l }))),
+    };
+  }
+  if (provider === 'openai') {
+    const def = openaiDefaultEffort();
+    return {
+      configurable: true,
+      kind: 'effort',
+      note: 'Sets reasoning.effort and requests live reasoning summaries (summary:"auto") via OpenAI Responses API.',
+      options: [{ value: '', label: `Default (${def})` }]
+        .concat(OPENAI_EFFORTS.map((e) => ({ value: e, label: e }))),
     };
   }
   return {
@@ -203,7 +221,7 @@ function thinkingProfile({ provider, publisher, model, effort } = {}) {
       const level = f.output_config.effort;
       return {
         mode: 'effort', level, overridden: !!chosen, label: `effort · ${level}`,
-        detail: `thinking: {type:"adaptive"} · output_config.effort: "${level}" · max_tokens: ${f.max_tokens}${mark}`,
+        detail: `thinking: {type:"adaptive", display:"summarized"} · output_config.effort: "${level}" · max_tokens: ${f.max_tokens}${mark}`,
       };
     }
     const budget = f.thinking.budget_tokens;
@@ -230,6 +248,14 @@ function thinkingProfile({ provider, publisher, model, effort } = {}) {
       mode: 'auto', level: def || 'auto', overridden: false,
       label: `thinking · ${def ? `${def} (default)` : 'auto'}`,
       detail: 'generationConfig.thinkingConfig: {includeThoughts:true} — no thinkingLevel is set, so the model default applies',
+    };
+  }
+  if (provider === 'openai') {
+    const level = chosen || openaiDefaultEffort();
+    return {
+      mode: 'effort', level, overridden: !!chosen,
+      label: `thinking · ${level}`,
+      detail: `reasoning: {effort:"${level}", summary:"auto"} (Responses API + Chat Completions fallback)${mark}`,
     };
   }
   if (OPENAI_COMPAT[provider]) {
@@ -318,29 +344,116 @@ function compatKey(cfg, keys) {
   return key;
 }
 
-async function openaiCompat(cfg, { model, system, messages, keys, signal }) {
+async function openaiCompat(cfg, { model, system, messages, keys, signal, effort }) {
   const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  const eff = cfg.keyField === 'openai' ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
+  const reqBody = { model, messages: msgs };
+  if (eff) reqBody.reasoning_effort = eff;
   const t0 = Date.now();
-  const r = await fetch(`${cfg.base}/chat/completions`, {
+  let r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({ model, messages: msgs }),
+    body: JSON.stringify(reqBody),
     signal,
   });
+  if (r.status === 400 && eff) {
+    // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: msgs }),
+      signal,
+    });
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`${cfg.label} ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
 
   const msg = j.choices?.[0]?.message || {};
   const text = msg.content || '';
-  const reasoning = msg.reasoning_content || '';          // Kimi/DeepSeek-style thinking
+  const reasoning = msg.reasoning_content || msg.reasoning || msg.thinking || '';
   const u = j.usage || {};
-  const think = u.completion_tokens_details?.reasoning_tokens ?? (reasoning ? estimateTokens([{ content: reasoning }]) : 0);
+  const outTok = u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const think = u.completion_tokens_details?.reasoning_tokens
+    ?? (reasoning ? estimateTokens([{ content: reasoning }]) : impliedThink);
   return {
     text, reasoning,
     promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
-    completionTokens: u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]),
+    completionTokens: outTok,
+    reasoningTokens: think,
+    latencyMs,
+  };
+}
+
+// OpenAI /v1/responses streaming adapter — requests `reasoning: { effort, summary: "auto" }`
+// so GPT-5.x / o-series stream live `response.reasoning_summary_text.delta` events AND
+// return exact `output_tokens_details.reasoning_tokens`. Returns null if the endpoint or
+// model does not support `/v1/responses` (or org is unverified for summaries), allowing
+// `openaiCompatStream` to fall back cleanly to `/v1/chat/completions`.
+async function openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort }) {
+  const key = compatKey(cfg, keys);
+  const eff = validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort();
+  const input = [];
+  if (system) input.push({ role: 'developer', content: system });
+  for (const m of messages) input.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
+
+  const sendReq = (withSummary) => fetch(`${cfg.base}/responses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model,
+      input,
+      stream: true,
+      reasoning: withSummary ? { effort: eff, summary: 'auto' } : { effort: eff },
+    }),
+    signal,
+  });
+
+  const t0 = Date.now();
+  let r = await sendReq(true);
+  if (r.status === 400 || r.status === 403) {
+    // Some OpenAI orgs are not verified for `summary: "auto"` — retry with `{ effort }` only
+    r = await sendReq(false);
+  }
+  if (!r.ok) return null; // fall back to /v1/chat/completions
+
+  let text = '', reasoning = '', usage = null;
+  await readSSE(r, (ev) => {
+    const t = ev && ev.type;
+    if (t === 'response.output_text.delta' && ev.delta) {
+      text += ev.delta;
+    } else if ((t === 'response.reasoning_summary_text.delta' || t === 'response.reasoning_text.delta') && ev.delta) {
+      reasoning += ev.delta;
+    } else if (t === 'response.reasoning_summary_part.done' && ev.part?.text && !reasoning.includes(ev.part.text)) {
+      reasoning += (reasoning ? '\n' : '') + ev.part.text;
+    } else if ((t === 'response.completed' || t === 'response.done') && ev.response?.usage) {
+      usage = ev.response.usage;
+    }
+    if (onDelta && (ev.delta || usage)) {
+      const uThink = usage?.output_tokens_details?.reasoning_tokens || 0;
+      const estThink = Math.max(uThink, reasoning ? estimateTokens([{ content: reasoning }]) : 0);
+      const estAns = text ? estimateTokens([{ content: text }]) : 0;
+      const runOut = usage?.output_tokens || (estAns + estThink);
+      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: estThink });
+    }
+  });
+
+  if (!text && !reasoning && !usage) return null; // stream gave nothing recognizable -> fallback
+  const latencyMs = Date.now() - t0;
+  const u = usage || {};
+  const outTok = u.output_tokens ?? u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const think = u.output_tokens_details?.reasoning_tokens
+    ?? u.completion_tokens_details?.reasoning_tokens
+    ?? (reasoning ? Math.max(estimateTokens([{ content: reasoning }]), impliedThink) : impliedThink);
+  return {
+    text, reasoning: reasoning.trim(),
+    promptTokens: u.input_tokens ?? u.prompt_tokens ?? estimateTokens(messages, system),
+    completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
   };
@@ -348,18 +461,38 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal }) {
 
 // Streamed variant — same contract, emits onDelta so the UI gets a live feed
 // (without this an external model's column sits blank until it finishes).
-async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal }) {
+async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal, effort }) {
+  if (cfg.keyField === 'openai') {
+    try {
+      const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort });
+      if (res) return res;
+    } catch (_) { /* fall through to /chat/completions */ }
+  }
+
   const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
-  const body = { model, messages: msgs, stream: true };
-  if (cfg.usageOpt) body.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
+  const eff = cfg.keyField === 'openai' ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
+  const buildBody = (includeEffort) => {
+    const b = { model, messages: msgs, stream: true };
+    if (cfg.usageOpt) b.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
+    if (includeEffort && eff) b.reasoning_effort = eff;
+    return b;
+  };
   const t0 = Date.now();
-  const r = await fetch(`${cfg.base}/chat/completions`, {
+  let r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildBody(true)),
     signal,
   });
+  if (r.status === 400 && eff) {
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(buildBody(false)),
+      signal,
+    });
+  }
   if (!r.ok) {
     let detail = '';
     try { detail = JSON.stringify(await r.json()); } catch (e) { try { detail = await r.text(); } catch (_) { detail = ''; } }
@@ -370,18 +503,29 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   await readSSE(r, (ev) => {
     if (ev.usage) usage = ev.usage;
     const d = ev.choices?.[0]?.delta;
-    if (!d) return;
-    if (d.content) text += d.content;
-    if (d.reasoning_content) reasoning += d.reasoning_content;
-    if (onDelta) onDelta({ answer: text, reasoning, runningOut: estimateTokens([{ content: text }]), runningThink: estimateTokens([{ content: reasoning }]) });
+    if (d) {
+      if (d.content) text += d.content;
+      const rChunk = d.reasoning_content || d.reasoning || d.thinking || '';
+      if (rChunk) reasoning += rChunk;
+    }
+    if (onDelta && (d || ev.usage)) {
+      const uThink = usage?.completion_tokens_details?.reasoning_tokens || 0;
+      const runThink = Math.max(uThink, reasoning ? estimateTokens([{ content: reasoning }]) : 0);
+      const runOut = usage?.completion_tokens || (estimateTokens([{ content: text }]) + runThink);
+      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: runThink });
+    }
   });
   const latencyMs = Date.now() - t0;
   const u = usage || {};
-  const think = u.completion_tokens_details?.reasoning_tokens ?? (reasoning ? estimateTokens([{ content: reasoning }]) : 0);
+  const outTok = u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const think = u.completion_tokens_details?.reasoning_tokens
+    ?? (reasoning ? Math.max(estimateTokens([{ content: reasoning }]), impliedThink) : impliedThink);
   return {
-    text, reasoning,
+    text, reasoning: reasoning.trim(),
     promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
-    completionTokens: u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]),
+    completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
   };
@@ -489,29 +633,39 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
 
-  const body = {
-    anthropic_version: 'vertex-2023-10-16',
-    ...claudeThinkingFields(model, effort),          // adaptive on 4.6+, enabled+budget below
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+  const makePayload = (omitDisplay) => {
+    const b = {
+      anthropic_version: 'vertex-2023-10-16',
+      ...claudeThinkingFields(model, effort, { omitDisplay }),
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    };
+    if (system) b.system = system;
+    return JSON.stringify(b);
   };
-  if (system) body.system = system;
-  // (temperature intentionally omitted: Anthropic requires it unset when thinking is on)
 
   const url =
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(model)}:rawPredict`;
 
-  const payload = JSON.stringify(body);
-  const send = (token) =>
+  const send = (token, omitDisplay = false) =>
     fetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: payload,
+      body: makePayload(omitDisplay),
+      signal,
     });
 
   const t0 = Date.now();
-  let r = await send(userToken || await getClaudeToken());
-  if (r.status === 401 && !userToken) r = await send(await getClaudeToken({ forceRefresh: true })); // token expired -> mint fresh, retry once
+  let tok = userToken || await getClaudeToken();
+  let r = await send(tok, false);
+  if (r.status === 401 && !userToken) {
+    tok = await getClaudeToken({ forceRefresh: true });
+    r = await send(tok, false);
+  }
+  if (r.status === 400) {
+    // Fallback if a specific model rejects `display: "summarized"`
+    r = await send(tok, true);
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`Claude (Agent Platform) ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
@@ -524,12 +678,18 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     .join('\n')
     .trim();
   const u = j.usage || {};
+  const outTok = u.output_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const reasonEst = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const finalThink = u.output_tokens_details?.thinking_tokens
+    ?? (reasonEst > 0 ? Math.min(outTok, Math.max(reasonEst, impliedThink)) : impliedThink);
   return {
     text,
     reasoning,
-    reasoningTokens: u.output_tokens_details?.thinking_tokens ?? undefined,
+    reasoningTokens: finalThink,
     promptTokens: u.input_tokens ?? estimateTokens(messages, system),
-    completionTokens: u.output_tokens ?? estimateTokens([{ content: text }]),
+    completionTokens: outTok,
     latencyMs,
   };
 }
@@ -604,23 +764,34 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
 async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
-  const body = {
-    anthropic_version: 'vertex-2023-10-16',
-    ...claudeThinkingFields(model, effort),          // adaptive on 4.6+, enabled+budget below
-    stream: true,
-    messages: messages.map((m) => ({ role: m.role, content: m.content })),
+  const makePayload = (omitDisplay) => {
+    const b = {
+      anthropic_version: 'vertex-2023-10-16',
+      ...claudeThinkingFields(model, effort, { omitDisplay }),
+      stream: true,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    };
+    if (system) b.system = system;
+    return JSON.stringify(b);
   };
-  if (system) body.system = system;
   const url =
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(model)}:streamRawPredict`;
 
-  const payload = JSON.stringify(body);
-  const send = (token) => fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: payload, signal });
+  const send = (token, omitDisplay = false) =>
+    fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay), signal });
 
   const t0 = Date.now();
-  let r = await send(userToken || await getClaudeToken());
-  if (r.status === 401 && !userToken) r = await send(await getClaudeToken({ forceRefresh: true })); // token expired -> mint fresh, retry once
+  let tok = userToken || await getClaudeToken();
+  let r = await send(tok, false);
+  if (r.status === 401 && !userToken) {
+    tok = await getClaudeToken({ forceRefresh: true });
+    r = await send(tok, false);
+  }
+  if (r.status === 400) {
+    // Fallback if a specific model rejects `display: "summarized"`
+    r = await send(tok, true);
+  }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Claude (Agent Platform) ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
 
   let answer = '', reasoning = '', inTok = 0, outTok = 0, thinkTok = 0;
@@ -628,19 +799,38 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     if (ev.type === 'message_start' && ev.message?.usage) inTok = ev.message.usage.input_tokens || inTok;
     else if (ev.type === 'content_block_delta') {
       const d = ev.delta || {};
-      if (d.type === 'text_delta') { answer += d.text || ''; if (onDelta) onDelta({ answer, reasoning, runningOut: outTok || null, runningThink: thinkTok }); }
-      else if (d.type === 'thinking_delta') { reasoning += d.thinking || ''; if (onDelta) onDelta({ answer, reasoning, runningOut: outTok || null, runningThink: thinkTok }); }
+      if (d.type === 'text_delta') answer += d.text || '';
+      else if (d.type === 'thinking_delta') reasoning += d.thinking || '';
+      if (onDelta && (d.type === 'text_delta' || d.type === 'thinking_delta')) {
+        const estThink = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
+        const estAns = answer ? estimateTokens([{ content: answer }]) : 0;
+        const curThink = thinkTok || estThink;
+        const curOut = outTok ? Math.max(outTok, estAns + curThink) : (estAns + curThink);
+        onDelta({ answer, reasoning, runningOut: curOut, runningThink: curThink });
+      }
     } else if (ev.type === 'message_delta' && ev.usage) {
       outTok = ev.usage.output_tokens || outTok;
-      if (ev.usage.output_tokens_details) thinkTok = ev.usage.output_tokens_details.thinking_tokens || thinkTok;
+      if (ev.usage.output_tokens_details?.thinking_tokens) {
+        thinkTok = ev.usage.output_tokens_details.thinking_tokens;
+      } else if (outTok > 0) {
+        const ansEst = estimateTokens([{ content: answer }]);
+        const reasonEst = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
+        const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+        thinkTok = reasonEst > 0 ? Math.min(outTok, Math.max(reasonEst, impliedThink)) : impliedThink;
+      }
       if (onDelta) onDelta({ answer, reasoning, runningOut: outTok, runningThink: thinkTok });
     }
   });
   const latencyMs = Date.now() - t0;
+  const ansEst = estimateTokens([{ content: answer }]);
+  const reasonEst = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
+  const totalOut = outTok || (ansEst + reasonEst);
+  const impliedThink = totalOut > ansEst ? (totalOut - ansEst) : 0;
+  const finalThink = thinkTok || (reasonEst > 0 ? Math.min(totalOut, Math.max(reasonEst, impliedThink)) : impliedThink);
   return {
-    text: answer, reasoning: reasoning.trim(), reasoningTokens: thinkTok || undefined,
+    text: answer, reasoning: reasoning.trim(), reasoningTokens: finalThink,
     promptTokens: inTok || estimateTokens(messages, system),
-    completionTokens: outTok || estimateTokens([{ content: answer }]),
+    completionTokens: totalOut,
     latencyMs,
   };
 }
@@ -661,7 +851,7 @@ async function complete({ provider, model, system, messages, publisher, project,
   // OpenAI-compatible providers stream too, so an external model's column gets
   // the same live token feed as the Vertex ones.
   if (OPENAI_COMPAT[provider] && onDelta) {
-    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys, signal });
+    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys, signal, effort });
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);

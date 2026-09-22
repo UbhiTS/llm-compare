@@ -73,5 +73,20 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   fs.rmSync(proot, { recursive: true, force: true });
   console.log('✓ WebGame cache rejects a half-built bundle and reuses a finished one');
 
+  // 6. Verify 3/day OpenAI quota & thinking profiles for OpenAI and Claude
+  const auth = require('../src/auth');
+  assert.strictEqual(auth.MAX_OPENAI_RUNS_PER_DAY, 3, 'MAX_OPENAI_RUNS_PER_DAY should default to 3');
+  assert.strictEqual(auth.MAX_RUNS_PER_DAY, 3, 'MAX_RUNS_PER_DAY should default to 3');
+  console.log('✓ Daily OpenAI run cap verified at 3 runs/day (while Vertex AI remains unlimited)');
+
+  const { thinkingOptions, thinkingProfile } = require('../src/providers');
+  const oaOpts = thinkingOptions({ provider: 'openai', model: 'gpt-5.4' });
+  assert(oaOpts && oaOpts.options.some((o) => o.value === 'high'), 'OpenAI models should expose reasoning effort options');
+  const oaProf = thinkingProfile({ provider: 'openai', model: 'gpt-5.4', effort: 'high' });
+  assert(oaProf && oaProf.detail && oaProf.detail.includes('effort:"high"'), 'OpenAI thinking profile should reflect reasoning effort');
+  const claudeProf = thinkingProfile({ provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5', effort: 'high' });
+  assert(claudeProf && claudeProf.detail && claudeProf.detail.includes('adaptive'), 'Claude 5 thinking profile should use adaptive thinking');
+  console.log('✓ Claude & OpenAI thinking options and profiles verified');
+
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
