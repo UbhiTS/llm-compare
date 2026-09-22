@@ -26,10 +26,15 @@ permissions:
   contents: read
   id-token: write   # required for Workload Identity Federation
 
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}
     steps:
       - name: Checkout

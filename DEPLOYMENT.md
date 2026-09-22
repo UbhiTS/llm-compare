@@ -138,22 +138,24 @@ down or your account is locked out. It survives the ephemeral filesystem; keep i
 
 ## Step 6 — "Sign in with Google" OAuth client
 
-OAuth clients are created in the console (not via `gcloud`):
+OAuth clients are created in the console (**Google Auth Platform**):
 
-1. **APIs & Services ▸ OAuth consent screen** → User type **Internal** (limits it to your
-   Workspace org automatically) → fill app name/support email → Save.
-2. **APIs & Services ▸ Credentials ▸ Create credentials ▸ OAuth client ID** →
-   Application type **Web application**.
-3. Under **Authorized redirect URIs**, add your callback URL:
-   `https://YOUR-APP-URL/auth/google/callback`
-   - You don't know the final URL until after the first deploy. Either deploy once (Step 9)
-     to get the Cloud Run URL, then come back and add it — or if you'll use a custom domain
-     (e.g. `https://your-app.example.com`), use that.
-4. Copy the **Client ID** and **Client secret**. Put the secret in Secret Manager (Step 5),
-   and keep the Client ID for Step 8.
-
-> Because the consent screen is **Internal**, only accounts in your Workspace org can even
-> complete sign-in; the app *additionally* checks `ALLOWED_EMAIL_DOMAINS` as defense in depth.
+1. **Google Auth Platform ▸ Branding**:
+   - Fill in **App name** (`LLM Compare`), **User support email**, and **Developer contact information**.
+   - **Leave App logo BLANK** (uploading a logo triggers manual Google Brand Verification; leaving it empty allows instant publishing to **In production** with zero review because only `openid email profile` scopes are used).
+   - Under **App domain**, set:
+     - Home page: `https://YOUR-APP-URL/login`
+     - Privacy policy: `https://YOUR-APP-URL/privacy` (served automatically by `server.js`)
+     - Terms of service: `https://YOUR-APP-URL/terms` (served automatically by `server.js`)
+   - Under **Authorized domains**, add your top-level registrable domain(s) (e.g. `ubhims.com` and `run.app`).
+2. **Google Auth Platform ▸ Audience**:
+   - If using **Internal**, only accounts in the same GCP Workspace organization can sign in.
+   - If hosting in **Argolis** (`*.altostrat.com`) while allowing `@google.com` Googlers to sign in without a 100-user test list, set User Type to **External** and click **Publish App** (`In production`). The server strictly enforces `ALLOWED_EMAIL_DOMAINS` (`claims.hd === email_domain`) in [`src/googleAuth.js`](src/googleAuth.js).
+3. **Google Auth Platform ▸ Clients ▸ Create client** → Application type **Web application**:
+   - Under **Authorized redirect URIs**, add your callback URL(s) (multiple origins are supported simultaneously because `redirectUri(req)` resolves the incoming `Host` dynamically):
+     - `https://YOUR-CUSTOM-DOMAIN/auth/google/callback`
+     - `https://YOUR-CLOUD-RUN-URL.run.app/auth/google/callback`
+4. Copy the **Client ID** and **Client secret**. Put the secret in Secret Manager (Step 5), and keep the Client ID for Step 8.
 
 ## Step 7 — deployer service account + Workload Identity Federation (keyless CI)
 

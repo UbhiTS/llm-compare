@@ -21,8 +21,7 @@
 //   • Claude Fable 5        — $10.00 in / $50.00 out (Anthropic list price; launched 2026-06-09)
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8       — $5.00 in / $25.00 out (Anthropic list price)
-//   • Claude Sonnet 5       — $2.00 in / $10.00 out (INTRODUCTORY through 2026-08-31;
-//       ⚠ rises to $3.00 / $15.00 on 2026-09-01 — update the catalog entry then)
+//   • Claude Sonnet 5       — $3.00 in / $15.00 out (standard rate since 2026-09-01)
 // ---------------------------------------------------------------------------
 
 const PRICING = {
