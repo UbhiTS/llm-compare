@@ -177,6 +177,36 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
+// Public OAuth Branding compliance pages (/privacy and /terms) so the OAuth consent
+// screen can be published to "In production" without failing URL reachability checks.
+app.get('/privacy', (_req, res) => {
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Privacy Policy — LLM Compare</title>
+  <style>body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f17;color:#e6edf3;max-width:680px;margin:48px auto;padding:0 24px;line-height:1.6}h1{font-size:22px}a{color:#5e8bff}</style></head>
+  <body><h1>Privacy Policy — LLM Compare</h1>
+  <p><strong>LLM Compare</strong> is an internal Google Cloud evaluation &amp; benchmarking demonstration hosted on Google Cloud Run.</p>
+  <ul>
+    <li><strong>Data Collected:</strong> When you sign in with Google OIDC (<code>openid email profile</code>), only your verified Workspace email address and display name are read to verify organization membership (<code>google.com</code> / <code>ubhi.altostrat.com</code>) and enforce per-user daily benchmark run quotas.</li>
+    <li><strong>Data Storage:</strong> Benchmark run histories and token metrics are stored in Google Cloud Storage within the demo project. Optional user-supplied API keys are used transiently in memory for that request only and are never persisted to disk.</li>
+    <li><strong>Data Sharing:</strong> No user identity or prompt data is sold or shared with third parties outside the model APIs explicitly selected during a comparison run.</li>
+    <li><strong>Contact:</strong> <a href="mailto:ubhi@google.com">ubhi@google.com</a></li>
+  </ul>
+  <p><a href="/login">← Back to Sign In</a></p></body></html>`);
+});
+
+app.get('/terms', (_req, res) => {
+  res.type('html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Terms of Service — LLM Compare</title>
+  <style>body{font-family:system-ui,-apple-system,sans-serif;background:#0b0f17;color:#e6edf3;max-width:680px;margin:48px auto;padding:0 24px;line-height:1.6}h1{font-size:22px}a{color:#5e8bff}</style></head>
+  <body><h1>Terms of Service — LLM Compare</h1>
+  <p><strong>LLM Compare</strong> is provided strictly for internal evaluation, benchmarking, and demonstration purposes by authorized Google Workspace users.</p>
+  <ul>
+    <li><strong>Authorized Use:</strong> Access is restricted to authorized Workspace domains (<code>google.com</code> and <code>ubhi.altostrat.com</code>). Do not submit customer confidential or regulated PII data into benchmark prompts.</li>
+    <li><strong>Usage Limits:</strong> Shared credentials are subject to per-user daily execution caps.</li>
+    <li><strong>Disclaimer:</strong> Provided "as-is" without warranty for demonstration and model evaluation workflows.</li>
+    <li><strong>Contact:</strong> <a href="mailto:ubhi@google.com">ubhi@google.com</a></li>
+  </ul>
+  <p><a href="/login">← Back to Sign In</a></p></body></html>`);
+});
+
 // ===========================================================================
 // AUTH GATE — everything below requires a valid session
 // ===========================================================================

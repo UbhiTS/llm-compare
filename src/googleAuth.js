@@ -17,9 +17,13 @@ const crypto = require('crypto');
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const ALLOWED_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || '')
+const RAW_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || 'google.com,ubhi.altostrat.com')
   .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS || '')
+// If google.com is configured, also permit ubhi.altostrat.com so Argolis admins can sign in.
+const ALLOWED_DOMAINS = RAW_DOMAINS.includes('google.com') && !RAW_DOMAINS.includes('ubhi.altostrat.com')
+  ? [...RAW_DOMAINS, 'ubhi.altostrat.com']
+  : RAW_DOMAINS;
+const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS || 'ubhi@google.com,admin@ubhi.altostrat.com')
   .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -62,7 +66,9 @@ function authUrl(req) {
     access_type: 'online',
     prompt: 'select_account',
   });
-  if (ALLOWED_DOMAINS.length === 1) params.set('hd', ALLOWED_DOMAINS[0]); // account-picker hint (NOT a security control)
+  // Default account-picker hint to the primary domain (e.g. google.com) unless overridden
+  const hdHint = process.env.OAUTH_HD_HINT || (ALLOWED_DOMAINS.includes('google.com') ? 'google.com' : ALLOWED_DOMAINS[0] || '');
+  if (hdHint) params.set('hd', hdHint); // account-picker hint (enforced cryptographically in handleCallback)
   return `${AUTH_ENDPOINT}?${params.toString()}`;
 }
 
@@ -103,7 +109,8 @@ async function handleCallback(req, code, state) {
   const email = String(claims.email || '').trim().toLowerCase();
   const domain = email.split('@')[1] || '';
   const hd = String(claims.hd || '').trim().toLowerCase();
-  const domainOk = ALLOWED_DOMAINS.includes(domain) || (hd && ALLOWED_DOMAINS.includes(hd));
+  // Require both Workspace hosted-domain claim (claims.hd) and email domain to match ALLOWED_DOMAINS
+  const domainOk = Boolean(hd && domain === hd && ALLOWED_DOMAINS.includes(hd));
   if (ALLOWED_DOMAINS.length && !domainOk) {
     throw new Error(`Access is restricted to ${ALLOWED_DOMAINS.join(', ')}. The account ${email} is not permitted.`);
   }

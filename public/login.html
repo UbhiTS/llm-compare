@@ -89,7 +89,9 @@
       <div class="msg" id="msg"></div>
     </form>
 
-    <div class="foot">Protected demo · sessions are server-side &amp; expire automatically</div>
+    <div class="foot">
+      Protected demo · <a href="/privacy" style="color:inherit;text-decoration:underline">Privacy Policy</a> · <a href="/terms" style="color:inherit;text-decoration:underline">Terms</a>
+    </div>
   </main>
 
   <script nonce="__NONCE__">
@@ -115,7 +117,7 @@
         $('pwLabel').textContent = setup ? 'Create password' : 'Password';
         $('username').readOnly = setup;            // first account is always "admin"
         $('password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
-        $('submit').textContent = setup ? 'Create account & sign in' : 'Sign in';
+        $('submit').textContent = setup ? 'Set password & sign in' : 'Sign in';
         var focusEl = setup ? $('code') : $('password');
         if (focusEl) setTimeout(function () { focusEl.focus(); }, 30);
       }
@@ -128,7 +130,8 @@
           if (googleOn) {
             $('googleBox').classList.remove('hide');
             if (s.allowedDomains && s.allowedDomains.length) {
-              $('googleBtnLabel').textContent = 'Sign in with Google (' + s.allowedDomains.join(', ') + ')';
+              var primary = s.allowedDomains.indexOf('google.com') !== -1 ? '@google.com' : s.allowedDomains.join(', ');
+              $('googleBtnLabel').textContent = 'Sign in with Google (' + primary + ')';
             }
           }
           // With Google enabled, the password form is a secondary fallback (login mode);
