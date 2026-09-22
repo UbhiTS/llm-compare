@@ -10,8 +10,9 @@ variable "region" {
 }
 
 module "iam" {
-  source     = "./terraform-modules/iam"
-  project_id = var.project_id
+  source         = "./terraform-modules/iam"
+  project_id     = var.project_id
+  project_number = var.project_number
 }
 
 module "gcs" {
@@ -29,6 +30,7 @@ module "security" {
 module "serverless" {
   source              = "./terraform-modules/serverless"
   project_id          = var.project_id
+  project_number      = var.project_number
   region              = var.region
   runtime_sa_email    = module.iam.runtime_sa_email
   appdata_bucket      = module.gcs.bucket_name

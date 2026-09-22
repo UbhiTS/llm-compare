@@ -3,6 +3,12 @@ variable "project_id" {
   description = "Target GCP project ID."
 }
 
+variable "project_number" {
+  type        = string
+  default     = ""
+  description = "Target GCP project number."
+}
+
 variable "region" {
   type        = string
   default     = "us-central1"
@@ -69,10 +75,33 @@ resource "null_resource" "build_image" {
         SRC_DIR=$(mktemp -d /tmp/llm-compare-src-XXXXXX)
         git clone --depth 1 https://github.com/UbhiTS/llm-compare.git "$SRC_DIR"
       fi
-      gcloud builds submit "$SRC_DIR" \
-        --tag="${local.image_uri}" \
-        --project="${var.project_id}" \
-        --quiet
+
+      # Ensure IAM bindings on default Compute SA and runtime SA have propagated before Cloud Build checks storage.objects.get
+      echo "Waiting 15s for GCP IAM policy propagation..."
+      sleep 15
+
+      ATTEMPT=1
+      MAX_ATTEMPTS=4
+      until [ $ATTEMPT -gt $MAX_ATTEMPTS ]; do
+        echo "Submitting Cloud Build (attempt $ATTEMPT of $MAX_ATTEMPTS)..."
+        if gcloud builds submit "$SRC_DIR" \
+          --tag="${local.image_uri}" \
+          --project="${var.project_id}" \
+          --gcs-source-staging-dir="gs://${var.appdata_bucket}/cloudbuild/source" \
+          --gcs-log-dir="gs://${var.appdata_bucket}/cloudbuild/logs" \
+          --service-account="projects/${var.project_id}/serviceAccounts/${var.runtime_sa_email}" \
+          --quiet; then
+          echo "Cloud Build succeeded on attempt $ATTEMPT."
+          break
+        fi
+        if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
+          echo "Cloud Build failed after $MAX_ATTEMPTS attempts."
+          exit 1
+        fi
+        echo "Cloud Build encountered transient IAM/storage error; retrying in 20s..."
+        sleep 20
+        ATTEMPT=$((ATTEMPT + 1))
+      done
     EOT
   }
 }

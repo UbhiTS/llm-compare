@@ -21,6 +21,8 @@
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
     "secretmanager.googleapis.com",
-    "aiplatform.googleapis.com"
+    "aiplatform.googleapis.com",
+    "compute.googleapis.com",
+    "logging.googleapis.com"
   ]
 }

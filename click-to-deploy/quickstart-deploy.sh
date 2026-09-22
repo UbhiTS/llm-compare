@@ -41,6 +41,7 @@ gcloud services enable \
   run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com \
   storage.googleapis.com iam.googleapis.com iamcredentials.googleapis.com \
   sts.googleapis.com secretmanager.googleapis.com aiplatform.googleapis.com \
+  compute.googleapis.com logging.googleapis.com \
   --project "$PROJECT_ID" --quiet
 ok "APIs enabled"
 
@@ -57,16 +58,21 @@ else
   warn "Skipped org-policy override (no orgpolicy.policyAdmin role or already permitted)"
 fi
 
-bold "3/6 Provisioning runtime Service Account (${RUNTIME_SA})..."
+bold "3/6 Provisioning runtime & Cloud Build Service Accounts (${RUNTIME_SA})..."
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)' 2>/dev/null || true)"
 if ! gcloud iam service-accounts describe "$RUNTIME_SA" --project "$PROJECT_ID" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${SERVICE}-run" \
     --display-name="LLM Compare Cloud Run Runtime" --project "$PROJECT_ID" --quiet
 fi
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:${RUNTIME_SA}" --role="roles/aiplatform.user" --condition=None --quiet >/dev/null
-gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-  --member="serviceAccount:${RUNTIME_SA}" --role="roles/secretmanager.secretAccessor" --condition=None --quiet >/dev/null
-ok "Runtime Service Account ready"
+for ROLE in roles/aiplatform.user roles/secretmanager.secretAccessor roles/storage.admin roles/artifactregistry.writer roles/logging.logWriter roles/cloudbuild.builds.builder; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${RUNTIME_SA}" --role="$ROLE" --condition=None --quiet >/dev/null
+  if [ -n "$PROJECT_NUMBER" ]; then
+    gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+      --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" --role="$ROLE" --condition=None --quiet >/dev/null || true
+  fi
+done
+ok "Runtime & Cloud Build Service Accounts ready"
 
 bold "4/6 Provisioning durable GCS bucket (gs://${DATA_BUCKET})..."
 if ! gcloud storage buckets describe "gs://${DATA_BUCKET}" --project "$PROJECT_ID" >/dev/null 2>&1; then
