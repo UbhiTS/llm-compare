@@ -15,7 +15,7 @@
 
 const { exec } = require('child_process');
 
-const TOKEN_CMD = process.env.GCLOUD_TOKEN_CMD || 'gcloud auth print-access-token';
+const TOKEN_CMD = process.env.GCLOUD_TOKEN_CMD || 'CLOUDSDK_ACTIVE_CONFIG_NAME=argolis CLOUDSDK_CORE_ACCOUNT=admin@ubhi.altostrat.com gcloud auth print-access-token || gcloud auth print-access-token';
 const GCLOUD_TTL_MS = (parseInt(process.env.GCLOUD_TOKEN_TTL_SEC, 10) || 3000) * 1000;
 const MINT_TIMEOUT_MS = 30000;
 const METADATA_HOST = process.env.GCE_METADATA_HOST || 'metadata.google.internal';

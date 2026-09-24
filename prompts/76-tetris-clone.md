@@ -22,8 +22,18 @@ Core requirements and mechanics:
 
 2. Gameplay and rules (crucial - get these exactly right)
 - The seven tetrominoes (I, O, T, S, Z, J, L) with correct shapes and rotation. Implement rotation with basic wall kicks so a rotation near a wall or the floor nudges into a legal spot instead of silently failing.
-- Gravity: the active piece falls one row every "gravity interval"; the interval shortens as the level rises (a speed curve). A piece LOCKS when it can no longer move down (use a short lock delay), then the next piece spawns.
-- Line clears: detect full rows, clear them, and shift the rows above down. Score 100 / 300 / 500 / 800 x level for clearing 1 / 2 / 3 / 4 lines (a 4-line "Tetris" is worth the most). Every 10 lines cleared raises the level and the speed.
+- Gravity: the active piece falls one row every "gravity interval"; the interval shortens as the level rises (a speed curve). A piece LOCKS when it can no longer move down (use a short 450ms lock delay), then checks for full rows.
+- **Line Clears & Mandatory 4-Tier Visual Celebration System (`LINE_CLEAR_ANIM` State — 360ms)**:
+  - NEVER delete full rows silently in a single invisible frame! When 1, 2, 3, or 4 full rows are detected upon piece lock, enter a dedicated `LINE_CLEAR_ANIM` state for `360ms` (tracked via `pygame.time.get_ticks()` inside the single async loop) BEFORE collapsing the board rows above, and trigger a **distinct, progressively escalating visual spectacle** based on `n = len(cleared_rows)`:
+    1. **1 Line (`SINGLE! +100 × level`)**:
+       - Horizontal cyan laser beam (`(0, 240, 255)`) sweeps outward from the center column (`col 4.5`) to both edges across the cleared row; blocks dissolve to white, emit **18 cyan spark particles**, and float a `"SINGLE +100"` popup banner.
+    2. **2 Lines (`DOUBLE! +300 × level`)**:
+       - Dual-row gold/emerald strobe flash (`(255, 220, 60)` / `(80, 255, 160)`) + expanding elliptical shockwave ring across the well + **38 glowing spark particles** + gentle `3px` vertical board bounce + `"DOUBLE! +300"` floating callout.
+    3. **3 Lines (`TRIPLE! +500 × level`)**:
+       - High-energy magenta/orange plasma wave (`(255, 60, 190)` / `(255, 150, 30)`) + **65 high-velocity spark particles** + `5px` screen-shake offset (`shake_x, shake_y`) + glowing well border pulse + bold `"TRIPLE!! +500"` floating banner.
+    4. **4 Lines (`⚡ TETRIS! +800 × level ⚡` — Grand Arcade Spectacle)**:
+       - Full-board rainbow/gold strobe across all 4 cleared rows + **120+ multi-colored physics confetti & star particles** exploding outward with gravity (`vy += 0.25`) + **intense `9px` damped camera shake** + neon border lightning flash + a large animated center-screen **`"⚡ TETRIS! +800 ⚡"`** badge that scales up with a golden halo glow!
+  - Once the `360ms` `LINE_CLEAR_ANIM` timer completes, remove the cleared rows, smoothly drop the rows above into place, increment `lines += n`, set `level = 1 + lines // 10`, and spawn the next piece (keep rendering active particles and floating score popups every frame until they fade out).
 - Collision and bounds are ABSOLUTE: a piece may NEVER overlap a filled cell or leave the 10x20 grid — validate every move, rotation, and drop against the board BEFORE applying it (revert if illegal). Locked cells never move except when full rows collapse. No piece may tunnel through the floor or stack.
 - Controls (player mode): Left / Right move; Down = soft drop; Up or X = rotate clockwise (Z = counter-clockwise); Space = hard drop (instant lock); optionally C = hold. Support held-key auto-repeat (DAS) for Left/Right/Down.
 - Ghost piece: show a faint outline where the current piece would land if hard-dropped.

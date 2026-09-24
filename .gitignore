@@ -24,7 +24,8 @@ build/
 dist/
 tmp/
 scratchpad/
-.data/          # local per-user run history (durable store is a GCS volume in the cloud)
+# local per-user run history (durable store is a GCS volume in the cloud)
+.data/
 
 # --- editor / AI-assistant scaffolding (not part of the app) ---
 .claude/

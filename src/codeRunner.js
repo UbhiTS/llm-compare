@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { runTests } = require('./runner');
 
-const PYTHON_CMD = process.env.PYTHON_CMD || 'python';
+const PYTHON_CMD = process.env.PYTHON_CMD || (process.platform === 'win32' ? 'python' : 'python3');
 const EXEC_TIMEOUT_MS = (parseInt(process.env.EXEC_TIMEOUT_SEC, 10) || 10) * 1000;
 const MAX_OUTPUT = 100_000; // cap captured stdout/stderr (chars)
 

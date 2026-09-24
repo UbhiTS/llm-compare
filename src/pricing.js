@@ -34,45 +34,71 @@ const PRICING = {
 // (Vertex); `publisher` = google | anthropic. `id` is the stable catalog key
 // (== `model` except where the API id differs, e.g. Gemini 3.1 Pro's preview id).
 const MODEL_CATALOG = [
-  // Gemini 3.8 / 3.7 / 3.6 Flash introductory pricing ends 2026-12-31 → then { input: 1.50, output: 7.50 }.
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.8-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
-  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.7-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.6-flash',      price: { input: 0.75, output: 3.75 }, context: 1000000 },
-  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.5-flash',      price: { input: 1.50, output: 9.00 }, context: 1000000 },
-  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 }, context: 1000000 },
-  { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro',   provider: 'agentplatform', publisher: 'google',    model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 }, context: 200000 },
-  { id: 'claude-fable-5',   label: 'Claude Fable 5',   provider: 'agentplatform', publisher: 'anthropic', model: 'claude-fable-5',         price: { input: 10.00, output: 50.00 }, context: 1000000 },
-  { id: 'claude-opus-5',    label: 'Claude Opus 5',    provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5',          price: { input: 5.00, output: 25.00 }, context: 1000000 },
-  { id: 'claude-opus-4-8',  label: 'Claude Opus 4.8',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-8',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
-  { id: 'claude-opus-4-7',  label: 'Claude Opus 4.7',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-7',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
-  { id: 'claude-opus-4-6',  label: 'Claude Opus 4.6',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-6',        price: { input: 5.00, output: 25.00 }, context: 1000000 },
-  { id: 'claude-opus-4-5',  label: 'Claude Opus 4.5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-4-5',        price: { input: 5.00, output: 25.00 }, context: 200000 },
-  // Sonnet 5 introductory pricing ended 2026-08-31 ($2.00 / $10.00) -> standard rate $3.00 / $15.00.
-  { id: 'claude-sonnet-5',  label: 'Claude Sonnet 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-5',        price: { input: 3.00, output: 15.00 }, context: 1000000 },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-6',    price: { input: 3.00, output: 15.00 }, context: 1000000 },
-  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-sonnet-4-5',    price: { input: 3.00, output: 15.00 }, context: 200000 },
-  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-haiku-4-5',       price: { input: 1.00, output: 5.00 }, context: 200000 },
-  // --- External models (NOT on Vertex). These call the vendor's own API, so a
-  // run on these sends the prompt outside Google infrastructure, and they need
-  // their own key (Settings ▸ Your API keys, or OPENAI_API_KEY/MOONSHOT_API_KEY).
-  // Without a key the UI shows them greyed out and refuses to place them.
-  //
-  // Mythos 5 is LISTED but flagged `blocked`, so the UI shows it greyed out and
-  // refuses to place it (rather than hiding it and looking like an oversight).
-  // Data sharing is already consented (verified dataSharingEnabledProvider=
-  // ANTHROPIC, so the old 403 is gone), but every call returns 429 "Quota
-  // exceeded for global_online_prediction_requests_per_base_model" on base model
-  // anthropic-claude-mythos-5 — the project has no serving quota, consistent with
-  // Mythos 5 being limited availability (Project Glasswing). Clear `blocked` once
-  // a quota grant lands and re-probe. ---
-  { id: 'claude-mythos-5',  label: 'Claude Mythos 5',  provider: 'agentplatform', publisher: 'anthropic', model: 'claude-mythos-5',        price: { input: 10.00, output: 50.00 }, context: 1000000,
-    blocked: 'a Vertex quota grant (base model anthropic-claude-mythos-5 has no serving quota on this project)', blockedHow: 'Google Cloud console ▸ IAM & Admin ▸ Quotas' },
+  // --- 1. Google (Gemini — Vertex AI Agent Platform) ---
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.8-flash', price: { input: 0.75, output: 3.75 }, context: 1000000 },
+  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.7-flash', price: { input: 0.75, output: 3.75 }, context: 1000000 },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.6-flash', price: { input: 0.75, output: 3.75 }, context: 1000000 },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.5-flash', price: { input: 1.50, output: 9.00 }, context: 1000000 },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 }, context: 1000000 },
+  { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 }, context: 200000 },
 
-  { id: 'gpt-5.6-sol',      label: 'GPT-5.6 Sol',      provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-sol',            price: { input: 5.00, output: 30.00 }, external: true },
-  { id: 'gpt-5.6-terra',    label: 'GPT-5.6 Terra',    provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-terra',          price: { input: 2.00, output: 12.00 }, external: true },
-  { id: 'gpt-5.6-luna',     label: 'GPT-5.6 Luna',     provider: 'openai',        publisher: 'openai',    model: 'gpt-5.6-luna',           price: { input: 0.20, output: 1.20 },  external: true },
-  { id: 'kimi-k3',          label: 'Kimi K3',          provider: 'moonshot',      publisher: 'moonshot',  model: 'kimi-k3',                price: { input: 3.00, output: 15.00 }, external: true },
-  { id: 'kimi-k2.6',        label: 'Kimi K2.6',        provider: 'moonshot',      publisher: 'moonshot',  model: 'kimi-k2.6',              price: { input: 0.95, output: 4.00 },  external: true },
+  // --- 2. Anthropic (Claude — Vertex AI Partner) ---
+  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-1', price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'claude-fable-5', label: 'Claude Fable 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'claude-opus-5', label: 'Claude Opus 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5', price: { input: 3.00, output: 15.00 }, context: 1000000 },
+  { id: 'claude-mythos-5', label: 'Claude Mythos 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-8', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-7', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-6', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-5', price: { input: 5.00, output: 25.00 }, context: 200000 },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-4-6', price: { input: 3.00, output: 15.00 }, context: 1000000 },
+  { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-4-5', price: { input: 3.00, output: 15.00 }, context: 200000 },
+  { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-4-5', price: { input: 1.00, output: 5.00 }, context: 200000 },
+
+  // --- 3. xAI (Grok — Vertex AI Model Garden Global MaaS) ---
+  { id: 'grok-4.20-reasoning', label: 'Grok 4.20 (Reasoning)', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'xai/grok-4.20-reasoning', price: { input: 3.00, output: 15.00 }, context: 256000 },
+  { id: 'grok-4.20-non-reasoning', label: 'Grok 4.20 (Standard)', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'xai/grok-4.20-non-reasoning', price: { input: 3.00, output: 15.00 }, context: 256000 },
+  { id: 'grok-4.1-fast-reasoning', label: 'Grok 4.1 Fast (Reasoning)', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'xai/grok-4.1-fast-reasoning', price: { input: 0.60, output: 3.00 }, context: 131072 },
+  { id: 'grok-4.1-fast-non-reasoning', label: 'Grok 4.1 Fast (Standard)', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'xai/grok-4.1-fast-non-reasoning', price: { input: 0.60, output: 3.00 }, context: 131072 },
+  { id: 'grok-4.6', label: 'Grok 4.6', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'xai/grok-4.6', price: { input: 5.00, output: 25.00 }, context: 256000 },
+
+  // --- 4. Meta (Llama — Vertex AI Model Garden MaaS, EULA accepted & enabled) ---
+  { id: 'llama-4-maverick-17b-128e-maas', label: 'Llama 4 Maverick 17B-128E', provider: 'agentplatform', publisher: 'meta', providerFamily: 'meta', providerLabel: 'Meta (Llama)', endpointType: 'openai-maas', region: 'us-east5', thinkingMode: 'off', model: 'meta/llama-4-maverick-17b-128e-instruct-maas', price: { input: 0.35, output: 1.15 }, context: 1000000 },
+  { id: 'llama-4-scout-17b-16e-maas', label: 'Llama 4 Scout 17B-16E', provider: 'agentplatform', publisher: 'meta', providerFamily: 'meta', providerLabel: 'Meta (Llama)', endpointType: 'openai-maas', region: 'us-east5', thinkingMode: 'off', model: 'meta/llama-4-scout-17b-16e-instruct-maas', price: { input: 0.20, output: 0.70 }, context: 1000000 },
+  { id: 'llama-3.3-70b-instruct-maas', label: 'Llama 3.3 70B Instruct', provider: 'agentplatform', publisher: 'meta', providerFamily: 'meta', providerLabel: 'Meta (Llama)', endpointType: 'openai-maas', region: 'us-central1', thinkingMode: 'off', model: 'meta/llama-3.3-70b-instruct-maas', price: { input: 0.60, output: 0.60 }, context: 128000 },
+
+  // --- 5. DeepSeek (Vertex AI Model Garden MaaS) ---
+  { id: 'deepseek-r1-0528-maas', label: 'DeepSeek-R1 (0528)', provider: 'agentplatform', publisher: 'deepseek-ai', providerFamily: 'deepseek', providerLabel: 'DeepSeek', endpointType: 'openai-maas', region: 'us-central1', thinkingMode: 'native', model: 'deepseek-ai/deepseek-r1-0528-maas', price: { input: 1.35, output: 5.40 }, context: 163840 },
+  { id: 'deepseek-v3.2-maas', label: 'DeepSeek-V3.2', provider: 'agentplatform', publisher: 'deepseek-ai', providerFamily: 'deepseek', providerLabel: 'DeepSeek', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'deepseek-ai/deepseek-v3.2-maas', price: { input: 0.56, output: 1.68 }, context: 163840 },
+
+  // --- 6. Alibaba / Qwen (Vertex AI Model Garden MaaS) ---
+  { id: 'qwen3-235b-a22b-instruct-maas', label: 'Qwen3 235B A22B Instruct', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'qwen/qwen3-235b-a22b-instruct-2507-maas', price: { input: 0.65, output: 2.60 }, context: 262144 },
+  { id: 'qwen3-coder-480b-a35b-instruct-maas', label: 'Qwen3 Coder 480B A35B', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'qwen/qwen3-coder-480b-a35b-instruct-maas', price: { input: 0.90, output: 3.60 }, context: 262144 },
+  { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Qwen3 Next 80B Thinking', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'qwen/qwen3-next-80b-a3b-thinking-maas', price: { input: 0.40, output: 1.60 }, context: 131072 },
+  { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Qwen3 Next 80B Instruct', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'qwen/qwen3-next-80b-a3b-instruct-maas', price: { input: 0.40, output: 1.60 }, context: 131072 },
+
+  // --- 7. OpenAI & GPT-OSS (GPT-6 Series + GPT-5.6 Series + Vertex AI MaaS) ---
+  { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-sol', price: { input: 6.00, output: 36.00 }, context: 1000000 },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-luna', price: { input: 0.30, output: 1.50 }, context: 1000000 },
+  { id: 'gpt-6-terra', label: 'GPT-6 Terra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-terra', price: { input: 2.50, output: 15.00 }, context: 1000000 },
+  { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-astra', price: { input: 4.00, output: 24.00 }, context: 1000000 },
+  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-sol', price: { input: 5.00, output: 30.00 }, context: 400000 },
+  { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-terra', price: { input: 2.00, output: 12.00 }, context: 400000 },
+  { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-luna', price: { input: 0.20, output: 1.20 }, context: 400000 },
+  { id: 'gpt-oss-120b-maas', label: 'GPT-OSS 120B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-120b-maas', price: { input: 0.30, output: 1.20 }, context: 131072 },
+  { id: 'gpt-oss-20b-maas', label: 'GPT-OSS 20B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-20b-maas', price: { input: 0.10, output: 0.40 }, context: 131072 },
+
+  // --- 8. Moonshot AI (Kimi — Vertex AI MaaS + Direct) ---
+  { id: 'kimi-k2-thinking-maas', label: 'Kimi K2 Thinking (Vertex MaaS)', provider: 'agentplatform', publisher: 'moonshotai', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'moonshotai/kimi-k2-thinking-maas', price: { input: 0.60, output: 2.50 }, context: 256000 },
+  { id: 'kimi-k3', label: 'Kimi K3', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k3', price: { input: 3.00, output: 15.00 }, external: true },
+  { id: 'kimi-k2.6', label: 'Kimi K2.6', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k2.6', price: { input: 0.95, output: 4.00 }, external: true },
+
+  // --- 9. Z.AI / Zhipu (GLM — Vertex AI Model Garden MaaS) ---
+  { id: 'glm-5.2-maas', label: 'GLM-5.2 (Vertex MaaS)', provider: 'agentplatform', publisher: 'zai-org', providerFamily: 'zai', providerLabel: 'Z.AI (GLM)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'zai-org/glm-5.2-maas', price: { input: 0.50, output: 2.00 }, context: 131072 },
+  { id: 'glm-5-maas', label: 'GLM-5 (Vertex MaaS)', provider: 'agentplatform', publisher: 'zai-org', providerFamily: 'zai', providerLabel: 'Z.AI (GLM)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'zai-org/glm-5-maas', price: { input: 0.40, output: 1.60 }, context: 131072 },
+  { id: 'glm-4.7-maas', label: 'GLM-4.7 (Vertex MaaS)', provider: 'agentplatform', publisher: 'zai-org', providerFamily: 'zai', providerLabel: 'Z.AI (GLM)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'zai-org/glm-4.7-maas', price: { input: 0.30, output: 1.20 }, context: 131072 },
 ];
 
 function catalogEntry(id) {
@@ -84,26 +110,43 @@ function catalogEntry(id) {
 function modelFromCatalog(slot, id) {
   const c = catalogEntry(id);
   if (!c) return null;
-  return { slot, catalogId: c.id, label: c.label, provider: c.provider, publisher: c.publisher, model: c.model, price: { input: c.price.input, output: c.price.output }, external: !!c.external, blocked: c.blocked || null, context: c.context || null };
+  return {
+    slot,
+    catalogId: c.id,
+    label: c.label,
+    provider: c.provider,
+    publisher: c.publisher,
+    providerFamily: c.providerFamily || c.publisher || c.provider,
+    providerLabel: c.providerLabel || c.publisher || c.provider,
+    endpointType: c.endpointType || null,
+    region: c.region || null,
+    thinkingMode: c.thinkingMode || null,
+    model: c.model,
+    price: { input: c.price.input, output: c.price.output },
+    external: !!c.external,
+    blocked: c.blocked || null,
+    context: c.context || null,
+  };
 }
 
-// The default slots shown in the UI on first load (a subset of the catalog).
-// Three slots = MAX_SLOTS in public/app.js, so this fills the arena on open.
+// The default slots shown in the UI on first load (latest frontier models).
 const DEFAULT_MODELS = [
-  modelFromCatalog('A', 'gemini-3.7-flash'),
-  modelFromCatalog('B', 'claude-opus-5'),
-  modelFromCatalog('C', 'gpt-5.6-sol'),
+  modelFromCatalog('A', 'gemini-3.8-flash'),
+  modelFromCatalog('B', 'claude-opus-5-5'),
+  modelFromCatalog('C', 'claude-fable-5-1'),
+  modelFromCatalog('D', 'gpt-6-sol'),
 ];
 
 // Server-authoritative model resolution for a run. Takes whatever the client
 // posted and rebuilds each slot from the catalog — dropping anything not in the
-// catalog and ignoring any client-supplied price/provider/model. This is what
-// makes "settings can't be modified" true even against a hand-crafted request.
+// catalog and ignoring any client-supplied price/provider/model.
+// Also disambiguates labels when the user compares the SAME model across multiple
+// slots with different Thinking Modes (e.g., Gemini 3.7 Flash [low] vs [high]).
 function resolveModels(requested) {
   const list = Array.isArray(requested) ? requested : [];
   const out = [];
   const usedSlots = new Set();
-  list.forEach((m, idx) => {
+  list.slice(0, 6).forEach((m, idx) => {
     if (!m) return;
     const c = catalogEntry(m.catalogId || m.id || m.model);
     if (!c) return;       // not in the catalog → cannot be run
@@ -117,6 +160,17 @@ function resolveModels(requested) {
     const effort = require('./providers').validateEffort(resolved, m.effort);
     if (effort) resolved.effort = effort;
     out.push(resolved);
+  });
+  // If the same catalogId appears in more than one slot (e.g. comparing Thinking Off vs High),
+  // append the effective thinking level to each duplicate's label so scorecards & legends are distinct.
+  const counts = {};
+  out.forEach((m) => { counts[m.catalogId] = (counts[m.catalogId] || 0) + 1; });
+  out.forEach((m) => {
+    if (counts[m.catalogId] > 1) {
+      const prof = require('./providers').thinkingProfile(m);
+      const tag = m.effort || (prof && prof.level) || ('Slot ' + m.slot);
+      m.label = `${m.label} (${tag})`;
+    }
   });
   return out.length ? out : DEFAULT_MODELS.map((m) => modelFromCatalog(m.slot, m.catalogId));
 }

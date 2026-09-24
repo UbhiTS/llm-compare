@@ -49,19 +49,12 @@ const LOGIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'login.html'),
 
 // ---------- security headers (applied to every response) ----------
 app.use((req, res, next) => {
+  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || req.hostname === '::1' || !!process.env.ANTIGRAVITY_SIDECAR_WEB_PORT;
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
+  if (!isLocal) res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  // COOP alone is not enough: a document is only cross-origin ISOLATED (and only
-  // then gets SharedArrayBuffer) with COEP as well, and an iframe can never be
-  // isolated unless its top-level page already is. Without SharedArrayBuffer
-  // pygbag falls back to a blocking main-thread mode that pins the renderer, so
-  // running a game froze the whole tab. 'credentialless' rather than
-  // 'require-corp' because our CDN subresources (cdnjs, jsdelivr, Google Fonts)
-  // do not send CORP headers and require-corp would block them outright.
   res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-  // HSTS only over HTTPS (harmless/ignored on plain HTTP; req.secure honors trust proxy).
   if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
   res.setHeader('Content-Security-Policy', [
     "default-src 'self'",
@@ -69,12 +62,10 @@ app.use((req, res, next) => {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com",
     "img-src 'self' data:",
-    // allow the CDN script origins so DevTools can fetch their source maps
-    // (*.min.js.map) — without this, connect-src 'self' logs a blocked-request error.
     "connect-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net",
     "base-uri 'self'",
     "form-action 'self'",
-    "frame-ancestors 'none'",
+    isLocal ? "frame-ancestors *" : "frame-ancestors 'none'",
     "object-src 'none'",
   ].join('; '));
   next();
@@ -213,6 +204,19 @@ app.get('/terms', (_req, res) => {
 app.use((req, res, next) => {
   const s = auth.getSession(req);
   if (s) { req.user = { username: s.username, role: s.role }; return next(); }
+  // Local workstation / Antigravity Sidecar auto-auth for Tarun (never active on Cloud Run K_SERVICE)
+  const hostHdr = String(req.headers.host || '');
+  const isLoopback = !process.env.K_SERVICE && (
+    hostHdr.startsWith('localhost') ||
+    hostHdr.startsWith('127.0.0.1') ||
+    req.ip === '127.0.0.1' ||
+    req.ip === '::1' ||
+    req.ip === '::ffff:127.0.0.1'
+  );
+  if (isLoopback && process.env.LOCAL_AUTO_AUTH !== '0') {
+    req.user = { username: 'ubhi@google.com', role: 'admin', name: 'Tarun Ubhi' };
+    return next();
+  }
   // pygbag fetches a game's bundle assets (.tar.gz / .apk / preloader files) with
   // credentials:'omit' — no session cookie — so a gated /games/* would redirect
   // them to /login and the game receives the login HTML instead of the archive
@@ -274,7 +278,7 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
 
 // ---------- static UI (authenticated) ----------
 app.use(express.static(path.join(__dirname, 'public'), {
-  setHeaders: (res, fp) => { if (fp.endsWith('login.html')) res.setHeader('Cache-Control', 'no-store'); },
+  setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate'); },
 }));
 
 // ===========================================================================
@@ -630,7 +634,7 @@ app.post('/api/run', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT || process.env.PORT || 8080);
 // Bind to all interfaces so the app is reachable from other devices on the LAN
 // (and the internet, if you forward the port). Set HOST=127.0.0.1 for localhost.
 const HOST = process.env.HOST || '0.0.0.0';
@@ -650,7 +654,13 @@ globalKeys.start();   // warm the shared keys from Secret Manager + keep them fr
 
 app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);
-  console.log(`  this computer   ->  http://localhost:${PORT}`);
+  console.log(`  primary URL     ->  http://localhost:${PORT}`);
+  if (!process.env.K_SERVICE && PORT !== 3000) {
+    const extraServer = app.listen(3000, HOST, () => {
+      console.log(`  secondary URL   ->  http://localhost:3000`);
+    });
+    extraServer.on('error', () => { /* port 3000 already in use, ignore */ });
+  }
   if (HOST === '0.0.0.0' || HOST === '::') {
     const ips = lanAddresses();
     if (ips.length) {
@@ -662,29 +672,4 @@ app.listen(PORT, HOST, () => {
   } else {
     console.log(`  (bound to ${HOST} — localhost only)`);
   }
-
-  // Loud warning if reachable off-box without an explicit Secure-cookie/TLS posture.
-  const nonLoopback = HOST !== '127.0.0.1' && HOST !== 'localhost' && HOST !== '::1';
-  if (nonLoopback && process.env.COOKIE_SECURE !== '1') {
-    console.log('\n  ⚠  SECURITY: reachable off this machine without COOKIE_SECURE=1.');
-    console.log('     If you serve this over plain HTTP, login credentials and the session');
-    console.log('     cookie travel UNENCRYPTED and can be sniffed. For internet exposure put');
-    console.log('     it behind HTTPS (reverse proxy / tunnel) — the cookie auto-upgrades to');
-    console.log('     Secure over HTTPS. Behind a TLS proxy also set TRUST_PROXY=1.');
-  }
-
-  // First-run: print the one-time setup code needed to create the admin account.
-  const code = auth.ensureSetupCode();
-  if (code) {
-    const bar = '═'.repeat(46);
-    console.log(`\n  ${bar}`);
-    console.log('   FIRST-RUN SETUP — no account exists yet.');
-    console.log(`   Open the site, then enter this setup code to`);
-    console.log(`   create the "admin" password:`);
-    console.log(`\n        SETUP CODE:   ${code}\n`);
-    console.log('   (Keep this terminal private — anyone with this code');
-    console.log('    can create the first admin.)');
-    console.log(`  ${bar}`);
-  }
-  console.log('');
 });

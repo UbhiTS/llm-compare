@@ -26,9 +26,10 @@ const fence = (code) => '```javascript\n' + code + '\n```';
 assert.deepStrictEqual(
   DEFAULT_MODELS.map((m) => ({ slot: m.slot, catalogId: m.catalogId })),
   [
-    { slot: 'A', catalogId: 'gemini-3.7-flash' },
-    { slot: 'B', catalogId: 'claude-opus-5' },
-    { slot: 'C', catalogId: 'gpt-5.6-sol' },
+    { slot: 'A', catalogId: 'gemini-3.8-flash' },
+    { slot: 'B', catalogId: 'claude-opus-5-5' },
+    { slot: 'C', catalogId: 'claude-fable-5-1' },
+    { slot: 'D', catalogId: 'gpt-6-sol' },
   ],
   'default slots should use the release lineup in the configured order'
 );
@@ -46,7 +47,7 @@ const gemini37Slot = modelFromCatalog('A', 'gemini-3.7-flash');
 assert.strictEqual(gemini37Slot.model, 'gemini-3.7-flash', 'Gemini 3.7 Flash should use its stable API model id');
 assert.deepStrictEqual(
   thinkingOptions(gemini37Slot).options.map((o) => o.value),
-  ['', 'low', 'medium', 'high'],
+  ['low', 'medium', 'high'],
   'Gemini 3.7 Flash should expose exactly its supported thinking levels'
 );
 assert.strictEqual(thinkingProfile(gemini37Slot).level, 'medium', 'Gemini 3.7 Flash should show its medium default');

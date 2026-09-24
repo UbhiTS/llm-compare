@@ -862,3 +862,229 @@ a.ud-item[hidden] { display: none; }
   .aurora::before, .aurora::after { animation: none; }
   .col.is-live::after, .col.is-live .progress-fill, .metric.flash .v, .bar-fill { animation: none; }
 }
+
+/* ---------- 3-Dropdown Cascading Model Selector (Provider > Model > Thinking Mode) ---------- */
+.model-config summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mc-summary-meta {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.mc-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mc-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mc-preset-label {
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 4px;
+}
+.mc-preset-btn {
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, transform .1s ease;
+}
+.mc-preset-btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--well));
+}
+.ctl-btn.sm {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+.slot-configurator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.slot-cfg-card {
+  border: 1px solid var(--border-hi);
+  border-top: 3px solid var(--slot-accent, var(--accent));
+  background: var(--well);
+  border-radius: 8px;
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.scc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.scc-slot-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #090d16;
+  padding: 2px 7px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.scc-ic {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+.scc-name {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
+}
+.vtx-badge {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: rgba(47, 217, 166, 0.14);
+  color: #2fd9a6;
+  border: 1px solid rgba(47, 217, 166, 0.38);
+}
+.scc-price {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.scc-remove {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.scc-remove:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+.scc-dropdowns {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr 1fr;
+  gap: 8px;
+}
+@media (max-width: 680px) {
+  .scc-dropdowns {
+    grid-template-columns: 1fr;
+  }
+}
+.scc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.scc-field label {
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.scc-field select,
+.col-dd-item select {
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-hi);
+  border-radius: 5px;
+  padding: 5px 7px;
+  font-size: 11.8px;
+  font-family: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+.scc-field select:focus,
+.col-dd-item select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Inline 3-Dropdown Cascader inside Arena Card Headers */
+.col-cascader {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.col-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.col-slot-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.col-dd-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.col-dd-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.col-dd-item .dd-k {
+  font-size: 9.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* Responsive multi-slot arena grid (supports 1 to 6 slots cleanly) */
+#arena.arena {
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)) !important;
+}
+

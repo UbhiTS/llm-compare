@@ -49,7 +49,12 @@ async function smFetch(path, init) {
   if (!token) throw new Error('No ADC token available for Secret Manager.');
   const r = await fetch(`https://secretmanager.googleapis.com/v1/projects/${PROJECT()}/secrets/${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init && init.headers) },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'x-goog-user-project': PROJECT(),
+      'Content-Type': 'application/json',
+      ...(init && init.headers),
+    },
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {

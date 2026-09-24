@@ -8,11 +8,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260924b" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" defer></script>
-  <script src="app.js" defer></script>
+  <script src="app.js?v=20260924b" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -73,12 +73,25 @@
     <textarea id="customPrompt" class="custom-prompt hidden" rows="3" placeholder="Type your own prompt — it is sent verbatim to every model slot. No automated tests; you get live output, tokens, cost, speed and thinking."></textarea>
 
     <details class="model-config" open>
-      <summary>Models — drag into a slot (up to 3)</summary>
-      <div class="picker-palette-row">
-        <span class="picker-label">Available models <span class="picker-hint">drag one into a slot below, or click it</span></span>
-        <div id="modelPalette" class="model-palette"></div>
+      <summary>
+        <span>Model Slots — 3-Dropdown Selector (<b>Provider</b> ▸ <b>Model</b> ▸ <b>Thinking Mode</b>)</span>
+        <span class="mc-summary-meta" id="slotCountBadge">3 of 6 slots active</span>
+      </summary>
+      <div class="mc-toolbar">
+        <div class="mc-presets" role="group" aria-label="Quick presets">
+          <span class="mc-preset-label">Quick presets:</span>
+          <button type="button" class="mc-preset-btn" data-preset="frontier">⚡ Frontier Showdown (Gemini 3.8 · Claude Opus 5.5 · Fable 5.1 · GPT-6 Sol · Grok 4.20)</button>
+          <button type="button" class="mc-preset-btn" data-preset="same-model-thinking">🧠 Gemini 3.8 Flash: Thinking Modes (Minimal vs Medium vs High)</button>
+          <button type="button" class="mc-preset-btn" data-preset="grok-reasoning">🚀 xAI Grok 4.20 &amp; 4.1: Reasoning vs Standard</button>
+          <button type="button" class="mc-preset-btn" data-preset="open-maas">🌐 Vertex MaaS Open-Weight (Llama 4 · Qwen 3 · Kimi K2 · GLM 5.2)</button>
+        </div>
+        <div class="mc-actions">
+          <button type="button" id="addSlotBtn" class="ctl-btn sm primary">+ Add Model Slot</button>
+        </div>
       </div>
-      <p class="hint">Drag a model onto one of the comparison cards below to load it there, or drag between cards to move it — a model can only occupy one card at a time. Model IDs and prices come from the preconfigured catalog and can’t be edited. Keys are read on the server and never sent to the browser — <b>external</b> models (not on Vertex) need their own key under <em>Your API keys</em>.</p>
+      <div id="slotConfiguratorGrid" class="slot-configurator-grid"></div>
+      <div id="modelPalette" class="model-palette hidden"></div>
+      <p class="hint">Select <b>1. Provider Family</b> ▸ <b>2. Model</b> ▸ <b>3. Thinking / Reasoning Mode</b> for each slot (up to 6 slots). You can select the <b>exact same model across multiple slots with different Thinking Modes</b> to benchmark how reasoning depth affects speed, token cost, and accuracy. All <b>Vertex AI Agent Platform / MaaS</b> models authenticate automatically via your Argolis GCP credentials.</p>
     </details>
   </section>
 

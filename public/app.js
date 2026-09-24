@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 
 const PALETTE = ['#5e8bff', '#2fd9a6', '#ff9e6d', '#b388ff', '#ffcb5e', '#22e0ff']; // Aurora accents
-const MIN_SLOTS = 0; // every slot can be cleared; Run is disabled while none are filled
-const MAX_SLOTS = 3; // compare at most 3 models at a time
+const MIN_SLOTS = 1; // keep at least 1 active slot
+const MAX_SLOTS = 6; // compare up to 6 models / thinking modes at a time
 let CONFIG = null;       // from /api/config
 let MODELS = [];         // current editable model configs (the dynamic source of truth)
 let radarChart = null;
@@ -31,9 +31,6 @@ const el = (tag, cls, html) => {
   if (html != null) n.innerHTML = html;
   return n;
 };
-// Every call site interpolates into innerHTML, including attribute values, so
-// the double quote must be escaped too — without it a quote in a model label or
-// a tooltip closes the attribute early and the rest leaks into the markup.
 const esc = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const MAGNIFY_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="6.8" cy="6.8" r="4.4"/><line x1="10.1" y1="10.1" x2="14" y2="14"/></svg>';
@@ -45,19 +42,27 @@ const ICON_CLAUDE = (() => {
   for (let i = 0; i < 12; i++) rays += `<rect x="11.05" y="2.1" width="1.9" height="6.4" rx=".95" transform="rotate(${i * 30} 12 12)"/>`;
   return `<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><g fill="#d97757">${rays}</g></svg>`;
 })();
+const ICON_GROK = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19L19 4M5.5 5.5h13v13" fill="none" stroke="#f5f5f7" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_META = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 14.5c0-4 2.5-7 5-7 2 0 3.5 2 5.5 5.2 2-3.2 3.5-5.2 5.5-5.2 2.5 0 5 3 5 7 0 2.5-1.5 4-3.3 4-1.6 0-2.9-1.2-4.7-4.2-1.8 3-3.1 4.2-4.7 4.2-1.8 0-3.3-1.5-3.3-4Z" fill="none" stroke="#3b82f6" stroke-width="2.1"/></svg>';
+const ICON_DEEPSEEK = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="#38bdf8" stroke-width="2"/><path d="M8 12.5c1.5-2.5 4.5-2.5 6 0s4.5 2.5 6 0" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/></svg>';
+const ICON_QWEN = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,2.5 20.5,7.5 20.5,16.5 12,21.5 3.5,16.5 3.5,7.5" fill="none" stroke="#a855f7" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="#a855f7"/></svg>';
 const ICON_GENERIC = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>';
 // Pick a brand mark from a model's publisher / provider / model id / label.
 function modelIconSvg(m) {
-  const s = (((m && m.publisher) || '') + ' ' + ((m && m.provider) || '') + ' ' + ((m && m.model) || '') + ' ' + ((m && m.label) || '')).toLowerCase();
+  const s = (((m && m.providerFamily) || '') + ' ' + ((m && m.publisher) || '') + ' ' + ((m && m.provider) || '') + ' ' + ((m && m.model) || '') + ' ' + ((m && m.label) || '')).toLowerCase();
   if (s.indexOf('anthropic') >= 0 || s.indexOf('claude') >= 0) return ICON_CLAUDE;
   if (s.indexOf('gemini') >= 0 || s.indexOf('google') >= 0) return ICON_GEMINI;
+  if (s.indexOf('xai') >= 0 || s.indexOf('grok') >= 0) return ICON_GROK;
+  if (s.indexOf('meta') >= 0 || s.indexOf('llama') >= 0) return ICON_META;
+  if (s.indexOf('deepseek') >= 0) return ICON_DEEPSEEK;
+  if (s.indexOf('qwen') >= 0 || s.indexOf('alibaba') >= 0) return ICON_QWEN;
   return ICON_GENERIC;
 }
 // A compact, distinct name for tight spaces — drops the family prefix so the two
 // Geminis read as "3.5 Flash" / "3.1 Pro" instead of both truncating to "Ge…".
 function shortLabel(label) {
   const s = String(label || '');
-  return s.replace(/^(Gemini|Claude|GPT|Llama|Mistral|OpenAI|Anthropic|Google|DeepSeek|Qwen)\s+/i, '').trim() || s;
+  return s.replace(/^(Gemini|Claude|Grok|GPT-OSS|GPT|Llama|Mistral|OpenAI|Anthropic|Google|DeepSeek|Qwen3|Qwen|Kimi|GLM)\s+/i, '').trim() || s;
 }
 
 // ---------- theme (light / medium / dark) ----------
@@ -539,109 +544,283 @@ function openChangePwModal() {
 // ---------- model slots: add / remove from the fixed catalog ----------
 function catalog() { return (CONFIG && CONFIG.catalog) || []; }
 
-// ---------- slot assignment (drag & drop picker) ----------
-// Three fixed slots, each holding at most one catalog model. A model can only
-// occupy ONE slot, so dropping a model that is already placed MOVES it (and
-// swaps with whatever was in the destination) rather than duplicating it.
-const SLOT_IDS = ['A', 'B', 'C'].slice(0, MAX_SLOTS);
+// ---------- 3-Dropdown Cascading Slot Selector (Provider > Model > Thinking Mode) ----------
+const ALL_SLOT_IDS = ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, MAX_SLOTS);
+let SLOT_IDS = ['A', 'B', 'C'];          // active slots (1 .. 6)
 const SLOT_ASSIGN = {};                  // slot -> catalogId | null
 const SLOT_EFFORT = {};                  // slot -> chosen thinking level | null
-SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
+ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
 
-// Open on whatever this user last compared, falling back to the shipped
-// defaults. The remembered set comes from the server (their run history), so it
-// follows them across browsers and machines. Anything no longer selectable —
-// dropped from the catalog, blocked, or missing a key — is skipped rather than
-// silently loading a dead card, and if that leaves nothing we use the defaults.
+const PROVIDER_FAMILIES = [
+  { id: 'google',    label: 'Google (Gemini — Vertex AI)' },
+  { id: 'anthropic', label: 'Anthropic (Claude — Vertex AI)' },
+  { id: 'xai',       label: 'xAI (Grok — Vertex AI MaaS)' },
+  { id: 'meta',      label: 'Meta (Llama — Vertex AI MaaS)' },
+  { id: 'deepseek',  label: 'DeepSeek (Vertex AI MaaS)' },
+  { id: 'qwen',      label: 'Alibaba / Qwen (Vertex AI MaaS)' },
+  { id: 'openai',    label: 'OpenAI (GPT-OSS Vertex & Direct)' },
+  { id: 'moonshot',  label: 'Moonshot AI (Kimi — Vertex & Direct)' },
+  { id: 'zai',       label: 'Z.AI (GLM — Vertex AI MaaS)' },
+];
+
+// Sibling Reasoning <-> Non-Reasoning catalog pairs so Dropdown 3 ("Thinking Mode")
+// can also toggle between Reasoning and Non-Reasoning variants of the same family!
+const REASONING_SIBLING_PAIRS = {
+  'grok-4.20-reasoning':      [
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought) — grok-4.20-reasoning' },
+    { id: 'grok-4.20-non-reasoning', label: 'Non-Reasoning (Fast Direct) — grok-4.20-non-reasoning' },
+  ],
+  'grok-4.20-non-reasoning':  [
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought) — grok-4.20-reasoning' },
+    { id: 'grok-4.20-non-reasoning', label: 'Non-Reasoning (Fast Direct) — grok-4.20-non-reasoning' },
+  ],
+  'grok-4.1-fast-reasoning': [
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT) — grok-4.1-fast-reasoning' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Non-Reasoning (Ultra-Fast) — grok-4.1-fast-non-reasoning' },
+  ],
+  'grok-4.1-fast-non-reasoning': [
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT) — grok-4.1-fast-reasoning' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Non-Reasoning (Ultra-Fast) — grok-4.1-fast-non-reasoning' },
+  ],
+  'qwen3-next-80b-a3b-thinking-maas': [
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought) — qwen3-next-80b-thinking' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Non-Reasoning) — qwen3-next-80b-instruct' },
+  ],
+  'qwen3-next-80b-a3b-instruct-maas': [
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought) — qwen3-next-80b-thinking' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Non-Reasoning) — qwen3-next-80b-instruct' },
+  ],
+  'deepseek-r1-0528-maas': [
+    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1 CoT) — deepseek-r1-0528-maas' },
+    { id: 'deepseek-v3.2-maas',    label: 'Non-Reasoning (DeepSeek V3.2 Fast) — deepseek-v3.2-maas' },
+  ],
+  'deepseek-v3.2-maas': [
+    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1 CoT) — deepseek-r1-0528-maas' },
+    { id: 'deepseek-v3.2-maas',    label: 'Non-Reasoning (DeepSeek V3.2 Fast) — deepseek-v3.2-maas' },
+  ],
+};
+
+function providerFamilyOf(c) {
+  if (!c) return 'google';
+  if (c.providerFamily) return c.providerFamily;
+  const pub = (c.publisher || '').toLowerCase();
+  if (pub === 'anthropic' || c.provider === 'anthropic') return 'anthropic';
+  if (pub === 'xai') return 'xai';
+  if (pub === 'meta') return 'meta';
+  if (pub.startsWith('deepseek')) return 'deepseek';
+  if (pub === 'qwen') return 'qwen';
+  if (pub === 'moonshotai' || c.provider === 'moonshot') return 'moonshot';
+  if (pub === 'zai-org') return 'zai';
+  if (pub === 'openai' || c.provider === 'openai') return 'openai';
+  return 'google';
+}
+
+function providerLabelOf(familyId) {
+  const f = PROVIDER_FAMILIES.find((x) => x.id === familyId);
+  return f ? f.label : familyId;
+}
+
 function seedSlots() {
-  const remembered = (CONFIG.me && CONFIG.me.lastModels) || null;
+  const UPGRADE_MAP = {
+    'gemini-3.7-flash': 'gemini-3.8-flash',
+    'gemini-3.6-flash': 'gemini-3.8-flash',
+    'claude-opus-4-7': 'claude-opus-5-5',
+    'claude-opus-4-8': 'claude-opus-5-5',
+    'claude-opus-5': 'claude-opus-5-5',
+    'claude-fable-5': 'claude-fable-5-1',
+    'gpt-5.6-sol': 'gpt-6-sol',
+  };
   const usable = (list) => (list || [])
-    .map((m) => ({ id: m.catalogId || m.id, effort: m.effort || null }))
+    .map((m) => {
+      const rawId = m.catalogId || m.id;
+      return { id: UPGRADE_MAP[rawId] || rawId, effort: m.effort || null };
+    })
     .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
-    .slice(0, SLOT_IDS.length);
+    .slice(0, MAX_SLOTS);
 
-  const chosen = usable(remembered);
-  const list = chosen.length ? chosen : usable(CONFIG.models);
+  const list = usable(CONFIG.models);
+  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 4));
+  SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
+  ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
   list.forEach((m, i) => {
     const s = SLOT_IDS[i];
     if (!s) return;
     SLOT_ASSIGN[s] = m.id;
-    SLOT_EFFORT[s] = m.effort;          // the thinking level they last ran it at
+    SLOT_EFFORT[s] = m.effort;
   });
 }
 
-function modelFromCatalogId(slot, id) {
+function modelFromCatalogId(slot, id, duplicateCatalogIds) {
   const c = catalog().find((x) => x.id === id);
   if (!c) return null;
+  const eff = SLOT_EFFORT[slot] || undefined;
+  const effDisplay = eff || (c.thinking && c.thinking.label) || 'default';
+  const label = (duplicateCatalogIds && duplicateCatalogIds.has(c.id))
+    ? `${c.label} (${effDisplay})`
+    : c.label;
   return {
-    slot, catalogId: c.id, label: c.label,
-    provider: c.provider, publisher: c.publisher, model: c.model,
+    slot, catalogId: c.id, label, baseLabel: c.label,
+    provider: c.provider, publisher: c.publisher,
+    providerFamily: providerFamilyOf(c),
+    providerLabel: c.providerLabel || providerLabelOf(providerFamilyOf(c)),
+    endpointType: c.endpointType || null,
+    region: c.region || null,
+    model: c.model,
     price: { input: c.price.input, output: c.price.output },
     external: !!c.external,
-    thinking: c.thinking || null,          // reasoning level this model gets sent
+    thinking: c.thinking || null,
     thinkingOptions: c.thinkingOptions || null,
-    effort: SLOT_EFFORT[slot] || undefined, // per-card override, validated again server-side
+    effort: eff,
   };
 }
-// MODELS (what the rest of the app runs on) is derived from the slots.
+
+// MODELS (what the rest of the app runs on) is derived from the active slots.
+// Automatically disambiguates labels when two or more slots compare the same model!
 function syncModelsFromSlots() {
-  MODELS = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).map((s) => modelFromCatalogId(s, SLOT_ASSIGN[s])).filter(Boolean);
+  const counts = {};
+  SLOT_IDS.forEach((s) => {
+    const cid = SLOT_ASSIGN[s];
+    if (cid) counts[cid] = (counts[cid] || 0) + 1;
+  });
+  const duplicateCatalogIds = new Set(Object.keys(counts).filter((k) => counts[k] > 1));
+  MODELS = SLOT_IDS
+    .filter((s) => SLOT_ASSIGN[s])
+    .map((s) => modelFromCatalogId(s, SLOT_ASSIGN[s], duplicateCatalogIds))
+    .filter(Boolean);
 }
+
 function slotOf(catalogId) { return SLOT_IDS.find((s) => SLOT_ASSIGN[s] === catalogId) || null; }
 
-// Place `catalogId` into `slot`. Moving between slots swaps; coming from the
-// palette displaces the current occupant back to the palette.
-function assignToSlot(catalogId, slot) {
-  if (!SLOT_IDS.includes(slot)) return;
+// Place `catalogId` into `slot` WITHOUT removing it from other slots (so the same
+// model can be compared side-by-side with different Thinking Modes).
+function assignToSlot(catalogId, slot, effortOverride) {
+  if (!ALL_SLOT_IDS.includes(slot)) return;
+  if (!SLOT_IDS.includes(slot)) SLOT_IDS.push(slot);
   const c = catalog().find((x) => x.id === catalogId);
-  if (!c) return;
-  // A model with no usable key can never occupy a slot, whatever route got us
-  // here (drag, click, or a hand-crafted drop event).
-  if (!modelAvailability(c).ok) return;
-  const from = slotOf(catalogId);
-  if (from === slot) return;                       // dropped where it already is
-  const displaced = SLOT_ASSIGN[slot] || null;
-  const movedEffort = from ? SLOT_EFFORT[from] : null;
+  if (!c || !modelAvailability(c).ok) return;
   SLOT_ASSIGN[slot] = catalogId;
-  // The level belongs to the model, not the card — carry it when a model moves,
-  // and drop any level the displaced model had chosen.
-  SLOT_EFFORT[slot] = from ? movedEffort : null;
-  if (from) { SLOT_ASSIGN[from] = displaced; SLOT_EFFORT[from] = null; }
+  if (effortOverride !== undefined) {
+    SLOT_EFFORT[slot] = effortOverride || null;
+  } else if (c.thinkingOptions && c.thinkingOptions.configurable) {
+    const valid = c.thinkingOptions.options.some((o) => o.value === (SLOT_EFFORT[slot] || ''));
+    if (!valid) SLOT_EFFORT[slot] = null;
+  } else {
+    SLOT_EFFORT[slot] = null;
+  }
   afterSlotChange();
 }
+
+function addSlot() {
+  if (SLOT_IDS.length >= MAX_SLOTS) return;
+  const nextSlot = ALL_SLOT_IDS.find((s) => !SLOT_IDS.includes(s));
+  if (!nextSlot) return;
+  // Pick the latest frontier models for new slots
+  const preferredOrder = [
+    'gemini-3.8-flash', 'claude-opus-5-5', 'claude-fable-5-1', 'gpt-6-sol',
+    'grok-4.20-reasoning', 'deepseek-r1-0528-maas', 'llama-4-maverick-17b-128e-maas',
+  ];
+  const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
+  let chosenId = preferredOrder.find((id) => {
+    const c = catalog().find((x) => x.id === id);
+    return c && modelAvailability(c).ok && !existingIds.has(id);
+  });
+  if (!chosenId) {
+    const firstAvail = catalog().find((c) => modelAvailability(c).ok);
+    chosenId = firstAvail ? firstAvail.id : 'gemini-3.8-flash';
+  }
+  SLOT_IDS.push(nextSlot);
+  SLOT_ASSIGN[nextSlot] = chosenId;
+  SLOT_EFFORT[nextSlot] = null;
+  afterSlotChange();
+}
+
 function clearSlot(slot) {
-  if (!SLOT_ASSIGN[slot]) return;
-  const filled = SLOT_IDS.filter((s) => SLOT_ASSIGN[s]).length;
-  if (filled <= MIN_SLOTS) return;
-  SLOT_ASSIGN[slot] = null;
-  SLOT_EFFORT[slot] = null;
+  if (SLOT_IDS.length <= MIN_SLOTS) return;
+  const idx = SLOT_IDS.indexOf(slot);
+  if (idx < 0) return;
+  // Shift remaining slot assignments down so slots stay contiguous A, B, C...
+  const remaining = SLOT_IDS.filter((s) => s !== slot).map((s) => ({
+    id: SLOT_ASSIGN[s],
+    effort: SLOT_EFFORT[s],
+  }));
+  SLOT_IDS = ALL_SLOT_IDS.slice(0, remaining.length);
+  ALL_SLOT_IDS.forEach((s, i) => {
+    SLOT_ASSIGN[s] = remaining[i] ? remaining[i].id : null;
+    SLOT_EFFORT[s] = remaining[i] ? remaining[i].effort : null;
+  });
   afterSlotChange();
 }
-// Click fallback (and touch, where HTML5 drag&drop doesn't fire): fill the first
-// empty slot, else replace the last one.
-function placeInFirstFreeSlot(catalogId) {
-  if (slotOf(catalogId)) return;
-  { const c = catalog().find((x) => x.id === catalogId); if (!c || !modelAvailability(c).ok) return; }
-  const free = SLOT_IDS.find((s) => !SLOT_ASSIGN[s]);
-  assignToSlot(catalogId, free || SLOT_IDS[SLOT_IDS.length - 1]);
+
+function applyPreset(presetName) {
+  let target = [];
+  if (presetName === 'frontier') {
+    target = [
+      { id: 'gemini-3.8-flash',    effort: 'high' },
+      { id: 'claude-opus-5-5',     effort: 'high' },
+      { id: 'claude-fable-5-1',    effort: 'high' },
+      { id: 'gpt-6-sol',           effort: 'high' },
+      { id: 'grok-4.20-reasoning', effort: null },
+    ];
+  } else if (presetName === 'same-model-thinking') {
+    target = [
+      { id: 'gemini-3.8-flash', effort: 'minimal' },
+      { id: 'gemini-3.8-flash', effort: 'medium' },
+      { id: 'gemini-3.8-flash', effort: 'high' },
+    ];
+  } else if (presetName === 'grok-reasoning') {
+    target = [
+      { id: 'grok-4.20-reasoning',          effort: null },
+      { id: 'grok-4.20-non-reasoning',      effort: null },
+      { id: 'grok-4.1-fast-reasoning',      effort: null },
+      { id: 'grok-4.1-fast-non-reasoning',  effort: null },
+    ];
+  } else if (presetName === 'open-maas') {
+    target = [
+      { id: 'llama-4-maverick-17b-128e-maas',   effort: null },
+      { id: 'qwen3-next-80b-a3b-thinking-maas', effort: null },
+      { id: 'kimi-k2-thinking-maas',            effort: null },
+      { id: 'glm-5.2-maas',                     effort: null },
+    ];
+  }
+  const valid = target.filter((t) => {
+    const c = catalog().find((x) => x.id === t.id);
+    return c && modelAvailability(c).ok;
+  });
+  if (!valid.length) return;
+  SLOT_IDS = ALL_SLOT_IDS.slice(0, valid.length);
+  ALL_SLOT_IDS.forEach((s, i) => {
+    SLOT_ASSIGN[s] = valid[i] ? valid[i].id : null;
+    SLOT_EFFORT[s] = valid[i] ? valid[i].effort : null;
+  });
+  afterSlotChange();
 }
+
+function placeInFirstFreeSlot(catalogId) {
+  const c = catalog().find((x) => x.id === catalogId);
+  if (!c || !modelAvailability(c).ok) return;
+  if (SLOT_IDS.length < MAX_SLOTS) {
+    const nextSlot = ALL_SLOT_IDS[SLOT_IDS.length];
+    SLOT_IDS.push(nextSlot);
+    assignToSlot(catalogId, nextSlot);
+  } else {
+    assignToSlot(catalogId, SLOT_IDS[SLOT_IDS.length - 1]);
+  }
+}
+
 function afterSlotChange() {
   syncModelsFromSlots();
   renderModelEditors();
   buildArena();
-  updateQuotaBadge();   // the key pills depend on which providers are selected
+  updateQuotaBadge();
   updateRunButton();
 }
 
-// Running with zero models would post an empty list, and the server falls back
-// to DEFAULT_MODELS for that — i.e. it would quietly run models the user just
-// removed. So the button is disabled until at least one slot is filled.
 function updateRunButton() {
   const btn = $('#runBtn');
   if (!btn || _busy) return;
   const none = MODELS.length === 0;
   btn.disabled = none;
-  btn.title = none ? 'Drag at least one model into a slot to run a comparison.' : '';
+  btn.title = none ? 'Select at least one model slot to run a comparison.' : '';
 }
 
 function currentTask() {
@@ -676,149 +855,221 @@ function renderTaskPrompt() {
 
 function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
 
-// The reasoning level this model is actually sent. Computed on the server from
-// the same code that builds the request, so it can't drift from the wire.
-// `mode` drives the colour: an explicit effort/budget reads stronger than a
-// model-chosen "auto", which in turn reads stronger than nothing being sent.
 function thinkTag(t) {
   if (!t || !t.label) return '';
   return `<div class="col-think think-${esc(t.mode || 'unknown')}" title="${esc(t.detail || '')}">`
        + `<span class="ti">◈</span>${esc(t.label)}</div>`;
 }
 
-// On a live card the badge becomes a picker: the levels come from the server's
-// per-model list, and each option carries the exact request it produces, so the
-// tooltip always matches what will be sent. Restored history runs stay read-only.
+// Build the HTML for the 3rd dropdown ("Thinking Mode") for a given catalog model & slot
+function buildThinkingDropdownOptions(c, currentEffort) {
+  if (!c) return '<option value="">high (default)</option>';
+  const o = c.thinkingOptions;
+  if (o && o.configurable && Array.isArray(o.options) && o.options.length) {
+    const cur = currentEffort || o.defaultValue || '';
+    return o.options.map((x) => {
+      const isSelected = cur ? x.value === cur : !!x.isDefault;
+      return `<option value="effort:${esc(x.value)}"${isSelected ? ' selected' : ''}>${esc(x.label)}</option>`;
+    }).join('');
+  }
+  // Check if this model belongs to a Reasoning <-> Non-Reasoning sibling pair
+  const siblings = REASONING_SIBLING_PAIRS[c.id];
+  if (siblings && siblings.length) {
+    return siblings.map((s, idx) => {
+      const lbl = idx === 0 && !/\(default\)/i.test(s.label) ? `${s.label} (default)` : s.label;
+      return `<option value="model:${esc(s.id)}"${s.id === c.id ? ' selected' : ''}>${esc(lbl)}</option>`;
+    }).join('');
+  }
+  const fixedLabel = (c.thinking && c.thinking.label)
+    ? `${c.thinking.label} (default)`
+    : (c.thinkingMode === 'reasoning' ? 'Reasoning (default)' : 'Standard (default)');
+  return `<option value="fixed" selected>${esc(fixedLabel)}</option>`;
+}
+
 function thinkControl(m, isRestore) {
-  const o = m.thinkingOptions;
-  if (isRestore || !o || !o.configurable || !o.options.length) return thinkTag(m.thinking);
+  if (isRestore) return thinkTag(m.thinking);
+  const c = catalog().find((x) => x.id === m.catalogId) || m;
+  const opts = buildThinkingDropdownOptions(c, m.effort);
   const cur = m.effort || '';
-  const sel = o.options.find((x) => x.value === cur) || o.options[0];
-  const opts = o.options.map((x) =>
-    `<option value="${esc(x.value)}"${x.value === cur ? ' selected' : ''}>${esc(x.label)}</option>`).join('');
-  return `<div class="col-think think-ctl${cur ? ' is-set' : ''}" title="${esc((sel && sel.detail) || o.note || '')}">`
+  const o = m.thinkingOptions;
+  const sel = (o && o.options && o.options.find((x) => x.value === cur)) || (o && o.options && o.options[0]);
+  return `<div class="col-think think-ctl${cur ? ' is-set' : ''}" title="${esc((sel && sel.detail) || (m.thinking && m.thinking.detail) || '')}">`
        + `<span class="ti">◈</span>`
        + `<select class="think-select" draggable="false" data-slot="${esc(m.slot)}" `
-       + `aria-label="Thinking level for ${esc(m.label)}">${opts}</select></div>`;
+       + `aria-label="Thinking mode for ${esc(m.label)}">${opts}</select></div>`;
 }
 
-// Vendor heading for the palette — a flat list of ~18 chips is hard to scan.
-function paletteGroup(c) {
-  const pub = c.publisher || 'google';
-  if (c.provider === 'agentplatform') return pub === 'anthropic' ? 'Claude · Vertex' : 'Gemini · Vertex';
-  if (c.provider === 'gemini') return 'Gemini · direct';
-  if (c.provider === 'openai') return 'OpenAI · external';
-  if (c.provider === 'moonshot') return 'Moonshot · external';
-  if (c.provider === 'anthropic') return 'Anthropic · direct';
-  return c.provider;
+// Inline 3-Dropdown Cascading Bar for inside each Arena Card Header
+function buildInlineCardCascader(m, isRestore) {
+  if (isRestore) {
+    return `<div class="col-id">
+      <div class="col-title">${esc(m.label)}${m.external ? '<span class="ext-badge">EXT</span>' : ''}</div>
+      <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}${m.price ? ` <span class="col-price">${priceTag(m)} / 1M</span>` : ''}</div>
+      ${thinkTag(m.thinking)}
+    </div>`;
+  }
+  const c = catalog().find((x) => x.id === m.catalogId) || m;
+  const curFamily = providerFamilyOf(c);
+  const familyOptions = PROVIDER_FAMILIES.map((pf) => {
+    const count = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
+    if (!count && pf.id !== curFamily) return '';
+    return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}>${esc(pf.label)}</option>`;
+  }).join('');
+  const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
+  const modelOptions = modelsInFamily.map((mc) => {
+    const av = modelAvailability(mc);
+    const suffix = !av.ok ? (av.blocked ? ' [No Quota]' : ' [Needs Key]') : '';
+    return `<option value="${esc(mc.id)}"${mc.id === m.catalogId ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)} (${priceTag(mc)})${esc(suffix)}</option>`;
+  }).join('');
+  const thinkOpts = buildThinkingDropdownOptions(c, m.effort);
+
+  return `<div class="col-id col-cascader" data-slot="${esc(m.slot)}">
+    <div class="col-title-row">
+      <span class="col-slot-pill" style="background:${slotColor(m.slot)}22;color:${slotColor(m.slot)};border-color:${slotColor(m.slot)}55">Slot ${esc(m.slot)}</span>
+      <span class="col-title">${esc(m.label)}</span>
+      ${m.external ? '<span class="ext-badge" title="External API Key">EXT</span>' : '<span class="vtx-badge" title="Google Cloud Vertex AI / Agent Platform">VERTEX AI</span>'}
+      ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
+    </div>
+    <div class="col-dd-row">
+      <label class="col-dd-item" title="1. Select Provider Family">
+        <span class="dd-k">Provider</span>
+        <select class="slot-provider-select" data-slot="${esc(m.slot)}">${familyOptions}</select>
+      </label>
+      <label class="col-dd-item" title="2. Select Model">
+        <span class="dd-k">Model</span>
+        <select class="slot-model-select" data-slot="${esc(m.slot)}">${modelOptions}</select>
+      </label>
+      <label class="col-dd-item" title="3. Select Thinking / Reasoning Mode">
+        <span class="dd-k">Thinking Mode</span>
+        <select class="slot-think-select" data-slot="${esc(m.slot)}">${thinkOpts}</select>
+      </label>
+    </div>
+  </div>`;
 }
 
-// Can this catalog model actually be run right now? True when either the user
-// has a personal key for its provider or the server has a shared one. Models
-// that fail this are shown greyed out and cannot be dragged into a slot —
-// better than letting someone build a comparison that errors on Run.
 function modelAvailability(c) {
-  const k = loadKeys();
-  const present = (CONFIG && CONFIG.keysPresent) || {};
-  const pub = c.publisher || 'google';
-  // Known-unrunnable on this project (e.g. no Vertex serving quota). Listed so
-  // it's visibly accounted for, but never selectable.
   if (c.blocked) return { ok: false, blocked: true, need: c.blocked, how: c.blockedHow || 'Google Cloud console' };
-  if (c.provider === 'agentplatform' && pub === 'anthropic') {
-    return { ok: present.claude || !!k.claudeBearerToken, need: 'Claude on Vertex', how: 'the server’s service account' };
-  }
-  if (c.provider === 'agentplatform' || c.provider === 'gemini') {
-    return { ok: !!(k.agentplatform || k.gemini) || !!present.agentplatform, need: 'a Gemini / Agent Platform key', how: 'Your API keys' };
-  }
-  if (c.provider === 'openai') return { ok: !!k.openai || !!present.openai, need: 'an OpenAI key', how: 'Your API keys' };
-  if (c.provider === 'moonshot') return { ok: !!k.moonshot || !!present.moonshot, need: 'a Moonshot key', how: 'Your API keys' };
-  if (c.provider === 'anthropic') return { ok: !!k.anthropic || !!present.anthropic, need: 'an Anthropic key', how: 'Your API keys' };
   return { ok: true };
 }
 function extBadge(c) { return c.external ? '<span class="ext-badge" title="Not on Vertex — needs its own API key; the prompt leaves Google infrastructure">EXT</span>' : ''; }
 
+// Wire up cascading events on any container holding .slot-provider-select / .slot-model-select / .slot-think-select
+function bindCascadingSelects(root) {
+  if (!root) return;
+  root.querySelectorAll('.slot-provider-select').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const slot = sel.dataset.slot;
+      const fam = sel.value;
+      const firstModel = catalog().find((x) => providerFamilyOf(x) === fam && modelAvailability(x).ok);
+      if (firstModel) {
+        SLOT_ASSIGN[slot] = firstModel.id;
+        SLOT_EFFORT[slot] = null;
+        afterSlotChange();
+      }
+    });
+  });
+  root.querySelectorAll('.slot-model-select').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const slot = sel.dataset.slot;
+      const newId = sel.value;
+      assignToSlot(newId, slot);
+    });
+  });
+  root.querySelectorAll('.slot-think-select').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const slot = sel.dataset.slot;
+      const val = sel.value || '';
+      if (val.startsWith('model:')) {
+        const siblingId = val.slice('model:'.length);
+        assignToSlot(siblingId, slot, null);
+      } else if (val.startsWith('effort:')) {
+        const eff = val.slice('effort:'.length);
+        SLOT_EFFORT[slot] = eff || null;
+        afterSlotChange();
+      }
+    });
+  });
+}
+
+let _toolbarBound = false;
 function renderModelEditors() {
-  // ---- palette: every catalog model not currently in a slot ----
-  const pal = $('#modelPalette');
-  if (pal) {
-    pal.innerHTML = '';
-    const avail = catalog().filter((c) => !slotOf(c.id));
-    if (!avail.length) {
-      pal.appendChild(el('span', 'add-note', 'Every model is in a slot — drag one out or swap.'));
-    } else {
-      // Group by vendor — with 18 models a flat list is hard to scan.
-      const groups = new Map();
-      avail.forEach((c) => {
-        const g = paletteGroup(c);
-        if (!groups.has(g)) groups.set(g, []);
-        groups.get(g).push(c);
-      });
-      let host = pal;
-      const addTo = (c) => {
-        const av = modelAvailability(c);
-        const chip = el('div', 'model-chip' + (av.ok ? '' : ' unavailable'));
-        chip.draggable = av.ok;                       // no key ⇒ not draggable at all
-        chip.dataset.id = c.id;
-        if (!av.ok) chip.dataset.locked = '1';
-        chip.title = av.ok
-          ? `${c.label} (${c.model}) — drag into a slot, or click`
-          : av.blocked
-            ? `${c.label} can't run on this project: needs ${av.need}. Fix it in ${av.how}.`
-            : `${c.label} needs ${av.need}. Add one under “${av.how}” to enable it.`;
-        chip.innerHTML = `<span class="am-ic">${modelIconSvg(c)}</span><b>${esc(c.label)}</b>${extBadge(c)}`
-          + (av.ok ? `<span class="am-price">${priceTag(c)}</span>`
-                   : `<span class="am-nokey">${av.blocked ? '🚫 no quota' : '🔒 no key'}</span>`);
-        if (av.ok) {
-          chip.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('text/plain', c.id);
-            e.dataTransfer.effectAllowed = 'move';
-            chip.classList.add('dragging');
-          });
-          chip.addEventListener('dragend', () => chip.classList.remove('dragging'));
-          chip.addEventListener('click', () => placeInFirstFreeSlot(c.id));
-        } else {
-          // belt and braces: even a synthesised dragstart carries nothing
-          chip.addEventListener('dragstart', (e) => e.preventDefault());
-          chip.addEventListener('click', () => {
-            // no key for this provider — point the user at where to add one
-            const m = $('#apiKeysBtn');
-            if (m) { m.classList.remove('nudge'); void m.offsetWidth; m.classList.add('nudge'); }
-          });
-        }
-        host.appendChild(chip);
-      };
-      groups.forEach((models, name) => {
-        const grp = el('div', 'palette-group');
-        // Groups share the row proportionally to how many models they hold, so a
-        // 10-model vendor gets the width it needs while a 2-model one doesn't
-        // reserve a whole line. They re-flow as the window resizes.
-        grp.style.flex = `${models.length} 1 ${Math.min(240 + models.length * 40, 560)}px`;
-        grp.innerHTML = `<div class="pg-label">${esc(name)} <span class="pg-count">${models.length}</span></div>`;
-        const row = el('div', 'pg-chips');
-        grp.appendChild(row);
-        host = row;
-        models.forEach(addTo);
-        pal.appendChild(grp);
-      });
-      host = pal;
-    }
-  }
-
-  // The comparison cards in the arena ARE the drop targets — there is no separate
-  // slot row (it just duplicated what the arena already shows). See buildArena().
-
-  // dropping back onto the palette clears the model from its card
-  if (pal) {
-    pal.addEventListener('dragover', (e) => { e.preventDefault(); pal.classList.add('drag-over'); });
-    pal.addEventListener('dragleave', () => pal.classList.remove('drag-over'));
-    pal.addEventListener('drop', (e) => {
-      e.preventDefault();
-      pal.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain');
-      const s = id && slotOf(id);
-      if (s) clearSlot(s);
+  // Bind toolbar buttons once
+  if (!_toolbarBound) {
+    _toolbarBound = true;
+    const addBtn = $('#addSlotBtn');
+    if (addBtn) addBtn.addEventListener('click', addSlot);
+    document.querySelectorAll('.mc-preset-btn').forEach((btn) => {
+      btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
     });
   }
+  const badge = $('#slotCountBadge');
+  if (badge) badge.textContent = `${SLOT_IDS.length} of ${MAX_SLOTS} slots active`;
+  const addBtn = $('#addSlotBtn');
+  if (addBtn) {
+    addBtn.disabled = SLOT_IDS.length >= MAX_SLOTS;
+    addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? 'Max 6 Slots Active' : `+ Add Model Slot (${SLOT_IDS.length}/${MAX_SLOTS})`;
+  }
+
+  const grid = $('#slotConfiguratorGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  SLOT_IDS.forEach((slot) => {
+    const cid = SLOT_ASSIGN[slot];
+    const c = catalog().find((x) => x.id === cid) || catalog()[0];
+    if (!c) return;
+    const curFamily = providerFamilyOf(c);
+    const curEffort = SLOT_EFFORT[slot] || '';
+
+    const familyOptions = PROVIDER_FAMILIES.map((pf) => {
+      const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
+      const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
+      if (!totalCount) return '';
+      return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(pf.label)} (${runnableCount} active)</option>`;
+    }).join('');
+
+    const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
+    const modelOptions = modelsInFamily.map((mc) => {
+      const av = modelAvailability(mc);
+      const tag = !av.ok ? (av.blocked ? ' — 🚫 Quota Required' : ' — 🔒 API Key Needed') : ` — ${priceTag(mc)}/1M`;
+      return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(tag)}</option>`;
+    }).join('');
+
+    const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
+
+    const card = el('div', 'slot-cfg-card');
+    card.style.setProperty('--slot-accent', slotColor(slot));
+    card.innerHTML = `
+      <div class="scc-head">
+        <span class="scc-slot-badge" style="background:${slotColor(slot)}">Slot ${esc(slot)}</span>
+        <span class="scc-ic">${modelIconSvg(c)}</span>
+        <strong class="scc-name">${esc(c.label)}</strong>
+        ${c.external ? '<span class="ext-badge">EXT</span>' : '<span class="vtx-badge">VERTEX AI</span>'}
+        <span class="scc-price">${priceTag(c)} / 1M</span>
+        ${SLOT_IDS.length > MIN_SLOTS ? `<button type="button" class="scc-remove" data-slot="${esc(slot)}" title="Remove Slot ${esc(slot)}">&times;</button>` : ''}
+      </div>
+      <div class="scc-dropdowns">
+        <div class="scc-field">
+          <label>1. Provider</label>
+          <select class="slot-provider-select" data-slot="${esc(slot)}">${familyOptions}</select>
+        </div>
+        <div class="scc-field">
+          <label>2. Model</label>
+          <select class="slot-model-select" data-slot="${esc(slot)}">${modelOptions}</select>
+        </div>
+        <div class="scc-field">
+          <label>3. Thinking Mode</label>
+          <select class="slot-think-select" data-slot="${esc(slot)}">${thinkOptions}</select>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  bindCascadingSelects(grid);
+  grid.querySelectorAll('.scc-remove').forEach((btn) => {
+    btn.addEventListener('click', () => clearSlot(btn.dataset.slot));
+  });
 }
 
 // ---------- arena scaffolding ----------
@@ -826,42 +1077,28 @@ function buildArena(models) {
   const arena = $('#arena');
   arena.innerHTML = '';
   const task = currentTask();
-  // What is actually on screen right now. A restored history run can render a
-  // different model set than the current selection, and "Run again" must re-run
-  // the model in THAT column, not whatever is selected in the editor.
   ARENA_MODELS = (models || MODELS).slice();
-  // A restored history run renders exactly its own models; otherwise every slot
-  // gets a column, empty ones included, so they can be dropped onto directly.
   const isRestore = !!models;
-  // Cells in slot order, so empty drop targets sit in their proper position.
   const cells = isRestore
     ? ARENA_MODELS.map((m) => ({ slot: m.slot, m }))
     : SLOT_IDS.map((slot) => ({ slot, m: ARENA_MODELS.find((x) => x.slot === slot) || null }));
+
+  arena.style.setProperty('--slot-count', String(Math.max(1, cells.length)));
+
   cells.forEach(({ slot: cellSlot, m }) => {
-    if (!m) {
-      const drop = el('div', 'col is-empty');
-      drop.dataset.slot = cellSlot;
-      drop.style.setProperty('--accent', slotColor(cellSlot));
-      drop.innerHTML = '<div class="col-drop"><span>＋</span>Drop a model here</div>';
-      arena.appendChild(drop);
-      return;
-    }
+    if (!m) return;
     const col = el('div', 'col');
     col.dataset.slot = m.slot;
     col.id = `col-${m.slot}`;
-    col.style.setProperty('--accent', slotColor(m.slot)); // CSS drives the identity strip, edge-light, glows
+    col.style.setProperty('--accent', slotColor(m.slot));
     col.innerHTML = `
-      <div class="col-head"${isRestore ? '' : ` draggable="true" data-id="${esc(m.catalogId || '')}"`}>
+      <div class="col-head">
         <span class="col-accent" style="background:${slotColor(m.slot)}"></span>
         <span class="col-ic">${modelIconSvg(m)}</span>
-        <div class="col-id">
-          <div class="col-title">${esc(m.label)}${m.external ? '<span class="ext-badge">EXT</span>' : ''}</div>
-          <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}${m.price ? ` <span class="col-price">${priceTag(m)} / 1M</span>` : ''}</div>
-          ${thinkControl(m, isRestore)}
-        </div>
+        ${buildInlineCardCascader(m, isRestore)}
         <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
           title="Re-run just this model on the current task — the other columns are left alone">↻ Run again</button>
-        ${isRestore ? '' : `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove this model">&times;</button>`}
+        ${(!isRestore && SLOT_IDS.length > MIN_SLOTS) ? `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove Slot ${m.slot}">&times;</button>` : ''}
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
       <div class="progress">
@@ -888,6 +1125,7 @@ function buildArena(models) {
       </div>`;
     arena.appendChild(col);
   });
+
   arena.querySelectorAll('.exec-btn').forEach((b) =>
     b.addEventListener('click', () => execSlotCode(b.dataset.slot)));
   arena.querySelectorAll('.rerun-btn').forEach((b) =>
@@ -895,59 +1133,11 @@ function buildArena(models) {
   arena.querySelectorAll('.md-magnify').forEach((b) =>
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openMagnify(b.dataset.slot, b.dataset.kind); }));
 
-  // Per-card thinking level. The header is draggable, and a <select> inside a
-  // draggable element starts a drag instead of opening — so the parent's
-  // draggable is switched off while the picker is in use.
-  arena.querySelectorAll('.think-select').forEach((sel) => {
-    const head = sel.closest('.col-head');
-    const wrap = sel.closest('.col-think');
-    const undrag = () => { if (head) head.setAttribute('draggable', 'false'); };
-    const redrag = () => { if (head && head.dataset.id) head.setAttribute('draggable', 'true'); };
-    sel.addEventListener('mousedown', undrag);
-    sel.addEventListener('focus', undrag);
-    sel.addEventListener('blur', redrag);
-    sel.addEventListener('click', (e) => e.stopPropagation());
-    sel.addEventListener('change', () => {
-      const slot = sel.dataset.slot;
-      SLOT_EFFORT[slot] = sel.value || null;
-      syncModelsFromSlots();                       // MODELS is what gets POSTed
-      const m = MODELS.find((x) => x.slot === slot);
-      const opt = m && m.thinkingOptions && m.thinkingOptions.options.find((x) => x.value === (sel.value || ''));
-      if (wrap) {
-        wrap.title = (opt && opt.detail) || '';
-        wrap.classList.toggle('is-set', !!sel.value);
-      }
-      redrag();
-    });
-  });
+  if (isRestore) return;
 
-  if (isRestore) return;   // a restored run is a snapshot, not the live selection
-
-  // The comparison cards are the drop targets: drop a palette model onto one to
-  // load it there, or drag a card's header onto another card to move/swap.
+  bindCascadingSelects(arena);
   arena.querySelectorAll('.col-remove').forEach((b) =>
     b.addEventListener('click', (e) => { e.stopPropagation(); clearSlot(e.currentTarget.dataset.slot); }));
-  arena.querySelectorAll('.col-head[draggable="true"]').forEach((head) => {
-    head.addEventListener('dragstart', (e) => {
-      if (!head.dataset.id) return;
-      e.dataTransfer.setData('text/plain', head.dataset.id);
-      e.dataTransfer.effectAllowed = 'move';
-      head.closest('.col').classList.add('dragging');
-    });
-    head.addEventListener('dragend', () => {
-      const c = head.closest('.col'); if (c) c.classList.remove('dragging');
-    });
-  });
-  arena.querySelectorAll('.col').forEach((col) => {
-    col.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; col.classList.add('drag-over'); });
-    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drag-over'); });
-    col.addEventListener('drop', (e) => {
-      e.preventDefault();
-      col.classList.remove('drag-over');
-      const id = e.dataTransfer.getData('text/plain');
-      if (id) assignToSlot(id, col.dataset.slot);
-    });
-  });
 }
 
 // ---------- LLM-as-judge (ungraded tasks) -----------------------------------

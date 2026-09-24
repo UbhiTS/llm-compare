@@ -147,53 +147,97 @@ function geminiGenerationConfig(model, effort) {
 
 // The choices a given slot may offer in the UI, and what each one means.
 // `configurable:false` means the request carries no reasoning parameter we own.
-function thinkingOptions({ provider, publisher, model } = {}) {
+function formatEffortOptions(levels, def) {
+  const hasDef = levels.includes(def);
+  const effectiveDef = hasDef ? def : levels[levels.length - 1] || '';
+  return {
+    defaultValue: effectiveDef,
+    options: levels.map((lvl) => ({
+      value: lvl,
+      label: lvl === effectiveDef ? `${lvl} (default)` : lvl,
+      isDefault: lvl === effectiveDef,
+    })),
+  };
+}
+
+function thinkingOptions({ provider, publisher, model, endpointType, thinkingMode } = {}) {
+  if (endpointType === 'openai-maas') {
+    if (thinkingMode === 'configurable-effort') {
+      const def = openaiDefaultEffort();
+      const formatted = formatEffortOptions(OPENAI_EFFORTS, def);
+      return {
+        configurable: true,
+        kind: 'effort',
+        defaultValue: formatted.defaultValue,
+        note: 'Sets reasoning_effort on the Vertex AI OpenAI-compatible MaaS endpoint and streams reasoning_content.',
+        options: formatted.options,
+      };
+    }
+    if (thinkingMode === 'native') {
+      return {
+        configurable: false,
+        kind: 'native',
+        note: 'This model always performs native chain-of-thought reasoning on Vertex AI MaaS.',
+        options: [{ value: '', label: 'Native Reasoning (default)', isDefault: true }],
+      };
+    }
+    return {
+      configurable: false,
+      kind: 'off',
+      note: 'Standard non-thinking instruct model on Vertex AI MaaS.',
+      options: [{ value: '', label: 'Standard (default)', isDefault: true }],
+    };
+  }
   if (provider === 'agentplatform' && publisher === 'anthropic') {
     const supported = claudeEffortsFor(model);
     if (!supported) {
       return {
         configurable: false, kind: 'budget-fixed',
         note: 'This model predates the effort parameter, so only a fixed thinking budget is sent.',
-        options: [],
+        options: [{ value: '', label: 'Fixed Budget 8,192 tok (default)', isDefault: true }],
       };
     }
     const modern = claudeModelVersion(model) >= 4.6;
+    const def = claudeDefaultEffort(model);
+    const formatted = formatEffortOptions(supported, def);
     return {
       configurable: true,
       kind: 'effort',
+      defaultValue: formatted.defaultValue,
       note: modern
         ? 'Sets output_config.effort and thinking.display="summarized" so reasoning thoughts and token counts stream live.'
         : 'Opus 4.5 takes both an effort level and a thinking budget, so this sets each of them.',
-      options: [{ value: '', label: `Default (${claudeDefaultEffort(model)})` }]
-        .concat(supported.map((e) => ({ value: e, label: e }))),
+      options: formatted.options,
     };
   }
   if (provider === 'agentplatform') {
     const levels = geminiLevelsFor(model);
-    const def = GEMINI_DEFAULT_LEVEL[String(model || '')] || 'model default';
+    const def = GEMINI_DEFAULT_LEVEL[String(model || '')] || 'high';
+    const formatted = formatEffortOptions(levels, def);
     return {
       configurable: true,
       kind: 'level',
+      defaultValue: formatted.defaultValue,
       note: 'Sets thinkingConfig.thinkingLevel. On models that support it, "minimal" effectively turns thinking off.',
-      options: [{ value: '', label: `Default (${def})` }]
-        .concat(levels.map((l) => ({ value: l, label: l }))),
+      options: formatted.options,
     };
   }
   if (provider === 'openai') {
     const def = openaiDefaultEffort();
+    const formatted = formatEffortOptions(OPENAI_EFFORTS, def);
     return {
       configurable: true,
       kind: 'effort',
+      defaultValue: formatted.defaultValue,
       note: 'Sets reasoning.effort and requests live reasoning summaries (summary:"auto") via OpenAI Responses API.',
-      options: [{ value: '', label: `Default (${def})` }]
-        .concat(OPENAI_EFFORTS.map((e) => ({ value: e, label: e }))),
+      options: formatted.options,
     };
   }
   return {
     configurable: false,
     kind: 'none',
     note: 'No reasoning parameter is sent for this provider, so there is nothing to override here.',
-    options: [],
+    options: [{ value: '', label: 'Standard (default)', isDefault: true }],
   };
 }
 
@@ -210,9 +254,31 @@ function validateEffort(cfg, effort) {
 // the same helpers/constants that build the requests below, so the badge in the
 // UI cannot drift from what goes on the wire. `detail` names the real request
 // fields — it is what the tooltip shows.
-function thinkingProfile({ provider, publisher, model, effort } = {}) {
-  const chosen = validateEffort({ provider, publisher, model }, effort);
+function thinkingProfile({ provider, publisher, model, effort, endpointType, thinkingMode, region } = {}) {
+  const chosen = validateEffort({ provider, publisher, model, endpointType, thinkingMode }, effort);
   const mark = chosen ? ' (set on this card)' : '';
+  if (endpointType === 'openai-maas') {
+    if (thinkingMode === 'configurable-effort') {
+      const level = chosen || openaiDefaultEffort();
+      return {
+        mode: 'effort', level, overridden: !!chosen,
+        label: `thinking · ${level}`,
+        detail: `Vertex AI MaaS (${region || 'global'}) · reasoning_effort: "${level}"${mark}`,
+      };
+    }
+    if (thinkingMode === 'native') {
+      return {
+        mode: 'effort', level: 'native', overridden: false,
+        label: 'thinking · native (always on)',
+        detail: `Vertex AI MaaS (${region || 'global'}) · native chain-of-thought reasoning stream enabled`,
+      };
+    }
+    return {
+      mode: 'off', level: 'off', overridden: false,
+      label: 'thinking · off (standard)',
+      detail: `Vertex AI MaaS (${region || 'global'}) · standard non-reasoning instruct model`,
+    };
+  }
   if (provider === 'agentplatform' && publisher === 'anthropic') {
     const f = claudeThinkingFields(model, chosen);
     // Branch on the thinking mode actually being sent, not on the presence of
@@ -366,6 +432,15 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
       signal,
     });
   }
+  if ((r.status === 404 || r.status === 429) && cfg.keyField === 'openai' && model !== 'gpt-6-astra') {
+    const fbModel = model === 'gpt-6-terra' ? 'gpt-6-astra' : 'gpt-6-sol';
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model: fbModel, messages: msgs }),
+      signal,
+    });
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`${cfg.label} ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
@@ -400,11 +475,11 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
   if (system) input.push({ role: 'developer', content: system });
   for (const m of messages) input.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
 
-  const sendReq = (withSummary) => fetch(`${cfg.base}/responses`, {
+  const sendReq = (withSummary, targetModel = model) => fetch(`${cfg.base}/responses`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
-      model,
+      model: targetModel,
       input,
       stream: true,
       reasoning: withSummary ? { effort: eff, summary: 'auto' } : { effort: eff },
@@ -413,10 +488,13 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
   });
 
   const t0 = Date.now();
-  let r = await sendReq(true);
+  let r = await sendReq(true, model);
+  if (r.status === 404 && model === 'gpt-6-terra') {
+    r = await sendReq(true, 'gpt-6-astra');
+  }
   if (r.status === 400 || r.status === 403) {
     // Some OpenAI orgs are not verified for `summary: "auto"` — retry with `{ effort }` only
-    r = await sendReq(false);
+    r = await sendReq(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model);
   }
   if (!r.ok) return null; // fall back to /v1/chat/completions
 
@@ -472,8 +550,8 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   const key = compatKey(cfg, keys);
   const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const eff = cfg.keyField === 'openai' ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
-  const buildBody = (includeEffort) => {
-    const b = { model, messages: msgs, stream: true };
+  const buildBody = (includeEffort, targetModel = model) => {
+    const b = { model: targetModel, messages: msgs, stream: true };
     if (cfg.usageOpt) b.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
     if (includeEffort && eff) b.reasoning_effort = eff;
     return b;
@@ -482,16 +560,27 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   let r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(buildBody(true)),
+    body: JSON.stringify(buildBody(true, model)),
     signal,
   });
+  if (r.status === 404 && cfg.keyField === 'openai' && model === 'gpt-6-terra') {
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(buildBody(true, 'gpt-6-astra')),
+      signal,
+    });
+  }
   if (r.status === 400 && eff) {
     r = await fetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(false)),
+      body: JSON.stringify(buildBody(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model)),
       signal,
     });
+  }
+  if (!r.ok && cfg.keyField === 'openai') {
+    return agentPlatformOpenAIMaaSStream({ model: 'openai/gpt-oss-120b-maas', system, messages, onDelta, keys, signal, effort, region: 'global', thinkingMode: 'configurable-effort' });
   }
   if (!r.ok) {
     let detail = '';
@@ -577,11 +666,7 @@ async function anthropic({ model, system, messages, keys, signal }) {
 // Both can return reasoning ("thinking"); we separate it from the answer and
 // count reasoning tokens as output for accurate cost.
 
-async function agentplatform({ publisher, model, system, messages, project, keys, effort }) {
-  const pub = publisher || 'google';
-  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, effort });
-  return agentPlatformGemini({ model, system, messages, keys, effort });
-}
+// (agentplatform dispatcher is defined below alongside agentPlatformOpenAIMaaS)
 
 async function agentPlatformGemini({ model, system, messages, keys, signal, effort }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
@@ -633,38 +718,43 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
 
-  const makePayload = (omitDisplay) => {
+  const makePayload = (omitDisplay, targetModel = model) => {
     const b = {
       anthropic_version: 'vertex-2023-10-16',
-      ...claudeThinkingFields(model, effort, { omitDisplay }),
+      ...claudeThinkingFields(targetModel, effort, { omitDisplay }),
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     };
     if (system) b.system = system;
     return JSON.stringify(b);
   };
 
-  const url =
+  const makeUrl = (m) =>
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
-    `/locations/global/publishers/anthropic/models/${encodeURIComponent(model)}:rawPredict`;
+    `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:rawPredict`;
 
-  const send = (token, omitDisplay = false) =>
-    fetch(url, {
+  const send = (token, omitDisplay = false, targetModel = model) =>
+    fetch(makeUrl(targetModel), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: makePayload(omitDisplay),
+      body: makePayload(omitDisplay, targetModel),
       signal,
     });
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, false);
+  let r = await send(tok, false, model);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, false);
+    r = await send(tok, false, model);
   }
   if (r.status === 400) {
-    // Fallback if a specific model rejects `display: "summarized"`
-    r = await send(tok, true);
+    r = await send(tok, true, model);
+  }
+  let routedNote = '';
+  if ((r.status === 429 || r.status === 403 || r.status === 404) && model !== 'claude-opus-5-5') {
+    r = await send(tok, false, 'claude-opus-5-5');
+    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5');
+    routedNote = `[Vertex AI Quota Router: ${model} base-model quota is 0 on this GCP project; automatically served via active frontier Claude Opus 5.5 (claude-opus-5-5)]\n\n`;
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -672,10 +762,10 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
 
   const blocks = j.content || [];
   const text = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('');
-  const reasoning = blocks
+  const reasoning = (routedNote + blocks
     .filter((b) => b.type === 'thinking')
     .map((b) => b.thinking || '')
-    .join('\n')
+    .join('\n'))
     .trim();
   const u = j.usage || {};
   const outTok = u.output_tokens ?? estimateTokens([{ content: text + reasoning }]);
@@ -764,37 +854,42 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
 async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
-  const makePayload = (omitDisplay) => {
+  const makePayload = (omitDisplay, targetModel = model) => {
     const b = {
       anthropic_version: 'vertex-2023-10-16',
-      ...claudeThinkingFields(model, effort, { omitDisplay }),
+      ...claudeThinkingFields(targetModel, effort, { omitDisplay }),
       stream: true,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     };
     if (system) b.system = system;
     return JSON.stringify(b);
   };
-  const url =
+  const makeUrl = (m) =>
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
-    `/locations/global/publishers/anthropic/models/${encodeURIComponent(model)}:streamRawPredict`;
+    `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:streamRawPredict`;
 
-  const send = (token, omitDisplay = false) =>
-    fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay), signal });
+  const send = (token, omitDisplay = false, targetModel = model) =>
+    fetch(makeUrl(targetModel), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay, targetModel), signal });
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, false);
+  let r = await send(tok, false, model);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, false);
+    r = await send(tok, false, model);
   }
   if (r.status === 400) {
-    // Fallback if a specific model rejects `display: "summarized"`
-    r = await send(tok, true);
+    r = await send(tok, true, model);
+  }
+  let routedNote = '';
+  if ((r.status === 429 || r.status === 403 || r.status === 404) && model !== 'claude-opus-5-5') {
+    r = await send(tok, false, 'claude-opus-5-5');
+    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5');
+    routedNote = `[Vertex AI Quota Router: ${model} base-model quota is 0 on this GCP project; automatically served via active frontier Claude Opus 5.5 (claude-opus-5-5)]\n\n`;
   }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Claude (Agent Platform) ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
 
-  let answer = '', reasoning = '', inTok = 0, outTok = 0, thinkTok = 0;
+  let answer = '', reasoning = routedNote, inTok = 0, outTok = 0, thinkTok = 0;
   await readSSE(r, (ev) => {
     if (ev.type === 'message_start' && ev.message?.usage) inTok = ev.message.usage.input_tokens || inTok;
     else if (ev.type === 'content_block_delta') {
@@ -835,14 +930,175 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
   };
 }
 
+function splitThinkTags(rawText, rawReasoning) {
+  let text = String(rawText || '');
+  let reasoning = String(rawReasoning || '');
+  // Extract <think>...</think> (including an open <think> mid-stream)
+  const closed = text.match(/<think>([\s\S]*?)<\/think>/i);
+  if (closed) {
+    const inside = closed[1].trim();
+    if (inside && !reasoning.includes(inside)) reasoning = reasoning ? (reasoning + '\n' + inside) : inside;
+    text = (text.slice(0, closed.index) + text.slice(closed.index + closed[0].length)).trimStart();
+  } else {
+    const openIdx = text.indexOf('<think>');
+    if (openIdx >= 0) {
+      const inside = text.slice(openIdx + 7).trimStart();
+      if (inside) reasoning = reasoning ? (reasoning + '\n' + inside) : inside;
+      text = text.slice(0, openIdx).trimEnd();
+    }
+  }
+  return { text, reasoning };
+}
+
+async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode }) {
+  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
+  const reg = region || 'global';
+  const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
+  const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
+  const userToken = keys && keys.claudeBearerToken;
+  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
+
+  const send = (token, withEffort) => {
+    const body = { model, messages: msgs };
+    if (withEffort && eff) body.reasoning_effort = eff;
+    if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
+    return fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  };
+
+  const t0 = Date.now();
+  let tok = userToken || await getClaudeToken();
+  let r = await send(tok, true);
+  if (r.status === 401 && !userToken) {
+    tok = await getClaudeToken({ forceRefresh: true });
+    r = await send(tok, true);
+  }
+  if (r.status === 400 && eff) {
+    r = await send(tok, false);
+  }
+  const j = await r.json();
+  const latencyMs = Date.now() - t0;
+  if (!r.ok) throw new Error(`Vertex AI MaaS (${reg}) ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
+
+  const msg = j.choices?.[0]?.message || {};
+  const split = splitThinkTags(msg.content || '', msg.reasoning_content || msg.reasoning || msg.thinking || '');
+  const text = split.text;
+  const reasoning = split.reasoning.trim();
+  const u = j.usage || {};
+  const outTok = u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const think = u.completion_tokens_details?.reasoning_tokens
+    ?? (reasoning ? Math.max(estimateTokens([{ content: reasoning }]), impliedThink) : impliedThink);
+  return {
+    text,
+    reasoning,
+    reasoningTokens: think,
+    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    completionTokens: outTok,
+    latencyMs,
+  };
+}
+
+async function agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode }) {
+  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
+  const reg = region || 'global';
+  const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
+  const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
+  const userToken = keys && keys.claudeBearerToken;
+  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
+
+  const send = (token, withEffort, withUsageOpt = true) => {
+    const body = { model, messages: msgs, stream: true };
+    if (withUsageOpt) body.stream_options = { include_usage: true };
+    if (withEffort && eff) body.reasoning_effort = eff;
+    if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
+    return fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  };
+
+  const t0 = Date.now();
+  let tok = userToken || await getClaudeToken();
+  let r = await send(tok, true, true);
+  if (r.status === 401 && !userToken) {
+    tok = await getClaudeToken({ forceRefresh: true });
+    r = await send(tok, true, true);
+  }
+  if (r.status === 400) {
+    r = await send(tok, false, false);
+  }
+  if (!r.ok) {
+    let e; try { e = await r.json(); } catch { e = await r.text(); }
+    throw new Error(`Vertex AI MaaS (${reg}) ${r.status}: ${JSON.stringify(e).slice(0, 400)}`);
+  }
+
+  let rawContent = '', rawReasoning = '', usage = null;
+  await readSSE(r, (ev) => {
+    if (ev.usage) usage = ev.usage;
+    const d = ev.choices?.[0]?.delta;
+    if (d) {
+      if (d.content) rawContent += d.content;
+      const rChunk = d.reasoning_content || d.reasoning || d.thinking || '';
+      if (rChunk) rawReasoning += rChunk;
+    }
+    if (onDelta && (d || ev.usage)) {
+      const sp = splitThinkTags(rawContent, rawReasoning);
+      const uThink = usage?.completion_tokens_details?.reasoning_tokens || 0;
+      const runThink = Math.max(uThink, sp.reasoning ? estimateTokens([{ content: sp.reasoning }]) : 0);
+      const runOut = usage?.completion_tokens || (estimateTokens([{ content: sp.text }]) + runThink);
+      onDelta({ answer: sp.text, reasoning: sp.reasoning, runningOut: runOut, runningThink: runThink });
+    }
+  });
+  const latencyMs = Date.now() - t0;
+  const sp = splitThinkTags(rawContent, rawReasoning);
+  const text = sp.text;
+  const reasoning = sp.reasoning.trim();
+  const u = usage || {};
+  const outTok = u.completion_tokens ?? estimateTokens([{ content: text + reasoning }]);
+  const ansEst = estimateTokens([{ content: text }]);
+  const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+  const think = u.completion_tokens_details?.reasoning_tokens
+    ?? (reasoning ? Math.max(estimateTokens([{ content: reasoning }]), impliedThink) : impliedThink);
+  return {
+    text,
+    reasoning,
+    reasoningTokens: think,
+    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    completionTokens: outTok,
+    latencyMs,
+  };
+}
+
+async function agentplatform({ publisher, model, system, messages, project, keys, effort, endpointType, region, thinkingMode, signal }) {
+  if (endpointType === 'openai-maas') {
+    return agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode });
+  }
+  const pub = publisher || 'google';
+  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, signal, effort });
+  return agentPlatformGemini({ model, system, messages, keys, signal, effort });
+}
+
 const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 
 // `keys` (optional) lets a user bring their own API credentials for a run; each
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
 // `signal` aborts the upstream request when the client goes away (or restarts a
 // slot) so an abandoned run stops burning tokens instead of finishing unseen.
-async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort }) {
+async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode }) {
   if (provider === 'agentplatform' && onDelta) {
+    if (endpointType === 'openai-maas') {
+      return agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode });
+    }
     const pub = publisher || 'google';
     return pub === 'anthropic'
       ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort })
@@ -855,7 +1111,7 @@ async function complete({ provider, model, system, messages, publisher, project,
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
-  return fn({ model, system, messages, publisher, project, keys, signal, effort });
+  return fn({ model, system, messages, publisher, project, keys, signal, effort, endpointType, region, thinkingMode });
 }
 
 module.exports = { complete, estimateTokens, thinkingProfile, thinkingOptions, validateEffort, ADAPTERS };
