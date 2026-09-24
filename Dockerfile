@@ -6,7 +6,7 @@
 # runs anywhere Docker does. PORT is provided by the platform (Cloud Run) and
 # defaults to 8080; all other settings are env-overridable at deploy time.
 # ---------------------------------------------------------------------------
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # System deps: python3 + pip (pygbag), tini (clean signal handling), CA certs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
