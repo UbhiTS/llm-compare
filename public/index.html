@@ -8,11 +8,11 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20260924b" />
+  <link rel="stylesheet" href="styles.css?v=20260924i" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" defer></script>
-  <script src="app.js?v=20260924b" defer></script>
+  <script src="app.js?v=20260924i" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -60,17 +60,49 @@
         <label for="taskSelect">Agentic task</label>
         <select id="taskSelect"></select>
       </div>
-      <button id="runBtn" class="ctl-btn primary">Run comparison ▸</button>
-      <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
-      <button id="autoFix" class="ctl-btn toggle" type="button" aria-pressed="false" title="When a model's code crashes, send the failure back to that model once for a fix. Off by default so a comparison measures first attempts; a Fix it button is always offered on the crash itself."><span class="ar-led"></span>Auto-fix crashes</button>
       <button id="historyBtn" class="ctl-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
     </div>
     <div class="run-status-row">
       <div id="taskMeta" class="task-meta"></div>
-      <span id="quotaBadge" class="quota-badge"></span>
+      <div class="run-status-right">
+        <span id="quotaBadge" class="quota-badge"></span>
+        <button type="button" id="copyPromptBtn" class="prompt-copy-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
+          <svg class="copy-ic" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.6"></rect>
+            <path d="M10.5 5.5V3.4A1.4 1.4 0 0 0 9.1 2H3.4A1.4 1.4 0 0 0 2 3.4v5.7a1.4 1.4 0 0 0 1.4 1.4h2.1"></path>
+          </svg>
+          <span class="copy-lbl" id="copyPromptLabel">Copy prompt</span>
+        </button>
+      </div>
     </div>
-    <p id="taskPrompt" class="task-prompt"></p>
-    <textarea id="customPrompt" class="custom-prompt hidden" rows="3" placeholder="Type your own prompt — it is sent verbatim to every model slot. No automated tests; you get live output, tokens, cost, speed and thinking."></textarea>
+    <div class="prompt-box-wrap">
+      <p id="taskPrompt" class="task-prompt"></p>
+      <textarea id="customPrompt" class="custom-prompt hidden" rows="3" placeholder="Type your own prompt — it is sent verbatim to every model slot (along with any attached files below). You can also paste images/files directly here (⌘V / Ctrl+V) or press ⌘↵ / Ctrl+Enter to run."></textarea>
+    </div>
+    <div id="customAttachmentsWrap" class="custom-attachments-wrap hidden">
+      <input type="file" id="customFileInput" class="hidden" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.zip,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.jsx,.ts,.tsx,.py,.sql,.sh,.log,.c,.cpp,.h,.go,.rs,.java,.rb,.php" />
+      <div id="customDropzone" class="ca-dropzone">
+        <div class="ca-drop-left">
+          <button type="button" id="attachFilesBtn" class="ctl-btn sm primary ca-attach-btn">📎 Attach files</button>
+          <span class="ca-drop-hint">Drag &amp; drop 1 or multiple files here, click <b>Attach files</b>, or paste (<code>⌘V</code>) — <b>Images</b> (PNG/JPG/WEBP/GIF/SVG), <b>PDFs</b>, <b>DOCX/XLSX/ZIP</b>, <b>CSV/JSON</b>, <b>Markdown &amp; Code</b></span>
+        </div>
+        <div class="ca-drop-right">
+          <span id="attachCountBadge" class="ca-count-badge">No files attached</span>
+          <button type="button" id="clearAttachmentsBtn" class="ctl-btn sm danger hidden">Clear all</button>
+        </div>
+      </div>
+      <div id="attachmentList" class="ca-list hidden"></div>
+      <div id="contextMeterBar" class="ca-context-meter hidden"></div>
+    </div>
+
+    <div class="execution-bar" role="toolbar" aria-label="Comparison execution controls">
+      <div class="exec-bar-actions">
+        <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>
+        <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
+        <button id="autoFix" class="ctl-btn toggle" type="button" aria-pressed="false" title="When a model's code crashes, send the failure back to that model once for a fix. Off by default so a comparison measures first attempts; a Fix it button is always offered on the crash itself."><span class="ar-led"></span>Auto-fix crashes</button>
+      </div>
+      <span class="exec-bar-hint">Tip: Press <kbd>⌘↵</kbd> or <kbd>Ctrl+Enter</kbd> in prompt to launch</span>
+    </div>
 
     <details class="model-config" open>
       <summary>

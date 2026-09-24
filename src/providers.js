@@ -15,6 +15,12 @@ const { getClaudeToken } = require('./gcloudToken');
 // Shared keys an admin can set at runtime (Secret Manager), falling back to the
 // deploy-time env vars. A user's own key always wins over these.
 const globalKeys = require('./globalKeys');
+const {
+  toGeminiParts,
+  toClaudeContent,
+  toOpenAIResponsesContent,
+  toOpenAIChatContent,
+} = require('./attachments');
 
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS, 10) || 0;
 const CLAUDE_MAX_OUTPUT = MAX_OUTPUT_TOKENS || 128000; // Anthropic requires max_tokens; Opus 4.8 supports 128k
@@ -342,36 +348,61 @@ function thinkingProfile({ provider, publisher, model, effort, endpointType, thi
 function estimateTokens(messages, system = '') {
   const chars =
     (system ? system.length : 0) +
-    messages.reduce((acc, m) => acc + (m.content ? String(m.content).length : 0), 0);
+    messages.reduce((acc, m) => {
+      let len = m.content ? (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length) : 0;
+      if (Array.isArray(m.attachments)) {
+        for (const a of m.attachments) {
+          len += (a.textContent ? a.textContent.length : 1000);
+        }
+      }
+      return acc + len;
+    }, 0);
   return Math.ceil(chars / 4);
+}
+
+function hasAttachments(messages) {
+  return Array.isArray(messages) && messages.some((m) => Array.isArray(m.attachments) && m.attachments.length > 0);
 }
 
 async function gemini({ model, system, messages, keys, signal }) {
   const key = (keys && keys.gemini) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
 
-  const contents = messages.map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
-  const body = {
-    contents,
-    generationConfig: { temperature: 0.2 },
+  const buildBody = (inlineBinary = true) => {
+    const contents = messages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: Array.isArray(m.attachments) && m.attachments.length
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        : [{ text: m.content }],
+    }));
+    const body = {
+      contents,
+      generationConfig: { temperature: 0.2 },
+    };
+    if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
+    if (system) body.systemInstruction = { parts: [{ text: system }] };
+    return body;
   };
-  if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
   )}:generateContent?key=${key}`;
 
   const t0 = Date.now();
-  const r = await fetch(url, {
+  let r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildBody(true)),
     signal,
   });
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildBody(false)),
+      signal,
+    });
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`Gemini ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
@@ -410,10 +441,25 @@ function compatKey(cfg, keys) {
   return key;
 }
 
+function buildOpenAIChatMessages(system, messages, { allowImages = true, allowFiles = false } = {}) {
+  const out = [];
+  if (system) out.push({ role: 'system', content: system });
+  for (const m of messages) {
+    out.push({
+      role: m.role,
+      content: Array.isArray(m.attachments) && m.attachments.length
+        ? toOpenAIChatContent(m.content, m.attachments, { allowImages, allowFiles })
+        : m.content,
+    });
+  }
+  return out;
+}
+
 async function openaiCompat(cfg, { model, system, messages, keys, signal, effort }) {
   const key = compatKey(cfg, keys);
-  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
-  const eff = cfg.keyField === 'openai' ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
+  const isOpenAI = cfg.keyField === 'openai';
+  const msgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: isOpenAI });
+  const eff = isOpenAI ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
   const reqBody = { model, messages: msgs };
   if (eff) reqBody.reasoning_effort = eff;
   const t0 = Date.now();
@@ -423,16 +469,30 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     body: JSON.stringify(reqBody),
     signal,
   });
-  if (r.status === 400 && eff) {
-    // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
+  if (r.status === 400 && hasAttachments(messages)) {
+    const fallbackMsgs = buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false });
+    const fbBody = { model, messages: fallbackMsgs };
+    if (eff) fbBody.reasoning_effort = eff;
     r = await fetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: msgs }),
+      body: JSON.stringify(fbBody),
       signal,
     });
   }
-  if ((r.status === 404 || r.status === 429) && cfg.keyField === 'openai' && model !== 'gpt-6-astra') {
+  if (r.status === 400 && eff) {
+    // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
+    const fallbackMsgs = hasAttachments(messages)
+      ? buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false })
+      : msgs;
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify({ model, messages: fallbackMsgs }),
+      signal,
+    });
+  }
+  if ((r.status === 404 || r.status === 429) && isOpenAI && model !== 'gpt-6-astra') {
     const fbModel = model === 'gpt-6-terra' ? 'gpt-6-astra' : 'gpt-6-sol';
     r = await fetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
@@ -456,7 +516,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     ?? (reasoning ? estimateTokens([{ content: reasoning }]) : impliedThink);
   return {
     text, reasoning,
-    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
@@ -473,7 +533,14 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
   const eff = validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort();
   const input = [];
   if (system) input.push({ role: 'developer', content: system });
-  for (const m of messages) input.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
+  for (const m of messages) {
+    input.push({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: Array.isArray(m.attachments) && m.attachments.length
+        ? toOpenAIResponsesContent(m.content, m.attachments)
+        : String(m.content || ''),
+    });
+  }
 
   const sendReq = (withSummary, targetModel = model) => fetch(`${cfg.base}/responses`, {
     method: 'POST',
@@ -540,7 +607,8 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 // Streamed variant — same contract, emits onDelta so the UI gets a live feed
 // (without this an external model's column sits blank until it finishes).
 async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal, effort }) {
-  if (cfg.keyField === 'openai') {
+  const isOpenAI = cfg.keyField === 'openai';
+  if (isOpenAI) {
     try {
       const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort });
       if (res) return res;
@@ -548,9 +616,12 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   }
 
   const key = compatKey(cfg, keys);
-  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
-  const eff = cfg.keyField === 'openai' ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
-  const buildBody = (includeEffort, targetModel = model) => {
+  const eff = isOpenAI ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
+  const buildBody = (includeEffort, targetModel = model, allowMultimodal = true) => {
+    const msgs = buildOpenAIChatMessages(system, messages, {
+      allowImages: allowMultimodal,
+      allowFiles: allowMultimodal && isOpenAI,
+    });
     const b = { model: targetModel, messages: msgs, stream: true };
     if (cfg.usageOpt) b.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
     if (includeEffort && eff) b.reasoning_effort = eff;
@@ -560,14 +631,22 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   let r = await fetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify(buildBody(true, model)),
+    body: JSON.stringify(buildBody(true, model, true)),
     signal,
   });
-  if (r.status === 404 && cfg.keyField === 'openai' && model === 'gpt-6-terra') {
+  if (r.status === 404 && isOpenAI && model === 'gpt-6-terra') {
     r = await fetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(true, 'gpt-6-astra')),
+      body: JSON.stringify(buildBody(true, 'gpt-6-astra', true)),
+      signal,
+    });
+  }
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await fetch(`${cfg.base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(buildBody(true, model === 'gpt-6-terra' ? 'gpt-6-astra' : model, false)),
       signal,
     });
   }
@@ -575,11 +654,11 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     r = await fetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model)),
+      body: JSON.stringify(buildBody(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model, false)),
       signal,
     });
   }
-  if (!r.ok && cfg.keyField === 'openai') {
+  if (!r.ok && isOpenAI) {
     return agentPlatformOpenAIMaaSStream({ model: 'openai/gpt-oss-120b-maas', system, messages, onDelta, keys, signal, effort, region: 'global', thinkingMode: 'configurable-effort' });
   }
   if (!r.ok) {
@@ -613,7 +692,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     ?? (reasoning ? Math.max(estimateTokens([{ content: reasoning }]), impliedThink) : impliedThink);
   return {
     text, reasoning: reasoning.trim(),
-    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
@@ -627,8 +706,7 @@ async function anthropic({ model, system, messages, keys, signal }) {
   const key = (keys && keys.anthropic) || process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment (.env)');
 
-  const t0 = Date.now();
-  const r = await fetch('https://api.anthropic.com/v1/messages', {
+  const sendReq = (allowPdfDocument = true) => fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -640,10 +718,21 @@ async function anthropic({ model, system, messages, keys, signal }) {
       max_tokens: CLAUDE_MAX_OUTPUT,
       temperature: 0.2,
       system: system || undefined,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: Array.isArray(m.attachments) && m.attachments.length
+          ? toClaudeContent(m.content, m.attachments, { allowPdfDocument })
+          : m.content,
+      })),
     }),
     signal,
   });
+
+  const t0 = Date.now();
+  let r = await sendReq(true);
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await sendReq(false);
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`Anthropic ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
@@ -672,27 +761,40 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
-  const contents = messages.map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
-  const body = {
-    contents,
-    generationConfig: geminiGenerationConfig(model, effort), // reasoning on, at the level this card asked for
+  const buildBody = (inlineBinary = true) => {
+    const contents = messages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: Array.isArray(m.attachments) && m.attachments.length
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        : [{ text: m.content }],
+    }));
+    const body = {
+      contents,
+      generationConfig: geminiGenerationConfig(model, effort), // reasoning on, at the level this card asked for
+    };
+    if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
+    if (system) body.systemInstruction = { parts: [{ text: system }] };
+    return body;
   };
-  if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
 
   const url =
     `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${key}`;
 
   const t0 = Date.now();
-  const r = await fetch(url, {
+  let r = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(buildBody(true)),
     signal,
   });
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildBody(false)),
+      signal,
+    });
+  }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw new Error(`Agent Platform ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
@@ -718,11 +820,16 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
 
-  const makePayload = (omitDisplay, targetModel = model) => {
+  const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
     const b = {
       anthropic_version: 'vertex-2023-10-16',
       ...claudeThinkingFields(targetModel, effort, { omitDisplay }),
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: Array.isArray(m.attachments) && m.attachments.length
+          ? toClaudeContent(m.content, m.attachments, { allowPdfDocument })
+          : m.content,
+      })),
     };
     if (system) b.system = system;
     return JSON.stringify(b);
@@ -732,28 +839,31 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:rawPredict`;
 
-  const send = (token, omitDisplay = false, targetModel = model) =>
+  const send = (token, omitDisplay = false, targetModel = model, allowPdfDocument = true) =>
     fetch(makeUrl(targetModel), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: makePayload(omitDisplay, targetModel),
+      body: makePayload(omitDisplay, targetModel, allowPdfDocument),
       signal,
     });
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, false, model);
+  let r = await send(tok, false, model, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, false, model);
+    r = await send(tok, false, model, true);
   }
   if (r.status === 400) {
-    r = await send(tok, true, model);
+    r = await send(tok, true, model, true);
+    if (r.status === 400 && hasAttachments(messages)) {
+      r = await send(tok, true, model, false);
+    }
   }
   let routedNote = '';
   if ((r.status === 429 || r.status === 403 || r.status === 404) && model !== 'claude-opus-5-5') {
-    r = await send(tok, false, 'claude-opus-5-5');
-    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5');
+    r = await send(tok, false, 'claude-opus-5-5', true);
+    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5', false);
     routedNote = `[Vertex AI Quota Router: ${model} base-model quota is 0 on this GCP project; automatically served via active frontier Claude Opus 5.5 (claude-opus-5-5)]\n\n`;
   }
   const j = await r.json();
@@ -810,20 +920,29 @@ async function readSSE(response, onEvent) {
 async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
-  const contents = messages.map((m) => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
-  }));
-  const body = {
-    contents,
-    generationConfig: geminiGenerationConfig(model, effort),
+
+  const buildBody = (inlineBinary = true) => {
+    const contents = messages.map((m) => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: Array.isArray(m.attachments) && m.attachments.length
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        : [{ text: m.content }],
+    }));
+    const body = {
+      contents,
+      generationConfig: geminiGenerationConfig(model, effort),
+    };
+    if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
+    if (system) body.systemInstruction = { parts: [{ text: system }] };
+    return body;
   };
-  if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
-  if (system) body.systemInstruction = { parts: [{ text: system }] };
   const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${key}`;
 
   const t0 = Date.now();
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
+  let r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(true)), signal });
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(false)), signal });
+  }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Agent Platform ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
 
   let answer = '', reasoning = '', usage = {};
@@ -854,12 +973,17 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
 async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
-  const makePayload = (omitDisplay, targetModel = model) => {
+  const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
     const b = {
       anthropic_version: 'vertex-2023-10-16',
       ...claudeThinkingFields(targetModel, effort, { omitDisplay }),
       stream: true,
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: Array.isArray(m.attachments) && m.attachments.length
+          ? toClaudeContent(m.content, m.attachments, { allowPdfDocument })
+          : m.content,
+      })),
     };
     if (system) b.system = system;
     return JSON.stringify(b);
@@ -868,23 +992,26 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}` +
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:streamRawPredict`;
 
-  const send = (token, omitDisplay = false, targetModel = model) =>
-    fetch(makeUrl(targetModel), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay, targetModel), signal });
+  const send = (token, omitDisplay = false, targetModel = model, allowPdfDocument = true) =>
+    fetch(makeUrl(targetModel), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay, targetModel, allowPdfDocument), signal });
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, false, model);
+  let r = await send(tok, false, model, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, false, model);
+    r = await send(tok, false, model, true);
   }
   if (r.status === 400) {
-    r = await send(tok, true, model);
+    r = await send(tok, true, model, true);
+    if (r.status === 400 && hasAttachments(messages)) {
+      r = await send(tok, true, model, false);
+    }
   }
   let routedNote = '';
   if ((r.status === 429 || r.status === 403 || r.status === 404) && model !== 'claude-opus-5-5') {
-    r = await send(tok, false, 'claude-opus-5-5');
-    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5');
+    r = await send(tok, false, 'claude-opus-5-5', true);
+    if (r.status === 400) r = await send(tok, true, 'claude-opus-5-5', false);
     routedNote = `[Vertex AI Quota Router: ${model} base-model quota is 0 on this GCP project; automatically served via active frontier Claude Opus 5.5 (claude-opus-5-5)]\n\n`;
   }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Claude (Agent Platform) ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
@@ -956,10 +1083,10 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
   const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
   const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
   const userToken = keys && keys.claudeBearerToken;
-  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
-  const send = (token, withEffort) => {
+  const send = (token, withEffort, allowImages = true) => {
+    const msgs = buildOpenAIChatMessages(system, messages, { allowImages, allowFiles: false });
     const body = { model, messages: msgs };
     if (withEffort && eff) body.reasoning_effort = eff;
     if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
@@ -973,13 +1100,16 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, true);
+  let r = await send(tok, true, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, true);
+    r = await send(tok, true, true);
+  }
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await send(tok, true, false);
   }
   if (r.status === 400 && eff) {
-    r = await send(tok, false);
+    r = await send(tok, false, false);
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
@@ -999,7 +1129,7 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
     text,
     reasoning,
     reasoningTokens: think,
-    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
   };
@@ -1011,10 +1141,10 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
   const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
   const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
   const userToken = keys && keys.claudeBearerToken;
-  const msgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
-  const send = (token, withEffort, withUsageOpt = true) => {
+  const send = (token, withEffort, withUsageOpt = true, allowImages = true) => {
+    const msgs = buildOpenAIChatMessages(system, messages, { allowImages, allowFiles: false });
     const body = { model, messages: msgs, stream: true };
     if (withUsageOpt) body.stream_options = { include_usage: true };
     if (withEffort && eff) body.reasoning_effort = eff;
@@ -1029,13 +1159,16 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, true, true);
+  let r = await send(tok, true, true, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, true, true);
+    r = await send(tok, true, true, true);
+  }
+  if (r.status === 400 && hasAttachments(messages)) {
+    r = await send(tok, true, true, false);
   }
   if (r.status === 400) {
-    r = await send(tok, false, false);
+    r = await send(tok, false, false, false);
   }
   if (!r.ok) {
     let e; try { e = await r.json(); } catch { e = await r.text(); }
@@ -1073,7 +1206,7 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
     text,
     reasoning,
     reasoningTokens: think,
-    promptTokens: u.prompt_tokens ?? estimateTokens(msgs),
+    promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
   };

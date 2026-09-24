@@ -32,6 +32,7 @@ const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
+const { normalizeAttachments, inspectAttachments } = require('./src/attachments');
 
 const app = express();
 app.disable('x-powered-by');
@@ -71,9 +72,20 @@ app.use((req, res, next) => {
   next();
 });
 
-// Large enough that a judge run on a 1M-token model (~2.2MB of answers) is never
-// rejected at the body parser before the per-judge budget in src/judge.js applies.
-app.use(express.json({ limit: '8mb' }));
+// Large enough for multiple base64 image/PDF/document attachments plus 1M-token judge runs.
+app.use(express.json({ limit: '50mb' }));
+app.use((err, _req, res, next) => {
+  if (err && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({
+      type: 'error',
+      error: 'Total attachment payload exceeds the 50 MB server request limit. Please remove one or more large files and try again.',
+    });
+  }
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({ type: 'error', error: 'Invalid JSON request payload.' });
+  }
+  return next(err);
+});
 app.use(auth.cookieParser);
 
 // ===========================================================================
@@ -416,9 +428,18 @@ app.post('/api/execute', async (req, res) => {
 // ungraded (business / general) tasks, which have no hidden tests and therefore
 // no quality signal of their own. Blinding and shuffling happen in src/judge.js.
 app.post('/api/judge', async (req, res) => {
-  const { taskId, judge: judgeId, entries } = req.body || {};
-  const task = TASKS.find((t) => t.id === taskId)
-    || { id: 'custom', title: 'Custom prompt', prompt: String((req.body && req.body.prompt) || ''), testCases: [] };
+  const { taskId, judge: judgeId, entries, attachments: rawAttachments } = req.body || {};
+  const attachments = normalizeAttachments(rawAttachments);
+  const foundTask = TASKS.find((t) => t.id === taskId);
+  const task = foundTask
+    ? { ...foundTask, attachments }
+    : {
+        id: 'custom',
+        title: 'Custom prompt',
+        prompt: String((req.body && req.body.prompt) || '').trim() || (attachments.length ? 'Analyze the attached file(s) and provide a detailed response.' : ''),
+        testCases: [],
+        attachments,
+      };
 
   const judge = resolveModels([{ catalogId: judgeId, slot: 'J' }])[0];
   if (!judge || judge.catalogId !== judgeId) return res.status(400).json({ error: 'Pick a judge model from the catalog.' });
@@ -516,8 +537,22 @@ function modelUsesOwnKey(m, keys) {
   return false;
 }
 
+// Lightweight attachment inspection & server-side SHA-1 LRU caching endpoint.
+// Called immediately when the user drops/picks files so the UI shows exact server-extracted
+// token counts, PDF page/encryption metadata, and caches the attachment payload by SHA-1.
+app.post('/api/attachments/inspect', (req, res) => {
+  try {
+    const rawAttachments = (req.body && req.body.attachments) || [];
+    const items = inspectAttachments(rawAttachments);
+    res.json({ ok: true, attachments: items });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message || String(e) });
+  }
+});
+
 app.post('/api/run', async (req, res) => {
-  const { taskId, models, maxIterations, customPrompt } = req.body || {};
+  const { taskId, models, maxIterations, customPrompt, attachments: rawAttachments } = req.body || {};
+  const attachments = normalizeAttachments(rawAttachments);
   // Sanitize any user-provided ("bring your own") API credentials (strings only).
   const rawKeys = (req.body && req.body.keys) || {};
   const keys = {};
@@ -525,16 +560,21 @@ app.post('/api/run', async (req, res) => {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
   let task;
-  if (taskId === 'custom') {
+  if (taskId === 'custom' || taskId === '__custom__') {
+    const defaultCustomPrompt = attachments.length
+      ? 'Analyze the attached file(s) and provide a detailed response.'
+      : 'Write a short response.';
     task = {
       id: 'custom',
-      title: 'Custom prompt',
-      prompt: (customPrompt || '').trim() || 'Write a short response.',
+      title: attachments.length ? `Custom prompt (${attachments.length} attachment${attachments.length > 1 ? 's' : ''})` : 'Custom prompt',
+      prompt: (customPrompt || '').trim() || defaultCustomPrompt,
       functionName: 'solution',
       testCases: [], // no hidden tests -> single generation, no self-debug loop
+      attachments,
     };
   } else {
-    task = TASKS.find((t) => t.id === taskId) || TASKS[0];
+    const baseTask = TASKS.find((t) => t.id === taskId) || TASKS[0];
+    task = attachments.length ? { ...baseTask, attachments } : baseTask;
   }
   // Server-authoritative: rebuild every slot from the fixed catalog. Any
   // client-supplied price / model id / provider is ignored — users can only

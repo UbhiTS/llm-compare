@@ -92,8 +92,8 @@ const MODEL_CATALOG = [
 
   // --- 8. Moonshot AI (Kimi — Vertex AI MaaS + Direct) ---
   { id: 'kimi-k2-thinking-maas', label: 'Kimi K2 Thinking (Vertex MaaS)', provider: 'agentplatform', publisher: 'moonshotai', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'moonshotai/kimi-k2-thinking-maas', price: { input: 0.60, output: 2.50 }, context: 256000 },
-  { id: 'kimi-k3', label: 'Kimi K3', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k3', price: { input: 3.00, output: 15.00 }, external: true },
-  { id: 'kimi-k2.6', label: 'Kimi K2.6', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k2.6', price: { input: 0.95, output: 4.00 }, external: true },
+  { id: 'kimi-k3', label: 'Kimi K3', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k3', price: { input: 3.00, output: 15.00 }, context: 256000, external: true },
+  { id: 'kimi-k2.6', label: 'Kimi K2.6', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k2.6', price: { input: 0.95, output: 4.00 }, context: 256000, external: true },
 
   // --- 9. Z.AI / Zhipu (GLM — Vertex AI Model Garden MaaS) ---
   { id: 'glm-5.2-maas', label: 'GLM-5.2 (Vertex MaaS)', provider: 'agentplatform', publisher: 'zai-org', providerFamily: 'zai', providerLabel: 'Z.AI (GLM)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'zai-org/glm-5.2-maas', price: { input: 0.50, output: 2.00 }, context: 131072 },

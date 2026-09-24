@@ -9,6 +9,7 @@
 const { complete, thinkingProfile } = require('./providers');
 const { runTests } = require('./runner');
 const { priceFor } = require('./pricing');
+const { budgetAttachmentsForModel } = require('./attachments');
 
 const SYSTEM_PROMPT =
   'You are an expert software engineer. You write correct, efficient JavaScript ' +
@@ -32,9 +33,10 @@ function extractCode(text) {
 }
 
 function buildInitialMessages(task) {
+  const attachments = Array.isArray(task.attachments) && task.attachments.length ? task.attachments : undefined;
   // Non-coding (general / custom) prompt: send the user's prompt verbatim.
   if (!task.language) {
-    return [{ role: 'user', content: task.prompt }];
+    return [{ role: 'user', content: task.prompt, attachments }];
   }
   const lang = task.language === 'python' ? 'python' : 'javascript';
   const graded = !!(task.testCases && task.testCases.length);
@@ -44,7 +46,7 @@ function buildInitialMessages(task) {
       `and no text before or after the block.`
     : `\n\nReturn ONLY a single fenced \`\`\`${lang} code block with the complete program — ` +
       `no prose, no explanation, and no text before or after the block.`;
-  return [{ role: 'user', content: `${task.prompt}${tail}` }];
+  return [{ role: 'user', content: `${task.prompt}${tail}`, attachments }];
 }
 
 // A repair round: the model's own program crashed when it was actually run, so
@@ -54,12 +56,14 @@ const MAX_REPAIR_CHARS = 6000;      // enough for a full program without blowing
 const MAX_REPAIR_ERR = 2000;        // a traceback's tail is the useful part
 
 function buildRepairMessages(task, repair) {
+  const attachments = Array.isArray(task.attachments) && task.attachments.length ? task.attachments : undefined;
   const code = String((repair && repair.code) || '').slice(0, MAX_REPAIR_CHARS);
   const err = String((repair && repair.error) || '').slice(-MAX_REPAIR_ERR);
   const lang = task.language === 'python' ? 'python' : task.language === 'javascript' ? 'javascript' : '';
   const fence = lang || '';
   return [{
     role: 'user',
+    attachments,
     content:
       `${task.prompt}\n\n` +
       `---\n\n` +
@@ -95,10 +99,27 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
   const system = task.language
     ? CODE_SYSTEM_PROMPT
     : 'You are a helpful assistant. When the user asks for a detailed plan or analysis, be thorough and well-structured.';
+
+  // Per-model context window budgeting & smart head+tail fitting for attachments
+  const budgetRes = budgetAttachmentsForModel(task.attachments, { prompt: task.prompt, modelConfig });
+  const modelTask = Array.isArray(task.attachments) && task.attachments.length
+    ? { ...task, attachments: budgetRes.attachments }
+    : task;
+  if (budgetRes.contextWarning) {
+    emit({
+      type: 'context_warning',
+      slot,
+      warning: budgetRes.contextWarning,
+      message: budgetRes.contextWarning,
+      estimatedInputTokens: budgetRes.estimatedInputTokens,
+      contextLimit: budgetRes.contextLimit,
+    });
+  }
+
   // A repair run replaces the opening turn with the crash report; everything
   // downstream (streaming, metrics, cost) is identical to a normal run.
   const isRepair = !!(repair && repair.code && repair.error);
-  const messages = isRepair ? buildRepairMessages(task, repair) : buildInitialMessages(task);
+  const messages = isRepair ? buildRepairMessages(modelTask, repair) : buildInitialMessages(modelTask);
 
   // completionTokens = ALL output tokens (answer + thinking, which is how output is billed);
   // reasoningTokens = the thinking subset. answer-only = completionTokens - reasoningTokens.
@@ -252,6 +273,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     model: modelConfig.model,
     price,
     thinking: thinkingProfile(modelConfig),   // what reasoning config this run was sent
+    contextWarning: budgetRes.contextWarning || null,
     repaired: isRepair,                       // this output followed a crash-repair round
     iterations,
     passed,

@@ -74,6 +74,32 @@ function fitToBudget(list, budget) {
     : { ...e, text: e.text.slice(0, share), truncated: true }));
 }
 
+function buildAttachmentContext(attachments) {
+  if (!Array.isArray(attachments) || !attachments.length) return '';
+  const MAX_EXCERPT_PER_FILE = 6000;
+  const blocks = attachments.map((att, idx) => {
+    const sizeKb = ((att.size || 0) / 1024).toFixed(1);
+    const metaParts = [att.mimeType || att.kind || 'file', `${sizeKb} KB`];
+    if (att.pageCount) metaParts.push(`${att.pageCount} page${att.pageCount > 1 ? 's' : ''}`);
+    if (att.warning) metaParts.push(att.warning);
+    const rawTxt = String(att.textContent || att.extractedText || '').trim();
+    let excerpt = '';
+    if (rawTxt) {
+      if (rawTxt.length <= MAX_EXCERPT_PER_FILE) {
+        excerpt = `\n${rawTxt}`;
+      } else {
+        const head = Math.floor(MAX_EXCERPT_PER_FILE * 0.7);
+        const tail = MAX_EXCERPT_PER_FILE - head;
+        excerpt = `\n${rawTxt.slice(0, head)}\n... [${(rawTxt.length - MAX_EXCERPT_PER_FILE).toLocaleString('en-US')} chars omitted in judge excerpt] ...\n${rawTxt.slice(rawTxt.length - tail)}`;
+      }
+    } else if (att.kind === 'image') {
+      excerpt = `\n[Image attachment passed via multimodal vision input]`;
+    }
+    return `[Attachment ${idx + 1}: ${att.name} (${metaParts.join(' · ')})]${excerpt}`;
+  });
+  return `=== ATTACHED FILES PROVIDED TO EVERY SYSTEM (${attachments.length}) ===\n${blocks.join('\n\n')}\n\n`;
+}
+
 function buildPrompt(task, blinded) {
   const criteria = CRITERIA.map((c) => `- ${c.key}: ${c.hint}`).join('\n');
   const anyTrimmed = blinded.some((b) => b.truncated);
@@ -85,6 +111,7 @@ function buildPrompt(task, blinded) {
       `That is an artefact of how they were sent to you, NOT a flaw in the response. Do not mark such a response down for completeness ` +
       `or for appearing to stop mid-sentence — judge it on the substance you can see.\n`
     : '';
+  const attachmentSection = buildAttachmentContext(task.attachments);
   const schema = `{"scores":[{"id":"A",${CRITERIA.map((c) => `"${c.key}":<1-10>`).join(',')},"note":"<one sentence, max 25 words>"}],"winner":"<id>","why":"<one or two sentences>"}`;
   return (
     `You are judging ${blinded.length} anonymous responses to the same task.\n\n` +
@@ -92,9 +119,11 @@ function buildPrompt(task, blinded) {
     `authorship, and do not let response length alone decide the score — a shorter ` +
     `response that fully answers the task beats a longer one that pads.\n\n` +
     `=== TASK GIVEN TO EVERY SYSTEM ===\n${String(task.prompt || '').slice(0, MAX_TASK_CHARS)}\n\n` +
+    attachmentSection +
     trimNote +
     `=== RESPONSES ===\n${bodies}\n\n` +
     `=== HOW TO SCORE ===\nScore every response from 1 to 10 on each criterion:\n${criteria}\n\n` +
+    `Grade accuracy and instruction-following strictly against both the task prompt and any attached file contents shown above.\n` +
     `Use the full range. If two responses are genuinely close, give them close ` +
     `scores; if one is clearly better, say so decisively.\n\n` +
     `Return ONLY a single JSON object, no prose and no code fence:\n${schema}`
@@ -134,6 +163,13 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     text: String(e.text),            // full answer — see the budget note at the top
   })), budgetFor(judge));
 
+  const { budgetAttachmentsForModel } = require('./attachments');
+  const rawAttachments = Array.isArray(task.attachments) && task.attachments.length ? task.attachments : undefined;
+  const promptText = buildPrompt(task, blinded);
+  const budgeted = rawAttachments
+    ? budgetAttachmentsForModel(rawAttachments, { prompt: promptText, modelConfig: judge }).attachments
+    : undefined;
+
   const resp = await complete({
     provider: judge.provider,
     publisher: judge.publisher,
@@ -144,7 +180,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     region: judge.region,
     thinkingMode: judge.thinkingMode,
     system: 'You are a rigorous, impartial evaluator. You return only the JSON object you are asked for.',
-    messages: [{ role: 'user', content: buildPrompt(task, blinded) }],
+    messages: [{ role: 'user', content: promptText, attachments: budgeted }],
     keys,
     signal,
   });

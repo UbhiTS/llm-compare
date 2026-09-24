@@ -11,7 +11,16 @@ const { thinkingProfile } = require('./providers');
 async function runComparison({ task, models, maxIterations, emit, keys, signal, repair }) {
   emit({
     type: 'start',
-    task: { id: task.id, title: task.title, prompt: task.prompt, testCount: task.testCases.length, functionName: task.functionName },
+    task: {
+      id: task.id,
+      title: task.title,
+      prompt: task.prompt,
+      testCount: task.testCases.length,
+      functionName: task.functionName,
+      attachments: Array.isArray(task.attachments)
+        ? task.attachments.map((a) => ({ name: a.name, mimeType: a.mimeType, size: a.size, kind: a.kind }))
+        : [],
+    },
     models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, price: m.price, thinking: thinkingProfile(m) })),
     maxIterations,
     startedAt: Date.now(),

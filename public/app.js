@@ -95,8 +95,17 @@ async function init() {
   syncModelsFromSlots();
 
 
-  // task select \u2014 grouped by category (Coding / General)
+  // task select — always default to Custom Prompt at the very top on every load
   const ts = $('#taskSelect');
+  const customOg = el('optgroup');
+  customOg.label = 'Custom';
+  const customOpt = el('option');
+  customOpt.value = 'custom';
+  customOpt.textContent = 'Custom Prompt';
+  customOpt.selected = true;
+  customOg.appendChild(customOpt);
+  ts.appendChild(customOg);
+
   const tag = (t) => t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
   [['business', 'Business'], ['coding', 'Coding'], ['games', 'Games'], ['general', 'General']].forEach(([cat, label]) => {
     const inCat = CONFIG.tasks.filter((t) => (t.category || 'general') === cat);
@@ -110,13 +119,9 @@ async function init() {
     });
     ts.appendChild(og);
   });
-  const og = el('optgroup'); og.label = 'Other';
-  const customOpt = el('option');
-  customOpt.value = 'custom';
-  customOpt.textContent = 'Custom prompt\u2026';
-  og.appendChild(customOpt);
-  ts.appendChild(og);
+  ts.value = 'custom';
   ts.addEventListener('change', () => { renderTaskPrompt(); $('#scorecard').classList.add('hidden'); buildArena(); });
+  initAttachmentsUI();
   renderTaskPrompt();
 
   renderModelEditors();
@@ -813,6 +818,7 @@ function afterSlotChange() {
   buildArena();
   updateQuotaBadge();
   updateRunButton();
+  if (typeof renderContextMeter === 'function') renderContextMeter();
 }
 
 function updateRunButton() {
@@ -828,6 +834,522 @@ function currentTask() {
   if (id === 'custom') return { id: 'custom', title: 'Custom prompt', prompt: '', testCount: 0, category: 'general', language: null, executable: false };
   return CONFIG.tasks.find((t) => t.id === id) || CONFIG.tasks[0];
 }
+let CUSTOM_ATTACHMENTS = []; // [{ id, name, mimeType, size, data, textContent, previewUrl, estimatedTokens, pageCount, warning }]
+const MAX_CUSTOM_ATTACHMENTS = 10;
+const MAX_CUSTOM_FILE_BYTES = 25 * 1024 * 1024; // 25 MB per file
+
+function formatBytes(bytes) {
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function fmtTokensShort(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return `${v} tok`;
+  if (v < 1000000) return `${(v / 1000).toFixed(1)}K tok`;
+  return `${(v / 1000000).toFixed(2)}M tok`;
+}
+
+function isTextLikeAttachment(name, mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.startsWith('text/') || m === 'application/json' || m === 'application/xml' || m === 'application/javascript' || m === 'image/svg+xml') return true;
+  return /\.(txt|md|markdown|csv|tsv|json|jsonl|xml|yaml|yml|html|htm|css|js|mjs|cjs|jsx|ts|tsx|py|sql|sh|bash|zsh|log|ini|conf|env|toml|c|cpp|h|go|rs|java|rb|php|swift|kt|svg)$/i.test(String(name || ''));
+}
+
+function attachmentBadgeInfo(name, mime) {
+  const m = String(mime || '').toLowerCase();
+  const n = String(name || '').toLowerCase();
+  if (m === 'application/pdf' || n.endsWith('.pdf')) return { label: 'PDF', cls: 'is-pdf' };
+  if (/\.(docx|xlsx|pptx|zip)$/i.test(n)) return { label: 'DOC/ZIP', cls: 'is-data' };
+  if (m.includes('csv') || n.endsWith('.csv') || n.endsWith('.tsv')) return { label: 'CSV', cls: 'is-data' };
+  if (m.includes('json') || n.endsWith('.json') || n.endsWith('.jsonl')) return { label: 'JSON', cls: 'is-data' };
+  if (n.endsWith('.svg') || m === 'image/svg+xml') return { label: 'SVG', cls: '' };
+  if (n.endsWith('.md') || n.endsWith('.markdown')) return { label: 'MD', cls: '' };
+  if (/\.(py|js|ts|jsx|tsx|sql|sh|go|rs|java|c|cpp|rb|php|html|css)$/i.test(n)) return { label: 'CODE', cls: '' };
+  return { label: 'FILE', cls: '' };
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = () => reject(fr.error || new Error('Failed to read file'));
+    fr.readAsDataURL(file);
+  });
+}
+
+function readFileAsText(file) {
+  return new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = () => resolve('');
+    fr.readAsText(file);
+  });
+}
+
+function readFileAsLatin1(file) {
+  return new Promise((resolve) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || ''));
+    fr.onerror = () => resolve('');
+    fr.readAsBinaryString(file);
+  });
+}
+
+function estimateClientAttachmentTokens({ isEmpty, isImage, isPdf, pageCount, size, textContent }) {
+  if (isEmpty) return 15;
+  if (isImage) return Math.min(1150, Math.max(258, Math.ceil((size || 0) / 1400)));
+  if (isPdf) {
+    const pTok = Math.max(1, pageCount || 1) * 258;
+    const tTok = Math.ceil((textContent || '').length / 3.8);
+    return Math.max(pTok, tTok) + 40;
+  }
+  if (textContent && textContent.length) return Math.ceil(textContent.length / 3.8) + 25;
+  return Math.max(60, Math.ceil((size || 0) / 20));
+}
+
+// Automatically downscales/compresses raster images >3.6 MB via offscreen HTML5 <canvas>
+// so their base64 stays under Anthropic Claude's strict 5 MB vision limit (~3.75 MB binary)
+// and every provider gets native multimodal vision instead of falling back to text metadata.
+function optimizeOversizedImage(dataUrl, mimeType, origSize) {
+  return new Promise((resolve) => {
+    if (typeof Image === 'undefined' || typeof document === 'undefined') {
+      return resolve(null);
+    }
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const maxDim = 2400;
+        let w = img.naturalWidth || img.width || 1600;
+        let h = img.naturalHeight || img.height || 1200;
+        if (w > maxDim || h > maxDim) {
+          const scale = maxDim / Math.max(w, h);
+          w = Math.max(1, Math.round(w * scale));
+          h = Math.max(1, Math.round(h * scale));
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return resolve(null);
+        ctx.drawImage(img, 0, 0, w, h);
+
+        let outMime = 'image/webp';
+        let outUrl = canvas.toDataURL(outMime, 0.88);
+        if (!outUrl.startsWith('data:image/webp')) {
+          outMime = 'image/jpeg';
+          outUrl = canvas.toDataURL(outMime, 0.88);
+        }
+        const comma = outUrl.indexOf(',');
+        const outB64 = comma >= 0 ? outUrl.slice(comma + 1) : outUrl;
+        const outBytes = Math.floor((outB64.length * 3) / 4);
+        if (outBytes < origSize && outB64.length <= 4.8 * 1024 * 1024) {
+          resolve({
+            dataUrl: outUrl,
+            base64Data: outB64,
+            mimeType: outMime,
+            size: outBytes,
+            optBadge: `Optimized for all vision APIs (${formatBytes(origSize)} → ${formatBytes(outBytes)})`,
+          });
+        } else {
+          resolve(null);
+        }
+      } catch (_) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+async function inspectAttachmentOnServer(attObj) {
+  if (!attObj || attObj.isEmpty) return;
+  try {
+    const r = await fetch('/api/attachments/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        attachments: [{
+          name: attObj.name,
+          mimeType: attObj.mimeType,
+          size: attObj.size,
+          data: attObj.data,
+          textContent: attObj.textContent || undefined,
+        }],
+      }),
+    });
+    if (!r.ok) return;
+    const body = await r.json();
+    const srv = body && Array.isArray(body.attachments) && body.attachments[0];
+    if (!srv) return;
+    if (srv.sha1) attObj.sha1 = srv.sha1;
+    if (srv.cached) attObj.cached = true;
+    if (typeof srv.estimatedTokens === 'number' && srv.estimatedTokens > 0) {
+      attObj.estimatedTokens = srv.estimatedTokens;
+    }
+    if (typeof srv.pageCount === 'number' && srv.pageCount > 0) {
+      attObj.pageCount = srv.pageCount;
+    }
+    if (srv.warning && !attObj.warning) {
+      attObj.warning = srv.warning;
+    }
+    renderAttachments();
+    renderTaskMeta();
+  } catch (_) {
+    // Non-fatal: client-side estimation remains active
+  }
+}
+
+async function addAttachmentFiles(fileList) {
+  if (!fileList || !fileList.length) return;
+  const files = Array.from(fileList);
+  for (const file of files) {
+    if (CUSTOM_ATTACHMENTS.length >= MAX_CUSTOM_ATTACHMENTS) {
+      window.alert(`Maximum of ${MAX_CUSTOM_ATTACHMENTS} attachments reached.`);
+      break;
+    }
+    if (file.size > MAX_CUSTOM_FILE_BYTES) {
+      window.alert(`"${file.name}" is ${formatBytes(file.size)} (max ${formatBytes(MAX_CUSTOM_FILE_BYTES)} per file).`);
+      continue;
+    }
+    // Deduplicate exact same filename + size
+    if (CUSTOM_ATTACHMENTS.some((x) => x.name === file.name && x.size === file.size)) {
+      continue;
+    }
+    try {
+      const isEmpty = file.size === 0;
+      let dataUrl = isEmpty ? '' : await readFileAsDataUrl(file);
+      let commaIdx = dataUrl.indexOf(',');
+      let base64Data = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+      const lowerName = String(file.name || '').toLowerCase();
+      let mimeType = file.type || (lowerName.endsWith('.pdf') ? 'application/pdf' : (lowerName.endsWith('.svg') ? 'image/svg+xml' : ''));
+      const isSvg = lowerName.endsWith('.svg') || mimeType === 'image/svg+xml';
+      const isPdf = !isEmpty && (mimeType === 'application/pdf' || lowerName.endsWith('.pdf'));
+      const isImage = !isEmpty && !isSvg && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
+      const textContent = (!isEmpty && isTextLikeAttachment(file.name, mimeType)) ? await readFileAsText(file) : '';
+
+      let effectiveSize = file.size || 0;
+      let optBadge = null;
+      if (isImage && (effectiveSize > 3.6 * 1024 * 1024 || base64Data.length > 4.8 * 1024 * 1024) && !/gif$/i.test(mimeType)) {
+        const optimized = await optimizeOversizedImage(dataUrl, mimeType, effectiveSize);
+        if (optimized) {
+          dataUrl = optimized.dataUrl;
+          base64Data = optimized.base64Data;
+          mimeType = optimized.mimeType;
+          effectiveSize = optimized.size;
+          optBadge = optimized.optBadge;
+        }
+      }
+
+      let pageCount = 0;
+      let warning = null;
+      if (isEmpty) {
+        warning = 'Empty file (0 bytes)';
+      } else if (isPdf) {
+        const rawBin = await readFileAsLatin1(file);
+        const pageMatches = rawBin.match(/\/Type\s*\/Page\b/g);
+        pageCount = Math.max(1, pageMatches ? pageMatches.length : 1);
+        if (/\/Encrypt\b/.test(rawBin)) {
+          warning = `Encrypted PDF (${pageCount}p)`;
+        } else if (pageCount > 100) {
+          warning = `${pageCount} pages (Claude >100p uses extracted text)`;
+        }
+      } else if (isImage && base64Data.length > 5 * 1024 * 1024) {
+        warning = 'Large image (>5MB base64: Gemini native, Claude text note)';
+      }
+
+      const estimatedTokens = estimateClientAttachmentTokens({
+        isEmpty,
+        isImage,
+        isPdf,
+        pageCount,
+        size: effectiveSize,
+        textContent,
+      });
+
+      const attObj = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name || 'attachment',
+        mimeType: mimeType || 'application/octet-stream',
+        size: effectiveSize,
+        isEmpty,
+        pageCount,
+        warning,
+        optBadge,
+        sha1: null,
+        cached: false,
+        estimatedTokens,
+        data: base64Data,
+        textContent: textContent || '',
+        previewUrl: isImage ? dataUrl : null,
+      };
+      CUSTOM_ATTACHMENTS.push(attObj);
+      // Immediately inspect & cache on server so exact extracted tokens and SHA-1 are ready before Run
+      inspectAttachmentOnServer(attObj);
+    } catch (e) {
+      console.error('Failed reading attachment:', e);
+    }
+  }
+  renderAttachments();
+  renderTaskMeta();
+}
+
+function removeAttachment(id) {
+  CUSTOM_ATTACHMENTS = CUSTOM_ATTACHMENTS.filter((a) => a.id !== id);
+  renderAttachments();
+  renderTaskMeta();
+}
+
+function clearAttachments() {
+  CUSTOM_ATTACHMENTS = [];
+  const inp = $('#customFileInput');
+  if (inp) inp.value = '';
+  renderAttachments();
+  renderTaskMeta();
+}
+
+function renderContextMeter() {
+  const meterEl = $('#contextMeterBar');
+  const sel = $('#taskSelect');
+  if (!meterEl || !sel || sel.value !== 'custom') {
+    if (meterEl) meterEl.classList.add('hidden');
+    return;
+  }
+  const promptText = ($('#customPrompt') && $('#customPrompt').value) || '';
+  const promptTok = Math.ceil(promptText.length / 3.8) + (CUSTOM_ATTACHMENTS.length || promptText.trim() ? 60 : 0);
+  const attTok = CUSTOM_ATTACHMENTS.reduce((sum, a) => sum + (a.estimatedTokens || 100), 0);
+  const totalEstTok = promptTok + attTok;
+
+  if (!CUSTOM_ATTACHMENTS.length && promptText.length < 200) {
+    meterEl.classList.add('hidden');
+    return;
+  }
+  meterEl.classList.remove('hidden');
+
+  const activeModels = (MODELS && MODELS.length ? MODELS : []).map((m) => {
+    const cat = catalog().find((x) => x.id === (m.catalogId || m.id || m.model));
+    const ctx = (m && m.context) || (cat && cat.context) || 128000;
+    const reservedOut = Math.min(32000, Math.max(8192, Math.floor(ctx * 0.20)));
+    const safeInputLimit = Math.max(4000, ctx - reservedOut);
+    const ratio = totalEstTok / safeInputLimit;
+    return {
+      slot: m.slot,
+      label: m.label,
+      ctx,
+      safeInputLimit,
+      ratio,
+      status: ratio > 1 ? 'over' : (ratio > 0.68 ? 'warn' : 'ok'),
+    };
+  });
+
+  const worstRatio = activeModels.reduce((mx, m) => Math.max(mx, m.ratio || 0), 0);
+  const barPct = Math.min(100, Math.max(2, Math.round(worstRatio * 100)));
+  const barCls = worstRatio > 1 ? 'is-over' : (worstRatio > 0.68 ? 'is-warn' : '');
+  const anyOver = activeModels.some((m) => m.status === 'over');
+
+  const pillsHtml = activeModels.map((m) => {
+    const ctxLabel = m.ctx >= 1000000 ? `${(m.ctx / 1000000).toFixed(0)}M` : `${Math.round(m.ctx / 1000)}K`;
+    const pct = Math.round(m.ratio * 100);
+    const icon = m.status === 'over' ? '⚠' : (m.status === 'warn' ? '◐' : '✓');
+    const note = m.status === 'over' ? `${pct}% · auto head+tail fit` : `${pct}% of ${ctxLabel}`;
+    return `<span class="cm-pill is-${m.status}" title="Slot ${esc(m.slot)}: ${esc(m.label)} (${ctxLabel} context window, ~${Math.round(m.safeInputLimit / 1000)}K safe input budget)">${icon} <b>${esc(m.label)}</b>: ${note}</span>`;
+  }).join('');
+
+  meterEl.innerHTML =
+    `<div class="cm-top">` +
+      `<span class="cm-title">📐 Context Window &amp; Token Budget Check</span>` +
+      `<span class="cm-summary">Est. input: <b>~${fmtTokensShort(totalEstTok)}</b> (${fmtTokensShort(promptTok)} prompt + ${fmtTokensShort(attTok)} attachments)${anyOver ? ' · <b>Smart Head+Tail Guardrail Active</b>' : ''}</span>` +
+    `</div>` +
+    `<div class="cm-bar-track"><div class="cm-bar-fill ${barCls}" style="width:${barPct}%"></div></div>` +
+    `<div class="cm-models">${pillsHtml}</div>`;
+}
+
+function renderAttachments() {
+  const listEl = $('#attachmentList');
+  const badgeEl = $('#attachCountBadge');
+  const clearBtn = $('#clearAttachmentsBtn');
+  if (!listEl || !badgeEl) return;
+
+  const count = CUSTOM_ATTACHMENTS.length;
+  const totalBytes = CUSTOM_ATTACHMENTS.reduce((acc, a) => acc + (a.size || 0), 0);
+  const totalTok = CUSTOM_ATTACHMENTS.reduce((acc, a) => acc + (a.estimatedTokens || 0), 0);
+  if (count === 0) {
+    badgeEl.textContent = 'No files attached';
+    badgeEl.classList.remove('has-files');
+    if (clearBtn) clearBtn.classList.add('hidden');
+    listEl.classList.add('hidden');
+    listEl.innerHTML = '';
+    renderContextMeter();
+    return;
+  }
+
+  badgeEl.textContent = `${count} file${count > 1 ? 's' : ''} · ${formatBytes(totalBytes)} · ~${fmtTokensShort(totalTok)}`;
+  badgeEl.classList.add('has-files');
+  if (clearBtn) clearBtn.classList.remove('hidden');
+  listEl.classList.remove('hidden');
+
+  listEl.innerHTML = CUSTOM_ATTACHMENTS.map((a) => {
+    const b = attachmentBadgeInfo(a.name, a.mimeType);
+    const visual = a.previewUrl
+      ? `<img class="ca-thumb" src="${esc(a.previewUrl)}" alt="${esc(a.name)}" />`
+      : `<div class="ca-type-icon ${b.cls}">${esc(b.label)}</div>`;
+    const metaParts = [formatBytes(a.size)];
+    if (a.pageCount) metaParts.push(`${a.pageCount}p`);
+    if (a.estimatedTokens) metaParts.push(`~${fmtTokensShort(a.estimatedTokens)}`);
+    if (a.cached) metaParts.push('⚡ Cached');
+    const optHtml = a.optBadge ? `<span class="ca-opt-badge" title="${esc(a.optBadge)}">✓ ${esc(a.optBadge)}</span>` : '';
+    const warnHtml = a.warning ? `<span class="ca-warn-tag" title="${esc(a.warning)}">⚠ ${esc(a.warning)}</span>` : '';
+    return (
+      `<div class="ca-item" title="${esc(a.name)} (${esc(a.mimeType || 'file')} · ${metaParts.join(' · ')})">` +
+        visual +
+        `<div class="ca-info">` +
+          `<span class="ca-name">${esc(a.name)}</span>` +
+          `<span class="ca-meta">${esc(metaParts.join(' · '))}</span>` +
+          optHtml +
+          warnHtml +
+        `</div>` +
+        `<button type="button" class="ca-remove" data-att-id="${esc(a.id)}" title="Remove ${esc(a.name)}">✕</button>` +
+      `</div>`
+    );
+  }).join('');
+  renderContextMeter();
+}
+
+function currentAttachmentsPayload() {
+  const sel = $('#taskSelect');
+  if (!sel || sel.value !== 'custom' || !CUSTOM_ATTACHMENTS.length) return undefined;
+  return CUSTOM_ATTACHMENTS.map((a) => {
+    if (a.cached && a.sha1) {
+      return {
+        sha1: a.sha1,
+        name: a.name,
+        mimeType: a.mimeType,
+        size: a.size,
+      };
+    }
+    return {
+      name: a.name,
+      mimeType: a.mimeType,
+      size: a.size,
+      data: a.data,
+      textContent: a.textContent || undefined,
+    };
+  });
+}
+
+function initAttachmentsUI() {
+  const btn = $('#attachFilesBtn');
+  const inp = $('#customFileInput');
+  const clearBtn = $('#clearAttachmentsBtn');
+  const dz = $('#customDropzone');
+  const listEl = $('#attachmentList');
+  const ta = $('#customPrompt');
+  const copyBtn = $('#copyPromptBtn');
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', async () => {
+      const isCustom = $('#taskSelect') && $('#taskSelect').value === 'custom';
+      const rawText = isCustom
+        ? (($('#customPrompt') && $('#customPrompt').value) || '')
+        : (($('#taskPrompt') && $('#taskPrompt').textContent) || '');
+      const textToCopy = String(rawText || '').trim();
+      if (!textToCopy) return;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(textToCopy);
+        } else {
+          const tmp = document.createElement('textarea');
+          tmp.value = textToCopy;
+          tmp.style.position = 'fixed';
+          tmp.style.opacity = '0';
+          document.body.appendChild(tmp);
+          tmp.select();
+          document.execCommand('copy');
+          document.body.removeChild(tmp);
+        }
+        const lbl = copyBtn.querySelector('.copy-lbl');
+        copyBtn.classList.add('is-copied');
+        if (lbl) lbl.textContent = '✓ Copied';
+        clearTimeout(copyBtn._copyTimer);
+        copyBtn._copyTimer = setTimeout(() => {
+          copyBtn.classList.remove('is-copied');
+          if (lbl) lbl.textContent = 'Copy prompt';
+        }, 1500);
+      } catch (err) {
+        console.error('Copy prompt failed:', err);
+      }
+    });
+  }
+
+  if (btn && inp) {
+    btn.addEventListener('click', () => inp.click());
+    inp.addEventListener('change', () => {
+      if (inp.files && inp.files.length) addAttachmentFiles(inp.files);
+      inp.value = '';
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener('click', clearAttachments);
+  }
+  if (listEl) {
+    listEl.addEventListener('click', (e) => {
+      const rm = e.target.closest('.ca-remove');
+      if (rm && rm.dataset.attId) removeAttachment(rm.dataset.attId);
+    });
+  }
+  [dz, ta].forEach((target) => {
+    if (!target) return;
+    target.addEventListener('dragover', (e) => {
+      if ($('#taskSelect').value !== 'custom') return;
+      e.preventDefault();
+      if (dz) dz.classList.add('drag-over');
+    });
+    target.addEventListener('dragleave', (e) => {
+      if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove('drag-over');
+    });
+    target.addEventListener('drop', (e) => {
+      if ($('#taskSelect').value !== 'custom') return;
+      if (dz) dz.classList.remove('drag-over');
+      const dt = e.dataTransfer;
+      if (dt && dt.files && dt.files.length) {
+        e.preventDefault();
+        addAttachmentFiles(dt.files);
+      }
+    });
+  });
+  if (ta) {
+    ta.addEventListener('input', () => renderContextMeter());
+    ta.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        const runBtn = $('#runBtn');
+        if (runBtn && !runBtn.disabled) {
+          e.preventDefault();
+          run();
+        }
+      }
+    });
+    ta.addEventListener('paste', (e) => {
+      if ($('#taskSelect').value !== 'custom') return;
+      const items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      const pastedFiles = [];
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const f = item.getAsFile();
+          if (f) pastedFiles.push(f);
+        }
+      }
+      if (pastedFiles.length) {
+        addAttachmentFiles(pastedFiles);
+      }
+    });
+  }
+  renderAttachments();
+}
+
 function renderTaskMeta() {
   const t = currentTask();
   const meta = $('#taskMeta');
@@ -838,17 +1360,23 @@ function renderTaskMeta() {
   if (t.language) bits.push(t.language);
   if (t.testCount) bits.push(`${t.testCount} hidden tests`);
   if (t.executable) bits.push('runnable \u25b8');
+  if (t.id === 'custom' && CUSTOM_ATTACHMENTS.length) {
+    bits.push(`${CUSTOM_ATTACHMENTS.length} attachment${CUSTOM_ATTACHMENTS.length > 1 ? 's' : ''}`);
+  }
   meta.textContent = bits.join(' \u00b7 ');
   meta.className = 'task-meta is-' + catKey;
 }
 function renderTaskPrompt() {
   const ta = $('#customPrompt');
+  const attWrap = $('#customAttachmentsWrap');
   if ($('#taskSelect').value === 'custom') {
-    $('#taskPrompt').textContent = 'Your prompt is sent verbatim to every model slot. No automated tests run \u2014 you get live output, tokens, cost, speed and thinking.';
+    $('#taskPrompt').textContent = 'Your prompt and any uploaded attachments (images, PDFs, CSV, code, docs) are sent to every model slot in parallel. No automated tests run \u2014 you get live output, tokens, cost, speed and thinking.';
     ta.classList.remove('hidden');
+    if (attWrap) attWrap.classList.remove('hidden');
   } else {
     $('#taskPrompt').textContent = currentTask().prompt;
     ta.classList.add('hidden');
+    if (attWrap) attWrap.classList.add('hidden');
   }
   renderTaskMeta();
 }
@@ -1078,6 +1606,7 @@ function buildArena(models) {
         ${(!isRestore && SLOT_IDS.length > MIN_SLOTS) ? `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove Slot ${m.slot}">&times;</button>` : ''}
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
+      <div class="col-ctx-warn hidden" id="ctx-warn-${m.slot}"></div>
       <div class="progress">
         <div class="progress-track"><div class="progress-fill" id="pf-${m.slot}"></div></div>
         <div class="progress-label"><span id="pl-${m.slot}">0 / ${currentTask().testCount} tests</span><span id="ph-${m.slot}"></span></div>
@@ -1181,7 +1710,14 @@ async function runJudge() {
   try {
     const resp = await fetch('/api/judge', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ taskId: currentTask().id, prompt: $('#customPrompt').value, judge: judgeId, entries, keys: loadKeys() }),
+      body: JSON.stringify({
+        taskId: currentTask().id,
+        prompt: $('#customPrompt').value,
+        attachments: currentAttachmentsPayload(),
+        judge: judgeId,
+        entries,
+        keys: loadKeys(),
+      }),
     });
     if (resp.status === 401) { window.location.replace('/login'); return; }
     const r = await resp.json();
@@ -1741,6 +2277,7 @@ async function run() {
     maxIterations: 1, // single-shot: correctness = the model's first-attempt pass rate (no self-debug retries)
     models: MODELS,
     customPrompt: $('#customPrompt').value,
+    attachments: currentAttachmentsPayload(),
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
   };
 
@@ -1781,7 +2318,7 @@ async function run() {
     slots.forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
   } finally {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
-    btn.textContent = 'Run comparison ▸';
+    btn.innerHTML = 'Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd>';
     _fullRun = false;
     _busy = Object.keys(SLOT_RUNS).length > 0;   // re-runs may still be going
     updateRunButton();          // stays disabled if every slot was cleared meanwhile
@@ -1833,6 +2370,7 @@ async function rerunSlot(slot, repair) {
       mode: 'single',            // draws on the separate single-model re-run budget
       repair: repair || undefined,   // crash-repair round: same model, its code + the failure
       customPrompt: $('#customPrompt').value,
+      attachments: currentAttachmentsPayload(),
       keys: loadKeys(),
     }, LAST_RESULTS, ac.signal, own);
     if (st === 'auth') return;
@@ -1864,6 +2402,14 @@ function handleEvent(ev, results, own) {
         updateQuotaBadge();
       }
       break;
+    case 'context_warning': {
+      const cw = $(`#ctx-warn-${ev.slot}`);
+      if (cw && ev.message) {
+        cw.textContent = `⚠ ${ev.message}`;
+        cw.classList.remove('hidden');
+      }
+      break;
+    }
     case 'status': {
       const phase = ev.phase === 'thinking'
         ? `Round ${ev.iteration}: generating solution…`
