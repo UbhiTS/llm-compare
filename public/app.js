@@ -899,7 +899,8 @@ function thinkControl(m, isRestore) {
        + `aria-label="Thinking mode for ${esc(m.label)}">${opts}</select></div>`;
 }
 
-// Inline 3-Dropdown Cascading Bar for inside each Arena Card Header
+// Clean Read-Only Model Identity Header inside each Arena Executor Card
+// (The 3-dropdown selector lives exclusively in the top Model Selector strip)
 function buildInlineCardCascader(m, isRestore) {
   if (isRestore) {
     return `<div class="col-id">
@@ -908,41 +909,15 @@ function buildInlineCardCascader(m, isRestore) {
       ${thinkTag(m.thinking)}
     </div>`;
   }
-  const c = catalog().find((x) => x.id === m.catalogId) || m;
-  const curFamily = providerFamilyOf(c);
-  const familyOptions = PROVIDER_FAMILIES.map((pf) => {
-    const count = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
-    if (!count && pf.id !== curFamily) return '';
-    return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}>${esc(pf.label)}</option>`;
-  }).join('');
-  const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
-  const modelOptions = modelsInFamily.map((mc) => {
-    const av = modelAvailability(mc);
-    const suffix = !av.ok ? (av.blocked ? ' [No Quota]' : ' [Needs Key]') : '';
-    return `<option value="${esc(mc.id)}"${mc.id === m.catalogId ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)} (${priceTag(mc)})${esc(suffix)}</option>`;
-  }).join('');
-  const thinkOpts = buildThinkingDropdownOptions(c, m.effort);
-
   return `<div class="col-id col-cascader" data-slot="${esc(m.slot)}">
     <div class="col-title-row">
       <span class="col-slot-pill" style="background:${slotColor(m.slot)}22;color:${slotColor(m.slot)};border-color:${slotColor(m.slot)}55">Slot ${esc(m.slot)}</span>
       <span class="col-title">${esc(m.label)}</span>
       ${m.external ? '<span class="ext-badge" title="External API Key">EXT</span>' : '<span class="vtx-badge" title="Google Cloud Vertex AI / Agent Platform">VERTEX AI</span>'}
-      ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
     </div>
-    <div class="col-dd-row">
-      <label class="col-dd-item" title="1. Select Provider Family">
-        <span class="dd-k">Provider</span>
-        <select class="slot-provider-select" data-slot="${esc(m.slot)}">${familyOptions}</select>
-      </label>
-      <label class="col-dd-item" title="2. Select Model">
-        <span class="dd-k">Model</span>
-        <select class="slot-model-select" data-slot="${esc(m.slot)}">${modelOptions}</select>
-      </label>
-      <label class="col-dd-item" title="3. Select Thinking / Reasoning Mode">
-        <span class="dd-k">Thinking Mode</span>
-        <select class="slot-think-select" data-slot="${esc(m.slot)}">${thinkOpts}</select>
-      </label>
+    <div class="col-sub-row">
+      ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
+      ${thinkTag(m.thinking)}
     </div>
   </div>`;
 }
@@ -1013,6 +988,8 @@ function renderModelEditors() {
   const grid = $('#slotConfiguratorGrid');
   if (!grid) return;
   grid.innerHTML = '';
+  grid.dataset.slotCount = String(SLOT_IDS.length);
+  grid.style.setProperty('--slot-count', String(Math.max(1, SLOT_IDS.length)));
 
   SLOT_IDS.forEach((slot) => {
     const cid = SLOT_ASSIGN[slot];
