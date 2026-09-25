@@ -986,6 +986,7 @@ async function inspectAttachmentOnServer(attObj) {
     const srv = body && Array.isArray(body.attachments) && body.attachments[0];
     if (!srv) return;
     if (srv.sha1) attObj.sha1 = srv.sha1;
+    if (srv.sha256) attObj.sha256 = srv.sha256;
     if (srv.cached) attObj.cached = true;
     if (typeof srv.estimatedTokens === 'number' && srv.estimatedTokens > 0) {
       attObj.estimatedTokens = srv.estimatedTokens;
@@ -1222,8 +1223,9 @@ function currentAttachmentsPayload() {
   const sel = $('#taskSelect');
   if (!sel || sel.value !== 'custom' || !CUSTOM_ATTACHMENTS.length) return undefined;
   return CUSTOM_ATTACHMENTS.map((a) => {
-    if (a.cached && a.sha1) {
+    if (a.cached && (a.sha256 || a.sha1)) {
       return {
+        sha256: a.sha256 || undefined,
         sha1: a.sha1,
         name: a.name,
         mimeType: a.mimeType,
@@ -1238,6 +1240,25 @@ function currentAttachmentsPayload() {
       textContent: a.textContent || undefined,
     };
   });
+}
+
+// The server answers 409 ATTACHMENT_EXPIRED when a cached-by-hash attachment has
+// been evicted (or the instance restarted). Drop the "cached" flag on those files
+// so the next payload carries the full bytes again. Returns false (and the caller
+// shows the server's "please re-attach" message) if a file's bytes aren't held
+// locally any more — we never send an empty file in its place.
+function markAttachmentsExpired(info) {
+  const expired = (info && Array.isArray(info.expired)) ? info.expired : [];
+  const hit = (a) => !expired.length || expired.some((e) =>
+    (e.sha256 && e.sha256 === a.sha256) || (e.sha1 && e.sha1 === a.sha1) || e.name === a.name);
+  let reuploadable = true;
+  CUSTOM_ATTACHMENTS.forEach((a) => {
+    if (!a.cached || !hit(a)) return;
+    a.cached = false;
+    if (!a.data && !a.textContent) reuploadable = false;
+  });
+  renderAttachments();
+  return reuploadable;
 }
 
 function initAttachmentsUI() {
@@ -1708,18 +1729,25 @@ async function runJudge() {
   btn.disabled = true; btn.textContent = 'Scoring…';
   out.innerHTML = '<p class="jp-status">The judge is reading all answers…</p>';
   try {
-    const resp = await fetch('/api/judge', {
-      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        taskId: currentTask().id,
-        prompt: $('#customPrompt').value,
-        attachments: currentAttachmentsPayload(),
-        judge: judgeId,
-        entries,
-        keys: loadKeys(),
-      }),
+    const judgeBody = () => JSON.stringify({
+      taskId: currentTask().id,
+      prompt: $('#customPrompt').value,
+      attachments: currentAttachmentsPayload(),
+      judge: judgeId,
+      entries,
+      keys: loadKeys(),
     });
+    const postJudge = () => fetch('/api/judge', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: judgeBody(),
+    });
+    let resp = await postJudge();
     if (resp.status === 401) { window.location.replace('/login'); return; }
+    if (resp.status === 409) {
+      // Cached attachment expired server-side: re-upload the full files once.
+      const j = await resp.clone().json().catch(() => ({}));
+      if (j && j.code === 'ATTACHMENT_EXPIRED' && markAttachmentsExpired(j)) resp = await postJudge();
+    }
     const r = await resp.json();
     if (!resp.ok || !r.ok) throw new Error(r.error || 'Judging failed.');
     _judgeScored = r;
@@ -2181,7 +2209,7 @@ const slotIsRunning = (slot) => !!SLOT_RUNS[slot] || (_fullRun && !wallFinished.
 
 // POST /api/run and pump the NDJSON stream into `results`.
 // Returns 'ok' | 'auth' | 'quota'; throws on transport/HTTP failure.
-async function streamRun(payload, results, signal, own) {
+async function streamRun(payload, results, signal, own, retried) {
   const resp = await fetch('/api/run', {
     method: 'POST',
     credentials: 'same-origin',
@@ -2190,6 +2218,14 @@ async function streamRun(payload, results, signal, own) {
     signal,
   });
   if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
+  if (resp.status === 409) {                                                     // cached attachment expired server-side
+    const j = await resp.json().catch(() => ({}));
+    if (j && j.code === 'ATTACHMENT_EXPIRED' && !retried && markAttachmentsExpired(j)) {
+      // Re-upload the full files once and retry (no quota was consumed by the 409).
+      return streamRun({ ...payload, attachments: currentAttachmentsPayload() }, results, signal, own, true);
+    }
+    throw new Error((j && j.error) || 'An attachment expired from the server cache — please re-attach it.');
+  }
   if (resp.status === 429) {                                                     // daily per-user OpenAI run limit
     const j = await resp.json().catch(() => ({}));
     if (j && j.quota) {
@@ -2288,7 +2324,7 @@ async function run() {
     if (st === 'auth') return;
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
-      slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, m, 'err'); });
+      slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(m), 'err'); });
       if (window._lastQuotaObj && window._lastQuotaObj.openaiQuotaExhausted) {
         const switchToVertex = window.confirm(
           `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Sonnet 5.0 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
@@ -2374,7 +2410,7 @@ async function rerunSlot(slot, repair) {
       keys: loadKeys(),
     }, LAST_RESULTS, ac.signal, own);
     if (st === 'auth') return;
-    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
+    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, esc(window._lastQuotaMsg), 'err'); window.alert(window._lastQuotaMsg); return; }
   } catch (e) {
     // AbortError just means this column was taken over — the new owner has the UI.
     if (e && e.name === 'AbortError') return;
@@ -3111,7 +3147,9 @@ function renderModalBody() {
   const body = modal.querySelector('.md-modal-body');
   const toggle = modal.querySelector('.md-toggle');
   const parser = window.marked && (window.marked.parse || window.marked);
-  const canMd = mdState.markdown && typeof parser === 'function';
+  // SECURITY: rendered markdown is LLM output → only insert it as HTML when DOMPurify
+  // loaded; if the sanitizer CDN failed, fall back to the raw (textContent) view.
+  const canMd = mdState.markdown && typeof parser === 'function' && !!(window.DOMPurify && window.DOMPurify.sanitize);
   toggle.style.display = canMd ? '' : 'none';
   toggle.textContent = mdState.rendered ? 'View raw' : 'View rendered';
   if (canMd && mdState.rendered) {

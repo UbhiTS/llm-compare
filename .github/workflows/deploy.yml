@@ -45,6 +45,17 @@ jobs:
           npm ci
           npm test
 
+      # Supply-chain gate: fail the deploy on any high/critical advisory in the
+      # production dependency tree (dev deps aren't shipped in the image).
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Black-box HTTP smoke suites against the real server (offline — no model
+      # calls): endpoints, auth gate, attachments, exec-off mode, /healthz,
+      # structured logs and graceful SIGTERM drain.
+      - name: HTTP smoke tests
+        run: npm run test:smoke
+
       - name: Authenticate to Google Cloud (keyless)
         uses: google-github-actions/auth@v2
         with:
@@ -72,10 +83,11 @@ jobs:
             --allow-unauthenticated \
             --min-instances=1 --max-instances=1 \
             --cpu=1 --memory=1Gi --timeout=3600 \
-            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@MAX_OPENAI_RUNS_PER_DAY=3@@MAX_RUNS_PER_DAY=3@@MAX_SINGLE_RUNS_PER_DAY=3@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth" \
+            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@MAX_OPENAI_RUNS_PER_DAY=3@@MAX_RUNS_PER_DAY=3@@MAX_SINGLE_RUNS_PER_DAY=3@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
             --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest" \
             --add-volume="name=appdata,type=cloud-storage,bucket=${{ vars.APP_DATA_BUCKET }}" \
-            --add-volume-mount="volume=appdata,mount-path=/data"
+            --add-volume-mount="volume=appdata,mount-path=/data" \
+            --startup-probe="httpGet.path=/api/health,httpGet.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=48"
 
       - name: Show service URL
         run: |

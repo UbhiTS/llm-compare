@@ -67,6 +67,8 @@ cp .env.example .env      # then fill in the values below
 npm start                 # → http://localhost:8080
 ```
 
+The server listens on `PORT` (default 8080) only. The old automatic second listener on `:3000` is now opt-in: set `SECONDARY_PORT=3000` (any port number) to enable it. Unset or `0` means off, and it never starts on Cloud Run.
+
 Minimum `.env` for the default **Gemini 3.7 Flash + Claude Opus 5 + GPT-5.6 Sol** lineup:
 
 ```ini

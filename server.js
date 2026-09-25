@@ -14,6 +14,10 @@
 // ---------------------------------------------------------------------------
 
 require('dotenv').config();
+// Structured JSON logs (Cloud Logging severity + secret redaction) on Cloud Run
+// or with LOG_FORMAT=json; plain text locally. Must run before anything logs.
+const log = require('./src/log');
+log.install();
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -32,7 +36,26 @@ const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
-const { normalizeAttachments, inspectAttachments } = require('./src/attachments');
+const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
+const { parseMultipart } = require('./src/multipart');
+const { scrubError, maskKnown } = require('./src/secrets');
+
+// Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
+// request references cached files that have expired, answer 409 with the list
+// so the client can re-upload — never run with an empty file. Returns null when
+// a response has already been sent.
+async function attachmentsOr409(res, raw, errorShape) {
+  try {
+    return await normalizeAttachmentsAsync(raw);
+  } catch (e) {
+    if (e && e.code === 'ATTACHMENT_EXPIRED') {
+      res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: scrubError(e.message), expired: e.expired });
+      return null;
+    }
+    res.status(400).json({ ...errorShape, error: scrubError(String((e && e.message) || e)) });
+    return null;
+  }
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -72,9 +95,41 @@ app.use((req, res, next) => {
   next();
 });
 
+// Defense in depth (R6): every /api/* response body — JSON, NDJSON stream,
+// errors — has any configured secret value (server keys + this request's BYOK
+// keys) masked before it leaves the process. Exact-value masking only, so
+// normal model output is never rewritten.
+app.use('/api', (req, res, next) => {
+  const origWrite = res.write.bind(res);
+  const origEnd = res.end.bind(res);
+  const textual = () => /json|ndjson|text/i.test(String(res.getHeader('Content-Type') || 'application/json'));
+  const scrub = (chunk, enc) => {
+    if (chunk == null || !textual()) return chunk;
+    const byok = (req.body && typeof req.body === 'object' && req.body.keys) || null;
+    if (typeof chunk === 'string') return maskKnown(chunk, byok);
+    if (Buffer.isBuffer(chunk)) {
+      const str = chunk.toString('utf8');
+      const masked = maskKnown(str, byok);
+      return masked === str ? chunk : Buffer.from(masked, 'utf8');
+    }
+    return chunk;
+  };
+  res.write = (chunk, enc, cb) => origWrite(scrub(chunk, enc), enc, cb);
+  res.end = (chunk, enc, cb) => {
+    if (typeof chunk === 'function') return origEnd(chunk);
+    const out = scrub(chunk, enc);
+    // res.send() set Content-Length for the unmasked body; keep it consistent.
+    if (out !== chunk && out != null && !res.headersSent) res.setHeader('Content-Length', Buffer.byteLength(out));
+    return origEnd(out, enc, cb);
+  };
+  next();
+});
+
 // Large enough for multiple base64 image/PDF/document attachments plus 1M-token judge runs.
-app.use(express.json({ limit: '50mb' }));
-app.use((err, _req, res, next) => {
+// SECURITY: the 50 MB parser is mounted only AFTER the auth gate (see below), so an
+// unauthenticated client can't make the server buffer + JSON.parse 50 MB bodies. The
+// few public POST routes (login / first-run setup) get a small parser here instead.
+const jsonBodyError = (err, _req, res, next) => {
   if (err && (err.type === 'entity.too.large' || err.status === 413)) {
     return res.status(413).json({
       type: 'error',
@@ -85,12 +140,28 @@ app.use((err, _req, res, next) => {
     return res.status(400).json({ type: 'error', error: 'Invalid JSON request payload.' });
   }
   return next(err);
-});
+};
+const PUBLIC_JSON_PATHS = new Set(['/api/auth/login', '/api/auth/setup']);
+const publicJson = express.json({ limit: process.env.PUBLIC_JSON_LIMIT || '64kb' });
+app.use((req, res, next) => (PUBLIC_JSON_PATHS.has(req.path) ? publicJson(req, res, next) : next()));
+app.use(jsonBodyError);
 app.use(auth.cookieParser);
 
 // ===========================================================================
 // PUBLIC routes (no authentication required)
 // ===========================================================================
+
+// Health check for the Cloud Run startup probe (and uptime checks). Returns 503
+// while draining after SIGTERM so no new work is routed here. No auth, no
+// secrets, no dependencies touched. /api/health is an alias that is also
+// reachable through the Cloud Run frontend (paths ending in "z" are reserved
+// there; container-level probes are unaffected).
+let draining = false;
+app.get(['/healthz', '/api/health'], (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (draining) return res.status(503).json({ ok: false, status: 'draining' });
+  return res.json({ ok: true, status: 'ok' });
+});
 
 // Login / first-run setup page. Strict per-response CSP with a fresh nonce so
 // the inline <style>/<script> run but nothing else can.
@@ -138,7 +209,7 @@ app.post('/api/auth/setup', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.json({ ok: true, user: { username: user.username, role: user.role } });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -176,7 +247,7 @@ app.get('/auth/google/callback', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.redirect('/');
   } catch (e) {
-    res.redirect('/login?error=' + encodeURIComponent(String((e && e.message) || e)));
+    res.redirect('/login?error=' + encodeURIComponent(scrubError(String((e && e.message) || e))));
   }
 });
 
@@ -217,14 +288,13 @@ app.use((req, res, next) => {
   const s = auth.getSession(req);
   if (s) { req.user = { username: s.username, role: s.role }; return next(); }
   // Local workstation / Antigravity Sidecar auto-auth for Tarun (never active on Cloud Run K_SERVICE)
-  const hostHdr = String(req.headers.host || '');
-  const isLoopback = !process.env.K_SERVICE && (
-    hostHdr.startsWith('localhost') ||
-    hostHdr.startsWith('127.0.0.1') ||
-    req.ip === '127.0.0.1' ||
-    req.ip === '::1' ||
-    req.ip === '::ffff:127.0.0.1'
-  );
+  // SECURITY: the Host header and X-Forwarded-For are client-controlled, so neither
+  // may grant access on its own. Auto-auth now requires the TCP peer to really be
+  // loopback AND (outside the Antigravity sidecar) a loopback Host header with no
+  // proxy forwarding headers. This blocks LAN clients spoofing `Host: localhost`,
+  // DNS-rebinding pages (Host = attacker domain) and local tunnels/reverse proxies
+  // (which connect from 127.0.0.1 on behalf of remote users).
+  const isLoopback = !process.env.K_SERVICE && isLocalAutoAuthRequest(req);
   if (isLoopback && process.env.LOCAL_AUTO_AUTH !== '0') {
     req.user = { username: 'ubhi@google.com', role: 'admin', name: 'Tarun Ubhi' };
     return next();
@@ -238,6 +308,25 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Authentication required.' });
   return res.redirect('/login');
 });
+
+// Authenticated routes may carry large attachment payloads (see note above).
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '50mb' }));
+app.use(jsonBodyError);
+
+function isLoopbackAddr(a) {
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+}
+
+// True only for a request that genuinely originates on this machine (see auth gate).
+function isLocalAutoAuthRequest(req) {
+  const peer = req.socket && req.socket.remoteAddress;   // real TCP peer — never req.ip (XFF)
+  if (!isLoopbackAddr(peer)) return false;
+  if (process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) return true; // sidecar proxy: keep prior behaviour
+  if (req.headers['x-forwarded-for'] || req.headers.forwarded) return false; // proxied/tunnelled
+  const extra = String(process.env.LOCAL_AUTO_AUTH_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || extra.includes(host);
+}
 
 function requireAdmin(req, res, next) {
   if (req.user && req.user.role === 'admin') return next();
@@ -260,7 +349,7 @@ app.post('/api/auth/password', async (req, res) => {
     );
     res.json({ ok: true });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -275,7 +364,7 @@ app.post('/api/auth/users', requireAdmin, async (req, res) => {
     await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user');
     res.json({ ok: true, users: auth.listUsers() });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -284,7 +373,7 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
     auth.deleteUser(req.params.username, req.user.username);
     res.json({ ok: true, users: auth.listUsers() });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -320,7 +409,10 @@ app.get('/api/config', (req, res) => {
       testCount: t.testCases.length,
       category: t.category || (t.testCases.length ? 'coding' : 'general'),
       language: t.language || null,
-      executable: !!t.executable && executionEnabled(),
+      // GUI (Pygame) tasks run in the user's browser via the WASM build
+      // (/api/web-game), not server-side /api/execute — so they stay runnable
+      // when ENABLE_CODE_EXEC=0 as long as web-game building is enabled.
+      executable: !!t.executable && (executionEnabled() || (!!t.gui && webGameEnabled())),
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
@@ -397,7 +489,7 @@ app.put('/api/global-keys', requireAdmin, async (req, res) => {
     console.log(`[globalKeys] ${req.user.username} updated ${name}`);
     res.json({ ok: true, keys });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -420,7 +512,7 @@ app.post('/api/execute', async (req, res) => {
     });
     res.json(result);
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -429,7 +521,8 @@ app.post('/api/execute', async (req, res) => {
 // no quality signal of their own. Blinding and shuffling happen in src/judge.js.
 app.post('/api/judge', async (req, res) => {
   const { taskId, judge: judgeId, entries, attachments: rawAttachments } = req.body || {};
-  const attachments = normalizeAttachments(rawAttachments);
+  const attachments = await attachmentsOr409(res, rawAttachments, { ok: false });
+  if (!attachments) return;
   const foundTask = TASKS.find((t) => t.id === taskId);
   const task = foundTask
     ? { ...foundTask, attachments }
@@ -468,7 +561,7 @@ app.post('/api/judge', async (req, res) => {
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
     res.json({ ok: true, ...verdict });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -483,7 +576,7 @@ app.post('/api/web-game', async (req, res) => {
     const { id, cached } = await buildWebGame(code);
     res.json({ ok: true, id, cached, url: `/games/${id}/` });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -540,19 +633,46 @@ function modelUsesOwnKey(m, keys) {
 // Lightweight attachment inspection & server-side SHA-1 LRU caching endpoint.
 // Called immediately when the user drops/picks files so the UI shows exact server-extracted
 // token counts, PDF page/encryption metadata, and caches the attachment payload by SHA-1.
-app.post('/api/attachments/inspect', (req, res) => {
+app.post('/api/attachments/inspect', async (req, res) => {
   try {
     const rawAttachments = (req.body && req.body.attachments) || [];
-    const items = inspectAttachments(rawAttachments);
+    const items = await inspectAttachmentsAsync(rawAttachments);
     res.json({ ok: true, attachments: items });
   } catch (e) {
-    res.status(400).json({ ok: false, error: e.message || String(e) });
+    const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;
+    res.status(status).json({ ok: false, error: scrubError(e.message || String(e)), code: e && e.code, expired: e && e.expired });
   }
 });
 
+// Multipart alternative to the base64-JSON inspect endpoint (same response
+// shape, same caching). Avoids the ~33% base64 overhead for large files:
+//   curl -F files=@report.pdf -F files=@data.xlsx https://…/api/attachments/upload
+// Authenticated (mounted after the auth gate); body capped by MULTIPART_LIMIT.
+app.post('/api/attachments/upload',
+  express.raw({ type: 'multipart/form-data', limit: process.env.MULTIPART_LIMIT || process.env.JSON_BODY_LIMIT || '50mb' }),
+  async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ ok: false, error: 'Expected a multipart/form-data body with one or more files.' });
+      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS });
+      if (!files.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });
+      const raw = files.map((f) => ({ name: f.filename, mimeType: f.contentType, size: f.data.length, data: f.data.toString('base64') }));
+      const items = await inspectAttachmentsAsync(raw);
+      res.json({ ok: true, attachments: items });
+    } catch (e) {
+      res.status((e && e.status) || 400).json({ ok: false, error: scrubError((e && e.message) || String(e)) });
+    }
+  },
+  (err, _req, res, next) => {
+    if (err && (err.type === 'entity.too.large' || err.status === 413)) return res.status(413).json({ ok: false, error: 'Upload exceeds the server request limit.' });
+    return next(err);
+  });
+
 app.post('/api/run', async (req, res) => {
   const { taskId, models, maxIterations, customPrompt, attachments: rawAttachments } = req.body || {};
-  const attachments = normalizeAttachments(rawAttachments);
+  // Resolved BEFORE any quota is consumed, so a 409 (expired cache → client
+  // re-uploads and retries) never costs the user a run.
+  const attachments = await attachmentsOr409(res, rawAttachments, { type: 'error' });
+  if (!attachments) return;
   // Sanitize any user-provided ("bring your own") API credentials (strings only).
   const rawKeys = (req.body && req.body.keys) || {};
   const keys = {};
@@ -658,7 +778,7 @@ app.post('/api/run', async (req, res) => {
   try {
     results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair });
   } catch (e) {
-    if (!aborted) emit({ type: 'error', message: String((e && e.message) || e) });
+    if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   }
   finished = true;
   if (aborted) return res.end();   // nothing to log: the client threw this run away
@@ -692,14 +812,22 @@ function lanAddresses() {
 
 globalKeys.start();   // warm the shared keys from Secret Manager + keep them fresh
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);
   console.log(`  primary URL     ->  http://localhost:${PORT}`);
-  if (!process.env.K_SERVICE && PORT !== 3000) {
-    const extraServer = app.listen(3000, HOST, () => {
-      console.log(`  secondary URL   ->  http://localhost:3000`);
+  // Optional second listener, OFF by default (audit R10: an automatic :3000
+  // listener doubled the local attack surface). Opt in with SECONDARY_PORT=<port>,
+  // e.g. SECONDARY_PORT=3000. Unset, empty, 0 or anything that isn't a valid
+  // port means off. Never started on Cloud Run or on the primary port itself.
+  const secondaryPort = /^\d+$/.test(String(process.env.SECONDARY_PORT || '').trim())
+    ? parseInt(process.env.SECONDARY_PORT, 10) : 0;
+  if (!process.env.K_SERVICE && secondaryPort > 0 && secondaryPort <= 65535 && secondaryPort !== PORT) {
+    extraServer = app.listen(secondaryPort, HOST, () => {
+      console.log(`  secondary URL   ->  http://localhost:${secondaryPort}`);
     });
-    extraServer.on('error', () => { /* port 3000 already in use, ignore */ });
+    extraServer.on('error', (e) => {
+      console.warn(`  secondary listener on :${secondaryPort} not started (${(e && e.code) || 'error'})`);
+    });
   }
   if (HOST === '0.0.0.0' || HOST === '::') {
     const ips = lanAddresses();
@@ -713,3 +841,35 @@ app.listen(PORT, HOST, () => {
     console.log(`  (bound to ${HOST} — localhost only)`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown. Cloud Run sends SIGTERM and allows ~10 s before SIGKILL.
+// Stop accepting new connections, flip /healthz to 503, let in-flight requests
+// (including streaming NDJSON runs) finish for up to SHUTDOWN_DRAIN_MS, then
+// exit. A second signal exits immediately.
+// ---------------------------------------------------------------------------
+let extraServer = null;
+const DRAIN_MS = Math.max(0, Number(process.env.SHUTDOWN_DRAIN_MS) || 9000);
+function shutdown(signal) {
+  if (draining) { process.exit(0); }
+  draining = true;
+  log.event('INFO', `[shutdown] ${signal} received — draining for up to ${DRAIN_MS}ms`, { signal, drainMs: DRAIN_MS });
+  const servers = [server, extraServer].filter(Boolean);
+  let open = servers.length;
+  const done = () => { if (--open <= 0) { log.event('INFO', '[shutdown] drained cleanly'); process.exit(0); } };
+  for (const s of servers) {
+    s.close(done);
+    if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
+  }
+  // Sockets that finish their in-flight request become idle keep-alives; close
+  // them promptly instead of waiting out keepAliveTimeout.
+  setInterval(() => {
+    for (const s of servers) if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
+  }, 250).unref();
+  setTimeout(() => {
+    log.event('WARNING', '[shutdown] drain timeout — exiting with requests still open');
+    process.exit(0);
+  }, DRAIN_MS).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));

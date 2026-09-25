@@ -28,6 +28,27 @@ function executionEnabled() {
   return process.env.ENABLE_CODE_EXEC !== '0';
 }
 
+// SECURITY: executed code must not inherit the server's credentials (provider API
+// keys, OAuth client secret, bootstrap admin password, bearer tokens, the gcloud
+// token command, SSH agent socket...). Anything whose NAME looks secret is dropped;
+// everything else (PATH, HOME, DISPLAY, XAUTHORITY, proxies, locale, SDL vars) is kept
+// so programs — including windowed Pygame launches — behave exactly as before.
+// Extra names can be dropped with EXEC_ENV_DENY=NAME1,NAME2 and specific names can be
+// kept with EXEC_ENV_ALLOW=NAME1,NAME2.
+const SECRET_ENV_RE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|PRIVATE)/i;
+const SECRET_ENV_EXACT = new Set(['SSH_AUTH_SOCK', 'GCLOUD_TOKEN_CMD', 'CLOUDSDK_AUTH_ACCESS_TOKEN_FILE']);
+function childEnv(extra) {
+  const deny = new Set(String(process.env.EXEC_ENV_DENY || '').split(',').map((s) => s.trim()).filter(Boolean));
+  const allow = new Set(String(process.env.EXEC_ENV_ALLOW || '').split(',').map((s) => s.trim()).filter(Boolean));
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (allow.has(k)) { env[k] = v; continue; }
+    if (deny.has(k) || SECRET_ENV_EXACT.has(k) || SECRET_ENV_RE.test(k)) continue;
+    env[k] = v;
+  }
+  return { ...env, ...extra };
+}
+
 function runPython(code) {
   return new Promise((resolve) => {
     let dir;
@@ -45,7 +66,7 @@ function runPython(code) {
     let settled = false;
 
     // Headless: lets Pygame / SDL programs init without a real display.
-    const env = { ...process.env, SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy', PYGAME_HIDE_SUPPORT_PROMPT: '1' };
+    const env = childEnv({ SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy', PYGAME_HIDE_SUPPORT_PROMPT: '1' });
     // -I = isolated mode (ignore env-derived sys.path / user site) for a bit of hygiene.
     const child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { windowsHide: true, env });
 
@@ -164,7 +185,7 @@ function launchGuiProgram(code, opts = {}) {
     let stderr = '';
     let settled = false;
     // NOTE: no SDL_VIDEODRIVER=dummy -> real window. SDL_VIDEO_WINDOW_POS places it.
-    const env = { ...process.env, PYGAME_HIDE_SUPPORT_PROMPT: '1' };
+    const env = childEnv({ PYGAME_HIDE_SUPPORT_PROMPT: '1' });
     if (Number.isFinite(opts.posX) && Number.isFinite(opts.posY)) {
       env.SDL_VIDEO_WINDOW_POS = `${Math.round(opts.posX)},${Math.round(opts.posY)}`;
       env.SDL_VIDEO_CENTERED = '0';
