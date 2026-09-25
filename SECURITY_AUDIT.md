@@ -194,7 +194,7 @@ Severity uses CVSS-style judgement in the context of the actual deployment: publ
 | **D3** | **Public auth surface**: `--allow-unauthenticated` plus username/password plus break-glass admin | Consider fronting with IAP (Workspace SSO at the edge) and disabling password login in the cloud. | IAP, or keep as is. |
 | **D4** | **Silent model fallback** (CS-INTEG-019) | A customer could see "GPT-6 Terra" results actually produced by another model and priced as Terra. | Surface a routed-model note in the UI (like the Claude path) or disable fallback during benchmarks. |
 | **D5** | **Model IDs**: default slot A is Gemini 3.8 Flash; 3.6 Flash is also in the catalog | Outside the approved Argolis list. Not changed, to avoid breaking the live demo. | Keep, or switch the default to Gemini 3.7 Flash after verifying against current Vertex AI docs. |
-| **D6** | **Commit / merge** | Changes are on branch `security-hardening-2026-09-24`, uncommitted. Merging to `main` **triggers the GitHub Actions deploy to Cloud Run**. | Review the diff, then commit and merge when ready. |
+| **D6** | **Commit / merge** | Changes are on branch `security-hardening-2026-09-24` (committed locally as `4528ce4` + `cab86c9`, not pushed). Merging to `main` **triggers the GitHub Actions deploy to Cloud Run**. | Review the diff, then commit and merge when ready. |
 
 > [!WARNING]
 > Tarun's **currently running local server** (PID 48469, started 16:12, port 3000, bound to `0.0.0.0`) is still the **pre-fix code** and is exposed to CS-AUTHN-001 on the LAN until you restart it.
@@ -227,3 +227,60 @@ Only trivially safe items were implemented (lockfile patch, `.dockerignore` slim
 3. **LLM-judge manipulation** can be reduced but not eliminated. Treat judge scores as advisory.
 4. The **`vm` module is still not a security boundary.** The classic escape is closed, but a determined attacker may find V8/vm escapes. Moving JS grading to a child process (like Python) is the durable fix.
 5. The SecureCoder scanner couldn't run (extension offline), so re-run it when available to catch anything the manual review missed.
+
+---
+
+## 10. Follow-up (2026-09-25): approved items D1, D4, D5, O1, O2, O4, O5
+
+Same branch (`security-hardening-2026-09-24`), same zero-regression process. Nothing is merged to `main` (a merge deploys) and no files were deleted. There are two local commits: `4528ce4` (phase 1) and `cab86c9` (this follow-up).
+
+### 10.1 What changed
+
+| Item | Change | Files |
+|---|---|---|
+| **D1** | `ENABLE_CODE_EXEC=0` added to the Cloud Run env in the deploy workflow. `/api/config` now keeps **GUI (Pygame) tasks runnable** while exec is off, because they build to WASM via `/api/web-game` and run in the user's browser. Before this, exec-off hid the game Run buttons. Non-GUI tasks lose Run (by design); hidden-test scoring is unaffected (it uses `runner.js`). | [server.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/server.js), [deploy.yml](file:///Users/ubhi/WorkIQ/projects/llm-compare/.github/workflows/deploy.yml) |
+| **D4** | Removed every **silent OpenAI model substitution**: `gpt-6-terra→gpt-6-astra`, any→`gpt-6-sol` on 404/429, and the streaming re-route to `openai/gpt-oss-120b-maas`. A 404/429 now fails **that slot** with a labelled error naming the requested model and saying it was "not re-routed". The failed slot is unpriced; other slots and the judge are unaffected. Same-model 400/403 retries are kept. The Claude quota router is out of scope: it re-routes to Opus 5.5 but visibly (see 10.4). | [providers.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/providers.js) |
+| **D5** | Verified, no change (see 10.3). | — |
+| **O1** | New `providerFetch()` for every upstream model call. **Timeout covers response headers only**, so streamed bodies are never cut off. Retries only on **429 / 5xx / network / header timeout**, using exponential backoff with full jitter and honouring `Retry-After`. Never retries other 4xx or client aborts. Configurable per provider through `PROVIDER_TIMEOUT_MS[_GEMINI\|_OPENAI\|_ANTHROPIC\|_MOONSHOT]` (default 900 s to first byte), `PROVIDER_MAX_RETRIES` (2), `PROVIDER_RETRY_BASE_MS` (1000) and `PROVIDER_RETRY_MAX_MS` (20000). | [providerFetch.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/providerFetch.js) |
+| **O2** | The cache is keyed by **SHA-256**, with a SHA-1 alias index so older clients' `{sha1}` references keep resolving. A reference-only item that misses the cache now throws `ATTACHMENT_EXPIRED`, which becomes **HTTP 409** `{code, expired:[…]}` on `/api/run` and `/api/judge`. That check happens **before quota is consumed**, and an empty file is never sent. The UI clears `cached` on the expired files and **re-uploads the full bytes once, automatically**. If the bytes aren't held locally it shows "please re-attach". `inspect` now also returns `sha256`. | [attachments.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/attachments.js), [server.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/server.js), [app.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/public/app.js) |
+| **O4** | PDF/ZIP/Office extraction runs in a **`worker_threads` pool**: `ATTACHMENT_WORKERS`=2, per-worker heap cap `ATTACHMENT_WORKER_HEAP_MB`=256, and a 30 s timeout that recycles the worker. It runs the same extractor code, so the inflate caps are unchanged. If a worker fails, extraction falls back to inline. New **multipart** endpoint `POST /api/attachments/upload` (same response as `inspect`), with a hand-written bounded parser. **No new npm dependency.** The base64 JSON `inspect` path is unchanged. | [attachmentWorker.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/attachmentWorker.js), [multipart.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/multipart.js) |
+| **O5** | **Structured JSON logs** with a Cloud Logging `severity` field. Enabled on Cloud Run or with `LOG_FORMAT=json`; local output is unchanged. Logs are redacted for `?key=`, Bearer tokens, `sk-…`, `AIza…`, `ya29.…` and passwords, and no prompts or outputs are logged. **`/healthz` and `/api/health`** are unauthenticated and return 503 while draining. **Graceful SIGTERM/SIGINT drain**: the server stops accepting connections, lets in-flight requests finish (up to `SHUTDOWN_DRAIN_MS`=9000), closes idle keep-alives, then exits 0. **Base image pinned by digest** (`node:22-bookworm-slim@sha256:43ac6c60…772c`). **CI** runs `npm audit --omit=dev --audit-level=high` and `npm run test:smoke` before the image build. The **startup probe** is now an HTTP GET on `/api/health`, replacing the TCP check; the budget is still 240 s. `SECONDARY_PORT=0` knob added so tests don't shadow a local `:3000` instance. | [log.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/log.js), [server.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/server.js), [Dockerfile](file:///Users/ubhi/WorkIQ/projects/llm-compare/Dockerfile), [deploy.yml](file:///Users/ubhi/WorkIQ/projects/llm-compare/.github/workflows/deploy.yml) |
+
+> [!NOTE]
+> **Why the startup probe uses `/api/health`:** Cloud Run reserves "some paths ending with z" at its frontend ([docs](https://cloud.google.com/run/docs/issues#reserved-url-paths)). `/healthz` is implemented and works inside the container, and the probe targets the alias `/api/health`, which is safe both internally and externally.
+
+New tests: [verify-followup.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/verify-followup.js) (offline, now part of `npm test`) and [smoke-followup.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/smoke-followup.js) (black-box, now part of `npm run test:smoke`).
+
+### 10.2 Before / after (full baseline re-run after this change group)
+
+| Check | Phase 1 result | Follow-up result |
+|---|---|---|
+| `npm test` | 3/3 suites pass | **4/4 pass** (adds verify-followup) |
+| `test/smoke-http.js` functional | 22/22 | **22/22**. The only shape diff is the **additive** `sha256` on inspect. |
+| `SMOKE_LIVE=1` (Gemini 3.5 Flash run, 3.5 Flash-Lite judge, cached-sha1 run) | 25/25 | **25/25** (the legacy sha1 reference still works) |
+| Security probes SEC-01/01b/01c/02/03/06 | PROTECTED | **PROTECTED** |
+| Differential `runTests`, 17 candidates vs `f6f1c4f` | 17/17 | **17/17** |
+| Differential `normalizeAttachments`, 8 fixtures vs `f6f1c4f` | 8/8 | **8/8** (ignoring the added `sha256`) |
+| Same 8 fixtures via **worker_threads** path vs old inline | — | **8/8 identical** |
+| ZIP bomb, 200 MB from 200 KB | old +724–885 MB RSS | ~0 (worker adds heap cap) |
+| Headless Chrome: libs / 18 tasks / markdown sanitised | ✓ / 18 / `__pwn=0` | **✓ / 18 / `__pwn=0`** |
+| Headless Chrome, exec **off**: GUI tasks executable | — (buttons hidden) | **mario/pacman/tetris = true**; lis/hanoi = false; `codeExec=false` |
+| Headless Chrome, real UI `streamRun()` with an **expired** cached attachment | silently sent as empty file | **409 → automatic re-upload → 200** |
+| Live re-upload answer (Gemini **3.8 Flash**, 3-row CSV) | — | answer **"3"**, $0.0007 |
+| D4 negative control: new test run against phase-1 code | — | **fails** (the old code re-routed to Vertex MaaS gpt-oss), proving the test catches it |
+| smoke-followup: health, exec-off, multipart parity, 409 with no quota used, SIGTERM drain, JSON logs, no secret leakage | — | **19/19** |
+
+### 10.3 D5: model ID verification
+
+| Catalog ID | Docs | Live API call (`aiplatform.googleapis.com/v1/publishers/google/models/<id>:generateContent`, global, API key) |
+|---|---|---|
+| `gemini-3.8-flash` (default slot A) | GA, released 2026-09-02; availability **global** plus multi-region us/eu. [Model page](https://cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-8-flash) | **200**, `modelVersion=gemini-3.8-flash`, correct answer |
+| `gemini-3.6-flash` | GA, released 2026-07-21; model ID `gemini-3.6-flash`; global plus us/eu; 1,048,576 context, 65,536 max output. [Model page](https://cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-6-flash) | **200**, `modelVersion=gemini-3.6-flash`, correct answer |
+
+**No mismatches, so no IDs were changed.** The app calls the **global** endpoint, which both models support. Model index: [Vertex AI / Agent Platform models](https://cloud.google.com/vertex-ai/generative-ai/docs/models).
+
+### 10.4 Still open / needs Tarun
+
+- **D1 live apply** (`gcloud run services update --update-env-vars ENABLE_CODE_EXEC=0`): the live revision runs the pre-branch code, so applying it now hides the three game Run buttons until the branch is deployed. The decision is recorded in the parent report.
+- The **Claude quota router** (`claude-* → claude-opus-5-5` on 429/403/404) still re-routes, visibly, via a note in the reasoning panel. For benchmark integrity, consider applying the D4 treatment there too.
+- **R6** (API key in `?key=` query) is not changed. The new log redaction masks it in any logged URL.
