@@ -12,6 +12,8 @@
 // omits usage data. Real usage is preferred and used whenever returned.
 // 0 = uncapped (let each model use its own max). Set MAX_OUTPUT_TOKENS in .env to clamp.
 const { getClaudeToken } = require('./gcloudToken');
+// Upstream calls go through providerFetch (header timeout + 429/5xx/network retries).
+const { providerFetch } = require('./providerFetch');
 // Shared keys an admin can set at runtime (Secret Manager), falling back to the
 // deploy-time env vars. A user's own key always wins over these.
 const globalKeys = require('./globalKeys');
@@ -389,14 +391,14 @@ async function gemini({ model, system, messages, keys, signal }) {
   )}:generateContent?key=${key}`;
 
   const t0 = Date.now();
-  let r = await fetch(url, {
+  let r = await providerFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBody(true)),
     signal,
   });
   if (r.status === 400 && hasAttachments(messages)) {
-    r = await fetch(url, {
+    r = await providerFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildBody(false)),
@@ -455,6 +457,20 @@ function buildOpenAIChatMessages(system, messages, { allowImages = true, allowFi
   return out;
 }
 
+// Labelled upstream error for a slot. Names the provider, HTTP status and the
+// exact model that was requested, and says explicitly that no other model was
+// substituted, so the UI never shows/prices a model the slot didn't use.
+async function upstreamError(cfg, model, r) {
+  let detail = '';
+  try { detail = await r.text(); } catch (_) { detail = ''; }
+  const hint = r.status === 429 ? ' (rate limited / quota exhausted)'
+    : r.status === 404 ? ' (model not found or not enabled for this key)' : '';
+  const err = new Error(`${cfg.label} ${r.status}${hint} for model "${model}" — not re-routed to another model: ${String(detail).slice(0, 400)}`);
+  err.status = r.status;
+  err.model = model;
+  return err;
+}
+
 async function openaiCompat(cfg, { model, system, messages, keys, signal, effort }) {
   const key = compatKey(cfg, keys);
   const isOpenAI = cfg.keyField === 'openai';
@@ -463,7 +479,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
   const reqBody = { model, messages: msgs };
   if (eff) reqBody.reasoning_effort = eff;
   const t0 = Date.now();
-  let r = await fetch(`${cfg.base}/chat/completions`, {
+  let r = await providerFetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify(reqBody),
@@ -473,7 +489,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     const fallbackMsgs = buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false });
     const fbBody = { model, messages: fallbackMsgs };
     if (eff) fbBody.reasoning_effort = eff;
-    r = await fetch(`${cfg.base}/chat/completions`, {
+    r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(fbBody),
@@ -485,25 +501,19 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     const fallbackMsgs = hasAttachments(messages)
       ? buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false })
       : msgs;
-    r = await fetch(`${cfg.base}/chat/completions`, {
+    r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify({ model, messages: fallbackMsgs }),
       signal,
     });
   }
-  if ((r.status === 404 || r.status === 429) && isOpenAI && model !== 'gpt-6-astra') {
-    const fbModel = model === 'gpt-6-terra' ? 'gpt-6-astra' : 'gpt-6-sol';
-    r = await fetch(`${cfg.base}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: fbModel, messages: msgs }),
-      signal,
-    });
-  }
+  // No silent model substitution: a 404/429 for the requested model surfaces as
+  // a labelled error for THIS slot instead of being re-routed to (and priced as)
+  // a different model. Same-model retries for 400s above are unchanged.
+  if (!r.ok) throw await upstreamError(cfg, model, r);
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`${cfg.label} ${r.status}: ${JSON.stringify(j).slice(0, 400)}`);
 
   const msg = j.choices?.[0]?.message || {};
   const text = msg.content || '';
@@ -542,7 +552,7 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
     });
   }
 
-  const sendReq = (withSummary, targetModel = model) => fetch(`${cfg.base}/responses`, {
+  const sendReq = (withSummary, targetModel = model) => providerFetch(`${cfg.base}/responses`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify({
@@ -556,12 +566,10 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 
   const t0 = Date.now();
   let r = await sendReq(true, model);
-  if (r.status === 404 && model === 'gpt-6-terra') {
-    r = await sendReq(true, 'gpt-6-astra');
-  }
   if (r.status === 400 || r.status === 403) {
     // Some OpenAI orgs are not verified for `summary: "auto"` — retry with `{ effort }` only
-    r = await sendReq(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model);
+    // (same model — never substitute a different one).
+    r = await sendReq(false, model);
   }
   if (!r.ok) return null; // fall back to /v1/chat/completions
 
@@ -628,44 +636,31 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     return b;
   };
   const t0 = Date.now();
-  let r = await fetch(`${cfg.base}/chat/completions`, {
+  let r = await providerFetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify(buildBody(true, model, true)),
     signal,
   });
-  if (r.status === 404 && isOpenAI && model === 'gpt-6-terra') {
-    r = await fetch(`${cfg.base}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(true, 'gpt-6-astra', true)),
-      signal,
-    });
-  }
   if (r.status === 400 && hasAttachments(messages)) {
-    r = await fetch(`${cfg.base}/chat/completions`, {
+    r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(true, model === 'gpt-6-terra' ? 'gpt-6-astra' : model, false)),
+      body: JSON.stringify(buildBody(true, model, false)),
       signal,
     });
   }
   if (r.status === 400 && eff) {
-    r = await fetch(`${cfg.base}/chat/completions`, {
+    r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(false, model === 'gpt-6-terra' ? 'gpt-6-astra' : model, false)),
+      body: JSON.stringify(buildBody(false, model, false)),
       signal,
     });
   }
-  if (!r.ok && isOpenAI) {
-    return agentPlatformOpenAIMaaSStream({ model: 'openai/gpt-oss-120b-maas', system, messages, onDelta, keys, signal, effort, region: 'global', thinkingMode: 'configurable-effort' });
-  }
-  if (!r.ok) {
-    let detail = '';
-    try { detail = JSON.stringify(await r.json()); } catch (e) { try { detail = await r.text(); } catch (_) { detail = ''; } }
-    throw new Error(`${cfg.label} ${r.status}: ${String(detail).slice(0, 400)}`);
-  }
+  // No silent re-route to gpt-oss-120b-maas (or any other model): the slot fails
+  // with a labelled error so it is never priced/labelled as a model it didn't use.
+  if (!r.ok) throw await upstreamError(cfg, model, r);
 
   let text = '', reasoning = '', usage = null;
   await readSSE(r, (ev) => {
@@ -706,7 +701,7 @@ async function anthropic({ model, system, messages, keys, signal }) {
   const key = (keys && keys.anthropic) || process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment (.env)');
 
-  const sendReq = (allowPdfDocument = true) => fetch('https://api.anthropic.com/v1/messages', {
+  const sendReq = (allowPdfDocument = true) => providerFetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -781,14 +776,14 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent?key=${key}`;
 
   const t0 = Date.now();
-  let r = await fetch(url, {
+  let r = await providerFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildBody(true)),
     signal,
   });
   if (r.status === 400 && hasAttachments(messages)) {
-    r = await fetch(url, {
+    r = await providerFetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildBody(false)),
@@ -840,7 +835,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:rawPredict`;
 
   const send = (token, omitDisplay = false, targetModel = model, allowPdfDocument = true) =>
-    fetch(makeUrl(targetModel), {
+    providerFetch(makeUrl(targetModel), {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: makePayload(omitDisplay, targetModel, allowPdfDocument),
@@ -939,9 +934,9 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${key}`;
 
   const t0 = Date.now();
-  let r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(true)), signal });
+  let r = await providerFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(true)), signal });
   if (r.status === 400 && hasAttachments(messages)) {
-    r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(false)), signal });
+    r = await providerFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(buildBody(false)), signal });
   }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Agent Platform ${r.status}: ${JSON.stringify(e).slice(0, 400)}`); }
 
@@ -993,7 +988,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     `/locations/global/publishers/anthropic/models/${encodeURIComponent(m)}:streamRawPredict`;
 
   const send = (token, omitDisplay = false, targetModel = model, allowPdfDocument = true) =>
-    fetch(makeUrl(targetModel), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay, targetModel, allowPdfDocument), signal });
+    providerFetch(makeUrl(targetModel), { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: makePayload(omitDisplay, targetModel, allowPdfDocument), signal });
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
@@ -1090,7 +1085,7 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
     const body = { model, messages: msgs };
     if (withEffort && eff) body.reasoning_effort = eff;
     if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
-    return fetch(url, {
+    return providerFetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1149,7 +1144,7 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
     if (withUsageOpt) body.stream_options = { include_usage: true };
     if (withEffort && eff) body.reasoning_effort = eff;
     if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
-    return fetch(url, {
+    return providerFetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

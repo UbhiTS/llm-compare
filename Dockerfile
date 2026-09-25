@@ -6,7 +6,10 @@
 # runs anywhere Docker does. PORT is provided by the platform (Cloud Run) and
 # defaults to 8080; all other settings are env-overridable at deploy time.
 # ---------------------------------------------------------------------------
-FROM node:22-bookworm-slim
+# Digest-pinned for reproducible, tamper-evident builds (multi-arch index for
+# node:22-bookworm-slim resolved 2026-09-25). To update: re-resolve the tag digest
+# (e.g. `docker buildx imagetools inspect node:22-bookworm-slim`) and bump it here.
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 
 # System deps: python3 + pip (pygbag), tini (clean signal handling), CA certs.
 RUN apt-get update && apt-get install -y --no-install-recommends \

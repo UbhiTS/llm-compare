@@ -14,6 +14,10 @@
 // ---------------------------------------------------------------------------
 
 require('dotenv').config();
+// Structured JSON logs (Cloud Logging severity + secret redaction) on Cloud Run
+// or with LOG_FORMAT=json; plain text locally. Must run before anything logs.
+const log = require('./src/log');
+log.install();
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -32,7 +36,25 @@ const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
-const { normalizeAttachments, inspectAttachments } = require('./src/attachments');
+const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
+const { parseMultipart } = require('./src/multipart');
+
+// Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
+// request references cached files that have expired, answer 409 with the list
+// so the client can re-upload — never run with an empty file. Returns null when
+// a response has already been sent.
+async function attachmentsOr409(res, raw, errorShape) {
+  try {
+    return await normalizeAttachmentsAsync(raw);
+  } catch (e) {
+    if (e && e.code === 'ATTACHMENT_EXPIRED') {
+      res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: e.message, expired: e.expired });
+      return null;
+    }
+    res.status(400).json({ ...errorShape, error: String((e && e.message) || e) });
+    return null;
+  }
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -97,6 +119,18 @@ app.use(auth.cookieParser);
 // ===========================================================================
 // PUBLIC routes (no authentication required)
 // ===========================================================================
+
+// Health check for the Cloud Run startup probe (and uptime checks). Returns 503
+// while draining after SIGTERM so no new work is routed here. No auth, no
+// secrets, no dependencies touched. /api/health is an alias that is also
+// reachable through the Cloud Run frontend (paths ending in "z" are reserved
+// there; container-level probes are unaffected).
+let draining = false;
+app.get(['/healthz', '/api/health'], (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  if (draining) return res.status(503).json({ ok: false, status: 'draining' });
+  return res.json({ ok: true, status: 'ok' });
+});
 
 // Login / first-run setup page. Strict per-response CSP with a fresh nonce so
 // the inline <style>/<script> run but nothing else can.
@@ -344,7 +378,10 @@ app.get('/api/config', (req, res) => {
       testCount: t.testCases.length,
       category: t.category || (t.testCases.length ? 'coding' : 'general'),
       language: t.language || null,
-      executable: !!t.executable && executionEnabled(),
+      // GUI (Pygame) tasks run in the user's browser via the WASM build
+      // (/api/web-game), not server-side /api/execute — so they stay runnable
+      // when ENABLE_CODE_EXEC=0 as long as web-game building is enabled.
+      executable: !!t.executable && (executionEnabled() || (!!t.gui && webGameEnabled())),
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
@@ -453,7 +490,8 @@ app.post('/api/execute', async (req, res) => {
 // no quality signal of their own. Blinding and shuffling happen in src/judge.js.
 app.post('/api/judge', async (req, res) => {
   const { taskId, judge: judgeId, entries, attachments: rawAttachments } = req.body || {};
-  const attachments = normalizeAttachments(rawAttachments);
+  const attachments = await attachmentsOr409(res, rawAttachments, { ok: false });
+  if (!attachments) return;
   const foundTask = TASKS.find((t) => t.id === taskId);
   const task = foundTask
     ? { ...foundTask, attachments }
@@ -564,19 +602,46 @@ function modelUsesOwnKey(m, keys) {
 // Lightweight attachment inspection & server-side SHA-1 LRU caching endpoint.
 // Called immediately when the user drops/picks files so the UI shows exact server-extracted
 // token counts, PDF page/encryption metadata, and caches the attachment payload by SHA-1.
-app.post('/api/attachments/inspect', (req, res) => {
+app.post('/api/attachments/inspect', async (req, res) => {
   try {
     const rawAttachments = (req.body && req.body.attachments) || [];
-    const items = inspectAttachments(rawAttachments);
+    const items = await inspectAttachmentsAsync(rawAttachments);
     res.json({ ok: true, attachments: items });
   } catch (e) {
-    res.status(400).json({ ok: false, error: e.message || String(e) });
+    const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;
+    res.status(status).json({ ok: false, error: e.message || String(e), code: e && e.code, expired: e && e.expired });
   }
 });
 
+// Multipart alternative to the base64-JSON inspect endpoint (same response
+// shape, same caching). Avoids the ~33% base64 overhead for large files:
+//   curl -F files=@report.pdf -F files=@data.xlsx https://…/api/attachments/upload
+// Authenticated (mounted after the auth gate); body capped by MULTIPART_LIMIT.
+app.post('/api/attachments/upload',
+  express.raw({ type: 'multipart/form-data', limit: process.env.MULTIPART_LIMIT || process.env.JSON_BODY_LIMIT || '50mb' }),
+  async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ ok: false, error: 'Expected a multipart/form-data body with one or more files.' });
+      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS });
+      if (!files.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });
+      const raw = files.map((f) => ({ name: f.filename, mimeType: f.contentType, size: f.data.length, data: f.data.toString('base64') }));
+      const items = await inspectAttachmentsAsync(raw);
+      res.json({ ok: true, attachments: items });
+    } catch (e) {
+      res.status((e && e.status) || 400).json({ ok: false, error: (e && e.message) || String(e) });
+    }
+  },
+  (err, _req, res, next) => {
+    if (err && (err.type === 'entity.too.large' || err.status === 413)) return res.status(413).json({ ok: false, error: 'Upload exceeds the server request limit.' });
+    return next(err);
+  });
+
 app.post('/api/run', async (req, res) => {
   const { taskId, models, maxIterations, customPrompt, attachments: rawAttachments } = req.body || {};
-  const attachments = normalizeAttachments(rawAttachments);
+  // Resolved BEFORE any quota is consumed, so a 409 (expired cache → client
+  // re-uploads and retries) never costs the user a run.
+  const attachments = await attachmentsOr409(res, rawAttachments, { type: 'error' });
+  if (!attachments) return;
   // Sanitize any user-provided ("bring your own") API credentials (strings only).
   const rawKeys = (req.body && req.body.keys) || {};
   const keys = {};
@@ -716,11 +781,13 @@ function lanAddresses() {
 
 globalKeys.start();   // warm the shared keys from Secret Manager + keep them fresh
 
-app.listen(PORT, HOST, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);
   console.log(`  primary URL     ->  http://localhost:${PORT}`);
-  if (!process.env.K_SERVICE && PORT !== 3000) {
-    const extraServer = app.listen(3000, HOST, () => {
+  // SECONDARY_PORT=0 disables the extra :3000 listener (tests/ephemeral servers
+  // must not shadow a developer's already-running localhost:3000 instance).
+  if (!process.env.K_SERVICE && PORT !== 3000 && process.env.SECONDARY_PORT !== '0') {
+    extraServer = app.listen(3000, HOST, () => {
       console.log(`  secondary URL   ->  http://localhost:3000`);
     });
     extraServer.on('error', () => { /* port 3000 already in use, ignore */ });
@@ -737,3 +804,35 @@ app.listen(PORT, HOST, () => {
     console.log(`  (bound to ${HOST} — localhost only)`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown. Cloud Run sends SIGTERM and allows ~10 s before SIGKILL.
+// Stop accepting new connections, flip /healthz to 503, let in-flight requests
+// (including streaming NDJSON runs) finish for up to SHUTDOWN_DRAIN_MS, then
+// exit. A second signal exits immediately.
+// ---------------------------------------------------------------------------
+let extraServer = null;
+const DRAIN_MS = Math.max(0, Number(process.env.SHUTDOWN_DRAIN_MS) || 9000);
+function shutdown(signal) {
+  if (draining) { process.exit(0); }
+  draining = true;
+  log.event('INFO', `[shutdown] ${signal} received — draining for up to ${DRAIN_MS}ms`, { signal, drainMs: DRAIN_MS });
+  const servers = [server, extraServer].filter(Boolean);
+  let open = servers.length;
+  const done = () => { if (--open <= 0) { log.event('INFO', '[shutdown] drained cleanly'); process.exit(0); } };
+  for (const s of servers) {
+    s.close(done);
+    if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
+  }
+  // Sockets that finish their in-flight request become idle keep-alives; close
+  // them promptly instead of waiting out keepAliveTimeout.
+  setInterval(() => {
+    for (const s of servers) if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
+  }, 250).unref();
+  setTimeout(() => {
+    log.event('WARNING', '[shutdown] drain timeout — exiting with requests still open');
+    process.exit(0);
+  }, DRAIN_MS).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
