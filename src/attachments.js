@@ -567,6 +567,9 @@ function normalizeAttachments(rawList, pre = null) {
       }
     }
 
+    const claudeDataBase64 = sanitizeBase64(item.claudeDataBase64);
+    const claudeMimeType = item.claudeMimeType ? inferMimeType(name, item.claudeMimeType) : null;
+
     const attObj = {
       sha1: contentSha1,
       sha256: contentSha256,
@@ -582,12 +585,17 @@ function normalizeAttachments(rawList, pre = null) {
       pdfMeta: kind === 'pdf' ? { pageCount, isEncrypted, isScannedOrImageOnly } : null,
       warning,
       data: isEmpty ? '' : (data || buf.toString('base64')),
+      claudeDataBase64: claudeDataBase64 || null,
+      claudeMimeType: claudeMimeType || null,
       textContent: textContent || '',
       extractedText: textContent || '',
       estimatedTokens: 0,
     };
     attObj.estimatedTokens = estimateAttachmentTokens(attObj);
-    if (!isEmpty) cacheSetAttachment(contentSha256, attObj);
+    if (!isEmpty) {
+      cacheSetAttachment(contentSha256, attObj);
+      cacheSetAttachment(contentSha1, attObj);
+    }
     out.push(attObj);
   }
   if (expired.length) throw new AttachmentExpiredError(expired);
@@ -850,12 +858,22 @@ function toClaudeContent(text, attachments, { allowPdfDocument = true, allowImag
       blocks.push({ type: 'text', text: formatAttachmentTextBlock(att) });
       continue;
     }
+    const useClaudeScaled = Boolean(
+      att.kind === 'image' &&
+      att.data &&
+      att.data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS &&
+      att.claudeDataBase64 &&
+      att.claudeDataBase64.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS
+    );
+    const claudeImgData = useClaudeScaled ? att.claudeDataBase64 : att.data;
+    const claudeImgMime = useClaudeScaled ? (att.claudeMimeType || 'image/webp') : att.mimeType;
+
     const canSendImage =
       allowImages &&
       att.kind === 'image' &&
-      CLAUDE_SUPPORTED_IMAGE_MIMES.has(att.mimeType) &&
-      att.data &&
-      att.data.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS &&
+      CLAUDE_SUPPORTED_IMAGE_MIMES.has(claudeImgMime) &&
+      claudeImgData &&
+      claudeImgData.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS &&
       imageCount < CLAUDE_MAX_IMAGES;
 
     const canSendPdf =
@@ -873,11 +891,16 @@ function toClaudeContent(text, attachments, { allowPdfDocument = true, allowImag
         type: 'image',
         source: {
           type: 'base64',
-          media_type: att.mimeType,
-          data: att.data,
+          media_type: claudeImgMime,
+          data: claudeImgData,
         },
       });
-      blocks.push({ type: 'text', text: `[Attached Image: ${att.name}]` });
+      blocks.push({
+        type: 'text',
+        text: useClaudeScaled
+          ? `[Attached Image: ${att.name} (auto-scaled to <5 MB for Claude's vision API cap)]`
+          : `[Attached Image: ${att.name}]`,
+      });
     } else if (att.kind === 'image') {
       const reason = att.data && att.data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS
         ? `exceeds Anthropic's 5 MB base64 per-image limit (${((att.size || 0) / (1024 * 1024)).toFixed(2)} MB)`
