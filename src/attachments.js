@@ -16,6 +16,35 @@ const CLAUDE_MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024; // Anthropic 5 MB base64 
 const CLAUDE_MAX_IMAGES = 20;
 const CLAUDE_MAX_PDF_BYTES = 24 * 1024 * 1024; // Safe binary ceiling below Anthropic 32 MB request limit
 const CLAUDE_MAX_PDF_PAGES = 100;              // Anthropic native PDF document limit
+// SECURITY (decompression bombs): a 200 KB deflate stream can expand to gigabytes.
+// Every inflate is capped; oversized streams keep only their leading content, which
+// is all the extractor ever uses (output is sliced to MAX_SINGLE_TEXT_CHARS anyway).
+const MAX_INFLATE_BYTES = Math.max(1, Number(process.env.ATTACHMENT_MAX_INFLATE_MB) || 32) * 1024 * 1024;
+// Bound the SHA-1 attachment cache by bytes too (50 × 25 MB base64 could exceed a 1 GiB instance).
+const MAX_CACHE_BYTES = Math.max(16, Number(process.env.ATTACHMENT_CACHE_MAX_MB) || 512) * 1024 * 1024;
+
+function isTooLarge(e) {
+  return !!e && (e.code === 'ERR_BUFFER_TOO_LARGE' || e instanceof RangeError);
+}
+
+// inflateFn is zlib.inflateRawSync (ZIP) or zlib.inflateSync (PDF FlateDecode).
+function boundedInflate(inflateFn, input, cap = MAX_INFLATE_BYTES) {
+  try {
+    return inflateFn(input, { maxOutputLength: cap });
+  } catch (e) {
+    if (!isTooLarge(e)) throw e;
+  }
+  // Too big: inflate progressively shorter prefixes of the compressed data with a
+  // sync flush (no "unexpected end" error) until the output fits under the cap.
+  for (let len = input.length >> 1; len > 0; len >>= 1) {
+    try {
+      return inflateFn(input.subarray(0, len), { maxOutputLength: cap, finishFlush: zlib.constants.Z_SYNC_FLUSH });
+    } catch (e) {
+      if (!isTooLarge(e)) throw e;
+    }
+  }
+  return Buffer.alloc(0);
+}
 
 const EXT_MIME_MAP = {
   '.png': 'image/png',
@@ -160,9 +189,15 @@ function extractZipOrOfficeText(buf) {
   // Check PK\x03\x04 magic signature
   if (buf.readUInt32LE(0) !== 0x04034b50) return '';
   const extractedFiles = [];
+  let joinedLen = 0; // length of extractedFiles.join('\n\n') so far
+  const pushText = (s) => { joinedLen += (extractedFiles.length ? 2 : 0) + s.length; extractedFiles.push(s); };
   let offset = 0;
   try {
     while (offset + 30 <= buf.length && buf.readUInt32LE(offset) === 0x04034b50) {
+      // Output is sliced to MAX_SINGLE_TEXT_CHARS below, so once that much text is
+      // collected further entries can't change the result — stop (bounds CPU/memory
+      // for archives with thousands of entries).
+      if (joinedLen >= MAX_SINGLE_TEXT_CHARS) break;
       const compression = buf.readUInt16LE(offset + 8);
       const compressedSize = buf.readUInt32LE(offset + 18);
       const nameLen = buf.readUInt16LE(offset + 26);
@@ -187,7 +222,7 @@ function extractZipOrOfficeText(buf) {
           rawXml = rawSlice.toString('utf8');
         } else if (compression === 8) {
           try {
-            rawXml = zlib.inflateRawSync(rawSlice).toString('utf8');
+            rawXml = boundedInflate(zlib.inflateRawSync, rawSlice).toString('utf8');
           } catch (_) {
             rawXml = '';
           }
@@ -204,9 +239,9 @@ function extractZipOrOfficeText(buf) {
               .replace(/&#39;/g, "'")
               .replace(/[ \t]{2,}/g, ' ')
               .trim();
-            if (plain) extractedFiles.push(`[${entryName}]\n${plain}`);
+            if (plain) pushText(`[${entryName}]\n${plain}`);
           } else {
-            extractedFiles.push(`[${entryName}]\n${rawXml.trim()}`);
+            pushText(`[${entryName}]\n${rawXml.trim()}`);
           }
         }
       }
@@ -301,7 +336,7 @@ function inspectPdfBuffer(buffer) {
         if (endData > startData && endData - startData < 8 * 1024 * 1024) {
           const slice = buffer.subarray(startData, endData);
           try {
-            const inflated = zlib.inflateSync(slice).toString('latin1');
+            const inflated = boundedInflate(zlib.inflateSync, slice).toString('latin1');
             const txt = extractTextFromPdfStreamContent(inflated);
             if (txt.trim()) extractedParts.push(txt.trim());
           } catch (_) {
@@ -356,6 +391,10 @@ function estimateAttachmentTokens(att) {
 // without re-uploading multi-megabyte base64 payloads on every request.
 const ATTACHMENT_CACHE = new Map();
 const MAX_CACHE_ENTRIES = 50;
+let cacheBytes = 0;
+// Approximate retained size: base64 payload + extracted text (JS strings ~2 bytes/char
+// worst case; textContent and extractedText share one string).
+const approxBytes = (a) => ((a && a.data) ? a.data.length : 0) + ((a && a.textContent) ? a.textContent.length * 2 : 0);
 
 function cacheGetAttachment(sha1) {
   if (!sha1 || typeof sha1 !== 'string') return null;
@@ -369,11 +408,17 @@ function cacheGetAttachment(sha1) {
 
 function cacheSetAttachment(sha1, attObj) {
   if (!sha1 || !attObj) return;
-  if (ATTACHMENT_CACHE.has(sha1)) ATTACHMENT_CACHE.delete(sha1);
+  if (ATTACHMENT_CACHE.has(sha1)) {
+    cacheBytes -= approxBytes(ATTACHMENT_CACHE.get(sha1));
+    ATTACHMENT_CACHE.delete(sha1);
+  }
   ATTACHMENT_CACHE.set(sha1, { ...attObj });
-  while (ATTACHMENT_CACHE.size > MAX_CACHE_ENTRIES) {
+  cacheBytes += approxBytes(attObj);
+  // Evict least-recently-used entries beyond the count OR byte budget (always keep the newest).
+  while (ATTACHMENT_CACHE.size > MAX_CACHE_ENTRIES || (cacheBytes > MAX_CACHE_BYTES && ATTACHMENT_CACHE.size > 1)) {
     const oldestKey = ATTACHMENT_CACHE.keys().next().value;
     if (oldestKey === undefined) break;
+    cacheBytes -= approxBytes(ATTACHMENT_CACHE.get(oldestKey));
     ATTACHMENT_CACHE.delete(oldestKey);
   }
 }

@@ -11,3 +11,11 @@ npm-debug.log*
 *.log
 Dockerfile
 .dockerignore
+# Local per-user run history (contains prompts/outputs) must never be baked into the image.
+.data
+# Not needed at runtime (keeps the image small; ~10 MB of media/screenshots).
+demospace
+docs
+test
+click-to-deploy
+SECURITY_AUDIT.md

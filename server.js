@@ -73,8 +73,10 @@ app.use((req, res, next) => {
 });
 
 // Large enough for multiple base64 image/PDF/document attachments plus 1M-token judge runs.
-app.use(express.json({ limit: '50mb' }));
-app.use((err, _req, res, next) => {
+// SECURITY: the 50 MB parser is mounted only AFTER the auth gate (see below), so an
+// unauthenticated client can't make the server buffer + JSON.parse 50 MB bodies. The
+// few public POST routes (login / first-run setup) get a small parser here instead.
+const jsonBodyError = (err, _req, res, next) => {
   if (err && (err.type === 'entity.too.large' || err.status === 413)) {
     return res.status(413).json({
       type: 'error',
@@ -85,7 +87,11 @@ app.use((err, _req, res, next) => {
     return res.status(400).json({ type: 'error', error: 'Invalid JSON request payload.' });
   }
   return next(err);
-});
+};
+const PUBLIC_JSON_PATHS = new Set(['/api/auth/login', '/api/auth/setup']);
+const publicJson = express.json({ limit: process.env.PUBLIC_JSON_LIMIT || '64kb' });
+app.use((req, res, next) => (PUBLIC_JSON_PATHS.has(req.path) ? publicJson(req, res, next) : next()));
+app.use(jsonBodyError);
 app.use(auth.cookieParser);
 
 // ===========================================================================
@@ -217,14 +223,13 @@ app.use((req, res, next) => {
   const s = auth.getSession(req);
   if (s) { req.user = { username: s.username, role: s.role }; return next(); }
   // Local workstation / Antigravity Sidecar auto-auth for Tarun (never active on Cloud Run K_SERVICE)
-  const hostHdr = String(req.headers.host || '');
-  const isLoopback = !process.env.K_SERVICE && (
-    hostHdr.startsWith('localhost') ||
-    hostHdr.startsWith('127.0.0.1') ||
-    req.ip === '127.0.0.1' ||
-    req.ip === '::1' ||
-    req.ip === '::ffff:127.0.0.1'
-  );
+  // SECURITY: the Host header and X-Forwarded-For are client-controlled, so neither
+  // may grant access on its own. Auto-auth now requires the TCP peer to really be
+  // loopback AND (outside the Antigravity sidecar) a loopback Host header with no
+  // proxy forwarding headers. This blocks LAN clients spoofing `Host: localhost`,
+  // DNS-rebinding pages (Host = attacker domain) and local tunnels/reverse proxies
+  // (which connect from 127.0.0.1 on behalf of remote users).
+  const isLoopback = !process.env.K_SERVICE && isLocalAutoAuthRequest(req);
   if (isLoopback && process.env.LOCAL_AUTO_AUTH !== '0') {
     req.user = { username: 'ubhi@google.com', role: 'admin', name: 'Tarun Ubhi' };
     return next();
@@ -238,6 +243,25 @@ app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Authentication required.' });
   return res.redirect('/login');
 });
+
+// Authenticated routes may carry large attachment payloads (see note above).
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '50mb' }));
+app.use(jsonBodyError);
+
+function isLoopbackAddr(a) {
+  return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1';
+}
+
+// True only for a request that genuinely originates on this machine (see auth gate).
+function isLocalAutoAuthRequest(req) {
+  const peer = req.socket && req.socket.remoteAddress;   // real TCP peer — never req.ip (XFF)
+  if (!isLoopbackAddr(peer)) return false;
+  if (process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) return true; // sidecar proxy: keep prior behaviour
+  if (req.headers['x-forwarded-for'] || req.headers.forwarded) return false; // proxied/tunnelled
+  const extra = String(process.env.LOCAL_AUTO_AUTH_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || extra.includes(host);
+}
 
 function requireAdmin(req, res, next) {
   if (req.user && req.user.role === 'admin') return next();

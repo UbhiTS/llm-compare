@@ -2288,7 +2288,7 @@ async function run() {
     if (st === 'auth') return;
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
-      slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, m, 'err'); });
+      slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(m), 'err'); });
       if (window._lastQuotaObj && window._lastQuotaObj.openaiQuotaExhausted) {
         const switchToVertex = window.confirm(
           `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Sonnet 5.0 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
@@ -2374,7 +2374,7 @@ async function rerunSlot(slot, repair) {
       keys: loadKeys(),
     }, LAST_RESULTS, ac.signal, own);
     if (st === 'auth') return;
-    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, window._lastQuotaMsg, 'err'); window.alert(window._lastQuotaMsg); return; }
+    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, esc(window._lastQuotaMsg), 'err'); window.alert(window._lastQuotaMsg); return; }
   } catch (e) {
     // AbortError just means this column was taken over — the new owner has the UI.
     if (e && e.name === 'AbortError') return;
@@ -3111,7 +3111,9 @@ function renderModalBody() {
   const body = modal.querySelector('.md-modal-body');
   const toggle = modal.querySelector('.md-toggle');
   const parser = window.marked && (window.marked.parse || window.marked);
-  const canMd = mdState.markdown && typeof parser === 'function';
+  // SECURITY: rendered markdown is LLM output → only insert it as HTML when DOMPurify
+  // loaded; if the sanitizer CDN failed, fall back to the raw (textContent) view.
+  const canMd = mdState.markdown && typeof parser === 'function' && !!(window.DOMPurify && window.DOMPurify.sanitize);
   toggle.style.display = canMd ? '' : 'none';
   toggle.textContent = mdState.rendered ? 'View raw' : 'View rendered';
   if (canMd && mdState.rendered) {
