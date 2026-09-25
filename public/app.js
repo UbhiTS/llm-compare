@@ -122,6 +122,7 @@ async function init() {
   ts.addEventListener('change', () => {
     renderTaskPrompt();
     $('#scorecard').classList.add('hidden');
+    { const jb = $('#jumpScorecardBtn'); if (jb) jb.classList.add('hidden'); }
     buildArena();
     saveUserPreferencesDebounced();
   });
@@ -155,6 +156,17 @@ async function init() {
   updateRunButton();
 
   $('#runBtn').addEventListener('click', run);
+  {
+    const jb = $('#jumpScorecardBtn');
+    if (jb) {
+      jb.addEventListener('click', () => {
+        const sc = $('#scorecard');
+        if (sc && !sc.classList.contains('hidden')) {
+          sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+    }
+  }
   ['#autoRun', '#autoFix'].forEach((sel) => {
     const b = $(sel);
     if (!b) return;
@@ -580,54 +592,53 @@ const ALL_SLOT_IDS = ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, MAX_SLOTS);
 let SLOT_IDS = ['A', 'B', 'C'];          // active slots (1 .. 6)
 const SLOT_ASSIGN = {};                  // slot -> catalogId | null
 const SLOT_EFFORT = {};                  // slot -> chosen thinking level | null
-ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
-
+const SLOT_PROVIDER_FILTER = {};         // slot -> chosen provider filter in Dropdown 1
 const PROVIDER_FAMILIES = [
-  { id: 'google',    label: 'Google (Gemini — Vertex AI)' },
-  { id: 'anthropic', label: 'Anthropic (Claude — Vertex AI)' },
-  { id: 'xai',       label: 'xAI (Grok — Vertex AI MaaS)' },
-  { id: 'meta',      label: 'Meta (Llama — Vertex AI MaaS)' },
-  { id: 'deepseek',  label: 'DeepSeek (Vertex AI MaaS)' },
-  { id: 'qwen',      label: 'Alibaba / Qwen (Vertex AI MaaS)' },
-  { id: 'openai',    label: 'OpenAI (GPT-OSS Vertex & Direct)' },
-  { id: 'moonshot',  label: 'Moonshot AI (Kimi — Vertex & Direct)' },
-  { id: 'zai',       label: 'Z.AI (GLM — Vertex AI MaaS)' },
+  { id: 'google',    label: 'Google (Gemini)' },
+  { id: 'anthropic', label: 'Anthropic (Claude)' },
+  { id: 'openai',    label: 'OpenAI' },
+  { id: 'xai',       label: 'xAI (Grok)' },
+  { id: 'meta',      label: 'Meta (Llama)' },
+  { id: 'deepseek',  label: 'DeepSeek' },
+  { id: 'qwen',      label: 'Alibaba (Qwen)' },
+  { id: 'moonshot',  label: 'Moonshot (Kimi)' },
+  { id: 'zai',       label: 'Z.AI (GLM)' },
 ];
 
 // Sibling Reasoning <-> Non-Reasoning catalog pairs so Dropdown 3 ("Thinking Mode")
-// can also toggle between Reasoning and Non-Reasoning variants of the same family!
+// can toggle between Reasoning and Standard variants of the same family cleanly.
 const REASONING_SIBLING_PAIRS = {
   'grok-4.20-reasoning':      [
-    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought) — grok-4.20-reasoning' },
-    { id: 'grok-4.20-non-reasoning', label: 'Non-Reasoning (Fast Direct) — grok-4.20-non-reasoning' },
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought)' },
+    { id: 'grok-4.20-non-reasoning', label: 'Standard (Fast Direct)' },
   ],
   'grok-4.20-non-reasoning':  [
-    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought) — grok-4.20-reasoning' },
-    { id: 'grok-4.20-non-reasoning', label: 'Non-Reasoning (Fast Direct) — grok-4.20-non-reasoning' },
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought)' },
+    { id: 'grok-4.20-non-reasoning', label: 'Standard (Fast Direct)' },
   ],
   'grok-4.1-fast-reasoning': [
-    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT) — grok-4.1-fast-reasoning' },
-    { id: 'grok-4.1-fast-non-reasoning', label: 'Non-Reasoning (Ultra-Fast) — grok-4.1-fast-non-reasoning' },
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT)' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard (Ultra-Fast)' },
   ],
   'grok-4.1-fast-non-reasoning': [
-    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT) — grok-4.1-fast-reasoning' },
-    { id: 'grok-4.1-fast-non-reasoning', label: 'Non-Reasoning (Ultra-Fast) — grok-4.1-fast-non-reasoning' },
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT)' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard (Ultra-Fast)' },
   ],
   'qwen3-next-80b-a3b-thinking-maas': [
-    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought) — qwen3-next-80b-thinking' },
-    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Non-Reasoning) — qwen3-next-80b-instruct' },
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought)' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Standard)' },
   ],
   'qwen3-next-80b-a3b-instruct-maas': [
-    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought) — qwen3-next-80b-thinking' },
-    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Non-Reasoning) — qwen3-next-80b-instruct' },
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought)' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Standard)' },
   ],
   'deepseek-r1-0528-maas': [
-    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1 CoT) — deepseek-r1-0528-maas' },
-    { id: 'deepseek-v3.2-maas',    label: 'Non-Reasoning (DeepSeek V3.2 Fast) — deepseek-v3.2-maas' },
+    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1)' },
+    { id: 'deepseek-v3.2-maas',    label: 'Standard (DeepSeek V3.2)' },
   ],
   'deepseek-v3.2-maas': [
-    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1 CoT) — deepseek-r1-0528-maas' },
-    { id: 'deepseek-v3.2-maas',    label: 'Non-Reasoning (DeepSeek V3.2 Fast) — deepseek-v3.2-maas' },
+    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1)' },
+    { id: 'deepseek-v3.2-maas',    label: 'Standard (DeepSeek V3.2)' },
   ],
 };
 
@@ -692,6 +703,10 @@ function saveUserPreferencesDebounced() {
 }
 
 function saveUserPreferencesImmediate() {
+  if (_prefSaveTimer) {
+    clearTimeout(_prefSaveTimer);
+    _prefSaveTimer = null;
+  }
   if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
   const uname = CONFIG.me.username;
   const customPromptEl = $('#customPrompt');
@@ -731,36 +746,52 @@ function saveUserPreferencesImmediate() {
 }
 
 function seedSlots() {
-  const UPGRADE_MAP = {
-    'gemini-3.7-flash': 'gemini-3.8-flash',
-    'gemini-3.6-flash': 'gemini-3.8-flash',
-    'claude-opus-4-7': 'claude-opus-5-5',
-    'claude-opus-4-8': 'claude-opus-5-5',
-    'claude-opus-5': 'claude-opus-5-5',
-    'claude-fable-5': 'claude-fable-5-1',
-    'gpt-5.6-sol': 'gpt-6-sol',
+  // Map retired / zero-quota / 404 model IDs to verified active catalog models,
+  // while never overwriting valid saved models (such as gemini-3.7-flash or claude-opus-4-7).
+  const RETIRED_MODEL_MAP = {
+    'claude-fable-5-1': 'claude-sonnet-5',
+    'claude-fable-5': 'claude-sonnet-5',
+    'claude-mythos-5': 'claude-opus-5-5',
+    'claude-opus-4-5': 'claude-opus-4-7',
+    'claude-sonnet-4-5': 'claude-sonnet-4-6',
+    'grok-4.6': 'grok-4.20-reasoning',
+    'gpt-6-terra': 'gpt-5.6-terra',
   };
-  const usable = (list) => (list || [])
-    .map((m) => {
-      const rawId = m.catalogId || m.id;
-      return { id: UPGRADE_MAP[rawId] || rawId, effort: m.effort || null, slot: m.slot || null };
-    })
-    .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
-    .slice(0, MAX_SLOTS);
 
   const me = CONFIG && CONFIG.me;
   const userSlots = (me && me.preferences && me.preferences.slots)
     || (me && me.lastModels)
     || loadLocalSlots();
-  const rawList = (Array.isArray(userSlots) && userSlots.length) ? userSlots : CONFIG.models;
+  let rawList = (Array.isArray(userSlots) && userSlots.length) ? userSlots : CONFIG.models;
+
+  // If the user's saved slots match the old 4-slot default that had zero-quota
+  // `claude-fable-5-1` in Slot C, drop `claude-fable-5-1` so they cleanly get the 3-slot default.
+  if (Array.isArray(rawList) && rawList.length === 4) {
+    const ids = rawList.map((m) => m && (m.catalogId || m.id));
+    if (ids.includes('claude-fable-5-1') || ids.includes('claude-fable-5')) {
+      rawList = rawList.filter((m) => {
+        const id = m && (m.catalogId || m.id);
+        return id !== 'claude-fable-5-1' && id !== 'claude-fable-5';
+      });
+    }
+  }
+
+  const usable = (list) => (list || [])
+    .map((m) => {
+      const rawId = m.catalogId || m.id;
+      return { id: RETIRED_MODEL_MAP[rawId] || rawId, effort: m.effort || null, slot: m.slot || null };
+    })
+    .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
+    .slice(0, MAX_SLOTS);
+
   let list = usable(rawList);
   if (!list.length) list = usable(CONFIG.models);
 
-  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 4));
+  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 3));
   SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
   ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
   list.forEach((m, i) => {
-    const s = (m.slot && ALL_SLOT_IDS.includes(m.slot)) ? m.slot : SLOT_IDS[i];
+    const s = SLOT_IDS[i];
     if (!s) return;
     SLOT_ASSIGN[s] = m.id;
     SLOT_EFFORT[s] = m.effort;
@@ -831,10 +862,10 @@ function addSlot() {
   if (SLOT_IDS.length >= MAX_SLOTS) return;
   const nextSlot = ALL_SLOT_IDS.find((s) => !SLOT_IDS.includes(s));
   if (!nextSlot) return;
-  // Pick the latest frontier models for new slots
+  // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-3.8-flash', 'claude-opus-5-5', 'claude-fable-5-1', 'gpt-6-sol',
-    'grok-4.20-reasoning', 'deepseek-r1-0528-maas', 'llama-4-maverick-17b-128e-maas',
+    'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5',
+    'grok-4.20-reasoning', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
   let chosenId = preferredOrder.find((id) => {
@@ -874,13 +905,17 @@ function applyPreset(presetName) {
     target = [
       { id: 'gemini-3.8-flash',    effort: 'high' },
       { id: 'claude-opus-5-5',     effort: 'high' },
-      { id: 'claude-fable-5-1',    effort: 'high' },
       { id: 'gpt-6-sol',           effort: 'high' },
-      { id: 'grok-4.20-reasoning', effort: null },
+    ];
+  } else if (presetName === 'fast') {
+    target = [
+      { id: 'gemini-3.5-flash-lite',       effort: 'minimal' },
+      { id: 'claude-haiku-4-5',            effort: null },
+      { id: 'grok-4.1-fast-non-reasoning', effort: null },
     ];
   } else if (presetName === 'same-model-thinking') {
     target = [
-      { id: 'gemini-3.8-flash', effort: 'minimal' },
+      { id: 'gemini-3.8-flash', effort: 'low' },
       { id: 'gemini-3.8-flash', effort: 'medium' },
       { id: 'gemini-3.8-flash', effort: 'high' },
     ];
@@ -889,14 +924,12 @@ function applyPreset(presetName) {
       { id: 'grok-4.20-reasoning',          effort: null },
       { id: 'grok-4.20-non-reasoning',      effort: null },
       { id: 'grok-4.1-fast-reasoning',      effort: null },
-      { id: 'grok-4.1-fast-non-reasoning',  effort: null },
     ];
   } else if (presetName === 'open-maas') {
     target = [
-      { id: 'llama-4-maverick-17b-128e-maas',   effort: null },
-      { id: 'qwen3-next-80b-a3b-thinking-maas', effort: null },
-      { id: 'kimi-k2-thinking-maas',            effort: null },
-      { id: 'glm-5.2-maas',                     effort: null },
+      { id: 'llama-4-maverick-17b-128e-maas', effort: null },
+      { id: 'deepseek-v3.2-maas',             effort: null },
+      { id: 'qwen3-235b-a22b-instruct-maas',  effort: null },
     ];
   }
   const valid = target.filter((t) => {
@@ -1525,21 +1558,17 @@ function clearAttachments() {
 
 function renderContextMeter() {
   const meterEl = $('#contextMeterBar');
+  const pillEl = $('#composerTokenPill');
   const sel = $('#taskSelect');
-  if (!meterEl || !sel || sel.value !== 'custom') {
+  if (!sel || sel.value !== 'custom') {
     if (meterEl) meterEl.classList.add('hidden');
+    if (pillEl) pillEl.classList.add('hidden');
     return;
   }
   const promptText = ($('#customPrompt') && $('#customPrompt').value) || '';
   const promptTok = Math.ceil(promptText.length / 3.8) + (CUSTOM_ATTACHMENTS.length || promptText.trim() ? 60 : 0);
   const attTok = CUSTOM_ATTACHMENTS.reduce((sum, a) => sum + (a.estimatedTokens || 100), 0);
   const totalEstTok = promptTok + attTok;
-
-  if (!CUSTOM_ATTACHMENTS.length && promptText.length < 200) {
-    meterEl.classList.add('hidden');
-    return;
-  }
-  meterEl.classList.remove('hidden');
 
   const activeModels = (MODELS && MODELS.length ? MODELS : []).map((m) => {
     const cat = catalog().find((x) => x.id === (m.catalogId || m.id || m.model));
@@ -1558,9 +1587,32 @@ function renderContextMeter() {
   });
 
   const worstRatio = activeModels.reduce((mx, m) => Math.max(mx, m.ratio || 0), 0);
+  const anyOver = activeModels.some((m) => m.status === 'over');
+  const anyWarn = activeModels.some((m) => m.status === 'warn');
+
+  // Lightweight inline token pill inside the composer footer (never shifts layout)
+  if (pillEl) {
+    if (!CUSTOM_ATTACHMENTS.length && !promptText.trim()) {
+      pillEl.classList.add('hidden');
+    } else {
+      pillEl.classList.remove('hidden');
+      pillEl.classList.toggle('is-warn', anyWarn && !anyOver);
+      pillEl.classList.toggle('is-over', anyOver);
+      const statusBadge = anyOver ? ' · ⚠ auto-fit' : (anyWarn ? ` · ${Math.round(worstRatio * 100)}% ctx` : '');
+      pillEl.textContent = `~${fmtTokensShort(totalEstTok)} est.${statusBadge}`;
+    }
+  }
+
+  // Only show the detailed multi-model context bar when attachments are present or a model is near/over limit
+  if (!meterEl) return;
+  if (!CUSTOM_ATTACHMENTS.length && worstRatio < 0.5) {
+    meterEl.classList.add('hidden');
+    return;
+  }
+  meterEl.classList.remove('hidden');
+
   const barPct = Math.min(100, Math.max(2, Math.round(worstRatio * 100)));
   const barCls = worstRatio > 1 ? 'is-over' : (worstRatio > 0.68 ? 'is-warn' : '');
-  const anyOver = activeModels.some((m) => m.status === 'over');
 
   const pillsHtml = activeModels.map((m) => {
     const ctxLabel = m.ctx >= 1000000 ? `${(m.ctx / 1000000).toFixed(0)}M` : `${Math.round(m.ctx / 1000)}K`;
@@ -1572,8 +1624,8 @@ function renderContextMeter() {
 
   meterEl.innerHTML =
     `<div class="cm-top">` +
-      `<span class="cm-title">📐 Context Window &amp; Token Budget Check</span>` +
-      `<span class="cm-summary">Est. input: <b>~${fmtTokensShort(totalEstTok)}</b> (${fmtTokensShort(promptTok)} prompt + ${fmtTokensShort(attTok)} attachments)${anyOver ? ' · <b>Smart Head+Tail Guardrail Active</b>' : ''}</span>` +
+      `<span class="cm-title">📐 Context Budget</span>` +
+      `<span class="cm-summary">Est. input: <b>~${fmtTokensShort(totalEstTok)}</b> (${fmtTokensShort(promptTok)} prompt + ${fmtTokensShort(attTok)} files)${anyOver ? ' · <b>Smart Head+Tail Fit Active</b>' : ''}</span>` +
     `</div>` +
     `<div class="cm-bar-track"><div class="cm-bar-fill ${barCls}" style="width:${barPct}%"></div></div>` +
     `<div class="cm-models">${pillsHtml}</div>`;
@@ -1589,7 +1641,8 @@ function renderAttachments() {
   const totalBytes = CUSTOM_ATTACHMENTS.reduce((acc, a) => acc + (a.size || 0), 0);
   const totalTok = CUSTOM_ATTACHMENTS.reduce((acc, a) => acc + (a.estimatedTokens || 0), 0);
   if (count === 0) {
-    badgeEl.textContent = 'No files attached';
+    badgeEl.textContent = '';
+    badgeEl.classList.add('hidden');
     badgeEl.classList.remove('has-files');
     if (clearBtn) clearBtn.classList.add('hidden');
     listEl.classList.add('hidden');
@@ -1599,6 +1652,7 @@ function renderAttachments() {
   }
 
   badgeEl.textContent = `${count} file${count > 1 ? 's' : ''} · ${formatBytes(totalBytes)} · ~${fmtTokensShort(totalTok)}`;
+  badgeEl.classList.remove('hidden');
   badgeEl.classList.add('has-files');
   if (clearBtn) clearBtn.classList.remove('hidden');
   listEl.classList.remove('hidden');
@@ -1805,19 +1859,38 @@ function renderTaskMeta() {
   meta.textContent = bits.join(' \u00b7 ');
   meta.className = 'task-meta is-' + catKey;
 }
+
 function renderTaskPrompt() {
   const ta = $('#customPrompt');
-  const attWrap = $('#customAttachmentsWrap');
-  if ($('#taskSelect').value === 'custom') {
-    $('#taskPrompt').textContent = 'Your prompt and any uploaded attachments (images, PDFs, CSV, code, docs) are sent to every model slot in parallel. No automated tests run \u2014 you get live output, tokens, cost, speed and thinking.';
-    ta.classList.remove('hidden');
-    if (attWrap) attWrap.classList.remove('hidden');
+  const tp = $('#taskPrompt');
+  const attBtn = $('#attachFilesBtn');
+  const codingWrap = $('#codingTogglesWrap');
+  const t = currentTask();
+  const isCustom = $('#taskSelect').value === 'custom';
+
+  if (isCustom) {
+    if (tp) {
+      tp.textContent = '';
+      tp.classList.add('hidden');
+    }
+    if (ta) ta.classList.remove('hidden');
+    if (attBtn) attBtn.classList.remove('hidden');
   } else {
-    $('#taskPrompt').textContent = currentTask().prompt;
-    ta.classList.add('hidden');
-    if (attWrap) attWrap.classList.add('hidden');
+    if (tp) {
+      tp.textContent = t.prompt;
+      tp.classList.remove('hidden');
+    }
+    if (ta) ta.classList.add('hidden');
+    if (attBtn) attBtn.classList.add('hidden');
   }
+
+  // Only show coding-specific toggles (Self-repair / Warmup) when the selected task has executable code tests
+  if (codingWrap) {
+    codingWrap.classList.toggle('hidden', !t.executable);
+  }
+
   renderTaskMeta();
+  renderContextMeter();
 }
 
 function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
@@ -1853,38 +1926,58 @@ function buildThinkingDropdownOptions(c, currentEffort) {
   return `<option value="fixed" selected>${esc(fixedLabel)}</option>`;
 }
 
-function thinkControl(m, isRestore) {
-  if (isRestore) return thinkTag(m.thinking);
-  const c = catalog().find((x) => x.id === m.catalogId) || m;
-  const opts = buildThinkingDropdownOptions(c, m.effort);
-  const cur = m.effort || '';
-  const o = m.thinkingOptions;
-  const sel = (o && o.options && o.options.find((x) => x.value === cur)) || (o && o.options && o.options[0]);
-  return `<div class="col-think think-ctl${cur ? ' is-set' : ''}" title="${esc((sel && sel.detail) || (m.thinking && m.thinking.detail) || '')}">`
-       + `<span class="ti">◈</span>`
-       + `<select class="think-select" draggable="false" data-slot="${esc(m.slot)}" `
-       + `aria-label="Thinking mode for ${esc(m.label)}">${opts}</select></div>`;
-}
-
-// Clean Read-Only Model Identity Header inside each Arena Executor Card
-// (The 3-dropdown selector lives exclusively in the top Model Selector strip)
+// Inline Card Header with direct Provider ▸ Model ▸ Thinking selectors (single source of truth)
 function buildInlineCardCascader(m, isRestore) {
   if (isRestore) {
     return `<div class="col-id">
-      <div class="col-title">${esc(m.label)}${m.external ? '<span class="ext-badge">EXT</span>' : ''}</div>
-      <div class="col-sub">${esc(m.provider)} · ${esc(m.model)}${m.price ? ` <span class="col-price">${priceTag(m)} / 1M</span>` : ''}</div>
-      ${thinkTag(m.thinking)}
+      <div class="col-title-row">
+        <span class="col-slot-pill" style="background:${slotColor(m.slot)}22;color:${slotColor(m.slot)};border-color:${slotColor(m.slot)}55">${esc(m.slot)}</span>
+        <span class="col-title">${esc(m.label)}</span>
+        ${m.external ? '<span class="ext-badge">EXT</span>' : '<span class="vtx-badge">VERTEX</span>'}
+      </div>
+      <div class="col-sub-row">
+        <span class="col-sub">${esc(m.provider)} · ${esc(m.model)}</span>
+        ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
+        ${thinkTag(m.thinking)}
+      </div>
     </div>`;
   }
-  return `<div class="col-id col-cascader" data-slot="${esc(m.slot)}">
-    <div class="col-title-row">
-      <span class="col-slot-pill" style="background:${slotColor(m.slot)}22;color:${slotColor(m.slot)};border-color:${slotColor(m.slot)}55">Slot ${esc(m.slot)}</span>
-      <span class="col-title">${esc(m.label)}</span>
-      ${m.external ? '<span class="ext-badge" title="External API Key">EXT</span>' : '<span class="vtx-badge" title="Google Cloud Vertex AI / Agent Platform">VERTEX AI</span>'}
+
+  const slot = m.slot;
+  const cid = SLOT_ASSIGN[slot] || m.catalogId || m.id;
+  const c = catalog().find((x) => x.id === cid) || m;
+  const curFamily = providerFamilyOf(c);
+  const curEffort = SLOT_EFFORT[slot] || m.effort || '';
+
+  const familyOptions = PROVIDER_FAMILIES.map((pf) => {
+    const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
+    const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
+    if (!totalCount) return '';
+    const shortFam = pf.label.replace(/\s*\(.*\)/, '');
+    return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(shortFam)}</option>`;
+  }).join('');
+
+  const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
+  const modelOptions = modelsInFamily.map((mc) => {
+    const av = modelAvailability(mc);
+    const suffix = !av.ok ? ' (No Key)' : '';
+    return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
+  }).join('');
+
+  const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
+
+  return `<div class="col-id col-cascader" data-slot="${esc(slot)}">
+    <div class="col-selector-bar">
+      <span class="col-slot-pill" style="background:${slotColor(slot)}22;color:${slotColor(slot)};border-color:${slotColor(slot)}55" title="Slot ${esc(slot)}">${esc(slot)}</span>
+      <select class="slot-provider-select col-inline-select col-prov-sel" data-slot="${esc(slot)}" title="Provider family" aria-label="Provider for Slot ${esc(slot)}">${familyOptions}</select>
+      <span class="col-sel-sep">▸</span>
+      <select class="slot-model-select col-inline-select col-mod-sel" data-slot="${esc(slot)}" title="Select model for Slot ${esc(slot)}" aria-label="Model for Slot ${esc(slot)}">${modelOptions}</select>
+      <select class="slot-think-select col-inline-select col-thk-sel" data-slot="${esc(slot)}" title="Thinking / reasoning depth" aria-label="Thinking mode for Slot ${esc(slot)}">${thinkOptions}</select>
     </div>
     <div class="col-sub-row">
-      ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
-      ${thinkTag(m.thinking)}
+      ${c.external ? '<span class="ext-badge" title="External API Key">EXT</span>' : '<span class="vtx-badge" title="Google Cloud Vertex AI">VERTEX AI</span>'}
+      ${m.price ? `<span class="col-price" title="Input / Output price per 1M tokens">${priceTag(m)} / 1M</span>` : ''}
+      <span class="col-ctx-tag" title="Context window">${c.context >= 1000000 ? `${(c.context / 1000000).toFixed(0)}M` : `${Math.round((c.context || 128000) / 1000)}K`} ctx</span>
     </div>
   </div>`;
 }
@@ -1935,7 +2028,7 @@ function bindCascadingSelects(root) {
 
 let _toolbarBound = false;
 function renderModelEditors() {
-  // Bind toolbar buttons once
+  // Bind top-bar lineup preset buttons & Add Model button once
   if (!_toolbarBound) {
     _toolbarBound = true;
     const addBtn = $('#addSlotBtn');
@@ -1944,76 +2037,19 @@ function renderModelEditors() {
       btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
     });
   }
-  const badge = $('#slotCountBadge');
-  if (badge) badge.textContent = `${SLOT_IDS.length} of ${MAX_SLOTS} slots active`;
   const addBtn = $('#addSlotBtn');
   if (addBtn) {
     addBtn.disabled = SLOT_IDS.length >= MAX_SLOTS;
-    addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? 'Max 6 Slots Active' : `+ Add Model Slot (${SLOT_IDS.length}/${MAX_SLOTS})`;
+    addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? `Max ${MAX_SLOTS} models` : `+ Add model (${SLOT_IDS.length}/${MAX_SLOTS})`;
   }
+}
 
-  const grid = $('#slotConfiguratorGrid');
-  if (!grid) return;
-  grid.innerHTML = '';
-  grid.dataset.slotCount = String(SLOT_IDS.length);
-  grid.style.setProperty('--slot-count', String(Math.max(1, SLOT_IDS.length)));
+// Track per-slot raw vs formatted view preference for non-executable prose tasks
+const SLOT_VIEW_RAW = {};
 
-  SLOT_IDS.forEach((slot) => {
-    const cid = SLOT_ASSIGN[slot];
-    const c = catalog().find((x) => x.id === cid) || catalog()[0];
-    if (!c) return;
-    const curFamily = providerFamilyOf(c);
-    const curEffort = SLOT_EFFORT[slot] || '';
-
-    const familyOptions = PROVIDER_FAMILIES.map((pf) => {
-      const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
-      const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
-      if (!totalCount) return '';
-      return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(pf.label)} (${runnableCount} active)</option>`;
-    }).join('');
-
-    const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
-    const modelOptions = modelsInFamily.map((mc) => {
-      const av = modelAvailability(mc);
-      const tag = !av.ok ? (av.blocked ? ' — 🚫 Quota Required' : ' — 🔒 API Key Needed') : ` — ${priceTag(mc)}/1M`;
-      return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(tag)}</option>`;
-    }).join('');
-
-    const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
-
-    const card = el('div', 'slot-cfg-card');
-    card.style.setProperty('--slot-accent', slotColor(slot));
-    card.innerHTML = `
-      <div class="scc-head">
-        <span class="scc-slot-badge" style="background:${slotColor(slot)}">Slot ${esc(slot)}</span>
-        <span class="scc-ic">${modelIconSvg(c)}</span>
-        <strong class="scc-name">${esc(c.label)}</strong>
-        ${c.external ? '<span class="ext-badge">EXT</span>' : '<span class="vtx-badge">VERTEX AI</span>'}
-        <span class="scc-price">${priceTag(c)} / 1M</span>
-        ${SLOT_IDS.length > MIN_SLOTS ? `<button type="button" class="scc-remove" data-slot="${esc(slot)}" title="Remove Slot ${esc(slot)}">&times;</button>` : ''}
-      </div>
-      <div class="scc-dropdowns">
-        <div class="scc-field">
-          <label>1. Provider</label>
-          <select class="slot-provider-select" data-slot="${esc(slot)}">${familyOptions}</select>
-        </div>
-        <div class="scc-field">
-          <label>2. Model</label>
-          <select class="slot-model-select" data-slot="${esc(slot)}">${modelOptions}</select>
-        </div>
-        <div class="scc-field">
-          <label>3. Thinking Mode</label>
-          <select class="slot-think-select" data-slot="${esc(slot)}">${thinkOptions}</select>
-        </div>
-      </div>
-    `;
-    grid.appendChild(card);
-  });
-
-  bindCascadingSelects(grid);
-  grid.querySelectorAll('.scc-remove').forEach((btn) => {
-    btn.addEventListener('click', () => clearSlot(btn.dataset.slot));
-  });
+function isProseTask(task) {
+  const t = task || currentTask();
+  return !t.executable && (!t.testCount || t.testCount === 0);
 }
 
 // ---------- arena scaffolding ----------
@@ -2021,6 +2057,8 @@ function buildArena(models) {
   const arena = $('#arena');
   arena.innerHTML = '';
   const task = currentTask();
+  const hasTests = (task.testCount || 0) > 0;
+  const proseMode = isProseTask(task);
   ARENA_MODELS = (models || MODELS).slice();
   const isRestore = !!models;
   const cells = isRestore
@@ -2031,6 +2069,7 @@ function buildArena(models) {
 
   cells.forEach(({ slot: cellSlot, m }) => {
     if (!m) return;
+    const showRaw = !proseMode || !!SLOT_VIEW_RAW[m.slot];
     const col = el('div', 'col');
     col.dataset.slot = m.slot;
     col.id = `col-${m.slot}`;
@@ -2040,22 +2079,31 @@ function buildArena(models) {
         <span class="col-accent" style="background:${slotColor(m.slot)}"></span>
         <span class="col-ic">${modelIconSvg(m)}</span>
         ${buildInlineCardCascader(m, isRestore)}
-        <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
-          title="Re-run just this model on the current task — the other columns are left alone">↻ Run again</button>
-        ${(!isRestore && SLOT_IDS.length > MIN_SLOTS) ? `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove Slot ${m.slot}">&times;</button>` : ''}
+        <div class="col-head-actions">
+          <button class="rerun-btn" type="button" data-slot="${m.slot}" disabled
+            title="Re-run just this model on the current task — the other columns are left alone">↻</button>
+          ${(!isRestore && SLOT_IDS.length > MIN_SLOTS) ? `<button class="col-remove" type="button" data-slot="${m.slot}" title="Remove Slot ${m.slot}">&times;</button>` : ''}
+        </div>
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
       <div class="col-ctx-warn hidden" id="ctx-warn-${m.slot}"></div>
       <div class="col-att-note hidden" id="att-note-${m.slot}"></div>
-      <div class="progress">
+      <div class="progress${hasTests ? '' : ' hidden'}" id="prog-${m.slot}">
         <div class="progress-track"><div class="progress-fill" id="pf-${m.slot}"></div></div>
-        <div class="progress-label"><span id="pl-${m.slot}">0 / ${currentTask().testCount} tests</span><span id="ph-${m.slot}"></span></div>
+        <div class="progress-label"><span id="pl-${m.slot}">0 / ${task.testCount || 0} tests</span><span id="ph-${m.slot}"></span></div>
       </div>
-      <details class="think" id="thinkbox-${m.slot}" open>
+      <details class="think" id="thinkbox-${m.slot}">
         <summary>Thinking / reasoning <span class="think-meta" id="think-meta-${m.slot}"></span><button class="md-magnify think-magnify" data-slot="${m.slot}" data-kind="think" type="button" title="Open full-page preview">${MAGNIFY_SVG}</button></summary>
         <pre class="think-pre"><code id="think-${m.slot}">—</code></pre>
       </details>
-      <div class="code-wrap"><button class="md-magnify" data-slot="${m.slot}" data-kind="code" type="button" title="Open full-page preview">${MAGNIFY_SVG}</button><pre><code id="code-${m.slot}">// generated solution will appear here</code></pre></div>
+      <div class="code-wrap">
+        <div class="code-toolbar">
+          ${proseMode ? `<button class="md-toggle-btn" data-slot="${m.slot}" type="button" title="Toggle Formatted Markdown vs Raw Text">${showRaw ? 'Formatted' : 'Raw'}</button>` : ''}
+          <button class="md-magnify" data-slot="${m.slot}" data-kind="code" type="button" title="Open full-page preview">${MAGNIFY_SVG}</button>
+        </div>
+        <div class="md-output${showRaw ? ' hidden' : ''}" id="md-${m.slot}"><span class="md-placeholder">Model response will appear here…</span></div>
+        <pre class="${showRaw ? '' : 'hidden'}" id="pre-${m.slot}"><code id="code-${m.slot}">${proseMode ? '// response will appear here' : '// generated solution will appear here'}</code></pre>
+      </div>
       ${task.executable ? `
       <div class="exec">
         <button class="exec-btn" data-slot="${m.slot}" type="button" disabled title="Run the generated program (${esc(task.language)})">▸ Run code</button>
@@ -2063,9 +2111,9 @@ function buildArena(models) {
         <pre class="exec-out hidden" id="exec-out-${m.slot}"><code></code></pre>
       </div>` : ''}
       <div class="metrics" id="metrics-${m.slot}">
-        <div class="metric" id="m-tok-${m.slot}"><div class="k">Output tokens (answer)</div><div class="v">0</div></div>
-        <div class="metric" id="m-think-${m.slot}"><div class="k">Thinking tokens</div><div class="v">0</div></div>
-        <div class="metric" id="m-tps-${m.slot}"><div class="k">Tokens / sec (live)</div><div class="v">0</div></div>
+        <div class="metric" id="m-tok-${m.slot}"><div class="k">Output tokens</div><div class="v">0</div></div>
+        <div class="metric" id="m-think-${m.slot}"><div class="k">Thinking</div><div class="v">0</div></div>
+        <div class="metric" id="m-tps-${m.slot}"><div class="k">Tokens / sec</div><div class="v">0</div></div>
         <div class="metric" id="m-cost-${m.slot}"><div class="k">Cost</div><div class="v">$0</div></div>
         <div class="metric metric-wide" id="m-time-${m.slot}"><div class="k">Wall time</div><div class="v">0.0s</div></div>
       </div>`;
@@ -2078,6 +2126,24 @@ function buildArena(models) {
     b.addEventListener('click', () => rerunSlot(b.dataset.slot)));
   arena.querySelectorAll('.md-magnify').forEach((b) =>
     b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openMagnify(b.dataset.slot, b.dataset.kind); }));
+  arena.querySelectorAll('.md-toggle-btn').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const slot = b.dataset.slot;
+      SLOT_VIEW_RAW[slot] = !SLOT_VIEW_RAW[slot];
+      const showRaw = !!SLOT_VIEW_RAW[slot];
+      b.textContent = showRaw ? 'Formatted' : 'Raw';
+      const mdEl = $(`#md-${slot}`);
+      const preEl = $(`#pre-${slot}`);
+      if (mdEl) mdEl.classList.toggle('hidden', showRaw);
+      if (preEl) preEl.classList.toggle('hidden', !showRaw);
+    }));
+  arena.querySelectorAll('details.think').forEach((d) => {
+    d.addEventListener('toggle', () => {
+      if (!d._autoToggling) d.dataset.userToggled = '1';
+    });
+  });
 
   if (isRestore) return;
 
@@ -2538,6 +2604,7 @@ function renderHanoiViz(host, moves, rawStdout, foot) {
 
 function setStatus(slot, html, kind) {
   const node = $(`#status-${slot}`);
+  if (!node) return;
   const spin = kind === 'run' ? '<span class="spinner"></span>' : '';
   node.className = 'col-status' + (kind === 'done' ? ' status-done' : kind === 'err' ? ' status-err' : '');
   node.innerHTML = `${spin}<span>${html}</span>`;
@@ -2550,13 +2617,74 @@ function setStatus(slot, html, kind) {
 // (but don't yank them down if they scrolled up to read).
 function stick(scroller, fn) {
   if (!scroller) return fn();
-  const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 32;
+  const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 36;
   fn();
   if (atBottom) scroller.scrollTop = scroller.scrollHeight;
 }
-function setCode(slot, text) {
+
+// Safe Markdown renderer (uses marked + DOMPurify when available, else escaped text)
+function renderSafeMarkdown(mdNode, rawText) {
+  if (!mdNode) return;
+  const txt = String(rawText || '');
+  if (!txt.trim()) {
+    mdNode.innerHTML = '<span class="md-placeholder">Model response will appear here…</span>';
+    return;
+  }
+  const parser = window.marked && (window.marked.parse || window.marked);
+  if (typeof parser === 'function' && window.DOMPurify && window.DOMPurify.sanitize) {
+    try {
+      const html = window.DOMPurify.sanitize(parser(txt));
+      mdNode.innerHTML = html;
+      return;
+    } catch (_) {}
+  }
+  mdNode.textContent = txt;
+}
+
+// Per-slot streaming accumulator & RAF batch state
+const STREAM_STATE = {};
+function resetStreamState(slot) {
+  const prev = STREAM_STATE[slot];
+  if (prev && prev.rafId) cancelAnimationFrame(prev.rafId);
+  STREAM_STATE[slot] = {
+    answer: '',
+    reasoning: '',
+    reasoningTokens: null,
+    dirtyAnswer: false,
+    dirtyThink: false,
+    lastMdAt: 0,
+    metrics: null,
+    rafId: 0,
+  };
+}
+
+function autoToggleThinkBox(slot, hasReasoning, hasAnswer) {
+  const d = document.querySelector(`#thinkbox-${slot}`);
+  if (!d || d.dataset.userToggled) return;
+  if (hasAnswer && d.open) {
+    d._autoToggling = true;
+    d.open = false;
+    setTimeout(() => { d._autoToggling = false; }, 0);
+  } else if (hasReasoning && !hasAnswer && !d.open) {
+    d._autoToggling = true;
+    d.open = true;
+    setTimeout(() => { d._autoToggling = false; }, 0);
+  }
+}
+
+function setCode(slot, text, isFinal) {
   const node = $(`#code-${slot}`);
   if (node) stick(node.parentElement, () => { node.textContent = text; }); // parent <pre> is the scroller
+  const mdNode = $(`#md-${slot}`);
+  if (mdNode && isProseTask()) {
+    const st = STREAM_STATE[slot];
+    const now = performance.now();
+    // Throttle full markdown re-parse during streaming to ~120ms, and always parse on final output
+    if (isFinal || !st || (now - (st.lastMdAt || 0) >= 120)) {
+      if (st) st.lastMdAt = now;
+      stick(mdNode, () => renderSafeMarkdown(mdNode, text));
+    }
+  }
 }
 
 function setThink(slot, text, rtok) {
@@ -2583,20 +2711,58 @@ function setThink(slot, text, rtok) {
     }
     stick(node.parentElement, () => { node.textContent = val; }); // parent .think-pre is the scroller
   }
-  if (rtok != null) {
-    const meta = document.querySelector(`#think-meta-${slot}`);
-    if (meta) meta.textContent = `· ${fmtInt(rtok)} reasoning tokens`;
+  const meta = document.querySelector(`#think-meta-${slot}`);
+  if (meta) {
+    meta.textContent = rtok != null ? `· ${fmtInt(rtok)} tok` : '';
   }
 }
+
+function flushSlotStream(slot, isFinal) {
+  const st = STREAM_STATE[slot];
+  if (!st) return;
+  if (st.rafId) {
+    cancelAnimationFrame(st.rafId);
+    st.rafId = 0;
+  }
+  const hasReasoning = !!(st.reasoning && st.reasoning.trim()) || (st.reasoningTokens || 0) > 0;
+  const hasAnswer = !!(st.answer && st.answer.trim());
+  autoToggleThinkBox(slot, hasReasoning, hasAnswer);
+
+  if (st.dirtyAnswer || isFinal) {
+    st.dirtyAnswer = false;
+    const t = currentTask();
+    const displayAns = st.answer ? (t.language ? liveCodeView(st.answer) : st.answer) : (isFinal ? '' : '…');
+    if (displayAns) setCode(slot, displayAns, !!isFinal);
+  }
+  if (st.dirtyThink || isFinal) {
+    st.dirtyThink = false;
+    setThink(slot, st.reasoning, st.reasoningTokens);
+  }
+  if (st.metrics) {
+    const m = st.metrics;
+    st.metrics = null;
+    setTileVal(slot, 'tok', m.tok);
+    setTileVal(slot, 'think', m.think);
+    setTileVal(slot, 'tps', m.tps);
+    if (m.cost != null) setTileVal(slot, 'cost', m.cost);
+  }
+}
+
+function scheduleSlotFlush(slot) {
+  const st = STREAM_STATE[slot];
+  if (!st || st.rafId) return;
+  st.rafId = requestAnimationFrame(() => {
+    st.rafId = 0;
+    flushSlotStream(slot, false);
+  });
+}
+
 function setTileVal(slot, key, val) {
   const n = document.querySelector(`#m-${key}-${slot} .v`);
   if (!n) return;
-  const changed = n.textContent !== String(val);
-  n.textContent = val;
-  if (changed && key !== 'time') { // flash on change (not the continuously-ticking wall clock)
-    const tile = n.parentElement;
-    if (tile) { tile.classList.remove('flash'); void tile.offsetWidth; tile.classList.add('flash'); }
-  }
+  const strVal = String(val);
+  if (n.textContent === strVal) return;
+  n.textContent = strVal;
 }
 function markWin(slot, key, win) {
   const n = document.querySelector(`#m-${key}-${slot}`);
@@ -2686,10 +2852,10 @@ function paintRerunButton(slot) {
   if (!b) return;
   const running = slotIsRunning(slot);
   b.disabled = false;
-  b.textContent = running ? '↻ Restart' : '↻ Run again';
+  b.textContent = running ? '↻' : '↻';
   b.classList.toggle('running', running);
   b.title = running
-    ? 'Abandon this model’s current attempt and start it again — other columns keep going'
+    ? 'Abandon this model’s current attempt and restart it — other columns keep going'
     : 'Re-run just this model on the current task — the other columns are left alone';
 }
 function paintAllRerunButtons() { (ARENA_MODELS || MODELS).forEach((m) => paintRerunButton(m.slot)); }
@@ -2706,15 +2872,28 @@ async function run() {
   { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
   Object.keys(CRASH).forEach((k) => clearCrash(k));
   $('#scorecard').classList.add('hidden');
+  const jumpBtn = $('#jumpScorecardBtn');
+  if (jumpBtn) jumpBtn.classList.add('hidden');
 
   buildArena();
   const slots = slotIds();
-  slots.forEach((s) => setStatus(s, 'Queued…', 'run'));
+  slots.forEach((s) => {
+    resetStreamState(s);
+    setStatus(s, 'Queued…', 'run');
+  });
   // Taking over every column cancels any single-slot re-run still in flight.
   slots.forEach((s) => { const r = SLOT_RUNS[s]; if (r) { r.abort.abort(); clearInterval(r.timer); delete SLOT_RUNS[s]; } });
   const own = claimSlots(slots);
   paintAllRerunButtons();
-  $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' }); // bring the model cards to the top
+
+  // Only scroll #arena into view if it is currently scrolled off-screen
+  const arenaEl = $('#arena');
+  if (arenaEl) {
+    const rect = arenaEl.getBoundingClientRect();
+    if (rect.top > window.innerHeight * 0.7 || rect.top < -80) {
+      arenaEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }
 
   // Wall clock starts ticking immediately — keeps running while a model is only
   // thinking (no tokens yet). Each slot freezes to the server's measured wallMs on 'done'.
@@ -2748,20 +2927,22 @@ async function run() {
       slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(m), 'err'); });
       if (window._lastQuotaObj && window._lastQuotaObj.openaiQuotaExhausted) {
         const switchToVertex = window.confirm(
-          `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Sonnet 5.0 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
+          `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
         );
         if (switchToVertex) {
-          const vertexFallbacks = ['claude-sonnet-5', 'gemini-3.8-flash', 'claude-opus-4-8', 'gemini-3.8-pro', 'claude-haiku-4-5'];
+          const vertexFallbacks = ['claude-opus-5-5', 'gemini-3.8-flash', 'claude-sonnet-5', 'gemini-3.1-pro', 'claude-haiku-4-5'];
           const k = loadKeys();
-          MODELS = MODELS.map((mod) => {
-            if (mod.provider === 'agentplatform' || keySourceFor(mod, k).state === 'own') return mod;
-            const usedIds = new Set(MODELS.map((x) => x.id));
-            const repId = vertexFallbacks.find((id) => !usedIds.has(id)) || 'claude-sonnet-5';
-            const preset = (CONFIG.modelPresets || []).find((p) => p.id === repId);
-            if (preset) return Object.assign({}, preset, { slot: mod.slot });
-            return mod;
+          const usedIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]).filter(Boolean));
+          MODELS.forEach((mod) => {
+            if (!mod.external || keySourceFor(mod, k).state === 'own') return;
+            const repId = vertexFallbacks.find((id) => !usedIds.has(id)) || 'claude-opus-5-5';
+            usedIds.add(repId);
+            SLOT_ASSIGN[mod.slot] = repId;
+            SLOT_EFFORT[mod.slot] = null;
           });
-          renderModelPicker();
+          syncModelsFromSlots();
+          renderModelEditors();
+          buildArena();
           updateQuotaBadge();
           setTimeout(() => run(), 50);
           return;
@@ -2789,10 +2970,6 @@ async function run() {
 async function rerunSlot(slot, repair) {
   const model = (ARENA_MODELS || MODELS).find((m) => m.slot === slot);
   if (!model) return;
-  // Clickable at ANY time. Whatever currently owns this column — an in-flight
-  // re-run of it, or a full comparison still streaming — is taken over: bumping
-  // the generation makes the old owner's events for this slot get dropped, and
-  // its own re-run request (if any) is aborted so the server stops billing it.
   { const prev = SLOT_RUNS[slot]; if (prev) { prev.abort.abort(); clearInterval(prev.timer); } }
   const own = claimSlots([slot]);
   const ac = new AbortController();
@@ -2807,15 +2984,19 @@ async function rerunSlot(slot, repair) {
   paintRerunButton(slot);
 
   // Reset just this column.
+  resetStreamState(slot);
   clearCrash(slot);
   delete LAST_RESULTS[slot];
   wallFinished.delete(slot);
   ['tok', 'think', 'tps', 'cost'].forEach((k) => setTileVal(slot, k, 0));
   setTileVal(slot, 'time', '0.0s');
-  { const c = $(`#code-${slot}`); if (c) c.textContent = '// generated solution will appear here'; }
+  const proseMode = isProseTask();
+  { const c = $(`#code-${slot}`); if (c) c.textContent = proseMode ? '// response will appear here' : '// generated solution will appear here'; }
+  { const md = $(`#md-${slot}`); if (md) md.innerHTML = '<span class="md-placeholder">Model response will appear here…</span>'; }
+  { const tb = document.querySelector(`#thinkbox-${slot}`); if (tb) { delete tb.dataset.userToggled; tb.open = false; } }
   setThink(slot, '', null);
   { const pf = $(`#pf-${slot}`); if (pf) pf.style.width = '0%'; }
-  { const pl = $(`#pl-${slot}`); if (pl) pl.textContent = `0 / ${currentTask().testCount} tests`; }
+  { const pl = $(`#pl-${slot}`); if (pl) pl.textContent = `0 / ${currentTask().testCount || 0} tests`; }
   { const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`); if (eb) eb.disabled = true; }
   setStatus(slot, 'Queued…', 'run');
 
@@ -2871,59 +3052,86 @@ function handleEvent(ev, results, own) {
       showAttachmentNotes(ev.slot, ev.notes);
       break;
     case 'status': {
-      const phase = ev.phase === 'thinking'
-        ? `Round ${ev.iteration}: generating solution…`
-        : `Round ${ev.iteration}: running hidden tests…`;
-      setStatus(ev.slot, phase, 'run');
+      let phaseText;
+      if (ev.phase === 'retrying') {
+        phaseText = esc(ev.message || 'Transient rate-limit — retrying…');
+      } else if (ev.phase === 'thinking') {
+        phaseText = 'Generating response…';
+      } else {
+        phaseText = 'Running hidden tests…';
+      }
+      setStatus(ev.slot, phaseText, 'run');
       break;
     }
     case 'delta': {
-      // token-by-token streaming: code, reasoning and counters update live
-      if (ev.answer != null) {
-        const t = currentTask();
-        setCode(ev.slot, t.language ? liveCodeView(ev.answer) : (ev.answer || '…'));
+      // Incremental O(1) delta accumulation + requestAnimationFrame DOM batching
+      if (!STREAM_STATE[ev.slot]) resetStreamState(ev.slot);
+      const st = STREAM_STATE[ev.slot];
+      if (ev.answerReset) st.answer = '';
+      if (ev.answerDelta != null) {
+        st.answer += ev.answerDelta;
+        st.dirtyAnswer = true;
+      } else if (ev.answer != null) {
+        st.answer = ev.answer;
+        st.dirtyAnswer = true;
       }
-      if (ev.reasoning !== undefined || ev.reasoningTokens !== undefined) {
-        setThink(ev.slot, ev.reasoning, ev.reasoningTokens);
+      if (ev.reasoningReset) st.reasoning = '';
+      if (ev.reasoningDelta != null) {
+        st.reasoning += ev.reasoningDelta;
+        st.dirtyThink = true;
+      } else if (ev.reasoning !== undefined) {
+        st.reasoning = ev.reasoning || '';
+        st.dirtyThink = true;
+      }
+      if (ev.reasoningTokens !== undefined) {
+        st.reasoningTokens = ev.reasoningTokens;
+        st.dirtyThink = true;
       }
       const secs = (ev.wallMs || 0) / 1000;
       const think = ev.reasoningTokens || 0;
-      setTileVal(ev.slot, 'tok', fmtInt(Math.max(0, (ev.estOutTokens || 0) - think))); // answer only
-      setTileVal(ev.slot, 'think', fmtInt(think));
-      // rolling 1s rate for "real-time" tok/s; falls back to cumulative if rolling is 0
-      const rolling = ev.currentTokensPerSec != null ? ev.currentTokensPerSec : (secs ? Math.round(ev.estOutTokens / secs) : 0);
-      setTileVal(ev.slot, 'tps', rolling);
-      if (ev.costUsd != null) setTileVal(ev.slot, 'cost', fmtCost(ev.costUsd)); // live cost as tokens stream
-      // (wall time is driven by the client ticker so it never sits at 0 during thinking)
-      setStatus(ev.slot, `Round ${ev.iteration}: streaming\u2026`, 'run');
+      const rolling = ev.currentTokensPerSec != null ? ev.currentTokensPerSec : (secs ? Math.round((ev.estOutTokens || 0) / secs) : 0);
+      st.metrics = {
+        tok: fmtInt(Math.max(0, (ev.estOutTokens || 0) - think)),
+        think: fmtInt(think),
+        tps: rolling,
+        cost: ev.costUsd != null ? fmtCost(ev.costUsd) : null,
+      };
+      scheduleSlotFlush(ev.slot);
+      setStatus(ev.slot, 'Streaming\u2026', 'run');
       break;
     }
     case 'metrics': {
-      // live cumulative counters tick up as each round's generation lands
+      flushSlotStream(ev.slot, true);
       if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, ev.roundReasoningTokens);
       const think = ev.reasoningTokens || 0;
       setTileVal(ev.slot, 'tok', fmtInt(Math.max(0, ev.completionTokens - think))); // answer only
       setTileVal(ev.slot, 'think', fmtInt(think));
       setTileVal(ev.slot, 'tps', ev.tokensPerSec);
       setTileVal(ev.slot, 'cost', fmtCost(ev.costUsd));
-      // (wall time is driven by the client ticker)
       break;
     }
     case 'iteration': {
+      flushSlotStream(ev.slot, true);
       if (ev.total === 0) {
-        $(`#pf-${ev.slot}`).style.width = '100%';
-        $(`#pl-${ev.slot}`).textContent = 'generated · no automated tests';
-        $(`#ph-${ev.slot}`).textContent = '';
+        const pf = $(`#pf-${ev.slot}`);
+        const pl = $(`#pl-${ev.slot}`);
+        const ph = $(`#ph-${ev.slot}`);
+        if (pf) pf.style.width = '100%';
+        if (pl) pl.textContent = 'generated · no automated tests';
+        if (ph) ph.textContent = '';
       } else {
         const pct = ev.total ? Math.round((ev.passed / ev.total) * 100) : 0;
-        $(`#pf-${ev.slot}`).style.width = pct + '%';
-        $(`#pl-${ev.slot}`).textContent = `${ev.passed} / ${ev.total} tests`;
+        const pf = $(`#pf-${ev.slot}`);
+        const pl = $(`#pl-${ev.slot}`);
+        if (pf) pf.style.width = pct + '%';
+        if (pl) pl.textContent = `${ev.passed} / ${ev.total} tests`;
       }
-      if (ev.code) setCode(ev.slot, ev.code);
+      if (ev.code) setCode(ev.slot, ev.code, true);
       if (ev.reasoning !== undefined) setThink(ev.slot, ev.reasoning, ev.reasoningTokens != null ? ev.reasoningTokens : null);
       break;
     }
     case 'done':
+      flushSlotStream(ev.slot, true);
       results[ev.slot] = ev.result;
       wallFinished.add(ev.slot); // freeze wall time to the server's measured value
       {
@@ -2932,6 +3140,8 @@ function handleEvent(ev, results, own) {
         setTileVal(ev.slot, 'think', fmtInt(think));
         // finalize the thinking panel with the authoritative total (text + count)
         setThink(ev.slot, ev.result.reasoning, ev.result.reasoningTokens);
+        if (ev.result.code != null) setCode(ev.slot, ev.result.code, true);
+        autoToggleThinkBox(ev.slot, !!(ev.result.reasoning || think > 0), !!(ev.result.code && ev.result.code.trim()));
       }
       setTileVal(ev.slot, 'tps', ev.result.tokensPerSec);
       setTileVal(ev.slot, 'cost', fmtCost(ev.result.costUsd));
@@ -2954,19 +3164,21 @@ function handleEvent(ev, results, own) {
       }
       break;
     case 'model_error':
+      flushSlotStream(ev.slot, true);
       results[ev.slot] = { slot: ev.slot, label: ev.label, error: ev.message };
       wallFinished.add(ev.slot);
       setStatus(ev.slot, 'Error: ' + esc(ev.message), 'err');
       break;
     case 'all_done':
       finalize(results);   // re-runs merge into LAST_RESULTS, so the scorecard reflects every slot
-      // Durable, per-user run history is written SERVER-SIDE on run completion — nothing to POST here.
-      // Bring the scorecard to the top after a FULL run; a single-slot re-run keeps
-      // you where you are (you were looking at that column).
-      if (own && Object.keys(own).length > 1) setTimeout(() => {
+      // Show the non-intrusive "🏆 View Scorecard ▾" pill in the composer footer instead of yanking the user's scroll position
+      {
         const sc = $('#scorecard');
-        if (sc && !sc.classList.contains('hidden')) sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 80);
+        const jumpBtn = $('#jumpScorecardBtn');
+        if (sc && !sc.classList.contains('hidden') && jumpBtn) {
+          jumpBtn.classList.remove('hidden');
+        }
+      }
       break;
     case 'error':
       slotIds().forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(ev.message), 'err'); });
@@ -3480,9 +3692,15 @@ async function restoreHistory(id) {
     const snap = j.run;
     closeAuthModal();
     const sel = $('#taskSelect');
-    if ([].slice.call(sel.options).some((o) => o.value === snap.taskId)) { sel.value = snap.taskId; renderTaskPrompt(); }
+    if ([].slice.call(sel.options).some((o) => o.value === snap.taskId)) {
+      sel.value = snap.taskId;
+      if (snap.taskId === 'custom' && snap.prompt && $('#customPrompt')) {
+        $('#customPrompt').value = snap.prompt;
+      }
+      renderTaskPrompt();
+    }
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
-    $('#arena').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) { window.alert(e.message); }
 }
 
@@ -3510,7 +3728,11 @@ function renderSavedRun(snap) {
     if (data.error) { setStatus(slot, 'Error: ' + esc(data.error), 'err'); return; }
     applyResultToColumn(slot, data);
   });
+  LAST_RESULTS = resultsMap;
   finalize(resultsMap, snap.models.map((m) => m.slot)); // rebuild the scorecard from saved results
+  const jumpBtn = $('#jumpScorecardBtn');
+  const sc = $('#scorecard');
+  if (jumpBtn && sc && !sc.classList.contains('hidden')) jumpBtn.classList.remove('hidden');
 }
 
 // Visible record of provider-specific attachment handling for this slot (e.g.
@@ -3525,10 +3747,11 @@ function showAttachmentNotes(slot, notes) {
 // Repaint one column from a saved/finished result (mirrors the live 'done' handler; never auto-runs).
 function applyResultToColumn(slot, r) {
   if (Array.isArray(r.attachmentNotes)) showAttachmentNotes(slot, r.attachmentNotes);
-  if (r.code != null) $(`#code-${slot}`).textContent = r.code;
+  if (r.code != null) setCode(slot, r.code, true);
   setThink(slot, r.reasoning, r.reasoningTokens != null ? r.reasoningTokens : null);
   // saved/finished view: show code & reasoning from the top, not the streamed bottom
   { const cp = $(`#code-${slot}`); if (cp && cp.parentElement) cp.parentElement.scrollTop = 0;
+    const md = $(`#md-${slot}`); if (md) md.scrollTop = 0;
     const tp = document.querySelector(`#think-${slot}`); if (tp && tp.parentElement) tp.parentElement.scrollTop = 0; }
   const thinkTok = r.reasoningTokens || 0;
   setTileVal(slot, 'tok', fmtInt(Math.max(0, r.completionTokens - thinkTok)));
@@ -3537,11 +3760,15 @@ function applyResultToColumn(slot, r) {
   setTileVal(slot, 'cost', fmtCost(r.costUsd));
   setTileVal(slot, 'time', (r.wallMs / 1000).toFixed(1) + 's');
   if (r.total) {
-    $(`#pf-${slot}`).style.width = Math.round((r.passed / r.total) * 100) + '%';
-    $(`#pl-${slot}`).textContent = `${r.passed} / ${r.total} tests`;
+    const pf = $(`#pf-${slot}`);
+    const pl = $(`#pl-${slot}`);
+    if (pf) pf.style.width = Math.round((r.passed / r.total) * 100) + '%';
+    if (pl) pl.textContent = `${r.passed} / ${r.total} tests`;
   } else {
-    $(`#pf-${slot}`).style.width = '100%';
-    $(`#pl-${slot}`).textContent = 'generated · no automated tests';
+    const pf = $(`#pf-${slot}`);
+    const pl = $(`#pl-${slot}`);
+    if (pf) pf.style.width = '100%';
+    if (pl) pl.textContent = 'generated · no automated tests';
   }
   const secs = (r.wallMs / 1000).toFixed(1);
   setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
@@ -3554,7 +3781,10 @@ function applyResultToColumn(slot, r) {
 
 
 // ---------- full-page preview (magnifying glass) ----------
-function modelLabel(slot) { const m = MODELS.find((x) => x.slot === slot); return (m && m.label) || ('Model ' + slot); }
+function modelLabel(slot) {
+  const m = (ARENA_MODELS || MODELS).find((x) => x.slot === slot) || MODELS.find((x) => x.slot === slot);
+  return (m && m.label) || ('Model ' + slot);
+}
 
 function ensureModal() {
   let modal = $('#mdModal');

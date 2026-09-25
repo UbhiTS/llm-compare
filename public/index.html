@@ -8,13 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=20260925c" />
+  <link rel="stylesheet" href="styles.css?v=20260925d" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=20260925c" defer></script>
+  <script src="app.js?v=20260925d" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -57,77 +57,73 @@
   </header>
 
   <section class="controls glass">
+    <!-- Row 1: Task Selector + Quick Lineup Presets + Add Model + History -->
     <div class="control-row">
-      <div class="field">
-        <label for="taskSelect">Agentic task</label>
-        <select id="taskSelect"></select>
-      </div>
-      <button id="historyBtn" class="ctl-btn" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
-    </div>
-    <div class="run-status-row">
-      <div id="taskMeta" class="task-meta"></div>
-      <div class="run-status-right">
-        <span id="quotaBadge" class="quota-badge"></span>
-        <button type="button" id="copyPromptBtn" class="prompt-copy-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
-          <svg class="copy-ic" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.6"></rect>
-            <path d="M10.5 5.5V3.4A1.4 1.4 0 0 0 9.1 2H3.4A1.4 1.4 0 0 0 2 3.4v5.7a1.4 1.4 0 0 0 1.4 1.4h2.1"></path>
-          </svg>
-          <span class="copy-lbl" id="copyPromptLabel">Copy prompt</span>
-        </button>
-      </div>
-    </div>
-    <div class="prompt-box-wrap">
-      <p id="taskPrompt" class="task-prompt"></p>
-      <textarea id="customPrompt" class="custom-prompt hidden" rows="3" placeholder="Type your own prompt — it is sent verbatim to every model slot (along with any attached files below). You can also paste images/files directly here (⌘V / Ctrl+V) or press ⌘↵ / Ctrl+Enter to run."></textarea>
-    </div>
-    <div id="customAttachmentsWrap" class="custom-attachments-wrap hidden">
-      <input type="file" id="customFileInput" class="hidden" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.zip,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.jsx,.ts,.tsx,.py,.sql,.sh,.log,.c,.cpp,.h,.go,.rs,.java,.rb,.php" />
-      <div id="customDropzone" class="ca-dropzone">
-        <div class="ca-drop-left">
-          <button type="button" id="attachFilesBtn" class="ctl-btn sm primary ca-attach-btn">📎 Attach files</button>
-          <span class="ca-drop-hint">Drag &amp; drop 1 or multiple files here, click <b>Attach files</b>, or paste (<code>⌘V</code>) — <b>Images</b> (PNG/JPG/WEBP/GIF/SVG), <b>PDFs</b>, <b>DOCX/XLSX/ZIP</b>, <b>CSV/JSON</b>, <b>Markdown &amp; Code</b></span>
+      <div class="control-row-left">
+        <div class="field task-field">
+          <label for="taskSelect">Task</label>
+          <select id="taskSelect"></select>
         </div>
-        <div class="ca-drop-right">
-          <span id="attachCountBadge" class="ca-count-badge">No files attached</span>
-          <button type="button" id="clearAttachmentsBtn" class="ctl-btn sm danger hidden">Clear all</button>
-        </div>
+        <div id="taskMeta" class="task-meta"></div>
       </div>
-      <div id="attachmentSizeWarning" class="ca-size-warning hidden" role="status" aria-live="polite"></div>
-      <div id="attachmentList" class="ca-list hidden"></div>
-      <div id="contextMeterBar" class="ca-context-meter hidden"></div>
+
+      <div class="control-row-right">
+        <div class="mc-presets" role="group" aria-label="Model lineup presets">
+          <span class="mc-preset-label">Lineup:</span>
+          <button type="button" class="mc-preset-btn" data-preset="frontier" title="Gemini 3.8 Flash · Claude Opus 5.5 · GPT-6 Sol">🏆 Flagships</button>
+          <button type="button" class="mc-preset-btn" data-preset="fast" title="Gemini 3.5 Flash Lite · Claude Haiku 4.5 · Grok 4.1 Fast">⚡ Fast</button>
+          <button type="button" class="mc-preset-btn" data-preset="same-model-thinking" title="Compare Gemini 3.8 Flash across Low, Medium, and High thinking modes">🧠 Thinking A/B/C</button>
+          <button type="button" class="mc-preset-btn" data-preset="open-maas" title="Llama 4 Maverick · DeepSeek V3.2 · Qwen 3 235B (100% Vertex AI MaaS)">☁️ Vertex MaaS</button>
+        </div>
+        <button type="button" id="addSlotBtn" class="ctl-btn sm" title="Add another model column to the comparison (up to 6)">+ Add model <span class="slot-count-pill" id="slotCountBadge">3/6</span></button>
+        <button id="historyBtn" class="ctl-btn sm" type="button" title="View &amp; restore past comparison runs">🗂 History</button>
+      </div>
     </div>
 
-    <div class="execution-bar" role="toolbar" aria-label="Comparison execution controls">
-      <div class="exec-bar-actions">
-        <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>
-        <button id="autoRun" class="ctl-btn toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run on finish</button>
-        <button id="autoFix" class="ctl-btn toggle" type="button" aria-pressed="false" title="When a model's code crashes, send the failure back to that model once for a fix. Off by default so a comparison measures first attempts; a Fix it button is always offered on the crash itself."><span class="ar-led"></span>Auto-fix crashes</button>
+    <!-- Row 2: Unified Prompt Composer Card (supports drag & drop directly onto the card) -->
+    <div id="customDropzone" class="composer-card">
+      <div class="prompt-box-wrap">
+        <p id="taskPrompt" class="task-prompt hidden"></p>
+        <textarea id="customPrompt" class="custom-prompt" rows="3" placeholder="Ask anything, compare code, or analyze attached files… (Paste images with ⌘V, press ⌘↵ to run)"></textarea>
       </div>
-      <span class="exec-bar-hint">Tip: Press <kbd>⌘↵</kbd> or <kbd>Ctrl+Enter</kbd> in prompt to launch</span>
+
+      <div id="customAttachmentsWrap" class="custom-attachments-wrap">
+        <input type="file" id="customFileInput" class="hidden" multiple accept="image/*,.pdf,.docx,.xlsx,.pptx,.zip,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.xml,.yaml,.yml,.html,.htm,.css,.js,.mjs,.cjs,.jsx,.ts,.tsx,.py,.sql,.sh,.log,.c,.cpp,.h,.go,.rs,.java,.rb,.php" />
+        <div id="attachmentList" class="ca-list hidden"></div>
+        <div id="attachmentSizeWarning" class="ca-size-warning hidden" role="status" aria-live="polite"></div>
+        <div id="contextMeterBar" class="ca-context-meter hidden"></div>
+      </div>
+
+      <div class="composer-footer" role="toolbar" aria-label="Prompt and execution controls">
+        <div class="composer-footer-left">
+          <button type="button" id="attachFilesBtn" class="composer-tool-btn" title="Attach images, PDFs, Office docs, ZIPs, CSV/JSON, or code files (or drag &amp; drop onto prompt)">📎 Attach files</button>
+          <span id="attachCountBadge" class="ca-count-badge hidden">No files attached</span>
+          <button type="button" id="clearAttachmentsBtn" class="composer-tool-btn danger hidden">Clear files</button>
+          <button type="button" id="copyPromptBtn" class="composer-tool-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
+            <svg class="copy-ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.6"></rect>
+              <path d="M10.5 5.5V3.4A1.4 1.4 0 0 0 9.1 2H3.4A1.4 1.4 0 0 0 2 3.4v5.7a1.4 1.4 0 0 0 1.4 1.4h2.1"></path>
+            </svg>
+            <span class="copy-lbl" id="copyPromptLabel">Copy prompt</span>
+          </button>
+          <span id="composerTokenPill" class="composer-token-pill" title="Estimated input tokens"></span>
+          <span id="quotaBadge" class="quota-badge"></span>
+        </div>
+
+        <div class="composer-footer-right">
+          <div id="codingTogglesWrap" class="coding-toggles-wrap hidden">
+            <button id="autoRun" class="ctl-btn sm toggle is-on" type="button" aria-pressed="true" title="Automatically run each model's code as soon as the task finishes"><span class="ar-led"></span>Auto-run</button>
+            <button id="autoFix" class="ctl-btn sm toggle" type="button" aria-pressed="false" title="When a model's code crashes, send the failure back to that model once for a fix"><span class="ar-led"></span>Auto-fix</button>
+          </div>
+          <button type="button" id="jumpScorecardBtn" class="ctl-btn sm jump-scorecard-btn hidden" title="Jump to comparison scorecard">🏆 Scorecard ↓</button>
+          <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>
+        </div>
+      </div>
     </div>
 
-    <details class="model-config" open>
-      <summary>
-        <span>Model Slots — 3-Dropdown Selector (<b>Provider</b> ▸ <b>Model</b> ▸ <b>Thinking Mode</b>)</span>
-        <span class="mc-summary-meta" id="slotCountBadge">3 of 6 slots active</span>
-      </summary>
-      <div class="mc-toolbar">
-        <div class="mc-presets" role="group" aria-label="Quick presets">
-          <span class="mc-preset-label">Quick presets:</span>
-          <button type="button" class="mc-preset-btn" data-preset="frontier">⚡ Frontier Showdown (Gemini 3.8 · Claude Opus 5.5 · Fable 5.1 · GPT-6 Sol · Grok 4.20)</button>
-          <button type="button" class="mc-preset-btn" data-preset="same-model-thinking">🧠 Gemini 3.8 Flash: Thinking Modes (Minimal vs Medium vs High)</button>
-          <button type="button" class="mc-preset-btn" data-preset="grok-reasoning">🚀 xAI Grok 4.20 &amp; 4.1: Reasoning vs Standard</button>
-          <button type="button" class="mc-preset-btn" data-preset="open-maas">🌐 Vertex MaaS Open-Weight (Llama 4 · Qwen 3 · Kimi K2 · GLM 5.2)</button>
-        </div>
-        <div class="mc-actions">
-          <button type="button" id="addSlotBtn" class="ctl-btn sm primary">+ Add Model Slot</button>
-        </div>
-      </div>
-      <div id="slotConfiguratorGrid" class="slot-configurator-grid"></div>
-      <div id="modelPalette" class="model-palette hidden"></div>
-      <p class="hint">Select <b>1. Provider Family</b> ▸ <b>2. Model</b> ▸ <b>3. Thinking / Reasoning Mode</b> for each slot (up to 6 slots). You can select the <b>exact same model across multiple slots with different Thinking Modes</b> to benchmark how reasoning depth affects speed, token cost, and accuracy. All <b>Vertex AI Agent Platform / MaaS</b> models authenticate automatically via your Argolis GCP credentials.</p>
-    </details>
+    <!-- Legacy hidden containers preserved for compatibility -->
+    <div id="slotConfiguratorGrid" class="slot-configurator-grid hidden" hidden></div>
+    <div id="modelPalette" class="model-palette hidden" hidden></div>
   </section>
 
   <section id="arena" class="arena"></section>

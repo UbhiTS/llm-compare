@@ -34,8 +34,16 @@
 // ---------------------------------------------------------------------------
 
 const net = require('net');
+const { AsyncLocalStorage } = require('async_hooks');
 
-const DEFAULTS = { TIMEOUT_MS: 900000, MAX_RETRIES: 2, RETRY_BASE_MS: 1000, RETRY_MAX_MS: 20000 };
+const retryListenerStorage = new AsyncLocalStorage();
+
+function withRetryListener(listener, fn) {
+  if (typeof listener !== 'function') return fn();
+  return retryListenerStorage.run(listener, fn);
+}
+
+const DEFAULTS = { TIMEOUT_MS: 90000, MAX_RETRIES: 2, RETRY_BASE_MS: 1000, RETRY_MAX_MS: 20000 };
 
 const CONNECT_ATTEMPT = { DEFAULT: 2500, MIN: 250, MAX: 10000 };
 
@@ -107,8 +115,9 @@ async function attempt(url, opts, timeoutMs, provider) {
     else clientSignal.addEventListener('abort', onClientAbort, { once: true });
   }
   const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs) : null;
+  const { onRetry: _omitOnRetry, ...fetchOpts } = opts || {};
   try {
-    return await globalThis.fetch(url, { ...opts, signal: ctrl.signal });
+    return await globalThis.fetch(url, { ...fetchOpts, signal: ctrl.signal });
   } catch (e) {
     if (timedOut) throw new ProviderTimeoutError(provider, timeoutMs);
     throw e;
@@ -136,6 +145,7 @@ async function providerFetch(url, opts = {}) {
   const base = knob('RETRY_BASE_MS', provider);
   const max = knob('RETRY_MAX_MS', provider);
   const clientSignal = opts.signal;
+  const notifyRetry = opts.onRetry || retryListenerStorage.getStore() || null;
 
   for (let i = 0; ; i++) {
     let res;
@@ -145,17 +155,26 @@ async function providerFetch(url, opts = {}) {
       // Caller cancelled → propagate immediately, never retry.
       if (clientSignal && clientSignal.aborted) throw e;
       if (i >= maxRetries) throw sanitizedNetworkError(e, provider);
-      await sleep(backoffMs(i, base, max), clientSignal);
+      const waitMs = backoffMs(i, base, max);
+      if (typeof notifyRetry === 'function') {
+        try { notifyRetry({ attempt: i + 1, maxRetries, status: null, delayMs: waitMs, provider }); } catch (_) {}
+      }
+      await sleep(waitMs, clientSignal);
       continue;
     }
     if (!isRetryableStatus(res.status) || i >= maxRetries) return res;
     const retryAfter = res.headers && res.headers.get ? res.headers.get('retry-after') : null;
     try { if (res.body && res.body.cancel) await res.body.cancel(); } catch (_) { /* ignore */ }
-    await sleep(backoffMs(i, base, max, retryAfter), clientSignal);
+    const waitMs = backoffMs(i, base, max, retryAfter);
+    if (typeof notifyRetry === 'function') {
+      try { notifyRetry({ attempt: i + 1, maxRetries, status: res.status, delayMs: waitMs, provider }); } catch (_) {}
+    }
+    await sleep(waitMs, clientSignal);
   }
 }
 
 module.exports = {
   providerFetch, providerOf, isRetryableStatus, backoffMs, ProviderTimeoutError,
   connectAttemptTimeoutMs, applyConnectAttemptTimeout, CONNECT_ATTEMPT, CONNECT_ATTEMPT_TIMEOUT_MS,
+  withRetryListener,
 };

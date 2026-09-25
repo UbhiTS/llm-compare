@@ -236,6 +236,7 @@ function upsertMetaInternal(meta, persistDisk = true) {
 }
 
 let persistTimer = null;
+let snapshotChain = Promise.resolve();
 function schedulePersistSnapshot() {
   if (persistTimer) return;
   persistTimer = setTimeout(async () => {
@@ -245,25 +246,29 @@ function schedulePersistSnapshot() {
   if (persistTimer.unref) persistTimer.unref();
 }
 
-async function flushSnapshotAsync() {
-  try {
-    await fsp.mkdir(BASE_DIR, { recursive: true });
-    // 1. Write compact index.json (single sequential file read/write on GCS FUSE)
-    const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
-    const tmpIdx = PERSIST_INDEX_JSON + '.tmp';
-    await fsp.writeFile(tmpIdx, JSON.stringify(allMeta));
-    await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
+function flushSnapshotAsync() {
+  snapshotChain = snapshotChain.then(async () => {
+    try {
+      await fsp.mkdir(BASE_DIR, { recursive: true });
+      const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+      // 1. Write compact index.json (single sequential file read/write on GCS FUSE)
+      const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
+      const tmpIdx = PERSIST_INDEX_JSON + suffix;
+      await fsp.writeFile(tmpIdx, JSON.stringify(allMeta));
+      await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
 
-    // 2. If SQLite is active in /tmp, checkpoint WAL and copy SQLite snapshot to /data
-    if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
-      try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
-      const tmpSqlite = PERSIST_SQLITE_PATH + '.tmp';
-      await fsp.copyFile(LOCAL_SQLITE_PATH, tmpSqlite);
-      await fsp.rename(tmpSqlite, PERSIST_SQLITE_PATH);
+      // 2. If SQLite is active in /tmp, checkpoint WAL and copy SQLite snapshot to /data
+      if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
+        try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
+        const tmpSqlite = PERSIST_SQLITE_PATH + suffix;
+        await fsp.copyFile(LOCAL_SQLITE_PATH, tmpSqlite);
+        await fsp.rename(tmpSqlite, PERSIST_SQLITE_PATH);
+      }
+    } catch (e) {
+      // Non-fatal background snapshot
     }
-  } catch (e) {
-    // Non-fatal background snapshot
-  }
+  });
+  return snapshotChain;
 }
 
 let backfillStarted = false;
@@ -512,6 +517,10 @@ function getUserPreferences(username) {
   return p || { prompt: '', taskId: 'custom', slots: null, models: null };
 }
 
+// Per-user promise chain so rapid concurrent saveUserPreferences calls
+// always serialize cleanly and write the latest prefsByUserKey snapshot.
+const prefWriteChains = new Map();
+
 // Save remembered preferences for a specific user
 function saveUserPreferences(username, newPrefs) {
   const u = norm(username);
@@ -573,15 +582,19 @@ function saveUserPreferences(username, newPrefs) {
         JSON.stringify(slots || []),
         updatedAt
       );
+      schedulePersistSnapshot();
     } catch (_) {}
   }
 
-  // Persist to disk asynchronously
-  const dir = path.join(BASE_DIR, key);
-  fsp.mkdir(dir, { recursive: true }).then(async () => {
-    const tmp = path.join(dir, `prefs.json.${Date.now()}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+  // Persist to disk asynchronously in serialized order per user
+  const prevChain = prefWriteChains.get(key) || Promise.resolve();
+  const nextChain = prevChain.then(async () => {
+    const latest = prefsByUserKey.get(key) || prefObj;
+    const dir = path.join(BASE_DIR, key);
+    await fsp.mkdir(dir, { recursive: true });
+    const tmp = path.join(dir, `prefs.json.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
     const finalPath = path.join(dir, 'prefs.json');
-    const payload = JSON.stringify(prefObj, null, 2);
+    const payload = JSON.stringify(latest, null, 2);
     try {
       await fsp.writeFile(tmp, payload);
       await fsp.rename(tmp, finalPath);
@@ -592,6 +605,7 @@ function saveUserPreferences(username, newPrefs) {
   }).catch((e) => {
     console.warn('[history] saveUserPreferences write failed:', (e && e.message) || e);
   });
+  prefWriteChains.set(key, nextChain);
 
   return prefObj;
 }

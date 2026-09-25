@@ -28,10 +28,9 @@ assert.deepStrictEqual(
   [
     { slot: 'A', catalogId: 'gemini-3.8-flash' },
     { slot: 'B', catalogId: 'claude-opus-5-5' },
-    { slot: 'C', catalogId: 'claude-fable-5-1' },
-    { slot: 'D', catalogId: 'gpt-6-sol' },
+    { slot: 'C', catalogId: 'gpt-6-sol' },
   ],
-  'default slots should use the release lineup in the configured order'
+  'default slots should use the 3-model verified frontier lineup in the configured order'
 );
 
 const gemini37 = MODEL_CATALOG.find((m) => m.id === 'gemini-3.7-flash');

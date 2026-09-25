@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 const { complete, thinkingProfile } = require('./providers');
+const { withRetryListener } = require('./providerFetch');
 const { runTests } = require('./runner');
 const { priceFor } = require('./pricing');
 const { budgetAttachmentsForModel } = require('./attachments');
@@ -144,6 +145,8 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
 
     emit({ type: 'status', slot, phase: 'thinking', iteration: iterations });
     let lastDelta = 0;
+    let sentAnswer = '';
+    let sentReasoning = '';
     const samples = []; // [{ms, charsLen}] rolling window for live tok/s
     const WINDOW_MS = 1000; // 1 second
     const onDelta = ({ answer, reasoning, runningOut, runningThink }) => {
@@ -151,7 +154,9 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       if (now - lastDelta < 60) return; // throttle delta emissions to ~16 fps
       lastDelta = now;
       const wallMs = Date.now() - wallStart;
-      const charsLen = (answer || '').length + (reasoning || '').length;
+      const curAns = answer || '';
+      const curReason = reasoning || '';
+      const charsLen = curAns.length + curReason.length;
       // rolling 1s rate from char growth (smooth, immune to end-of-stream usage corrections)
       samples.push({ ms: wallMs, charsLen });
       while (samples.length > 1 && samples[0].ms < wallMs - WINDOW_MS) samples.shift();
@@ -166,19 +171,31 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       // mid-stream (Gemini reports thoughtsTokenCount only at the end), so estimate
       // thinking from the reasoning text and answer from the answer text, taking the
       // max with any provider count. (The final exact split lands on the metrics/done event.)
-      const thinkNow = Math.max(runningThink || 0, Math.ceil((reasoning || '').length / 4));
+      const thinkNow = Math.max(runningThink || 0, Math.ceil(curReason.length / 4));
       const answerNow = Math.max(
         runningOut != null ? Math.max(0, runningOut - (runningThink || 0)) : 0,
-        Math.ceil((answer || '').length / 4)
+        Math.ceil(curAns.length / 4)
       );
       // Live cost = prior rounds' cost + this round's streaming output so far (output
       // tokens incl. thinking are billed at price.output). Input cost for the current
       // round lands when the round's usage arrives on the metrics event.
       const liveOut = totals.completionTokens + answerNow + thinkNow;
       const liveCostUsd = +(((price.input * totals.promptTokens) + (price.output * liveOut)) / 1e6).toFixed(6);
+
+      // Compute O(1) incremental deltas so we don't re-serialize & secret-scrub
+      // the entire cumulative text on every 60ms tick.
+      const answerReset = !curAns.startsWith(sentAnswer);
+      const answerDelta = answerReset ? curAns : curAns.slice(sentAnswer.length);
+      sentAnswer = curAns;
+
+      const reasoningReset = !curReason.startsWith(sentReasoning);
+      const reasoningDelta = reasoningReset ? curReason : curReason.slice(sentReasoning.length);
+      sentReasoning = curReason;
+
       emit({
         type: 'delta', slot, iteration: iterations,
-        answer: answer || '', reasoning: reasoning || '',
+        ...(answerDelta || answerReset ? { answerDelta, ...(answerReset ? { answerReset: true } : {}) } : {}),
+        ...(reasoningDelta || reasoningReset ? { reasoningDelta, ...(reasoningReset ? { reasoningReset: true } : {}) } : {}),
         estOutTokens: answerNow + thinkNow,   // total (answer + thinking)
         reasoningTokens: thinkNow,            // thinking subset; UI shows answer = total − thinking
         costUsd: liveCostUsd,
@@ -186,21 +203,35 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
         wallMs,
       });
     };
-    const resp = await complete({
-      provider: modelConfig.provider,
-      publisher: modelConfig.publisher,
-      project: modelConfig.project,
-      model: modelConfig.model,
-      effort: modelConfig.effort,        // per-card reasoning level, already validated server-side
-      endpointType: modelConfig.endpointType,
-      region: modelConfig.region,
-      thinkingMode: modelConfig.thinkingMode,
-      system,
-      messages,
-      onDelta,
-      keys,
-      signal,
-    });
+    const resp = await withRetryListener(
+      (retryInfo) => {
+        emit({
+          type: 'status',
+          slot,
+          phase: 'retrying',
+          iteration: iterations,
+          status: retryInfo.status,
+          attempt: retryInfo.attempt,
+          maxRetries: retryInfo.maxRetries,
+          delayMs: retryInfo.delayMs,
+        });
+      },
+      () => complete({
+        provider: modelConfig.provider,
+        publisher: modelConfig.publisher,
+        project: modelConfig.project,
+        model: modelConfig.model,
+        effort: modelConfig.effort,        // per-card reasoning level, already validated server-side
+        endpointType: modelConfig.endpointType,
+        region: modelConfig.region,
+        thinkingMode: modelConfig.thinkingMode,
+        system,
+        messages,
+        onDelta,
+        keys,
+        signal,
+      })
+    );
 
     // Visible record of any attachment substitution (e.g. an image auto-scaled
     // for this model because the provider rejects the original) — never silent.

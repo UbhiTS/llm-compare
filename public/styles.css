@@ -1312,3 +1312,436 @@ a.ud-item[hidden] { display: none; }
   opacity: 1;
 }
 
+/* ============================================================================
+   2026-09 Streamlined 2-Row Controls, Unified Composer & Inline Card Selectors
+   ============================================================================ */
+
+.controls {
+  padding: 16px 20px 18px;
+}
+
+.control-row.control-row-top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.task-field {
+  flex: 1 1 320px;
+  min-width: 240px;
+}
+
+.task-select-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.task-select-wrap select {
+  flex: 1 1 240px;
+  min-width: 200px;
+  height: 40px;
+  padding: 0 12px;
+}
+
+.lineup-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lineup-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 6px;
+  background: var(--well);
+  border: 1px solid var(--border);
+}
+
+.lineup-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  padding: 0 6px;
+}
+
+.ctl-btn.compact {
+  height: 36px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+
+/* Unified Prompt & Attachment Composer Card */
+.composer-card {
+  margin-top: 12px;
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.composer-card.drag-over {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: color-mix(in srgb, var(--accent) 8%, var(--well));
+}
+
+.composer-body {
+  padding: 10px 14px 6px;
+}
+
+.composer-body .custom-prompt {
+  margin-top: 0;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 64px;
+  box-shadow: none !important;
+}
+
+.composer-body .custom-prompt:focus {
+  border: none;
+  box-shadow: none !important;
+}
+
+.composer-body .task-prompt {
+  margin: 2px 0 4px;
+  max-height: 200px;
+}
+
+.composer-body .ca-list {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--surface) 65%, var(--well));
+  border-top: 1px solid var(--border);
+}
+
+.composer-footer-left,
+.composer-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.composer-footer-right {
+  margin-left: auto;
+}
+
+.composer-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--well);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.composer-tool-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.composer-tool-btn.subtle {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+.composer-tool-btn.subtle:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.composer-token-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 3px 8px;
+  background: var(--well);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.composer-token-pill.is-warn {
+  color: #ffb347;
+  border-color: rgba(255, 179, 71, 0.45);
+}
+
+.composer-token-pill.is-over {
+  color: #ff8787;
+  border-color: rgba(255, 107, 107, 0.5);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.coding-toggles-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.jump-scorecard-btn {
+  border-color: rgba(52, 224, 161, 0.55) !important;
+  color: var(--good) !important;
+  background: rgba(52, 224, 161, 0.1) !important;
+}
+
+.jump-scorecard-btn:hover {
+  background: rgba(52, 224, 161, 0.18) !important;
+}
+
+/* Inline Card Header Selector Bar (Provider ▸ Model ▸ Thinking) */
+.col-head {
+  padding: 11px 14px;
+  gap: 9px;
+  align-items: flex-start;
+}
+
+.col-head .col-ic .mi {
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+}
+
+.col-id.col-cascader {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.col-selector-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.col-inline-select {
+  height: 28px;
+  padding: 0 22px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background-color: var(--well);
+  color: var(--text);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  cursor: pointer;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+.col-inline-select:hover {
+  border-color: var(--accent);
+}
+
+.col-inline-select.col-prov-sel {
+  font-size: 11.5px;
+  color: var(--muted);
+  flex: 0 1 auto;
+}
+
+.col-inline-select.col-mod-sel {
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  flex: 1 1 135px;
+  min-width: 115px;
+}
+
+.col-inline-select.col-thk-sel {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background-color: color-mix(in srgb, var(--accent) 8%, var(--well));
+  flex: 0 1 auto;
+}
+
+.col-sel-sep {
+  color: var(--faint);
+  font-size: 10px;
+  user-select: none;
+}
+
+.col-ctx-tag {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.col-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.col-head-actions .rerun-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 13.5px;
+}
+
+/* Formatted Markdown & Wrapped Code Output inside Arena Cards */
+.code-wrap {
+  position: relative;
+  padding: 11px 15px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.code-toolbar {
+  position: absolute;
+  top: 17px;
+  right: 23px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.code-toolbar .md-magnify {
+  position: static;
+}
+
+.md-toggle-btn {
+  height: 24px;
+  padding: 0 8px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.md-toggle-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.code-wrap pre {
+  flex: 1;
+  max-height: 360px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.code-wrap code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.md-output {
+  flex: 1;
+  margin: 0;
+  background: var(--well-2);
+  border: 1px solid var(--border);
+  padding: 14px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 360px;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.md-output .md-placeholder {
+  color: var(--faint);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.md-output > *:first-child { margin-top: 0; }
+.md-output > *:last-child { margin-bottom: 0; }
+.md-output h1, .md-output h2, .md-output h3, .md-output h4 {
+  font-family: "Space Grotesk", Inter, sans-serif;
+  margin: 12px 0 6px;
+  line-height: 1.3;
+}
+.md-output h1 { font-size: 17px; }
+.md-output h2 { font-size: 15.5px; }
+.md-output h3 { font-size: 14px; }
+.md-output p { margin: 0 0 9px; }
+.md-output ul, .md-output ol { margin: 0 0 9px; padding-left: 20px; }
+.md-output li { margin-bottom: 4px; }
+.md-output code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  background: var(--well);
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+}
+.md-output pre {
+  background: var(--well);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md-output pre code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+.md-output table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.md-output th, .md-output td {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  white-space: normal;
+}
+
