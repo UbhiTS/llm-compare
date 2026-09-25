@@ -352,7 +352,7 @@ This finishes Tarun's uncommitted work from 2026-09-24 18:07–18:09. It was com
 
 **Behaviour.**
 - Every provider gets the **original** image, up to the 25 MB per-file cap.
-- When an image's base64 is over Anthropic's 5 MB cap, the browser makes a scaled copy. It uses `createImageBitmap` with OffscreenCanvas, or `<img>` and canvas as a fallback. It encodes WebP, or JPEG if WebP isn't available. It steps down quality (0.9→0.6) and then the long side (3840→768) until the copy is under 97% of the cap.
+- When an image's base64 is over Anthropic's 5 MB cap, the browser makes a scaled copy. It uses `createImageBitmap` with OffscreenCanvas, or `<img>` and canvas as a fallback. It encodes WebP, or JPEG if WebP isn't available. It starts at Claude's maximum native resolution (see 13.1). If the copy is still too big, it steps quality 0.9→0.6 and then size ×0.8…×0.3 until the copy is under 97% of the cap.
 - The copy is sent as `claudeDataBase64` / `claudeMimeType`, and **only** `toClaudeContent` uses it.
 - `#attachmentSizeWarning` tells the user whether the image was auto-scaled for Claude or couldn't be. It is built with `createElement` / `textContent`, and file names are never put in HTML.
 - The old `optimizeOversizedImage` downscaled the image for **all** providers. It has been removed. See the decision note below.
@@ -384,3 +384,27 @@ Anything else is ignored, never raised as an error:
 **Tests.**
 - New [verify-claude-scaled.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/verify-claude-scaled.js) runs under `npm test`: 16 checks, including routing, cache bytes, a single entry, sha1 references, 7 rejection cases, unneeded copies, the cached-reference path, and the worker path.
 - smoke-followup gains 3 checks: JSON inspect accepted, bad MIME rejected, and the multipart `claude_scaled` part.
+
+### 13.1 Round 6: Claude copy starts at Claude's native resolution
+
+**Doc finding.** Source: https://docs.anthropic.com/en/docs/build-with-claude/vision, fetched live on 2026-09-25, section "Resolution tier".
+- Claude bills images in 28×28 px patches, called "visual tokens".
+- Each model has a maximum native resolution. Images over either limit are "downscaled before processing".
+- **High-resolution tier, "Claude 4.7 and later models": max long edge 2576 px, max 4784 visual tokens.**
+- Standard tier, all other models: 1568 px and 1568 visual tokens.
+- Per-image hard limits: 8000×8000 px, and 5 MB on the API.
+
+The requested 1568 px is the **standard-tier** figure. Most Claude models in this app's catalog are 4.7 or later (opus-4-7, opus-4-8, opus-5, opus-5-5, sonnet-5, fable-5, fable-5-1, mythos-5), and those accept 2576 px / 4784 visual tokens natively. So, per the instruction "if the docs give a different number, use that":
+- The copy starts at the largest size inside **both** high-res limits: constants `CLAUDE_IMAGE_MAX_LONG_EDGE = 2576` and `CLAUDE_IMAGE_MAX_VISUAL_TOKENS = 4784`, computed in `claudeNativeScale()`.
+- A 3000×2200 image becomes 2239×1642 (80×59 = 4720 visual tokens; 1.49 MB WebP in headless Chrome).
+- Older standard-tier models (haiku-4-5, opus-4-5/4-6, sonnet-4-5/4-6) downscale it to 1568 px on the server, which costs nothing extra.
+- Using 1568 px would give the 4.7+ models less detail than they can use. Changing it is one constant.
+
+**Decision 1 = (a)**: non-Claude providers get the original image. A live OpenAI check used the same 7.74 MB / 3000×2200 PNG (10.3 MB base64) with the payloads built by the app's own `toOpenAIResponsesContent` and `toOpenAIChatContent`:
+
+| Model | /v1/responses | /v1/chat/completions |
+|---|---|---|
+| gpt-6-luna | 200, correct ("large red circle and a yellow square … blue background") | 200, correct |
+| gpt-5.6-luna | 200, correct | 200, correct |
+
+OpenAI accepts the original on both formats, so no size-error handling was needed.

@@ -9,6 +9,7 @@
 //     falls back to the existing "too large" text note
 //   - copy for a small original or a non-image is dropped
 //   - cached-reference path picks up a copy the cache entry lacked
+//   - browser copy size math (claudeNativeScale in public/app.js)
 // No network, no server.
 // ---------------------------------------------------------------------------
 const assert = require('assert');
@@ -173,7 +174,36 @@ check('cached ref + copy: validated, attached, re-cached with correct bytes', ()
   assert.ok(!b.claudeDataBase64, 'mismatched copy on ref ignored');
 });
 
-// 6. Worker path (normalizeAttachmentsAsync) gives the same result.
+// 6. Browser scale math (public/app.js claudeNativeScale), extracted and run in a vm.
+check('browser copy size: ≤ 2576 px long edge and ≤ 4784 visual tokens (Claude native limit)', () => {
+  const fs = require('fs');
+  const vm = require('vm');
+  const src = fs.readFileSync(require('path').join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const grab = (re) => { const m = src.match(re); assert.ok(m, `missing ${re}`); return m[0]; };
+  const code = [
+    grab(/const CLAUDE_IMAGE_MAX_LONG_EDGE = \d+;/),
+    grab(/const CLAUDE_IMAGE_MAX_VISUAL_TOKENS = \d+;/),
+    grab(/const CLAUDE_IMAGE_PATCH_PX = \d+;/),
+    grab(/function claudeNativeScale\([\s\S]*?\n}\n/),
+    'this.claudeNativeScale = claudeNativeScale; this.L = CLAUDE_IMAGE_MAX_LONG_EDGE; this.T = CLAUDE_IMAGE_MAX_VISUAL_TOKENS;',
+  ].join('\n');
+  const ctx = {}; vm.createContext(ctx); vm.runInContext(code, ctx);
+  assert.strictEqual(ctx.L, 2576); assert.strictEqual(ctx.T, 4784);
+  const tok = (w, h) => Math.ceil(w / 28) * Math.ceil(h / 28);
+  for (const [W, H] of [[3000, 2200], [8000, 8000], [6000, 1000], [1000, 6000], [4032, 3024], [2576, 1000], [1200, 900], [20000, 300]]) {
+    const s = ctx.claudeNativeScale(W, H);
+    const w = Math.max(1, Math.round(W * s)); const h = Math.max(1, Math.round(H * s));
+    assert.ok(s > 0 && s <= 1, `scale in (0,1] for ${W}x${H}`);
+    assert.ok(Math.max(w, h) <= 2576, `${W}x${H} → ${w}x${h} long edge`);
+    assert.ok(tok(w, h) <= 4784, `${W}x${H} → ${w}x${h} tokens ${tok(w, h)}`);
+    // not needlessly small: 3% larger would break a limit (unless already at scale 1)
+    const w2 = Math.round(W * s * 1.03); const h2 = Math.round(H * s * 1.03);
+    assert.ok(s === 1 || Math.max(w2, h2) > 2576 || tok(w2, h2) > 4784, `${W}x${H} → ${w}x${h} is near the limit`);
+  }
+  assert.strictEqual(ctx.claudeNativeScale(1200, 900), 1, 'small images keep their size');
+});
+
+// 7. Worker path (normalizeAttachmentsAsync) gives the same result.
 (async () => {
   try {
     const orig = bigPng();

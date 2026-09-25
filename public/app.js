@@ -915,8 +915,30 @@ function estimateClientAttachmentTokens({ isEmpty, isImage, isPdf, pageCount, si
 // sent alongside it (claudeDataBase64 / claudeMimeType) and used only for Claude.
 const CLAUDE_MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024;
 const CLAUDE_SCALED_TARGET_CHARS = Math.floor(CLAUDE_MAX_IMAGE_BASE64_CHARS * 0.97); // headroom under the cap
-const CLAUDE_SCALE_MAX_SIDES = [3840, 2560, 2048, 1568, 1280, 1024, 768];
+// Claude's maximum native image resolution (high-resolution tier, Claude 4.7 and
+// later: 2576 px long edge AND 4784 visual tokens, one token per 28×28 patch).
+// Anything larger is downscaled by the API anyway, so the copy starts at this size;
+// older (standard-tier, 1568 px) Claude models downscale it further server-side.
+// https://docs.anthropic.com/en/docs/build-with-claude/vision (checked 2026-09-25)
+const CLAUDE_IMAGE_MAX_LONG_EDGE = 2576;
+const CLAUDE_IMAGE_MAX_VISUAL_TOKENS = 4784;
+const CLAUDE_IMAGE_PATCH_PX = 28;
+// If the copy is still over 5 MB at the native size: shrink by these factors.
+const CLAUDE_SCALE_STEPS = [1, 0.8, 0.65, 0.5, 0.4, 0.3];
 const CLAUDE_SCALE_QUALITIES = [0.9, 0.82, 0.72, 0.6];
+
+// Largest scale (≤ 1) whose result fits Claude's long-edge and visual-token limits.
+function claudeNativeScale(width, height) {
+  const long = Math.max(width, height);
+  let s = Math.min(1, CLAUDE_IMAGE_MAX_LONG_EDGE / long);
+  const px = (n, k) => Math.max(1, Math.round(n * k));
+  const tokens = (k) => Math.ceil(px(width, k) / CLAUDE_IMAGE_PATCH_PX) * Math.ceil(px(height, k) / CLAUDE_IMAGE_PATCH_PX);
+  if (tokens(s) > CLAUDE_IMAGE_MAX_VISUAL_TOKENS) {
+    s = Math.min(s, Math.sqrt((CLAUDE_IMAGE_MAX_VISUAL_TOKENS * CLAUDE_IMAGE_PATCH_PX * CLAUDE_IMAGE_PATCH_PX) / (width * height)));
+    while (s > 0.01 && tokens(s) > CLAUDE_IMAGE_MAX_VISUAL_TOKENS) s *= 0.99; // ceil() rounding
+  }
+  return s;
+}
 
 const base64LengthForBytes = (n) => 4 * Math.ceil((Number(n) || 0) / 3);
 
@@ -974,9 +996,9 @@ async function makeClaudeScaledCopy(file) {
     const longSide = Math.max(decoded.width, decoded.height);
     if (!longSide) return { error: 'the image has no dimensions' };
     let outMime = null; // decided on the first encode: WebP if the browser can encode it, else JPEG
-    for (const side of CLAUDE_SCALE_MAX_SIDES) {
-      if (side >= longSide && side !== CLAUDE_SCALE_MAX_SIDES[0]) continue;
-      const scale = Math.min(1, side / longSide);
+    const native = claudeNativeScale(decoded.width, decoded.height);
+    for (const step of CLAUDE_SCALE_STEPS) {
+      const scale = native * step;
       const w = Math.max(1, Math.round(decoded.width * scale));
       const h = Math.max(1, Math.round(decoded.height * scale));
       const canvas = makeScaleCanvas(w, h);
@@ -1138,7 +1160,7 @@ async function addAttachmentFiles(fileList) {
           claudeCopy = scaled;
           const fmt = scaled.mimeType === 'image/webp' ? 'WebP' : 'JPEG';
           optBadge = `Claude copy ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)})`;
-          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit, so it was auto-scaled to ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)}) for Claude. Other models get the original.`, isError: false };
+          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit, so Claude gets a copy auto-scaled to ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)}), within Claude's max native resolution (${CLAUDE_IMAGE_MAX_LONG_EDGE} px / ${CLAUDE_IMAGE_MAX_VISUAL_TOKENS} visual tokens). Other models get the original.`, isError: false };
         } else {
           const why = (scaled && scaled.error) || 'unknown error';
           sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit and couldn't be auto-scaled (${why}). Claude will receive a text note instead of the image; other models get the original.`, isError: true };
