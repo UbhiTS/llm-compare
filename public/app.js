@@ -119,9 +119,35 @@ async function init() {
     });
     ts.appendChild(og);
   });
-  ts.value = 'custom';
-  ts.addEventListener('change', () => { renderTaskPrompt(); $('#scorecard').classList.add('hidden'); buildArena(); });
+  ts.addEventListener('change', () => {
+    renderTaskPrompt();
+    $('#scorecard').classList.add('hidden');
+    buildArena();
+    saveUserPreferencesDebounced();
+  });
   initAttachmentsUI();
+
+  // Restore user's last used prompt and task selection (per user)
+  const me = CONFIG && CONFIG.me;
+  const userPrompt = (me && me.preferences && typeof me.preferences.prompt === 'string' && me.preferences.prompt)
+    || (me && typeof me.lastPrompt === 'string' && me.lastPrompt)
+    || loadLocalPrompt();
+  const userTaskId = (me && me.preferences && typeof me.preferences.taskId === 'string' && me.preferences.taskId)
+    || loadLocalTaskId();
+
+  const customTa = $('#customPrompt');
+  if (customTa && typeof userPrompt === 'string' && userPrompt) {
+    customTa.value = userPrompt;
+  }
+  if (customTa) {
+    customTa.addEventListener('input', () => saveUserPreferencesDebounced());
+  }
+
+  if (userTaskId && [].slice.call(ts.options).some((o) => o.value === userTaskId)) {
+    ts.value = userTaskId;
+  } else {
+    ts.value = 'custom';
+  }
   renderTaskPrompt();
 
   renderModelEditors();
@@ -625,6 +651,85 @@ function providerLabelOf(familyId) {
   return f ? f.label : familyId;
 }
 
+function getUsername() {
+  return (CONFIG && CONFIG.me && CONFIG.me.username) ? CONFIG.me.username : 'default';
+}
+
+function loadLocalSlots() {
+  try {
+    const raw = localStorage.getItem('ullm.pref.' + getUsername());
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && Array.isArray(obj.slots) && obj.slots.length) ? obj.slots : null;
+  } catch (_) { return null; }
+}
+
+function loadLocalPrompt() {
+  try {
+    const raw = localStorage.getItem('ullm.pref.' + getUsername());
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj.prompt === 'string') ? obj.prompt : null;
+  } catch (_) { return null; }
+}
+
+function loadLocalTaskId() {
+  try {
+    const raw = localStorage.getItem('ullm.pref.' + getUsername());
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj.taskId === 'string') ? obj.taskId : null;
+  } catch (_) { return null; }
+}
+
+let _prefSaveTimer = null;
+function saveUserPreferencesDebounced() {
+  if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
+  _prefSaveTimer = setTimeout(() => {
+    _prefSaveTimer = null;
+    saveUserPreferencesImmediate();
+  }, 400);
+}
+
+function saveUserPreferencesImmediate() {
+  if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
+  const uname = CONFIG.me.username;
+  const customPromptEl = $('#customPrompt');
+  const taskSelectEl = $('#taskSelect');
+  const prompt = (customPromptEl && customPromptEl.value) || '';
+  const taskId = (taskSelectEl && taskSelectEl.value) || 'custom';
+  const slots = SLOT_IDS.map((s) => ({
+    slot: s,
+    catalogId: SLOT_ASSIGN[s] || null,
+    effort: SLOT_EFFORT[s] || null,
+  })).filter((s) => s.catalogId);
+
+  const payload = {
+    prompt,
+    taskId,
+    slots,
+    models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
+  };
+
+  if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
+  Object.assign(CONFIG.me.preferences, payload);
+  CONFIG.me.lastPrompt = prompt;
+  CONFIG.me.lastModels = payload.models;
+
+  try {
+    localStorage.setItem('ullm.pref.' + uname, JSON.stringify(payload));
+  } catch (_) {}
+
+  try {
+    fetch('/api/me/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    }).catch(() => {});
+  } catch (_) {}
+}
+
 function seedSlots() {
   const UPGRADE_MAP = {
     'gemini-3.7-flash': 'gemini-3.8-flash',
@@ -638,17 +743,24 @@ function seedSlots() {
   const usable = (list) => (list || [])
     .map((m) => {
       const rawId = m.catalogId || m.id;
-      return { id: UPGRADE_MAP[rawId] || rawId, effort: m.effort || null };
+      return { id: UPGRADE_MAP[rawId] || rawId, effort: m.effort || null, slot: m.slot || null };
     })
     .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
     .slice(0, MAX_SLOTS);
 
-  const list = usable(CONFIG.models);
+  const me = CONFIG && CONFIG.me;
+  const userSlots = (me && me.preferences && me.preferences.slots)
+    || (me && me.lastModels)
+    || loadLocalSlots();
+  const rawList = (Array.isArray(userSlots) && userSlots.length) ? userSlots : CONFIG.models;
+  let list = usable(rawList);
+  if (!list.length) list = usable(CONFIG.models);
+
   const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 4));
   SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
   ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
   list.forEach((m, i) => {
-    const s = SLOT_IDS[i];
+    const s = (m.slot && ALL_SLOT_IDS.includes(m.slot)) ? m.slot : SLOT_IDS[i];
     if (!s) return;
     SLOT_ASSIGN[s] = m.id;
     SLOT_EFFORT[s] = m.effort;
@@ -819,6 +931,7 @@ function afterSlotChange() {
   updateQuotaBadge();
   updateRunButton();
   if (typeof renderContextMeter === 'function') renderContextMeter();
+  saveUserPreferencesDebounced();
 }
 
 function updateRunButton() {
@@ -2622,6 +2735,8 @@ async function run() {
     attachments: currentAttachmentsPayload(),
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
   };
+
+  saveUserPreferencesImmediate();
 
   LAST_RESULTS = {};
   const results = LAST_RESULTS;

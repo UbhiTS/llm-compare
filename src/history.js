@@ -65,6 +65,8 @@ let stmts = null;
 // Kept 100% in sync with SQLite so both Node 20 and Node 22 answer listRuns /
 // listAllRuns / usageSummary / lastModels in <0.2ms with zero disk I/O!
 const metaById = new Map();
+// Per-user preferences in-memory map: userKey -> { user, prompt, taskId, slots, models, updatedAt }
+const prefsByUserKey = new Map();
 // Full payload LRU cache for getRun(id): id -> full record
 const fullPayloadCache = new Map();
 const MAX_PAYLOAD_CACHE = 300;
@@ -96,6 +98,14 @@ function initSqlite() {
         );
         CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_runs_user_at ON runs(user_key, at DESC);
+        CREATE TABLE IF NOT EXISTS user_prefs (
+          user_key TEXT PRIMARY KEY,
+          user TEXT NOT NULL,
+          prompt TEXT,
+          task_id TEXT,
+          slots_json TEXT,
+          updated_at INTEGER
+        );
       `);
       stmts = {
         upsert: sqliteDb.prepare(`
@@ -110,11 +120,38 @@ function initSqlite() {
         `),
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
+        upsertPref: sqliteDb.prepare(`
+          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_key) DO UPDATE SET
+            user = excluded.user,
+            prompt = excluded.prompt,
+            task_id = excluded.task_id,
+            slots_json = excluded.slots_json,
+            updated_at = excluded.updated_at
+        `),
+        allPrefs: sqliteDb.prepare(`SELECT * FROM user_prefs`),
       };
       const rows = stmts.all.all();
       for (const r of rows) {
         metaById.set(r.id, rowToMeta(r));
       }
+      try {
+        const prefRows = stmts.allPrefs.all();
+        for (const pr of prefRows) {
+          let slots = null;
+          try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
+          const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
+          prefsByUserKey.set(pr.user_key, {
+            user: pr.user,
+            prompt: pr.prompt || '',
+            taskId: pr.task_id || 'custom',
+            slots,
+            models,
+            updatedAt: Number(pr.updated_at) || 0,
+          });
+        }
+      } catch (_) {}
     }
   } catch (e) {
     console.warn('[history] SQLite init fallback to JSON index:', (e && e.message) || e);
@@ -169,6 +206,7 @@ function recordToMeta(rec) {
     userName: rec.userName || rec.user || u,
     taskId: rec.taskId || 'unknown',
     title: rec.title || rec.taskId || 'Run',
+    prompt: typeof rec.prompt === 'string' ? rec.prompt : '',
     kind: rec.kind === 'single' ? 'single' : 'compare',
     models: Array.isArray(rec.models) ? rec.models : [],
     summary: Array.isArray(rec.summary) ? rec.summary : [],
@@ -239,7 +277,7 @@ function scheduleBackgroundBackfill() {
       let imported = 0;
       for (const k of ownerDirs) {
         const dir = path.join(BASE_DIR, k);
-        const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+        const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json') && f !== 'prefs.json');
         // Process in batches of 8 concurrent async reads so we never block the event loop
         for (let i = 0; i < files.length; i += 8) {
           const batch = files.slice(i, i + 8);
@@ -270,13 +308,23 @@ function scheduleBackgroundBackfill() {
 // Synchronous one-time scan for a specific owner key ONLY if that owner has 0
 // entries in metaById (e.g., unit test that writes files or fresh local dir).
 function ensureOwnerLoadedSync(key) {
+  if (!prefsByUserKey.has(key)) {
+    const pfile = path.join(BASE_DIR, key, 'prefs.json');
+    try {
+      if (fs.existsSync(pfile)) {
+        const raw = fs.readFileSync(pfile, 'utf8');
+        const p = JSON.parse(raw);
+        if (p) prefsByUserKey.set(key, p);
+      }
+    } catch (_) {}
+  }
   for (const m of metaById.values()) {
     if (m.userKey === key) return;
   }
   const dir = path.join(BASE_DIR, key);
   try {
     if (!fs.existsSync(dir)) return;
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'prefs.json');
     let added = 0;
     for (const f of files) {
       const id = f.slice(0, -5);
@@ -334,17 +382,21 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
-async function saveRun({ user, userName, task, models, results, kind }) {
+async function saveRun({ user, userName, task, customPrompt, models, results, kind }) {
   try {
     const id = newId();
     const at = Date.now();
     const u = norm(user);
     const uKey = userKey(u);
+    const promptText = (typeof customPrompt === 'string' && customPrompt.trim())
+      ? customPrompt
+      : ((task && typeof task.prompt === 'string') ? task.prompt : '');
     const record = {
       v: 1, id, at,
       user: u, userKey: uKey, userName: userName || user,
       taskId: (task && task.id) || 'unknown',
       title: (task && task.title) || (task && task.id) || 'Run',
+      prompt: promptText,
       kind: kind === 'single' ? 'single' : 'compare',
       models: (models || []).map((m) => ({
         slot: m.slot, catalogId: m.catalogId, label: m.label,
@@ -359,6 +411,29 @@ async function saveRun({ user, userName, task, models, results, kind }) {
     const meta = recordToMeta(record);
     upsertMetaInternal(meta, true);
     cachePayload(id, record);
+
+    // Update user preferences for remembered prompt and models selection on the slots
+    if (kind !== 'single') {
+      const runSlots = (models || [])
+        .filter((m) => m && m.catalogId)
+        .map((m) => ({
+          slot: m.slot || null,
+          catalogId: m.catalogId,
+          effort: m.effort || null,
+        }));
+      saveUserPreferences(u, {
+        prompt: promptText,
+        taskId: (task && task.id) || 'custom',
+        slots: runSlots,
+      });
+    } else if (promptText) {
+      const cur = getUserPreferences(u);
+      saveUserPreferences(u, {
+        prompt: promptText,
+        taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
+        slots: cur && cur.slots,
+      });
+    }
 
     // 2. Write full record JSON to owner directory for getRun(id) restore
     const dir = path.join(BASE_DIR, uKey);
@@ -375,8 +450,170 @@ async function saveRun({ user, userName, task, models, results, kind }) {
   }
 }
 
+// Derive remembered preferences from historical runs if no explicit preferences exist
+function derivePrefsFromHistory(u, key) {
+  const userRuns = [];
+  for (const m of metaById.values()) {
+    if (m.userKey === key) userRuns.push(m);
+  }
+  if (!userRuns.length) return null;
+  userRuns.sort((a, b) => b.at - a.at);
+  const pick = userRuns.find((r) => r.kind !== 'single' && Array.isArray(r.models) && r.models.length)
+    || userRuns.find((r) => Array.isArray(r.models) && r.models.length);
+  if (!pick) return null;
+
+  let prompt = '';
+  if (pick.prompt) {
+    prompt = pick.prompt;
+  } else {
+    try {
+      const full = getRun(pick.id, { username: u, isAdmin: true });
+      if (full && typeof full.prompt === 'string') prompt = full.prompt;
+    } catch (_) {}
+  }
+
+  const slots = (pick.models || [])
+    .filter((m) => m && m.catalogId)
+    .map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null }));
+
+  return {
+    user: u,
+    prompt: prompt || '',
+    taskId: pick.taskId || 'custom',
+    slots: slots.length ? slots : null,
+    models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
+    updatedAt: pick.at,
+  };
+}
+
+// Get remembered preferences for a specific user (prompt, taskId, slots)
+function getUserPreferences(username) {
+  const u = norm(username);
+  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null };
+  const key = userKey(u);
+  ensureOwnerLoadedSync(key);
+  let p = prefsByUserKey.get(key);
+  if (!p) {
+    const fp = path.join(BASE_DIR, key, 'prefs.json');
+    try {
+      if (fs.existsSync(fp)) {
+        const raw = fs.readFileSync(fp, 'utf8');
+        p = JSON.parse(raw);
+        if (p) prefsByUserKey.set(key, p);
+      }
+    } catch (_) {}
+  }
+  if (!p) {
+    p = derivePrefsFromHistory(u, key);
+    if (p) {
+      prefsByUserKey.set(key, p);
+    }
+  }
+  return p || { prompt: '', taskId: 'custom', slots: null, models: null };
+}
+
+// Save remembered preferences for a specific user
+function saveUserPreferences(username, newPrefs) {
+  const u = norm(username);
+  if (!u) return null;
+  const key = userKey(u);
+  const current = getUserPreferences(u) || {};
+
+  const prompt = typeof newPrefs.prompt === 'string'
+    ? newPrefs.prompt.slice(0, 500000)
+    : (current.prompt || '');
+  const taskId = typeof newPrefs.taskId === 'string'
+    ? newPrefs.taskId.slice(0, 100)
+    : (current.taskId || 'custom');
+
+  let slots = null;
+  if (Array.isArray(newPrefs.slots)) {
+    slots = newPrefs.slots
+      .slice(0, 6)
+      .filter((s) => s && (s.catalogId || s.id))
+      .map((s) => ({
+        slot: s.slot || null,
+        catalogId: s.catalogId || s.id,
+        effort: s.effort || null,
+      }));
+  } else if (Array.isArray(newPrefs.models)) {
+    slots = newPrefs.models
+      .slice(0, 6)
+      .filter((m) => m && (m.catalogId || m.id))
+      .map((m) => ({
+        slot: m.slot || null,
+        catalogId: m.catalogId || m.id,
+        effort: m.effort || null,
+      }));
+  } else if (current.slots) {
+    slots = current.slots;
+  }
+
+  const models = slots ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : (current.models || null);
+  const updatedAt = Date.now();
+
+  const prefObj = {
+    user: u,
+    prompt,
+    taskId,
+    slots,
+    models,
+    updatedAt,
+  };
+
+  prefsByUserKey.set(key, prefObj);
+
+  if (stmts && stmts.upsertPref) {
+    try {
+      stmts.upsertPref.run(
+        key,
+        u,
+        prompt,
+        taskId,
+        JSON.stringify(slots || []),
+        updatedAt
+      );
+    } catch (_) {}
+  }
+
+  // Persist to disk asynchronously
+  const dir = path.join(BASE_DIR, key);
+  fsp.mkdir(dir, { recursive: true }).then(async () => {
+    const tmp = path.join(dir, `prefs.json.${Date.now()}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    const finalPath = path.join(dir, 'prefs.json');
+    const payload = JSON.stringify(prefObj, null, 2);
+    try {
+      await fsp.writeFile(tmp, payload);
+      await fsp.rename(tmp, finalPath);
+    } catch (_) {
+      await fsp.writeFile(finalPath, payload).catch(() => {});
+      try { await fsp.unlink(tmp); } catch (_) {}
+    }
+  }).catch((e) => {
+    console.warn('[history] saveUserPreferences write failed:', (e && e.message) || e);
+  });
+
+  return prefObj;
+}
+
+// Instant (<0.1ms) lookup of the user's last used prompt
+function lastPrompt(username) {
+  const p = getUserPreferences(username);
+  if (p && typeof p.prompt === 'string' && p.prompt.trim()) {
+    return p.prompt;
+  }
+  return null;
+}
+
 // Instant (<0.1ms) lookup of the user's most recent model line-up from the SQLite/memory index.
 function lastModels(username) {
+  const p = getUserPreferences(username);
+  if (p && Array.isArray(p.models) && p.models.length) {
+    const out = p.models
+      .filter((m) => m && m.catalogId)
+      .map((m) => ({ catalogId: m.catalogId, effort: m.effort || null }));
+    if (out.length) return out;
+  }
   const key = userKey(username);
   ensureOwnerLoadedSync(key);
   const userRuns = [];
@@ -524,4 +761,4 @@ function usageSummary() {
 
 initSqlite();
 
-module.exports = { saveRun, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, BASE_DIR };
+module.exports = { saveRun, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, BASE_DIR };

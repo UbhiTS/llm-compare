@@ -440,8 +440,20 @@ app.get('/api/config', (req, res) => {
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
       lastModels: history.lastModels(req.user.username),   // reopen on their last selection
+      lastPrompt: history.lastPrompt(req.user.username),   // reopen on their last prompt
+      preferences: history.getUserPreferences(req.user.username),
     },
   });
+});
+
+// ---------- user preferences (remembered prompt, task, slots per user) ----------
+app.get('/api/me/preferences', (req, res) => {
+  res.json({ ok: true, preferences: history.getUserPreferences(req.user.username) });
+});
+
+app.post('/api/me/preferences', (req, res) => {
+  const prefs = history.saveUserPreferences(req.user.username, req.body || {});
+  res.json({ ok: true, preferences: prefs });
 });
 
 // ---------- run history (per-user; admins can see everyone) ----------
@@ -808,7 +820,15 @@ app.post('/api/run', async (req, res) => {
   // instance). The server is the source of truth (the browser never writes
   // history), so a user cannot forge or tamper with the log.
   if (Array.isArray(results)) {
-    history.saveRun({ user: req.user.username, userName: req.user.username, task, models: chosenModels, results, kind }).catch(() => {});
+    history.saveRun({
+      user: req.user.username,
+      userName: req.user.username,
+      task,
+      customPrompt: typeof customPrompt === 'string' ? customPrompt : undefined,
+      models: chosenModels,
+      results,
+      kind,
+    }).catch(() => {});
   }
   res.end();
 });

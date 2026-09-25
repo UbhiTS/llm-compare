@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js",
+    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js && node test/verify-user-preferences.js",
     "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js && node test/smoke-secrets.js && node test/smoke-secondary.js"
   },
   "engines": {
