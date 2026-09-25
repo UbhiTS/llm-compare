@@ -408,3 +408,27 @@ The requested 1568 px is the **standard-tier** figure. Most Claude models in thi
 | gpt-5.6-luna | 200, correct | 200, correct |
 
 OpenAI accepts the original on both formats, so no size-error handling was needed.
+
+## 14. Round 7 (2026-09-25): no silent attachment stripping + per-model large-image matrix
+
+**Root cause on 00078:**
+- OpenAI rejects images over 30,000 patches of 32 px ("…requires 41334 patches…, exceeding the limit of 30000"). Doc: https://platform.openai.com/docs/guides/images-vision.
+- The old adapters then silently retried with the image stripped. gpt-6-sol said it couldn't see the image; gpt-5.6-sol hallucinated.
+
+**Fix** (`src/imagePolicy.js`, `src/imageInfo.js`):
+- Documented per-provider limits are applied up front.
+- original → fit copy (OpenAI budget) → compact copy (Claude) ladder, with same-model retry on image rejections and a visible per-slot note.
+- A labelled "image couldn't be sent" error when no rung is left.
+- Proven text-only models are labelled "does not accept images" and make zero upstream calls.
+- All `allowImages:false` strips were removed.
+
+**Security:**
+- The browser-made fit copy is validated server-side: magic bytes = MIME, dimensions ≤ original and ≤ 30k patches, bytes ≤ original, ≤ 25 MB.
+- Only accepted when the original actually exceeds the budget.
+- Normal uploads keep their exact object shape.
+
+**Also in this round:**
+- Llama 4 Scout max_tokens 8192.
+- Happy-eyeballs connect attempt timeout 2500 ms (`PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS`, clamped 250–10000). It fixes our-side ETIMEDOUT under concurrent large bodies.
+
+Full per-model × image-size matrix, doc sources and text-only proofs: [IMAGE_COMPAT.md](IMAGE_COMPAT.md).
