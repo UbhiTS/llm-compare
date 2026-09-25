@@ -284,3 +284,57 @@ New tests: [verify-followup.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/t
 - **D1 live apply** (`gcloud run services update --update-env-vars ENABLE_CODE_EXEC=0`): the live revision runs the pre-branch code, so applying it now hides the three game Run buttons until the branch is deployed. The decision is recorded in the parent report.
 - The **Claude quota router** (`claude-* → claude-opus-5-5` on 429/403/404) still re-routes, visibly, via a note in the reasoning panel. For benchmark integrity, consider applying the D4 treatment there too.
 - **R6** (API key in `?key=` query) is not changed. The new log redaction masks it in any logged URL.
+
+## 11. Round 3 (2026-09-25): R6, universal D4, D1 live deploy
+
+Same branch and process: nothing is merged to `main` and no files were deleted. Code commit `d7b32c1`. Uncommitted edits by Tarun in `src/attachments.js`, `public/index.html` and `public/styles.css` (Claude scaled-image path, size-warning UI) were **left untouched and are not in the commit or the image**. All tests and the image build ran from a clean `git worktree` / `git archive` of `d7b32c1`.
+
+### 11.1 What changed
+
+| Item | Change | Files |
+|---|---|---|
+| **R6(a) key out of URLs** | All three Gemini call paths (generativelanguage, Agent Platform non-stream and stream) now send the key in the `x-goog-api-key` header. `git grep` finds no `key=` in `src/`, `server.js` or `public/`. | [providers.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/providers.js) |
+| **R6(b) nothing secret reaches the browser or logs** | New [secrets.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/secrets.js):<br>• `maskKnown()` masks exact configured secret values: secret-named env vars, stored global keys and per-request BYOK keys.<br>• `scrubError()` adds pattern masking for `?key=`, auth headers, Bearer, `AIza`, `AQ.`, `sk-` and `ya29.`, and reduces upstream URLs to their host.<br><br>Where it's applied:<br>• Every provider error is a labelled `<Provider> <status> for model "<id>": <scrubbed body>`.<br>• Network errors are rethrown as `<provider> provider network error (CODE)` with no URL or cause.<br>• All `server.js` error responses are scrubbed, as are orchestrator `model_error` events.<br>• A final `/api/*` response-body mask is added for JSON, NDJSON and text.<br>• Log redaction now also runs in local text mode. | [secrets.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/secrets.js), [server.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/server.js), [orchestrator.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/orchestrator.js), [providerFetch.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/providerFetch.js), [log.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/log.js) |
+| **R6(c)** | `/api/global-keys` returns `present` and `masked` (`••••` plus the **last 4 chars**), never the value. Verified live. | — |
+| **R6(d) exposure assessment** | **No evidence any key left the server:**<br>• Cloud Logging: 0 hits on exact value, `key=` and `AIza`/`AQ.A` (30-day retention).<br>• 0 git commits contain a key.<br>• `.env` has been in `.dockerignore` since the first commit.<br>• Values exist only in the local `.env` and Secret Manager (the same key, v1).<br>• Not checkable: stdout of the local dev server. | — |
+| **Universal D4** | Removed both Claude quota-router blocks (`claude-* → claude-opus-5-5` on 429/403/404). A grep found no other substitution: Vertex MaaS, Gemini and the judge retry only the same model. A failed slot is a labelled, **unpriced** error; the other slots and the judge complete. | [providers.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/src/providers.js) |
+| **Tests** | New [smoke-secrets.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/smoke-secrets.js) plus the hostile upstream mock [mock-upstream.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/fixtures/mock-upstream.js). It forces a bad key (400/401 echoing the key and URL), a network failure whose message and cause contain the URL and headers, a timeout, and a 429 echoing a bearer token. It asserts no canary key and no `key=` in any NDJSON, JSON, BYOK or judge response, or in any log line (JSON and text log formats). Added to `npm run test:smoke`.<br><br>[verify-followup.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/verify-followup.js) now covers **10 provider paths × 429/403/404**: each must give a labelled error and call only the requested model. | — |
+
+### 11.2 Before / after
+
+| Check | Result |
+|---|---|
+| `npm test` | **4/4 pass** (verify-followup includes universal D4 and R6) |
+| smoke-http (offline / `SMOKE_LIVE=1`) | **22/22 and 25/25**. Probe results are identical to phase 2 (only timing differs). |
+| smoke-followup | all pass |
+| smoke-secrets (JSON and text logs) | **all pass**. Negative control against `cab86c9`: **4 leaks detected** (NDJSON, BYOK, judge and upstream URL). |
+| Differential runner / attachments vs `f6f1c4f` | 17/17; 8/8, plus the worker path 8/8 |
+| Headless Chrome (exec on + live; exec off + web-game) | same as phase 2, including the O2 409 → re-upload flow |
+
+### 11.3 D1 live deploy (Cloud Run `llm-compare`, `llm-compare-ubhits`, us-central1)
+
+- Image: `us-central1-docker.pkg.dev/llm-compare-ubhits/cloud-run-source-deploy/llm-compare:branch-d7b32c1` (`sha256:76cc7aa8…596e`), built from a clean `git archive`.
+- Deployed `--no-traffic --tag sec-d7b32c1` with `--update-env-vars ENABLE_CODE_EXEC=0`. All other env vars, secrets, the GCS volume, the service account, scaling and the probe are unchanged.
+- Revisions: **old `llm-compare-00075-w8m` → new `llm-compare-00076-ceh`**, now at 100%.
+
+Verification (tag URL, then main URL after the shift):
+- `/api/health` returns 200.
+- `/api/execute` returns 401 anonymous, and 400 "Code execution is disabled" when authed.
+- `/api/config`: `codeExec=false`, `webGame=true`; mario/pacman/tetris executable, lis/hanoi not.
+- Break-glass login works.
+- 3-slot real run: Gemini 3.5 Flash and 3.5 Flash-Lite complete and are priced. Slot C `claude-fable-5-1` shows a **labelled, unpriced** 429 ("not re-routed to another model"), with no Opus.
+- Judge (Gemini 3.5 Flash) returns ok.
+- web-game build returns 200 and the game URL returns 200.
+- Cloud Logging for the new revision: stdout/stderr entries are structured (severity INFO/ERROR, where the old revision had DEFAULT). 0 request URLs contain `key=`, and 0 log entries match `key=`, `AQ.A` or `x-goog-api-key`.
+
+Rollback: `gcloud run services update-traffic llm-compare --to-revisions=llm-compare-00075-w8m=100 --region us-central1 --project llm-compare-ubhits`
+
+### 11.4 Claude quota requests (Cloud Quotas API, filed 2026-09-25)
+
+The app calls the **global** endpoint. The 429 names `global_online_prediction_requests_per_base_model` for base models `anthropic-claude-fable` (shared by fable-5 and fable-5-1) and `anthropic-claude-mythos-5`, both with limit 0. Preferences were filed at 60 RPM, 1M input TPM and 100k output TPM each; IDs are `llmc-{fable,mythos-5}-global-{rpm,input-tpm,output-tpm}`. No other quota was changed. `cloudquotas.googleapis.com` was enabled on the project to file them.
+
+### 11.5 Remaining notes
+
+- Node's `ExperimentalWarning: SQLite` now shows as severity ERROR (structured stderr). It's cosmetic.
+- The deploy.yml startup probe (`/api/health`) was **not** applied to the live service. The live service keeps its TCP probe until the branch is merged and deployed by CI.
+- The default slot C stays `claude-fable-5-1` (Tarun's decision); it errors until the quota is granted.
