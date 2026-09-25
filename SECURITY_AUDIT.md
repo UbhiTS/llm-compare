@@ -338,3 +338,10 @@ The app calls the **global** endpoint. The 429 names `global_online_prediction_r
 - Node's `ExperimentalWarning: SQLite` now shows as severity ERROR (structured stderr). It's cosmetic.
 - The deploy.yml startup probe (`/api/health`) was **not** applied to the live service. The live service keeps its TCP probe until the branch is merged and deployed by CI.
 - The default slot C stays `claude-fable-5-1` (Tarun's decision); it errors until the quota is granted.
+
+## 12. Round 4 (2026-09-25): R10 secondary listener, merge to main
+
+- **R10 (done):** the automatic second listener on `:3000` is now **opt-in**. It starts only when `SECONDARY_PORT` is a port number (for example `SECONDARY_PORT=3000`). Unset, empty, `0` or non-numeric means off, and it never starts on Cloud Run. New test [smoke-secondary.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/smoke-secondary.js) is in `npm run test:smoke`. Docs are in the README quickstart and `.env.example`.
+- **Old local server:** PID 48469 (pre-fix code, `*:8080` plus `*:3000`) was stopped with SIGTERM. It is restarted from the repo on `:8080` only.
+- **Full regression** in a clean worktree of `25a7905`: `npm test` 4/4; smoke-http 22/22 and 25/25 live; smoke-followup, smoke-secrets (JSON and text) and smoke-secondary all pass; differential tests 17/17, 8/8 and 8/8.
+- **Merge:** `security-hardening-2026-09-24` → `main` (no-ff), done in a separate worktree. Tarun's uncommitted work in progress is not included. Pre-push check: the post-merge `deploy.yml` `--set-env-vars` / `--set-secrets` match live revision `llm-compare-00076-ceh` exactly: the same 15 env vars plus `ENABLE_CODE_EXEC=0`, 3 secrets, the service account, the `/data` GCS volume, 1 CPU / 1 GiB, min=max=1 and timeout 3600. `OAUTH_REDIRECT_BASE` is empty in both. The only intended difference is the startup probe, which changes from TCP to HTTP `/api/health`.
