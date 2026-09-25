@@ -659,16 +659,21 @@ app.post('/api/attachments/upload',
       // "claude_scaled" with the SAME filename: a downscaled copy used only for
       // Claude when the original image exceeds Anthropic's 5 MB cap (validated in
       // attachments.js exactly like the JSON path's claudeDataBase64/claudeMimeType).
-      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS * 2 });
-      const originals = files.filter((f) => f.field !== 'claude_scaled');
+      // A part named "fit_scaled" (same filename) is the OpenAI patch-budget copy.
+      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS * 3 });
+      const originals = files.filter((f) => f.field !== 'claude_scaled' && f.field !== 'fit_scaled');
       if (originals.length > MAX_ATTACHMENTS) return res.status(400).json({ ok: false, error: `Too many files (max ${MAX_ATTACHMENTS}).` });
       if (!originals.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });
       const scaled = new Map();
+      const fit = new Map();
       for (const f of files) if (f.field === 'claude_scaled' && !scaled.has(f.filename)) scaled.set(f.filename, f);
+      for (const f of files) if (f.field === 'fit_scaled' && !fit.has(f.filename)) fit.set(f.filename, f);
       const raw = originals.map((f) => {
         const item = { name: f.filename, mimeType: f.contentType, size: f.data.length, data: f.data.toString('base64') };
         const s = scaled.get(f.filename);
         if (s) { item.claudeDataBase64 = s.data.toString('base64'); item.claudeMimeType = s.contentType; }
+        const ft = fit.get(f.filename);
+        if (ft) { item.fitDataBase64 = ft.data.toString('base64'); item.fitMimeType = ft.contentType; }
         return item;
       });
       const items = await inspectAttachmentsAsync(raw);
@@ -826,6 +831,10 @@ function lanAddresses() {
 }
 
 globalKeys.start();   // warm the shared keys from Secret Manager + keep them fresh
+{
+  const { CONNECT_ATTEMPT_TIMEOUT_MS } = require('./src/providerFetch');
+  log.event('INFO', `[providerFetch] connect attempt timeout ${CONNECT_ATTEMPT_TIMEOUT_MS == null ? 'n/a (no autoSelectFamily API)' : CONNECT_ATTEMPT_TIMEOUT_MS + 'ms'} (PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS)`, { connectAttemptTimeoutMs: CONNECT_ATTEMPT_TIMEOUT_MS });
+}
 
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);

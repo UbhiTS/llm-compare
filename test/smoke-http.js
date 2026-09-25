@@ -172,6 +172,20 @@ async function waitUp() {
 
   r = await req('POST', '/api/attachments/inspect', { body: { attachments: [{ name: 'p.png', mimeType: 'image/png', data: PNG_1x1 }] } });
   check('inspect: PNG -> image', r.status === 200 && r.json.attachments[0].kind === 'image', { status: r.status });
+  check('inspect: small PNG keeps its shape (no fitScaled/claudeScaled fields)', r.status === 200 && !('fitScaled' in r.json.attachments[0]) && !('claudeScaled' in r.json.attachments[0]), { status: r.status, shape: shape(r.json && r.json.attachments[0]) });
+
+  // Round 7: a >30,000-OpenAI-patch photo (7952×5304 = 41,334 patches) with a browser-made
+  // fit copy (6764×4512 = 29,892 patches). Synthetic SOF0 headers — no real photo in CI.
+  const jpegHdr = (w, h, tail) => Buffer.concat([
+    Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, h >> 8, h & 255, w >> 8, w & 255, 0x03, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]),
+    Buffer.alloc(tail, 7), Buffer.from([0xff, 0xd9]),
+  ]).toString('base64');
+  const bigJ = jpegHdr(7952, 5304, 60000);
+  const fitJ = jpegHdr(6764, 4512, 30000);
+  r = await req('POST', '/api/attachments/inspect', { body: { attachments: [{ name: 'land.jpg', mimeType: 'image/jpeg', data: bigJ, fitDataBase64: fitJ, fitMimeType: 'image/jpeg' }] } });
+  check('inspect: >30k-patch JPEG + fit copy -> fitScaled:true', r.status === 200 && r.json.attachments[0].kind === 'image' && r.json.attachments[0].fitScaled === true, { status: r.status, shape: shape(r.json && r.json.attachments[0]) });
+  r = await req('POST', '/api/attachments/inspect', { body: { attachments: [{ name: 'ok.jpg', mimeType: 'image/jpeg', data: jpegHdr(4000, 3000, 60000), fitDataBase64: fitJ, fitMimeType: 'image/jpeg' }] } });
+  check('inspect: unneeded fit copy dropped (original within budget), no error', r.status === 200 && r.json.attachments[0].kind === 'image' && !('fitScaled' in r.json.attachments[0]), { status: r.status, shape: shape(r.json && r.json.attachments[0]) });
 
   const docZip = zipOf([
     { name: 'notes.txt', data: Buffer.from('stored entry text'), method: 0 },

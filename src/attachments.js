@@ -8,6 +8,7 @@
 const zlib = require('zlib');
 const path = require('path');
 const crypto = require('crypto');
+const { imageDimensionsFromBase64 } = require('./imageInfo');
 
 const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB per file
@@ -16,6 +17,15 @@ const CLAUDE_MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024; // Anthropic 5 MB base64 
 const CLAUDE_MAX_IMAGES = 20;
 const CLAUDE_MAX_PDF_BYTES = 24 * 1024 * 1024; // Safe binary ceiling below Anthropic 32 MB request limit
 const CLAUDE_MAX_PDF_PAGES = 100;              // Anthropic native PDF document limit
+// Pixel limits that make the browser build scaled copies (see imagePolicy.js):
+// OpenAI rejects images over 30,000 patches of 32x32 px
+// (platform.openai.com/docs/guides/images-vision); Claude's hard cap is 8000 px.
+const OPENAI_PATCH_PX = 32;
+const OPENAI_MAX_PATCHES = 30000;
+const CLAUDE_MAX_IMAGE_DIM = 8000;
+const openaiPatches = (d) => Math.ceil(d.width / OPENAI_PATCH_PX) * Math.ceil(d.height / OPENAI_PATCH_PX);
+const overOpenAIPatches = (d) => Boolean(d) && openaiPatches(d) > OPENAI_MAX_PATCHES;
+const overClaudeDim = (d) => Boolean(d) && Math.max(d.width, d.height) > CLAUDE_MAX_IMAGE_DIM;
 // SECURITY (decompression bombs): a 200 KB deflate stream can expand to gigabytes.
 // Every inflate is capped; oversized streams keep only their leading content, which
 // is all the extractor ever uses (output is sliced to MAX_SINGLE_TEXT_CHARS anyway).
@@ -381,11 +391,14 @@ function sniffClaudeImageMime(head) {
   return null;
 }
 
-// Optional browser-made downscaled copy of an oversized image, used ONLY for
-// Claude (Anthropic caps images at 5 MB base64); every other provider keeps the
-// original bytes. The copy is untrusted client input, so it is accepted only if:
-//   - the attachment itself is an image whose original base64 exceeds the cap
-//     (otherwise Claude takes the original and the copy would only waste cache);
+// Optional browser-made downscaled copy of an oversized image ("compact copy",
+// Claude's max native size). Claude uses it when the original is over 5 MB base64
+// or 8000 px; for every other provider it is only the last rung of imagePolicy's
+// ladder (original -> fit copy -> compact copy). The copy is untrusted client
+// input, so it is accepted only if:
+//   - the attachment itself is an image whose original base64 exceeds the cap,
+//     or whose pixels exceed Claude's 8000 px / OpenAI's 30,000-patch limit
+//     (otherwise every model takes the original and the copy would waste cache);
 //   - claudeMimeType is in CLAUDE_SUPPORTED_IMAGE_MIMES and matches the copy's
 //     magic bytes;
 //   - it is strict standard base64 no longer than CLAUDE_MAX_IMAGE_BASE64_CHARS.
@@ -393,11 +406,15 @@ function sniffClaudeImageMime(head) {
 // existing "exceeds the 5 MB limit" text note — never an error.
 // Note: the server can't prove the copy shows the same picture as the original
 // (no image decoder without a new dependency); it is the user's own upload.
-function validateClaudeScaledCopy(item, kind, originalB64Length) {
+function validateClaudeScaledCopy(item, kind, originalData) {
   const supplied = Boolean(item) && item.claudeDataBase64 != null && item.claudeDataBase64 !== '';
   if (!supplied) return { status: 'none' };
   if (kind !== 'image') return { status: 'rejected' };
-  if (!(originalB64Length > CLAUDE_MAX_IMAGE_BASE64_CHARS)) return { status: 'unneeded' };
+  const originalB64Length = (originalData || '').length;
+  if (!(originalB64Length > CLAUDE_MAX_IMAGE_BASE64_CHARS)) {
+    const d = imageDimensionsFromBase64(originalData);
+    if (!overOpenAIPatches(d) && !overClaudeDim(d)) return { status: 'unneeded' };
+  }
   const reject = { status: 'rejected' };
   if (typeof item.claudeDataBase64 !== 'string' || typeof item.claudeMimeType !== 'string') return reject;
   // Cheap bound before any regex/decoding (small slack for a data: URL prefix).
@@ -411,6 +428,45 @@ function validateClaudeScaledCopy(item, kind, originalB64Length) {
   if (!CLAUDE_SUPPORTED_IMAGE_MIMES.has(mime)) return reject;
   if (sniffClaudeImageMime(Buffer.from(b64.slice(0, 64), 'base64')) !== mime) return reject;
   return { status: 'ok', claudeDataBase64: b64, claudeMimeType: mime };
+}
+
+// Optional browser-made "fit copy": the original shrunk to OpenAI's 30,000-patch
+// budget (official shrink formula), so OpenAI keeps as much detail as it accepts.
+// Untrusted client input; accepted only if the original really is over the patch
+// budget, the copy is a supported raster whose magic bytes match its MIME, it is
+// smaller than the original, and its own dimensions fit the budget.
+function validateFitCopy(item, kind, originalData) {
+  const supplied = Boolean(item) && item.fitDataBase64 != null && item.fitDataBase64 !== '';
+  if (!supplied) return { status: 'none' };
+  if (kind !== 'image') return { status: 'rejected' };
+  const od = imageDimensionsFromBase64(originalData);
+  if (!overOpenAIPatches(od)) return { status: 'unneeded' };
+  const reject = { status: 'rejected' };
+  if (typeof item.fitDataBase64 !== 'string' || typeof item.fitMimeType !== 'string') return reject;
+  const maxChars = Math.min((originalData || '').length, Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4);
+  if (item.fitDataBase64.length > maxChars + 256) return reject;
+  const s = item.fitDataBase64.trim();
+  const comma = s.indexOf(',');
+  const b64 = ((s.startsWith('data:') && comma >= 0) ? s.slice(comma + 1) : s).replace(/\s+/g, '');
+  if (!b64 || b64.length > maxChars || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return reject;
+  let mime = item.fitMimeType.trim().toLowerCase().split(';')[0];
+  if (mime === 'image/jpg') mime = 'image/jpeg';
+  if (!CLAUDE_SUPPORTED_IMAGE_MIMES.has(mime)) return reject;
+  if (sniffClaudeImageMime(Buffer.from(b64.slice(0, 64), 'base64')) !== mime) return reject;
+  const cd = imageDimensionsFromBase64(b64);
+  if (!cd || overOpenAIPatches(cd) || cd.width > od.width || cd.height > od.height) return reject;
+  return { status: 'ok', fitDataBase64: b64, fitMimeType: mime };
+}
+
+function applyFitCopy(attObj, copy) {
+  if (copy.status === 'ok') {
+    attObj.fitDataBase64 = copy.fitDataBase64;
+    attObj.fitMimeType = copy.fitMimeType;
+    delete attObj.fitScaledRejected;
+  } else if (copy.status === 'rejected') {
+    attObj.fitScaledRejected = true;
+  }
+  return attObj;
 }
 
 function applyClaudeScaledCopy(attObj, copy) {
@@ -454,6 +510,7 @@ let cacheBytes = 0;
 // text (JS strings ~2 bytes/char worst case; textContent and extractedText share one string).
 const approxBytes = (a) => ((a && a.data) ? a.data.length : 0) +
   ((a && a.claudeDataBase64) ? a.claudeDataBase64.length : 0) +
+  ((a && a.fitDataBase64) ? a.fitDataBase64.length : 0) +
   ((a && a.textContent) ? a.textContent.length * 2 : 0);
 
 // Accepts a SHA-256 (preferred) or a legacy SHA-1 hex digest.
@@ -538,11 +595,18 @@ function normalizeAttachments(rawList, pre = null) {
         seenHashes.add(dedupKey);
         // A reference may carry a Claude scaled copy the cached entry lacks
         // (e.g. uploaded before the copy existed): validate and remember it.
+        let refreshed = false;
         if (!cached.claudeDataBase64 && item.claudeDataBase64) {
-          const copy = validateClaudeScaledCopy(item, cached.kind, (cached.data || '').length);
+          const copy = validateClaudeScaledCopy(item, cached.kind, cached.data || '');
           applyClaudeScaledCopy(cached, copy);
-          if (copy.status === 'ok') cacheSetAttachment(cached.sha256, cached);
+          if (copy.status === 'ok') refreshed = true;
         }
+        if (!cached.fitDataBase64 && item.fitDataBase64) {
+          const copy = validateFitCopy(item, cached.kind, cached.data || '');
+          applyFitCopy(cached, copy);
+          if (copy.status === 'ok') refreshed = true;
+        }
+        if (refreshed) cacheSetAttachment(cached.sha256, cached);
         out.push({
           ...cached,
           name: item.name ? name : cached.name,
@@ -651,7 +715,8 @@ function normalizeAttachments(rawList, pre = null) {
     };
     // Fields are only added when a copy was supplied, so objects for every
     // other upload are exactly what they were before this feature.
-    applyClaudeScaledCopy(attObj, validateClaudeScaledCopy(item, kind, attObj.data.length));
+    applyClaudeScaledCopy(attObj, validateClaudeScaledCopy(item, kind, attObj.data));
+    applyFitCopy(attObj, validateFitCopy(item, kind, attObj.data));
     attObj.estimatedTokens = estimateAttachmentTokens(attObj);
     // One entry per file, keyed by SHA-256; SHA1_INDEX resolves legacy sha1 refs.
     if (!isEmpty) cacheSetAttachment(contentSha256, attObj);
@@ -729,6 +794,8 @@ function toInspection(normalized) {
     // Only present when the client sent a Claude scaled copy: true = accepted,
     // false = ignored (Claude gets the "too large" note instead).
     ...(a.claudeDataBase64 ? { claudeScaled: true } : (a.claudeScaledRejected ? { claudeScaled: false } : {})),
+    // Same for the OpenAI patch-budget fit copy.
+    ...(a.fitDataBase64 ? { fitScaled: true } : (a.fitScaledRejected ? { fitScaled: false } : {})),
   }));
 }
 
@@ -873,7 +940,7 @@ function flattenPromptWithAttachments(text, attachments) {
 
 // 1. Google Gemini (Vertex AI & Google GenAI) — supports native inlineData for
 //    images, PDFs, audio, and video, plus structured text parts for code/CSV/text.
-function toGeminiParts(text, attachments, { inlineBinary = true } = {}) {
+function toGeminiParts(text, attachments, { inlineBinary = true, inlineDocs = true } = {}) {
   const parts = [];
   if (Array.isArray(attachments) && attachments.length) {
     for (const att of attachments) {
@@ -886,9 +953,9 @@ function toGeminiParts(text, attachments, { inlineBinary = true } = {}) {
         att.data &&
         !att.truncatedForContext &&
         ((att.kind === 'image' && GEMINI_SUPPORTED_IMAGE_MIMES.has(att.mimeType)) ||
-         (att.kind === 'pdf' && !att.isEncrypted) ||
-         att.kind === 'audio' ||
-         att.kind === 'video');
+         (inlineDocs && att.kind === 'pdf' && !att.isEncrypted) ||
+         (inlineDocs && att.kind === 'audio') ||
+         (inlineDocs && att.kind === 'video'));
 
       if (canInline) {
         parts.push({
@@ -897,7 +964,9 @@ function toGeminiParts(text, attachments, { inlineBinary = true } = {}) {
             data: att.data,
           },
         });
-        parts.push({ text: `[Attached ${att.kind.toUpperCase()}: ${att.name} (${((att.size || 0) / 1024).toFixed(1)} KB)]` });
+        parts.push({ text: att.scaledNote
+          ? `[Attached IMAGE: ${att.name} (${att.scaledNote})]`
+          : `[Attached ${att.kind.toUpperCase()}: ${att.name} (${((att.size || 0) / 1024).toFixed(1)} KB)]` });
       } else {
         parts.push({ text: formatAttachmentTextBlock(att) });
       }
@@ -962,9 +1031,11 @@ function toClaudeContent(text, attachments, { allowPdfDocument = true, allowImag
       });
       blocks.push({
         type: 'text',
-        text: useClaudeScaled
-          ? `[Attached Image: ${att.name} (auto-scaled to <5 MB for Claude's vision API cap)]`
-          : `[Attached Image: ${att.name}]`,
+        text: att.scaledNote
+          ? `[Attached Image: ${att.name} (${att.scaledNote})]`
+          : (useClaudeScaled
+            ? `[Attached Image: ${att.name} (auto-scaled to <5 MB for Claude's vision API cap)]`
+            : `[Attached Image: ${att.name}]`),
       });
     } else if (att.kind === 'image') {
       const reason = att.data && att.data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS
@@ -1006,6 +1077,7 @@ function toOpenAIResponsesContent(text, attachments) {
         type: 'input_image',
         image_url: `data:${att.mimeType};base64,${att.data}`,
       });
+      if (att.scaledNote) content.push({ type: 'input_text', text: `[Attached Image: ${att.name} (${att.scaledNote})]` });
     } else if (att.kind === 'pdf' && !att.isEncrypted && !att.truncatedForContext && att.data && (att.size || 0) <= 20 * 1024 * 1024) {
       content.push({
         type: 'input_file',
@@ -1040,7 +1112,7 @@ function toOpenAIChatContent(text, attachments, { allowImages = true, allowFiles
         type: 'image_url',
         image_url: { url: `data:${att.mimeType};base64,${att.data}` },
       });
-      content.push({ type: 'text', text: `[Attached Image: ${att.name}]` });
+      content.push({ type: 'text', text: att.scaledNote ? `[Attached Image: ${att.name} (${att.scaledNote})]` : `[Attached Image: ${att.name}]` });
     } else if (allowFiles && att.kind === 'pdf' && !att.isEncrypted && !att.truncatedForContext && att.data && (att.size || 0) <= 20 * 1024 * 1024) {
       content.push({
         type: 'file',

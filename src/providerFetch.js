@@ -20,9 +20,40 @@
 //   PROVIDER_MAX_RETRIES[_<P>]     default 2 (i.e. up to 3 attempts)
 //   PROVIDER_RETRY_BASE_MS[_<P>]   default 1000
 //   PROVIDER_RETRY_MAX_MS[_<P>]    default 20000
+//   PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS  default 2500, clamped 250–10000
+//
+// Connect attempt timeout (Round 7): Node's fetch uses happy-eyeballs
+// (autoSelectFamily) with a 250 ms per-address attempt timeout. While the event
+// loop is busy serialising/encrypting several multi-MB image bodies at once
+// (a 4-slot compare with a 20 MB photo), IPv4 connects to api.openai.com /
+// api.moonshot.ai were cut off at 250 ms and fetch threw
+// AggregateError[ETIMEDOUT x IPv4, EHOSTUNREACH x IPv6] before any byte was
+// sent — an error caused by US, not the provider. Raising the per-address wait
+// only makes the process wait longer before trying the next address; it does
+// not reroute, proxy or block anything. Process-local, no new dependency.
 // ---------------------------------------------------------------------------
 
+const net = require('net');
+
 const DEFAULTS = { TIMEOUT_MS: 900000, MAX_RETRIES: 2, RETRY_BASE_MS: 1000, RETRY_MAX_MS: 20000 };
+
+const CONNECT_ATTEMPT = { DEFAULT: 2500, MIN: 250, MAX: 10000 };
+
+// Parse + clamp the knob. Invalid/empty → default.
+function connectAttemptTimeoutMs(raw = process.env.PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS) {
+  const n = Number(raw);
+  if (raw == null || String(raw).trim() === '' || !Number.isFinite(n)) return CONNECT_ATTEMPT.DEFAULT;
+  return Math.min(CONNECT_ATTEMPT.MAX, Math.max(CONNECT_ATTEMPT.MIN, Math.round(n)));
+}
+
+// Apply once at module load. Returns the effective value (null if this Node
+// has no autoSelectFamily API — then behaviour is simply unchanged).
+function applyConnectAttemptTimeout(raw) {
+  if (typeof net.setDefaultAutoSelectFamilyAttemptTimeout !== 'function') return null;
+  net.setDefaultAutoSelectFamilyAttemptTimeout(connectAttemptTimeoutMs(raw));
+  return net.getDefaultAutoSelectFamilyAttemptTimeout();
+}
+const CONNECT_ATTEMPT_TIMEOUT_MS = applyConnectAttemptTimeout();
 
 function providerOf(url) {
   const u = String(url);
@@ -124,4 +155,7 @@ async function providerFetch(url, opts = {}) {
   }
 }
 
-module.exports = { providerFetch, providerOf, isRetryableStatus, backoffMs, ProviderTimeoutError };
+module.exports = {
+  providerFetch, providerOf, isRetryableStatus, backoffMs, ProviderTimeoutError,
+  connectAttemptTimeoutMs, applyConnectAttemptTimeout, CONNECT_ATTEMPT, CONNECT_ATTEMPT_TIMEOUT_MS,
+};
