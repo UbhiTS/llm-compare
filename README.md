@@ -240,6 +240,8 @@ flowchart LR
 npm test    # runs test/mock-run.js and test/verify-enhancements.js offline
 ```
 
+**Large images and Claude:** Anthropic rejects images over 5 MB (base64). When you attach one, the browser also makes a scaled WebP/JPEG copy under 5 MB, which is used **only for Claude**. Every other model still gets the original. A note under the attachments says whether the image was auto-scaled. The multipart endpoint takes the same copy as an optional `claude_scaled` file part with the original's filename.
+
 ## License
 
 Released under the [MIT License](LICENSE).

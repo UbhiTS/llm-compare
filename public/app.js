@@ -910,59 +910,144 @@ function estimateClientAttachmentTokens({ isEmpty, isImage, isPdf, pageCount, si
   return Math.max(60, Math.ceil((size || 0) / 20));
 }
 
-// Automatically downscales/compresses raster images >3.6 MB via offscreen HTML5 <canvas>
-// so their base64 stays under Anthropic Claude's strict 5 MB vision limit (~3.75 MB binary)
-// and every provider gets native multimodal vision instead of falling back to text metadata.
-function optimizeOversizedImage(dataUrl, mimeType, origSize) {
-  return new Promise((resolve) => {
-    if (typeof Image === 'undefined' || typeof document === 'undefined') {
-      return resolve(null);
-    }
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const maxDim = 2400;
-        let w = img.naturalWidth || img.width || 1600;
-        let h = img.naturalHeight || img.height || 1200;
-        if (w > maxDim || h > maxDim) {
-          const scale = maxDim / Math.max(w, h);
-          w = Math.max(1, Math.round(w * scale));
-          h = Math.max(1, Math.round(h * scale));
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(null);
-        ctx.drawImage(img, 0, 0, w, h);
+// Anthropic caps each image at 5 MB of base64. For a larger image we keep the
+// ORIGINAL for every provider and make a downscaled copy in the browser that is
+// sent alongside it (claudeDataBase64 / claudeMimeType) and used only for Claude.
+const CLAUDE_MAX_IMAGE_BASE64_CHARS = 5 * 1024 * 1024;
+const CLAUDE_SCALED_TARGET_CHARS = Math.floor(CLAUDE_MAX_IMAGE_BASE64_CHARS * 0.97); // headroom under the cap
+const CLAUDE_SCALE_MAX_SIDES = [3840, 2560, 2048, 1568, 1280, 1024, 768];
+const CLAUDE_SCALE_QUALITIES = [0.9, 0.82, 0.72, 0.6];
 
-        let outMime = 'image/webp';
-        let outUrl = canvas.toDataURL(outMime, 0.88);
-        if (!outUrl.startsWith('data:image/webp')) {
-          outMime = 'image/jpeg';
-          outUrl = canvas.toDataURL(outMime, 0.88);
-        }
-        const comma = outUrl.indexOf(',');
-        const outB64 = comma >= 0 ? outUrl.slice(comma + 1) : outUrl;
-        const outBytes = Math.floor((outB64.length * 3) / 4);
-        if (outBytes < origSize && outB64.length <= 4.8 * 1024 * 1024) {
-          resolve({
-            dataUrl: outUrl,
-            base64Data: outB64,
-            mimeType: outMime,
-            size: outBytes,
-            optBadge: `Optimized for all vision APIs (${formatBytes(origSize)} → ${formatBytes(outBytes)})`,
-          });
-        } else {
-          resolve(null);
-        }
-      } catch (_) {
-        resolve(null);
-      }
-    };
-    img.onerror = () => resolve(null);
-    img.src = dataUrl;
+const base64LengthForBytes = (n) => 4 * Math.ceil((Number(n) || 0) / 3);
+
+function blobToBase64(blob) {
+  return readFileAsDataUrl(blob).then((u) => {
+    const i = u.indexOf(',');
+    return i >= 0 ? u.slice(i + 1) : u;
   });
+}
+
+// Decode the file into something drawable. createImageBitmap is preferred (off the
+// main thread, honours EXIF orientation); an <img> element is the fallback.
+async function decodeImageSource(file) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(file);
+      return { source: bmp, width: bmp.width, height: bmp.height, close: () => bmp.close() };
+    } catch (_) { /* fall back to <img> below */ }
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.decoding = 'async';
+    img.src = url;
+    await img.decode();
+    return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => {} };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function makeScaleCanvas(w, h) {
+  if (typeof OffscreenCanvas === 'function') {
+    const c = new OffscreenCanvas(w, h);
+    return { ctx: c.getContext('2d'), encode: (type, quality) => c.convertToBlob({ type, quality }) };
+  }
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  return { ctx: c.getContext('2d'), encode: (type, quality) => new Promise((resolve) => c.toBlob(resolve, type, quality)) };
+}
+
+// Returns { base64, mimeType, width, height, bytes } or { error } (never throws).
+async function makeClaudeScaledCopy(file) {
+  if (/gif$/i.test(file.type || '') || /\.gif$/i.test(file.name || '')) {
+    return { error: 'animated GIFs are not re-encoded' };
+  }
+  let decoded;
+  try {
+    decoded = await decodeImageSource(file);
+  } catch (_) {
+    return { error: 'the browser could not decode this image' };
+  }
+  try {
+    const longSide = Math.max(decoded.width, decoded.height);
+    if (!longSide) return { error: 'the image has no dimensions' };
+    let outMime = null; // decided on the first encode: WebP if the browser can encode it, else JPEG
+    for (const side of CLAUDE_SCALE_MAX_SIDES) {
+      if (side >= longSide && side !== CLAUDE_SCALE_MAX_SIDES[0]) continue;
+      const scale = Math.min(1, side / longSide);
+      const w = Math.max(1, Math.round(decoded.width * scale));
+      const h = Math.max(1, Math.round(decoded.height * scale));
+      const canvas = makeScaleCanvas(w, h);
+      if (!canvas.ctx) return { error: 'canvas is unavailable in this browser' };
+      for (const q of CLAUDE_SCALE_QUALITIES) {
+        if (!outMime) {
+          const probe = await canvasEncode(canvas, decoded, w, h, 'image/webp', q);
+          outMime = probe && probe.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+          if (outMime === 'image/webp' && base64LengthForBytes(probe.size) <= CLAUDE_SCALED_TARGET_CHARS) {
+            return { base64: await blobToBase64(probe), mimeType: outMime, width: w, height: h, bytes: probe.size };
+          }
+          if (outMime === 'image/webp') continue;
+        }
+        const blob = await canvasEncode(canvas, decoded, w, h, outMime, q);
+        if (blob && blob.type === outMime && base64LengthForBytes(blob.size) <= CLAUDE_SCALED_TARGET_CHARS) {
+          return { base64: await blobToBase64(blob), mimeType: outMime, width: w, height: h, bytes: blob.size };
+        }
+      }
+    }
+    return { error: 'it could not be compressed under 5 MB' };
+  } catch (_) {
+    return { error: 'the browser failed while re-encoding the image' };
+  } finally {
+    decoded.close();
+  }
+}
+
+async function canvasEncode(canvas, decoded, w, h, type, quality) {
+  // JPEG has no alpha channel: paint white first so transparent areas don't turn black.
+  canvas.ctx.clearRect(0, 0, w, h);
+  if (type === 'image/jpeg') {
+    canvas.ctx.fillStyle = '#ffffff';
+    canvas.ctx.fillRect(0, 0, w, h);
+  }
+  canvas.ctx.drawImage(decoded.source, 0, 0, w, h);
+  return canvas.encode(type, quality);
+}
+
+// #attachmentSizeWarning: one dismissible row per oversized image, built with
+// createElement/textContent only (file names are untrusted).
+const SIZE_WARNINGS = new Map(); // attachment id -> { text, isError }
+
+function setSizeWarning(id, text, isError) {
+  if (text) SIZE_WARNINGS.set(id, { text, isError: Boolean(isError) });
+  else SIZE_WARNINGS.delete(id);
+  renderSizeWarnings();
+}
+
+function renderSizeWarnings() {
+  const box = $('#attachmentSizeWarning');
+  if (!box) return;
+  for (const id of [...SIZE_WARNINGS.keys()]) {
+    if (!CUSTOM_ATTACHMENTS.some((a) => a.id === id)) SIZE_WARNINGS.delete(id);
+  }
+  const rows = [];
+  for (const [id, w] of SIZE_WARNINGS) {
+    const row = document.createElement('div');
+    row.className = w.isError ? 'csw-row is-error' : 'csw-row';
+    const msg = document.createElement('span');
+    msg.textContent = (w.isError ? '⚠ ' : 'ℹ ') + w.text;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'csw-dismiss';
+    btn.setAttribute('aria-label', 'Dismiss');
+    btn.textContent = '✕';
+    btn.addEventListener('click', () => setSizeWarning(id, null));
+    row.append(msg, btn);
+    rows.push(row);
+  }
+  box.replaceChildren(...rows);
+  box.classList.toggle('hidden', rows.length === 0);
 }
 
 async function inspectAttachmentOnServer(attObj) {
@@ -978,6 +1063,8 @@ async function inspectAttachmentOnServer(attObj) {
           size: attObj.size,
           data: attObj.data,
           textContent: attObj.textContent || undefined,
+          claudeDataBase64: attObj.claudeDataBase64 || undefined,
+          claudeMimeType: attObj.claudeDataBase64 ? attObj.claudeMimeType : undefined,
         }],
       }),
     });
@@ -996,6 +1083,13 @@ async function inspectAttachmentOnServer(attObj) {
     }
     if (srv.warning && !attObj.warning) {
       attObj.warning = srv.warning;
+    }
+    if (srv.claudeScaled === false && attObj.claudeDataBase64) {
+      // Server refused the copy (bad type/size): Claude falls back to a text note.
+      attObj.claudeDataBase64 = null;
+      attObj.claudeMimeType = null;
+      attObj.optBadge = null;
+      setSizeWarning(attObj.id, `"${attObj.name}": the scaled copy for Claude was rejected by the server, so Claude will receive a text note instead of the image. Other models get the original.`, true);
     }
     renderAttachments();
     renderTaskMeta();
@@ -1032,16 +1126,22 @@ async function addAttachmentFiles(fileList) {
       const isImage = !isEmpty && !isSvg && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
       const textContent = (!isEmpty && isTextLikeAttachment(file.name, mimeType)) ? await readFileAsText(file) : '';
 
-      let effectiveSize = file.size || 0;
+      const effectiveSize = file.size || 0;
       let optBadge = null;
-      if (isImage && (effectiveSize > 3.6 * 1024 * 1024 || base64Data.length > 4.8 * 1024 * 1024) && !/gif$/i.test(mimeType)) {
-        const optimized = await optimizeOversizedImage(dataUrl, mimeType, effectiveSize);
-        if (optimized) {
-          dataUrl = optimized.dataUrl;
-          base64Data = optimized.base64Data;
-          mimeType = optimized.mimeType;
-          effectiveSize = optimized.size;
-          optBadge = optimized.optBadge;
+      // Every provider gets the original image. Only when it is over Anthropic's
+      // 5 MB base64 cap do we build a scaled copy that is used for Claude alone.
+      let claudeCopy = null;
+      let sizeNote = null;
+      if (isImage && base64Data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS) {
+        const scaled = await makeClaudeScaledCopy(file);
+        if (scaled && scaled.base64) {
+          claudeCopy = scaled;
+          const fmt = scaled.mimeType === 'image/webp' ? 'WebP' : 'JPEG';
+          optBadge = `Claude copy ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)})`;
+          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit, so it was auto-scaled to ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)}) for Claude. Other models get the original.`, isError: false };
+        } else {
+          const why = (scaled && scaled.error) || 'unknown error';
+          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit and couldn't be auto-scaled (${why}). Claude will receive a text note instead of the image; other models get the original.`, isError: true };
         }
       }
 
@@ -1058,8 +1158,8 @@ async function addAttachmentFiles(fileList) {
         } else if (pageCount > 100) {
           warning = `${pageCount} pages (Claude >100p uses extracted text)`;
         }
-      } else if (isImage && base64Data.length > 5 * 1024 * 1024) {
-        warning = 'Large image (>5MB base64: Gemini native, Claude text note)';
+      } else if (isImage && base64Data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS && !claudeCopy) {
+        warning = 'Large image (>5MB base64: others get original, Claude text note)';
       }
 
       const estimatedTokens = estimateClientAttachmentTokens({
@@ -1087,7 +1187,12 @@ async function addAttachmentFiles(fileList) {
         textContent: textContent || '',
         previewUrl: isImage ? dataUrl : null,
       };
+      if (claudeCopy) {
+        attObj.claudeDataBase64 = claudeCopy.base64;
+        attObj.claudeMimeType = claudeCopy.mimeType;
+      }
       CUSTOM_ATTACHMENTS.push(attObj);
+      if (sizeNote) setSizeWarning(attObj.id, sizeNote.text, sizeNote.isError);
       // Immediately inspect & cache on server so exact extracted tokens and SHA-1 are ready before Run
       inspectAttachmentOnServer(attObj);
     } catch (e) {
@@ -1100,12 +1205,16 @@ async function addAttachmentFiles(fileList) {
 
 function removeAttachment(id) {
   CUSTOM_ATTACHMENTS = CUSTOM_ATTACHMENTS.filter((a) => a.id !== id);
+  SIZE_WARNINGS.delete(id);
+  renderSizeWarnings();
   renderAttachments();
   renderTaskMeta();
 }
 
 function clearAttachments() {
   CUSTOM_ATTACHMENTS = [];
+  SIZE_WARNINGS.clear();
+  renderSizeWarnings();
   const inp = $('#customFileInput');
   if (inp) inp.value = '';
   renderAttachments();
@@ -1238,6 +1347,10 @@ function currentAttachmentsPayload() {
       size: a.size,
       data: a.data,
       textContent: a.textContent || undefined,
+      // Full (non-cached / 409 re-upload) payloads carry the Claude copy too, so it
+      // survives cache eviction. Cached refs don't: the server cache already has it.
+      claudeDataBase64: a.claudeDataBase64 || undefined,
+      claudeMimeType: a.claudeDataBase64 ? a.claudeMimeType : undefined,
     };
   });
 }

@@ -345,3 +345,42 @@ The app calls the **global** endpoint. The 429 names `global_online_prediction_r
 - **Old local server:** PID 48469 (pre-fix code, `*:8080` plus `*:3000`) was stopped with SIGTERM. It is restarted from the repo on `:8080` only.
 - **Full regression** in a clean worktree of `25a7905`: `npm test` 4/4; smoke-http 22/22 and 25/25 live; smoke-followup, smoke-secrets (JSON and text) and smoke-secondary all pass; differential tests 17/17, 8/8 and 8/8.
 - **Merge:** `security-hardening-2026-09-24` → `main` (no-ff), done in a separate worktree. Tarun's uncommitted work in progress is not included. Pre-push check: the post-merge `deploy.yml` `--set-env-vars` / `--set-secrets` match live revision `llm-compare-00076-ceh` exactly: the same 15 env vars plus `ENABLE_CODE_EXEC=0`, 3 secrets, the service account, the `/data` GCS volume, 1 CPU / 1 GiB, min=max=1 and timeout 3600. `OAUTH_REDIRECT_BASE` is empty in both. The only intended difference is the startup probe, which changes from TCP to HTTP `/api/health`.
+
+## 13. Round 5 (2026-09-25): Claude-only image auto-scale (branch `feat/claude-image-autoscale`, not merged)
+
+This finishes Tarun's uncommitted work from 2026-09-24 18:07–18:09. It was committed as found in `0120e7d` and then completed.
+
+**Behaviour.**
+- Every provider gets the **original** image, up to the 25 MB per-file cap.
+- When an image's base64 is over Anthropic's 5 MB cap, the browser makes a scaled copy. It uses `createImageBitmap` with OffscreenCanvas, or `<img>` and canvas as a fallback. It encodes WebP, or JPEG if WebP isn't available. It steps down quality (0.9→0.6) and then the long side (3840→768) until the copy is under 97% of the cap.
+- The copy is sent as `claudeDataBase64` / `claudeMimeType`, and **only** `toClaudeContent` uses it.
+- `#attachmentSizeWarning` tells the user whether the image was auto-scaled for Claude or couldn't be. It is built with `createElement` / `textContent`, and file names are never put in HTML.
+- The old `optimizeOversizedImage` downscaled the image for **all** providers. It has been removed. See the decision note below.
+
+**Server validation** (`validateClaudeScaledCopy` in `src/attachments.js`). The copy is untrusted input and is accepted only if all of these hold:
+- `kind === 'image'`
+- the original's base64 is over the cap
+- it is a string and strict base64
+- it is at or under the cap (there is a cheap length pre-check before any regex)
+- its MIME is in `CLAUDE_SUPPORTED_IMAGE_MIMES` (`image/jpg` is normalised to `image/jpeg`)
+- its magic bytes match that MIME
+
+Anything else is ignored, never raised as an error:
+- `/api/attachments/inspect` returns `claudeScaled:false`.
+- Claude gets the existing "too large" text note.
+- Uploads without a copy produce byte-identical objects to before, because the fields are omitted.
+
+**Upload paths.** The same validator runs on every path:
+- JSON inspect and run
+- cached-reference requests (a reference may add a copy that the cache entry was missing)
+- the 409 re-upload, where full payloads carry the copy
+- the worker-thread path, since `normalizeAttachmentsAsync` still ends in `normalizeAttachments`
+- multipart `/api/attachments/upload`, via an optional `claude_scaled` part with the same filename as the original
+
+**Cache.**
+- `approxBytes` now counts `claudeDataBase64`, so `ATTACHMENT_CACHE_MAX_MB` stays accurate.
+- The duplicate `cacheSetAttachment(sha1)` from the WIP was removed. There is one entry per file, keyed by SHA-256, and `SHA1_INDEX` still resolves legacy sha1 references.
+
+**Tests.**
+- New [verify-claude-scaled.js](file:///Users/ubhi/WorkIQ/projects/llm-compare/test/verify-claude-scaled.js) runs under `npm test`: 16 checks, including routing, cache bytes, a single entry, sha1 references, 7 rejection cases, unneeded copies, the cached-reference path, and the worker path.
+- smoke-followup gains 3 checks: JSON inspect accepted, bad MIME rejected, and the multipart `claude_scaled` part.
