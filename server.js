@@ -647,15 +647,30 @@ app.post('/api/attachments/inspect', async (req, res) => {
 // Multipart alternative to the base64-JSON inspect endpoint (same response
 // shape, same caching). Avoids the ~33% base64 overhead for large files:
 //   curl -F files=@report.pdf -F files=@data.xlsx https://…/api/attachments/upload
+// Optional Claude copy of an oversized image (same filename as the original):
+//   curl -F files=@photo.png -F "claude_scaled=@small.webp;filename=photo.png;type=image/webp" …
 // Authenticated (mounted after the auth gate); body capped by MULTIPART_LIMIT.
 app.post('/api/attachments/upload',
   express.raw({ type: 'multipart/form-data', limit: process.env.MULTIPART_LIMIT || process.env.JSON_BODY_LIMIT || '50mb' }),
   async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ ok: false, error: 'Expected a multipart/form-data body with one or more files.' });
-      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS });
-      if (!files.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });
-      const raw = files.map((f) => ({ name: f.filename, mimeType: f.contentType, size: f.data.length, data: f.data.toString('base64') }));
+      // Up to MAX_ATTACHMENTS originals, each optionally followed by a part named
+      // "claude_scaled" with the SAME filename: a downscaled copy used only for
+      // Claude when the original image exceeds Anthropic's 5 MB cap (validated in
+      // attachments.js exactly like the JSON path's claudeDataBase64/claudeMimeType).
+      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS * 2 });
+      const originals = files.filter((f) => f.field !== 'claude_scaled');
+      if (originals.length > MAX_ATTACHMENTS) return res.status(400).json({ ok: false, error: `Too many files (max ${MAX_ATTACHMENTS}).` });
+      if (!originals.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });
+      const scaled = new Map();
+      for (const f of files) if (f.field === 'claude_scaled' && !scaled.has(f.filename)) scaled.set(f.filename, f);
+      const raw = originals.map((f) => {
+        const item = { name: f.filename, mimeType: f.contentType, size: f.data.length, data: f.data.toString('base64') };
+        const s = scaled.get(f.filename);
+        if (s) { item.claudeDataBase64 = s.data.toString('base64'); item.claudeMimeType = s.contentType; }
+        return item;
+      });
       const items = await inspectAttachmentsAsync(raw);
       res.json({ ok: true, attachments: items });
     } catch (e) {

@@ -77,6 +77,23 @@ async function req(method, p, { body, headers = {}, raw } = {}) {
   r = await req('POST', '/api/attachments/upload', { raw: Buffer.from('garbage'), headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` } });
   check('multipart malformed → 400', r.status === 400);
 
+  // Claude-only scaled copy of an oversized image (JSON inspect + multipart part).
+  const crypto = require('crypto');
+  const bigImg = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), crypto.randomBytes(4 * 1024 * 1024 + 200 * 1024)]);
+  const wHdr = Buffer.alloc(12); wHdr.write('RIFF', 0, 'latin1'); wHdr.writeUInt32LE(100004, 4); wHdr.write('WEBP', 8, 'latin1');
+  const webp = Buffer.concat([wHdr, crypto.randomBytes(100000)]);
+  r = await req('POST', '/api/attachments/inspect', { body: { attachments: [{ name: 'big.png', mimeType: 'image/png', data: bigImg.toString('base64'), claudeDataBase64: webp.toString('base64'), claudeMimeType: 'image/webp' }] } });
+  check('inspect big image + valid Claude copy → claudeScaled:true (copy not echoed)', r.status === 200 && r.json.attachments[0].claudeScaled === true && !/claudeDataBase64/.test(r.text), `[${r.status}]`);
+  r = await req('POST', '/api/attachments/inspect', { body: { attachments: [{ name: 'big2.png', mimeType: 'image/png', data: Buffer.concat([bigImg, Buffer.from('x')]).toString('base64'), claudeDataBase64: webp.toString('base64'), claudeMimeType: 'image/bmp' }] } });
+  check('inspect big image + bad claudeMimeType → 200, claudeScaled:false', r.status === 200 && r.json.attachments[0].claudeScaled === false, `[${r.status}]`);
+  const mp2 = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="big3.png"\r\nContent-Type: image/png\r\n\r\n`), bigImg, Buffer.from('y'),
+    Buffer.from(`\r\n--${boundary}\r\nContent-Disposition: form-data; name="claude_scaled"; filename="big3.png"\r\nContent-Type: image/webp\r\n\r\n`), webp,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  r = await req('POST', '/api/attachments/upload', { raw: mp2, headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` } });
+  check('multipart original + claude_scaled part → 1 attachment, claudeScaled:true', r.status === 200 && r.json.attachments.length === 1 && r.json.attachments[0].claudeScaled === true, `[${r.status}]`);
+
   // O2: cached references (sha256 + legacy sha1) and expired → 409, quota untouched
   const before = await req('GET', '/api/config');
   const expiredRef = [{ sha256: 'a'.repeat(64), name: 'gone.csv', mimeType: 'text/csv' }];

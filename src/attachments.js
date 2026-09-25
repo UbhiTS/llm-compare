@@ -370,6 +370,60 @@ function sanitizeBase64(data) {
   return cleaned;
 }
 
+// Identify a raster image by its magic bytes (only the formats Claude accepts).
+function sniffClaudeImageMime(head) {
+  if (!head || head.length < 12) return null;
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return 'image/png';
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
+  const sig6 = head.toString('latin1', 0, 6);
+  if (sig6 === 'GIF87a' || sig6 === 'GIF89a') return 'image/gif';
+  if (head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
+
+// Optional browser-made downscaled copy of an oversized image, used ONLY for
+// Claude (Anthropic caps images at 5 MB base64); every other provider keeps the
+// original bytes. The copy is untrusted client input, so it is accepted only if:
+//   - the attachment itself is an image whose original base64 exceeds the cap
+//     (otherwise Claude takes the original and the copy would only waste cache);
+//   - claudeMimeType is in CLAUDE_SUPPORTED_IMAGE_MIMES and matches the copy's
+//     magic bytes;
+//   - it is strict standard base64 no longer than CLAUDE_MAX_IMAGE_BASE64_CHARS.
+// Anything else is ignored (status 'rejected') and Claude falls back to the
+// existing "exceeds the 5 MB limit" text note — never an error.
+// Note: the server can't prove the copy shows the same picture as the original
+// (no image decoder without a new dependency); it is the user's own upload.
+function validateClaudeScaledCopy(item, kind, originalB64Length) {
+  const supplied = Boolean(item) && item.claudeDataBase64 != null && item.claudeDataBase64 !== '';
+  if (!supplied) return { status: 'none' };
+  if (kind !== 'image') return { status: 'rejected' };
+  if (!(originalB64Length > CLAUDE_MAX_IMAGE_BASE64_CHARS)) return { status: 'unneeded' };
+  const reject = { status: 'rejected' };
+  if (typeof item.claudeDataBase64 !== 'string' || typeof item.claudeMimeType !== 'string') return reject;
+  // Cheap bound before any regex/decoding (small slack for a data: URL prefix).
+  if (item.claudeDataBase64.length > CLAUDE_MAX_IMAGE_BASE64_CHARS + 256) return reject;
+  const s = item.claudeDataBase64.trim();
+  const comma = s.indexOf(',');
+  const b64 = ((s.startsWith('data:') && comma >= 0) ? s.slice(comma + 1) : s).replace(/\s+/g, '');
+  if (!b64 || b64.length > CLAUDE_MAX_IMAGE_BASE64_CHARS || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return reject;
+  let mime = item.claudeMimeType.trim().toLowerCase().split(';')[0];
+  if (mime === 'image/jpg') mime = 'image/jpeg';
+  if (!CLAUDE_SUPPORTED_IMAGE_MIMES.has(mime)) return reject;
+  if (sniffClaudeImageMime(Buffer.from(b64.slice(0, 64), 'base64')) !== mime) return reject;
+  return { status: 'ok', claudeDataBase64: b64, claudeMimeType: mime };
+}
+
+function applyClaudeScaledCopy(attObj, copy) {
+  if (copy.status === 'ok') {
+    attObj.claudeDataBase64 = copy.claudeDataBase64;
+    attObj.claudeMimeType = copy.claudeMimeType;
+    delete attObj.claudeScaledRejected;
+  } else if (copy.status === 'rejected') {
+    attObj.claudeScaledRejected = true;
+  }
+  return attObj;
+}
+
 function estimateAttachmentTokens(att) {
   if (!att || att.isEmpty) return 15;
   if (att.kind === 'image') {
@@ -396,9 +450,11 @@ const HEX40 = /^[0-9a-f]{40}$/i;
 const HEX64 = /^[0-9a-f]{64}$/i;
 const MAX_CACHE_ENTRIES = 50;
 let cacheBytes = 0;
-// Approximate retained size: base64 payload + extracted text (JS strings ~2 bytes/char
-// worst case; textContent and extractedText share one string).
-const approxBytes = (a) => ((a && a.data) ? a.data.length : 0) + ((a && a.textContent) ? a.textContent.length * 2 : 0);
+// Approximate retained size: base64 payload + optional Claude scaled copy + extracted
+// text (JS strings ~2 bytes/char worst case; textContent and extractedText share one string).
+const approxBytes = (a) => ((a && a.data) ? a.data.length : 0) +
+  ((a && a.claudeDataBase64) ? a.claudeDataBase64.length : 0) +
+  ((a && a.textContent) ? a.textContent.length * 2 : 0);
 
 // Accepts a SHA-256 (preferred) or a legacy SHA-1 hex digest.
 function cacheGetAttachment(ref) {
@@ -480,6 +536,13 @@ function normalizeAttachments(rawList, pre = null) {
         const dedupKey = `${name}:${cached.sha1}`;
         if (seenHashes.has(dedupKey)) continue;
         seenHashes.add(dedupKey);
+        // A reference may carry a Claude scaled copy the cached entry lacks
+        // (e.g. uploaded before the copy existed): validate and remember it.
+        if (!cached.claudeDataBase64 && item.claudeDataBase64) {
+          const copy = validateClaudeScaledCopy(item, cached.kind, (cached.data || '').length);
+          applyClaudeScaledCopy(cached, copy);
+          if (copy.status === 'ok') cacheSetAttachment(cached.sha256, cached);
+        }
         out.push({
           ...cached,
           name: item.name ? name : cached.name,
@@ -586,7 +649,11 @@ function normalizeAttachments(rawList, pre = null) {
       extractedText: textContent || '',
       estimatedTokens: 0,
     };
+    // Fields are only added when a copy was supplied, so objects for every
+    // other upload are exactly what they were before this feature.
+    applyClaudeScaledCopy(attObj, validateClaudeScaledCopy(item, kind, attObj.data.length));
     attObj.estimatedTokens = estimateAttachmentTokens(attObj);
+    // One entry per file, keyed by SHA-256; SHA1_INDEX resolves legacy sha1 refs.
     if (!isEmpty) cacheSetAttachment(contentSha256, attObj);
     out.push(attObj);
   }
@@ -659,6 +726,9 @@ function toInspection(normalized) {
     extractedChars: (a.textContent || '').length,
     warning: a.warning || null,
     cached: !a.isEmpty && Boolean(a.sha1),
+    // Only present when the client sent a Claude scaled copy: true = accepted,
+    // false = ignored (Claude gets the "too large" note instead).
+    ...(a.claudeDataBase64 ? { claudeScaled: true } : (a.claudeScaledRejected ? { claudeScaled: false } : {})),
   }));
 }
 
@@ -850,12 +920,25 @@ function toClaudeContent(text, attachments, { allowPdfDocument = true, allowImag
       blocks.push({ type: 'text', text: formatAttachmentTextBlock(att) });
       continue;
     }
+    // Validated browser-made copy (see validateClaudeScaledCopy); only used when
+    // the original is over Anthropic's cap. Other providers always get att.data.
+    const useClaudeScaled = Boolean(
+      att.kind === 'image' &&
+      att.data &&
+      att.data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS &&
+      att.claudeDataBase64 &&
+      att.claudeDataBase64.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS &&
+      CLAUDE_SUPPORTED_IMAGE_MIMES.has(att.claudeMimeType)
+    );
+    const claudeImgData = useClaudeScaled ? att.claudeDataBase64 : att.data;
+    const claudeImgMime = useClaudeScaled ? att.claudeMimeType : att.mimeType;
+
     const canSendImage =
       allowImages &&
       att.kind === 'image' &&
-      CLAUDE_SUPPORTED_IMAGE_MIMES.has(att.mimeType) &&
-      att.data &&
-      att.data.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS &&
+      CLAUDE_SUPPORTED_IMAGE_MIMES.has(claudeImgMime) &&
+      claudeImgData &&
+      claudeImgData.length <= CLAUDE_MAX_IMAGE_BASE64_CHARS &&
       imageCount < CLAUDE_MAX_IMAGES;
 
     const canSendPdf =
@@ -873,11 +956,16 @@ function toClaudeContent(text, attachments, { allowPdfDocument = true, allowImag
         type: 'image',
         source: {
           type: 'base64',
-          media_type: att.mimeType,
-          data: att.data,
+          media_type: claudeImgMime,
+          data: claudeImgData,
         },
       });
-      blocks.push({ type: 'text', text: `[Attached Image: ${att.name}]` });
+      blocks.push({
+        type: 'text',
+        text: useClaudeScaled
+          ? `[Attached Image: ${att.name} (auto-scaled to <5 MB for Claude's vision API cap)]`
+          : `[Attached Image: ${att.name}]`,
+      });
     } else if (att.kind === 'image') {
       const reason = att.data && att.data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS
         ? `exceeds Anthropic's 5 MB base64 per-image limit (${((att.size || 0) / (1024 * 1024)).toFixed(2)} MB)`
@@ -989,4 +1077,7 @@ module.exports = {
   toClaudeContent,
   toOpenAIResponsesContent,
   toOpenAIChatContent,
+  CLAUDE_MAX_IMAGE_BASE64_CHARS,
+  // Read-only view of the attachment cache for tests / diagnostics.
+  _cacheStats: () => ({ entries: ATTACHMENT_CACHE.size, bytes: cacheBytes, sha1Aliases: SHA1_INDEX.size, keys: [...ATTACHMENT_CACHE.keys()] }),
 };
