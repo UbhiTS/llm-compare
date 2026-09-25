@@ -13,7 +13,7 @@ process.env.CLAUDE_BEARER_TOKEN = 'test-shared-claude-bearer';
 process.env.GCP_PROJECT_ID = 'llm-compare-ubhits';
 process.env.OPENAI_API_KEY = 'sk-test-shared-openai-key';
 process.env.ADMIN_BOOTSTRAP_PASSWORD = 'admin-test-password-123';
-process.env.SECONDARY_PORT = '0'; // don't shadow a developer's running localhost:3000
+process.env.SECONDARY_PORT = '0'; // secondary listener is off by default; keep it explicitly off here
 
 // Mock global.fetch for upstream provider calls (Vertex Gemini, Vertex Claude, OpenAI Responses API)
 // while allowing local HTTP calls to our Express server to pass through to real fetch.

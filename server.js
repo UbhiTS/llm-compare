@@ -815,13 +815,19 @@ globalKeys.start();   // warm the shared keys from Secret Manager + keep them fr
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);
   console.log(`  primary URL     ->  http://localhost:${PORT}`);
-  // SECONDARY_PORT=0 disables the extra :3000 listener (tests/ephemeral servers
-  // must not shadow a developer's already-running localhost:3000 instance).
-  if (!process.env.K_SERVICE && PORT !== 3000 && process.env.SECONDARY_PORT !== '0') {
-    extraServer = app.listen(3000, HOST, () => {
-      console.log(`  secondary URL   ->  http://localhost:3000`);
+  // Optional second listener, OFF by default (audit R10: an automatic :3000
+  // listener doubled the local attack surface). Opt in with SECONDARY_PORT=<port>,
+  // e.g. SECONDARY_PORT=3000. Unset, empty, 0 or anything that isn't a valid
+  // port means off. Never started on Cloud Run or on the primary port itself.
+  const secondaryPort = /^\d+$/.test(String(process.env.SECONDARY_PORT || '').trim())
+    ? parseInt(process.env.SECONDARY_PORT, 10) : 0;
+  if (!process.env.K_SERVICE && secondaryPort > 0 && secondaryPort <= 65535 && secondaryPort !== PORT) {
+    extraServer = app.listen(secondaryPort, HOST, () => {
+      console.log(`  secondary URL   ->  http://localhost:${secondaryPort}`);
     });
-    extraServer.on('error', () => { /* port 3000 already in use, ignore */ });
+    extraServer.on('error', (e) => {
+      console.warn(`  secondary listener on :${secondaryPort} not started (${(e && e.code) || 'error'})`);
+    });
   }
   if (HOST === '0.0.0.0' || HOST === '::') {
     const ips = lanAddresses();
