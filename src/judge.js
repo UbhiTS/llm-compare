@@ -235,6 +235,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     results,
     winnerSlot: winner ? winner.slot : null,
     why: String(parsed.why || '').slice(0, 600),
+    ...(Array.isArray(resp.attachmentNotes) && resp.attachmentNotes.length ? { attachmentNotes: resp.attachmentNotes } : {}),
     usage: {
       promptTokens: resp.promptTokens,
       completionTokens: resp.completionTokens,

@@ -303,6 +303,11 @@ select option { color: var(--text); background: var(--bg); }
   margin: 6px 0 2px; padding: 6px 9px; font-size: 11px; line-height: 1.4;
   border: 1px solid rgba(255,179,71,.45); background: rgba(255,179,71,.09); color: #ffc069;
 }
+/* per-slot attachment handling note (e.g. image auto-scaled for this model) */
+.col-att-note {
+  margin: 6px 0 2px; padding: 6px 9px; font-size: 11px; line-height: 1.4; white-space: pre-line;
+  border: 1px solid rgba(108,182,255,.45); background: rgba(108,182,255,.08); color: #9ccfff;
+}
 
 .model-config { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
 .model-config summary { cursor: pointer; color: var(--accent); font-size: 13px; user-select: none; letter-spacing: .01em; }

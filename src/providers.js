@@ -24,6 +24,7 @@ const {
   toOpenAIResponsesContent,
   toOpenAIChatContent,
 } = require('./attachments');
+const { withImagePolicy, IMAGE_REJECTION_RE } = require('./imagePolicy');
 
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS, 10) || 0;
 const CLAUDE_MAX_OUTPUT = MAX_OUTPUT_TOKENS || 128000; // Anthropic requires max_tokens; Opus 4.8 supports 128k
@@ -367,15 +368,48 @@ function hasAttachments(messages) {
   return Array.isArray(messages) && messages.some((m) => Array.isArray(m.attachments) && m.attachments.length > 0);
 }
 
+// Native (non-image) documents that an adapter may, visibly, re-send as extracted
+// text if the provider rejects the native form. Images are NEVER flattened here:
+// image rejections go to imagePolicy (scaled copy on the same model, or a
+// labelled "image couldn't be sent" error).
+function hasNativeDocs(messages, kinds = ['pdf', 'audio', 'video']) {
+  return Array.isArray(messages) && messages.some((m) => Array.isArray(m.attachments) &&
+    m.attachments.some((a) => a && !a.isEmpty && a.data && kinds.includes(a.kind)));
+}
+
+// Read an error body without consuming the response.
+async function peekBody(r) {
+  try { return await r.clone().text(); } catch (_) { return ''; }
+}
+
+// True when a non-OK response looks like it was caused by an attached image
+// (so no unrelated same-model fallback should be attempted before imagePolicy).
+async function isImageError(r, messages) {
+  if (!hasAttachments(messages) || r.ok) return false;
+  if (r.status === 413) return true;
+  if (r.status !== 400 && r.status !== 422) return false;
+  return IMAGE_REJECTION_RE.test(await peekBody(r));
+}
+
+// Throwable error that carries the HTTP status (imagePolicy keys off it).
+function statusError(message, status, model) {
+  const err = new Error(message);
+  err.status = status;
+  if (model) err.model = model;
+  return err;
+}
+
+const docNote = (model, what) => `${what} sent to ${model} as extracted text (the provider rejected the native file)`;
+
 async function gemini({ model, system, messages, keys, signal }) {
   const key = (keys && keys.gemini) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
 
-  const buildBody = (inlineBinary = true) => {
+  const buildBody = (inlineDocs = true) => {
     const contents = messages.map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: Array.isArray(m.attachments) && m.attachments.length
-        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary: true, inlineDocs })
         : [{ text: m.content }],
     }));
     const body = {
@@ -401,17 +435,20 @@ async function gemini({ model, system, messages, keys, signal }) {
     body: JSON.stringify(buildBody(true)),
     signal,
   });
-  if (r.status === 400 && hasAttachments(messages)) {
+  const notes = [];
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
+    // Visible fallback: PDFs/audio/video as extracted text; images stay inline.
     r = await providerFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(buildBody(false)),
       signal,
     });
+    if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`Gemini ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`);
+  if (!r.ok) throw statusError(`Gemini ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
   const text = (j.candidates?.[0]?.content?.parts || [])
     .map((p) => p.text || '')
@@ -422,6 +459,7 @@ async function gemini({ model, system, messages, keys, signal }) {
     promptTokens: u.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens: u.candidatesTokenCount ?? estimateTokens([{ content: text }]),
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -492,9 +530,13 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     body: JSON.stringify(reqBody),
     signal,
   });
-  if (r.status === 400 && hasAttachments(messages)) {
-    const fallbackMsgs = buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false });
-    const fbBody = { model, messages: fallbackMsgs };
+  // Images are never stripped: an image rejection surfaces to imagePolicy.
+  // Only a native PDF may (visibly) fall back to its extracted text.
+  const notes = [];
+  let curMsgs = msgs;
+  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+    curMsgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: false });
+    const fbBody = { model, messages: curMsgs };
     if (eff) fbBody.reasoning_effort = eff;
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
@@ -502,16 +544,15 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
       body: JSON.stringify(fbBody),
       signal,
     });
+    if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
-  if (r.status === 400 && eff) {
+  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
     // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
-    const fallbackMsgs = hasAttachments(messages)
-      ? buildOpenAIChatMessages(system, messages, { allowImages: false, allowFiles: false })
-      : msgs;
+    // (same model, attachments unchanged).
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: fallbackMsgs }),
+      body: JSON.stringify({ model, messages: curMsgs }),
       signal,
     });
   }
@@ -537,6 +578,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -573,11 +615,15 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 
   const t0 = Date.now();
   let r = await sendReq(true, model);
-  if (r.status === 400 || r.status === 403) {
+  if ((r.status === 400 || r.status === 403) && !(await isImageError(r, messages))) {
     // Some OpenAI orgs are not verified for `summary: "auto"` — retry with `{ effort }` only
     // (same model — never substitute a different one).
     r = await sendReq(false, model);
   }
+  // An image rejection must NOT fall back to /chat/completions (which used to
+  // end in a silent text-only retry): surface it so imagePolicy can resend the
+  // same model a scaled copy, or fail the slot with a labelled error.
+  if (await isImageError(r, messages)) throw await upstreamError(cfg, model, r);
   if (!r.ok) return null; // fall back to /v1/chat/completions
 
   let text = '', reasoning = '', usage = null;
@@ -627,15 +673,18 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     try {
       const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort });
       if (res) return res;
-    } catch (_) { /* fall through to /chat/completions */ }
+    } catch (e) {
+      if (e && e.status) throw e; // labelled upstream (image) error — never a silent chat fallback
+      /* otherwise fall through to /chat/completions */
+    }
   }
 
   const key = compatKey(cfg, keys);
   const eff = isOpenAI ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
-  const buildBody = (includeEffort, targetModel = model, allowMultimodal = true) => {
+  const buildBody = (includeEffort, targetModel = model, allowFiles = true) => {
     const msgs = buildOpenAIChatMessages(system, messages, {
-      allowImages: allowMultimodal,
-      allowFiles: allowMultimodal && isOpenAI,
+      allowImages: true, // images are never stripped (see imagePolicy)
+      allowFiles: allowFiles && isOpenAI,
     });
     const b = { model: targetModel, messages: msgs, stream: true };
     if (cfg.usageOpt) b.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
@@ -649,19 +698,23 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     body: JSON.stringify(buildBody(true, model, true)),
     signal,
   });
-  if (r.status === 400 && hasAttachments(messages)) {
+  const notes = [];
+  let filesOk = true;
+  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+    filesOk = false; // visible fallback: PDF as extracted text; images unchanged
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
       body: JSON.stringify(buildBody(true, model, false)),
       signal,
     });
+    if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
-  if (r.status === 400 && eff) {
+  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify(buildBody(false, model, false)),
+      body: JSON.stringify(buildBody(false, model, filesOk)),
       signal,
     });
   }
@@ -698,6 +751,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -732,12 +786,14 @@ async function anthropic({ model, system, messages, keys, signal }) {
 
   const t0 = Date.now();
   let r = await sendReq(true);
-  if (r.status === 400 && hasAttachments(messages)) {
-    r = await sendReq(false);
+  const notes = [];
+  if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+    r = await sendReq(false); // visible fallback: PDF as extracted text; images unchanged
+    if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`Anthropic ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`);
+  if (!r.ok) throw statusError(`Anthropic ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
   const text = (j.content || []).map((c) => c.text || '').join('');
   const u = j.usage || {};
@@ -746,6 +802,7 @@ async function anthropic({ model, system, messages, keys, signal }) {
     promptTokens: u.input_tokens ?? estimateTokens(messages, system),
     completionTokens: u.output_tokens ?? estimateTokens([{ content: text }]),
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -763,11 +820,11 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
-  const buildBody = (inlineBinary = true) => {
+  const buildBody = (inlineDocs = true) => {
     const contents = messages.map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: Array.isArray(m.attachments) && m.attachments.length
-        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary: true, inlineDocs })
         : [{ text: m.content }],
     }));
     const body = {
@@ -791,17 +848,19 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     body: JSON.stringify(buildBody(true)),
     signal,
   });
-  if (r.status === 400 && hasAttachments(messages)) {
+  const notes = [];
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
     r = await providerFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(buildBody(false)),
       signal,
     });
+    if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`);
+  if (!r.ok) throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
   const parts = j.candidates?.[0]?.content?.parts || [];
   const text = parts.filter((x) => x.thought !== true).map((x) => x.text || '').join('');
@@ -817,6 +876,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     promptTokens: u.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens,
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -858,10 +918,12 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     tok = await getClaudeToken({ forceRefresh: true });
     r = await send(tok, false, model, true);
   }
-  if (r.status === 400) {
+  const notes = [];
+  if (r.status === 400 && !(await isImageError(r, messages))) {
     r = await send(tok, true, model, true);
-    if (r.status === 400 && hasAttachments(messages)) {
-      r = await send(tok, true, model, false);
+    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+      r = await send(tok, true, model, false); // visible fallback: PDF as extracted text; images unchanged
+      if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
     }
   }
   // No silent model substitution (previously a 429/403/404 was re-routed to
@@ -893,6 +955,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     promptTokens: u.input_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -923,11 +986,11 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
-  const buildBody = (inlineBinary = true) => {
+  const buildBody = (inlineDocs = true) => {
     const contents = messages.map((m) => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: Array.isArray(m.attachments) && m.attachments.length
-        ? toGeminiParts(m.content, m.attachments, { inlineBinary })
+        ? toGeminiParts(m.content, m.attachments, { inlineBinary: true, inlineDocs })
         : [{ text: m.content }],
     }));
     const body = {
@@ -944,10 +1007,12 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
 
   const t0 = Date.now();
   let r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(true)), signal });
-  if (r.status === 400 && hasAttachments(messages)) {
+  const notes = [];
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
     r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(false)), signal });
+    if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
-  if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`); }
+  if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`, r.status, model); }
 
   let answer = '', reasoning = '', usage = {};
   await readSSE(r, (obj) => {
@@ -971,6 +1036,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     text: answer, reasoning: reasoning.trim(), reasoningTokens: thoughts,
     promptTokens: usage.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens, latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -1006,10 +1072,12 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     tok = await getClaudeToken({ forceRefresh: true });
     r = await send(tok, false, model, true);
   }
-  if (r.status === 400) {
+  const notes = [];
+  if (r.status === 400 && !(await isImageError(r, messages))) {
     r = await send(tok, true, model, true);
-    if (r.status === 400 && hasAttachments(messages)) {
-      r = await send(tok, true, model, false);
+    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+      r = await send(tok, true, model, false); // visible fallback: PDF as extracted text; images unchanged
+      if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
     }
   }
   // No silent model substitution (previously a 429/403/404 was re-routed to
@@ -1056,6 +1124,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     promptTokens: inTok || estimateTokens(messages, system),
     completionTokens: totalOut,
     latencyMs,
+    ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
@@ -1079,6 +1148,15 @@ function splitThinkTags(rawText, rawReasoning) {
   return { text, reasoning };
 }
 
+// Some MaaS models reject a request that omits max_tokens (the platform default
+// exceeds their range). Llama 4 Scout: 400 "maxOutputTokens … supported range is
+// from 1 (inclusive) to 8193 (exclusive)"; without max_tokens it returns 400
+// INVALID_ARGUMENT / 500 INTERNAL for every prompt (live, 2026-09-25).
+const MAAS_MAX_OUTPUT = { 'meta/llama-4-scout-17b-16e-instruct-maas': 8192 };
+const maasMaxTokens = (model) => MAX_OUTPUT_TOKENS
+  ? (MAAS_MAX_OUTPUT[model] ? Math.min(MAX_OUTPUT_TOKENS, MAAS_MAX_OUTPUT[model]) : MAX_OUTPUT_TOKENS)
+  : (MAAS_MAX_OUTPUT[model] || 0);
+
 async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const reg = region || 'global';
@@ -1087,11 +1165,13 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
   const userToken = keys && keys.claudeBearerToken;
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
-  const send = (token, withEffort, allowImages = true) => {
-    const msgs = buildOpenAIChatMessages(system, messages, { allowImages, allowFiles: false });
+  const send = (token, withEffort) => {
+    // Images are never stripped (see imagePolicy); MaaS takes no native files.
+    const msgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: false });
     const body = { model, messages: msgs };
     if (withEffort && eff) body.reasoning_effort = eff;
-    if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
+    const maxTok = maasMaxTokens(model);
+    if (maxTok) body.max_tokens = maxTok;
     return providerFetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1102,20 +1182,17 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, true, true);
+  let r = await send(tok, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, true, true);
+    r = await send(tok, true);
   }
-  if (r.status === 400 && hasAttachments(messages)) {
-    r = await send(tok, true, false);
+  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
+    r = await send(tok, false);
   }
-  if (r.status === 400 && eff) {
-    r = await send(tok, false, false);
-  }
-  const j = await r.json();
+  let j; try { j = await r.json(); } catch (_) { j = {}; }
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`);
+  if (!r.ok) throw statusError(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
   const msg = j.choices?.[0]?.message || {};
   const split = splitThinkTags(msg.content || '', msg.reasoning_content || msg.reasoning || msg.thinking || '');
@@ -1145,12 +1222,14 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
   const userToken = keys && keys.claudeBearerToken;
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
-  const send = (token, withEffort, withUsageOpt = true, allowImages = true) => {
-    const msgs = buildOpenAIChatMessages(system, messages, { allowImages, allowFiles: false });
+  const send = (token, withEffort, withUsageOpt = true) => {
+    // Images are never stripped (see imagePolicy); MaaS takes no native files.
+    const msgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: false });
     const body = { model, messages: msgs, stream: true };
     if (withUsageOpt) body.stream_options = { include_usage: true };
     if (withEffort && eff) body.reasoning_effort = eff;
-    if (MAX_OUTPUT_TOKENS) body.max_tokens = MAX_OUTPUT_TOKENS;
+    const maxTok = maasMaxTokens(model);
+    if (maxTok) body.max_tokens = maxTok;
     return providerFetch(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -1161,20 +1240,17 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
 
   const t0 = Date.now();
   let tok = userToken || await getClaudeToken();
-  let r = await send(tok, true, true, true);
+  let r = await send(tok, true, true);
   if (r.status === 401 && !userToken) {
     tok = await getClaudeToken({ forceRefresh: true });
-    r = await send(tok, true, true, true);
+    r = await send(tok, true, true);
   }
-  if (r.status === 400 && hasAttachments(messages)) {
-    r = await send(tok, true, true, false);
-  }
-  if (r.status === 400) {
-    r = await send(tok, false, false, false);
+  if (r.status === 400 && !(await isImageError(r, messages))) {
+    r = await send(tok, false, false); // same model, no effort/usage options; attachments unchanged
   }
   if (!r.ok) {
     let e; try { e = await r.json(); } catch { e = await r.text(); }
-    throw new Error(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`);
+    throw statusError(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`, r.status, model);
   }
 
   let rawContent = '', rawReasoning = '', usage = null;
@@ -1229,7 +1305,15 @@ const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
 // `signal` aborts the upstream request when the client goes away (or restarts a
 // slot) so an abandoned run stops burning tokens instead of finishing unseen.
-async function complete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode }) {
+async function complete(args) {
+  const { provider, model, messages, publisher, endpointType, signal } = args;
+  // Every image is either seen by the model (original, or a visibly-labelled
+  // scaled copy) or the slot fails with a labelled error — see imagePolicy.js.
+  return withImagePolicy({ provider, model, publisher, endpointType }, messages, signal,
+    (msgs) => dispatchComplete({ ...args, messages: msgs }));
+}
+
+async function dispatchComplete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode }) {
   if (provider === 'agentplatform' && onDelta) {
     if (endpointType === 'openai-maas') {
       return agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode });

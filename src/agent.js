@@ -131,6 +131,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
   const total = task.testCases.length;
   let firstTryPassed = null;
   const history = []; // [{ iteration, passed, total }]
+  const attachmentNotes = []; // provider-specific attachment handling shown in the slot
 
   const price = priceFor(modelConfig);
   const runningCost = () =>
@@ -200,6 +201,16 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       keys,
       signal,
     });
+
+    // Visible record of any attachment substitution (e.g. an image auto-scaled
+    // for this model because the provider rejects the original) — never silent.
+    if (Array.isArray(resp.attachmentNotes) && resp.attachmentNotes.length) {
+      const fresh = resp.attachmentNotes.filter((n) => !attachmentNotes.includes(n));
+      if (fresh.length) {
+        attachmentNotes.push(...fresh);
+        emit({ type: 'attachment_note', slot, notes: attachmentNotes.slice(), message: attachmentNotes.join(' · ') });
+      }
+    }
 
     totals.promptTokens += resp.promptTokens;
     totals.completionTokens += resp.completionTokens;
@@ -274,6 +285,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     price,
     thinking: thinkingProfile(modelConfig),   // what reasoning config this run was sent
     contextWarning: budgetRes.contextWarning || null,
+    ...(attachmentNotes.length ? { attachmentNotes } : {}),
     repaired: isRepair,                       // this output followed a crash-repair round
     iterations,
     passed,

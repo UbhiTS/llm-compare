@@ -942,6 +942,105 @@ function claudeNativeScale(width, height) {
 
 const base64LengthForBytes = (n) => 4 * Math.ceil((Number(n) || 0) / 3);
 
+// OpenAI: images over 30,000 patches of 32×32 px are REJECTED, not resized
+// (https://platform.openai.com/docs/guides/images-vision, checked 2026-09-25).
+// For such images the browser also makes a "fit copy" shrunk to that budget with
+// OpenAI's official shrink formula, so OpenAI keeps as much detail as it accepts.
+// Claude's hard limit is 8000 px, so that also triggers the Claude copy.
+const OPENAI_PATCH_PX = 32;
+const OPENAI_MAX_PATCHES = 30000;
+const CLAUDE_HARD_MAX_DIM = 8000;
+const FIT_COPY_QUALITIES = [0.9, 0.85, 0.8, 0.72, 0.6];
+const openaiPatchCount = (w, h) => Math.ceil(w / OPENAI_PATCH_PX) * Math.ceil(h / OPENAI_PATCH_PX);
+
+// Official formula: shrink = sqrt(32² × budget / (w×h)), then snap so whole
+// patches fit, then floor. Returns null when the image already fits.
+function openaiFitSize(width, height, budget = OPENAI_MAX_PATCHES) {
+  if (!width || !height || openaiPatchCount(width, height) <= budget) return null;
+  const p = OPENAI_PATCH_PX;
+  const shrink = Math.sqrt((p * p * budget) / (width * height));
+  const wp = (width * shrink) / p;
+  const hp = (height * shrink) / p;
+  const adjusted = shrink * Math.min(Math.floor(wp) / wp, Math.floor(hp) / hp);
+  return { width: Math.max(1, Math.floor(width * adjusted)), height: Math.max(1, Math.floor(height * adjusted)) };
+}
+
+// Pixel size from the file header (PNG/GIF/WebP/JPEG) without decoding; falls
+// back to a full decode if the header can't be read. Returns null on failure.
+function dimsFromHeader(b) {
+  const u16be = (o) => (b[o] << 8) | b[o + 1];
+  const u16le = (o) => b[o] | (b[o + 1] << 8);
+  const u24le = (o) => b[o] | (b[o + 1] << 8) | (b[o + 2] << 16);
+  const u32be = (o) => ((b[o] << 24) >>> 0) + ((b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]);
+  const str = (o, n) => String.fromCharCode(...b.subarray(o, o + n));
+  if (b.length < 30) return null;
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return str(12, 4) === 'IHDR' ? { width: u32be(16), height: u32be(20) } : null;
+  if (str(0, 6) === 'GIF87a' || str(0, 6) === 'GIF89a') return { width: u16le(6), height: u16le(8) };
+  if (str(0, 4) === 'RIFF' && str(8, 4) === 'WEBP') {
+    const cc = str(12, 4);
+    if (cc === 'VP8X') return { width: 1 + u24le(24), height: 1 + u24le(27) };
+    if (cc === 'VP8L') return { width: 1 + (((b[22] & 0x3f) << 8) | b[21]), height: 1 + (((b[24] & 0x0f) << 10) | (b[23] << 2) | ((b[22] & 0xc0) >> 6)) };
+    if (cc === 'VP8 ') return { width: u16le(26) & 0x3fff, height: u16le(28) & 0x3fff };
+    return null;
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    const SOF = [0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf];
+    let off = 2;
+    while (off + 9 < b.length) {
+      if (b[off] !== 0xff) { off++; continue; }
+      const m = b[off + 1];
+      if (m === 0xff) { off++; continue; }
+      if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { off += 2; continue; }
+      if (m === 0xd9 || m === 0xda) return null;
+      if (SOF.includes(m)) return { width: u16be(off + 7), height: u16be(off + 5) };
+      off += 2 + u16be(off + 2);
+    }
+  }
+  return null;
+}
+
+async function readImageDims(file) {
+  try {
+    const head = new Uint8Array(await file.slice(0, 512 * 1024).arrayBuffer());
+    const d = dimsFromHeader(head);
+    if (d && d.width && d.height) return d;
+  } catch (_) { /* fall back to decoding */ }
+  try {
+    const decoded = await decodeImageSource(file);
+    try { return { width: decoded.width, height: decoded.height }; } finally { decoded.close(); }
+  } catch (_) {
+    return null;
+  }
+}
+
+// OpenAI fit copy at exactly `target` size, JPEG, smaller than the original.
+// Returns { base64, mimeType, width, height, bytes } or { error } (never throws).
+async function makeFitCopy(file, target) {
+  let decoded;
+  try {
+    decoded = await decodeImageSource(file);
+  } catch (_) {
+    return { error: 'the browser could not decode this image' };
+  }
+  try {
+    const { width: w, height: h } = target;
+    const canvas = makeScaleCanvas(w, h);
+    if (!canvas.ctx) return { error: 'canvas is unavailable in this browser' };
+    const maxBytes = Math.min((file.size || 0) * 0.98, MAX_CUSTOM_FILE_BYTES);
+    for (const q of FIT_COPY_QUALITIES) {
+      const blob = await canvasEncode(canvas, decoded, w, h, 'image/jpeg', q);
+      if (blob && blob.type === 'image/jpeg' && blob.size < maxBytes) {
+        return { base64: await blobToBase64(blob), mimeType: 'image/jpeg', width: w, height: h, bytes: blob.size };
+      }
+    }
+    return { error: 'it could not be made smaller than the original' };
+  } catch (_) {
+    return { error: 'the browser failed while re-encoding the image' };
+  } finally {
+    decoded.close();
+  }
+}
+
 function blobToBase64(blob) {
   return readFileAsDataUrl(blob).then((u) => {
     const i = u.indexOf(',');
@@ -1072,28 +1171,51 @@ function renderSizeWarnings() {
   box.classList.toggle('hidden', rows.length === 0);
 }
 
+// Cloud Run caps an HTTP/1 request at 32 MiB, so an original plus its scaled
+// copies may not fit in one inspect call: the original goes first, and each copy
+// that doesn't fit follows as a by-hash reference (the server attaches it to the
+// cached entry after validating it).
+const INSPECT_BUDGET_CHARS = 28 * 1024 * 1024;
+
+async function postInspect(item) {
+  const r = await fetch('/api/attachments/inspect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ attachments: [item] }),
+  });
+  if (!r.ok) return null;
+  const body = await r.json();
+  return (body && Array.isArray(body.attachments) && body.attachments[0]) || null;
+}
+
 async function inspectAttachmentOnServer(attObj) {
   if (!attObj || attObj.isEmpty) return;
   try {
-    const r = await fetch('/api/attachments/inspect', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        attachments: [{
-          name: attObj.name,
-          mimeType: attObj.mimeType,
-          size: attObj.size,
-          data: attObj.data,
-          textContent: attObj.textContent || undefined,
-          claudeDataBase64: attObj.claudeDataBase64 || undefined,
-          claudeMimeType: attObj.claudeDataBase64 ? attObj.claudeMimeType : undefined,
-        }],
-      }),
-    });
-    if (!r.ok) return;
-    const body = await r.json();
-    const srv = body && Array.isArray(body.attachments) && body.attachments[0];
+    const base = {
+      name: attObj.name,
+      mimeType: attObj.mimeType,
+      size: attObj.size,
+      data: attObj.data,
+      textContent: attObj.textContent || undefined,
+    };
+    const copies = [];
+    if (attObj.claudeDataBase64) copies.push({ claudeDataBase64: attObj.claudeDataBase64, claudeMimeType: attObj.claudeMimeType });
+    if (attObj.fitDataBase64) copies.push({ fitDataBase64: attObj.fitDataBase64, fitMimeType: attObj.fitMimeType });
+    const copyChars = (c) => (c.claudeDataBase64 || c.fitDataBase64 || '').length;
+    const first = { ...base };
+    const later = [];
+    let used = (attObj.data || '').length + (attObj.textContent || '').length;
+    for (const c of copies) {
+      if (used + copyChars(c) <= INSPECT_BUDGET_CHARS) { Object.assign(first, c); used += copyChars(c); } else later.push(c);
+    }
+    const srv = await postInspect(first);
     if (!srv) return;
+    for (const c of later) {
+      if (!srv.sha256) break;
+      const extra = await postInspect({ sha256: srv.sha256, name: attObj.name, mimeType: attObj.mimeType, size: attObj.size, ...c });
+      if (extra && extra.claudeScaled !== undefined) srv.claudeScaled = extra.claudeScaled;
+      if (extra && extra.fitScaled !== undefined) srv.fitScaled = extra.fitScaled;
+    }
     if (srv.sha1) attObj.sha1 = srv.sha1;
     if (srv.sha256) attObj.sha256 = srv.sha256;
     if (srv.cached) attObj.cached = true;
@@ -1112,6 +1234,11 @@ async function inspectAttachmentOnServer(attObj) {
       attObj.claudeMimeType = null;
       attObj.optBadge = null;
       setSizeWarning(attObj.id, `"${attObj.name}": the scaled copy for Claude was rejected by the server, so Claude will receive a text note instead of the image. Other models get the original.`, true);
+    }
+    if (srv.fitScaled === false && attObj.fitDataBase64) {
+      attObj.fitDataBase64 = null;
+      attObj.fitMimeType = null;
+      setSizeWarning(attObj.id, `"${attObj.name}": the scaled copy for OpenAI was rejected by the server, so OpenAI models will show an "image couldn't be sent" error instead of answering without it. Other models are unaffected.`, true);
     }
     renderAttachments();
     renderTaskMeta();
@@ -1150,21 +1277,57 @@ async function addAttachmentFiles(fileList) {
 
       const effectiveSize = file.size || 0;
       let optBadge = null;
-      // Every provider gets the original image. Only when it is over Anthropic's
-      // 5 MB base64 cap do we build a scaled copy that is used for Claude alone.
+      // Every provider gets the original image when it accepts it. Scaled copies
+      // are made only when a provider's documented limit would reject it:
+      //  - Claude copy (max native size): over 5 MB base64 or 8000 px — used by
+      //    Claude, and as the last fallback for any provider that rejects the original;
+      //  - OpenAI fit copy: over OpenAI's 30,000-patch limit.
       let claudeCopy = null;
+      let fitCopy = null;
       let sizeNote = null;
-      if (isImage && base64Data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS) {
+      const isGif = /gif$/i.test(mimeType) || /\.gif$/i.test(lowerName);
+      const dims = isImage && !isGif ? await readImageDims(file) : null;
+      const overClaudeBytes = isImage && base64Data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS;
+      const overClaudeDim = Boolean(dims) && Math.max(dims.width, dims.height) > CLAUDE_HARD_MAX_DIM;
+      const fitTarget = dims ? openaiFitSize(dims.width, dims.height) : null;
+      const label = `"${file.name || 'image'}" (${formatBytes(effectiveSize)}${dims ? `, ${dims.width}×${dims.height}` : ''})`;
+      const notes = [];
+      let noteIsError = false;
+      if (isImage && (overClaudeBytes || overClaudeDim || fitTarget)) {
         const scaled = await makeClaudeScaledCopy(file);
+        const claudeWhy = overClaudeBytes ? "over Claude's 5 MB image limit" : (overClaudeDim ? `over Claude's ${CLAUDE_HARD_MAX_DIM} px limit` : '');
         if (scaled && scaled.base64) {
           claudeCopy = scaled;
           const fmt = scaled.mimeType === 'image/webp' ? 'WebP' : 'JPEG';
           optBadge = `Claude copy ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)})`;
-          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit, so Claude gets a copy auto-scaled to ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)}), within Claude's max native resolution (${CLAUDE_IMAGE_MAX_LONG_EDGE} px / ${CLAUDE_IMAGE_MAX_VISUAL_TOKENS} visual tokens). Other models get the original.`, isError: false };
+          if (claudeWhy) {
+            notes.push(`${label} is ${claudeWhy}, so Claude gets a copy auto-scaled to ${scaled.width}×${scaled.height} ${fmt} (${formatBytes(scaled.bytes)}), within Claude's max native resolution (${CLAUDE_IMAGE_MAX_LONG_EDGE} px / ${CLAUDE_IMAGE_MAX_VISUAL_TOKENS} visual tokens).`);
+          } else {
+            notes.push(`${label}: a ${scaled.width}×${scaled.height} ${fmt} copy is kept as a fallback, used (and labelled) only if a provider rejects the original.`);
+          }
         } else {
           const why = (scaled && scaled.error) || 'unknown error';
-          sizeNote = { text: `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over Claude's 5 MB image limit and couldn't be auto-scaled (${why}). Claude will receive a text note instead of the image; other models get the original.`, isError: true };
+          noteIsError = noteIsError || Boolean(claudeWhy);
+          notes.push(claudeWhy
+            ? `${label} is ${claudeWhy} and couldn't be auto-scaled (${why}). Claude will receive a text note instead of the image.`
+            : `${label}: couldn't make a fallback copy (${why}).`);
         }
+      }
+      if (isImage && fitTarget) {
+        const patches = openaiPatchCount(dims.width, dims.height);
+        const fc = await makeFitCopy(file, fitTarget);
+        if (fc && fc.base64) {
+          fitCopy = fc;
+          optBadge = [optBadge, `OpenAI copy ${fc.width}×${fc.height} JPEG (${formatBytes(fc.bytes)})`].filter(Boolean).join(' · ');
+          notes.push(`OpenAI models get a copy auto-scaled to ${fc.width}×${fc.height} JPEG (${formatBytes(fc.bytes)}): OpenAI rejects images over ${OPENAI_MAX_PATCHES.toLocaleString()} patches and this one needs ${patches.toLocaleString()}.`);
+        } else {
+          noteIsError = true;
+          notes.push(`OpenAI rejects images over ${OPENAI_MAX_PATCHES.toLocaleString()} patches (this one needs ${patches.toLocaleString()}) and a copy couldn't be made (${(fc && fc.error) || 'unknown error'}); OpenAI models will use the smaller fallback copy if there is one, or show an "image couldn't be sent" error.`);
+        }
+      }
+      if (notes.length) {
+        // Keep the Round 6 sentence verbatim for the plain ">5 MB" case.
+        sizeNote = { text: `${notes.join(' ')} Other models get the original.`.replace(`${label} is over`, `"${file.name || 'image'}" (${formatBytes(effectiveSize)}) is over`), isError: noteIsError };
       }
 
       let pageCount = 0;
@@ -1180,8 +1343,8 @@ async function addAttachmentFiles(fileList) {
         } else if (pageCount > 100) {
           warning = `${pageCount} pages (Claude >100p uses extracted text)`;
         }
-      } else if (isImage && base64Data.length > CLAUDE_MAX_IMAGE_BASE64_CHARS && !claudeCopy) {
-        warning = 'Large image (>5MB base64: others get original, Claude text note)';
+      } else if (isImage && (overClaudeBytes || overClaudeDim) && !claudeCopy) {
+        warning = 'Large image (over Claude limits: others get original, Claude text note)';
       }
 
       const estimatedTokens = estimateClientAttachmentTokens({
@@ -1212,6 +1375,10 @@ async function addAttachmentFiles(fileList) {
       if (claudeCopy) {
         attObj.claudeDataBase64 = claudeCopy.base64;
         attObj.claudeMimeType = claudeCopy.mimeType;
+      }
+      if (fitCopy) {
+        attObj.fitDataBase64 = fitCopy.base64;
+        attObj.fitMimeType = fitCopy.mimeType;
       }
       CUSTOM_ATTACHMENTS.push(attObj);
       if (sizeNote) setSizeWarning(attObj.id, sizeNote.text, sizeNote.isError);
@@ -1373,6 +1540,9 @@ function currentAttachmentsPayload() {
       // survives cache eviction. Cached refs don't: the server cache already has it.
       claudeDataBase64: a.claudeDataBase64 || undefined,
       claudeMimeType: a.claudeDataBase64 ? a.claudeMimeType : undefined,
+      // The OpenAI fit copy too, when it still fits under the request cap.
+      ...(a.fitDataBase64 && ((a.data || '').length + (a.claudeDataBase64 || '').length + a.fitDataBase64.length) <= INSPECT_BUDGET_CHARS
+        ? { fitDataBase64: a.fitDataBase64, fitMimeType: a.fitMimeType } : {}),
     };
   });
 }
@@ -1763,6 +1933,7 @@ function buildArena(models) {
       </div>
       <div class="col-status" id="status-${m.slot}"><span>Idle — press Run.</span></div>
       <div class="col-ctx-warn hidden" id="ctx-warn-${m.slot}"></div>
+      <div class="col-att-note hidden" id="att-note-${m.slot}"></div>
       <div class="progress">
         <div class="progress-track"><div class="progress-fill" id="pf-${m.slot}"></div></div>
         <div class="progress-label"><span id="pl-${m.slot}">0 / ${currentTask().testCount} tests</span><span id="ph-${m.slot}"></span></div>
@@ -2581,6 +2752,9 @@ function handleEvent(ev, results, own) {
       }
       break;
     }
+    case 'attachment_note':
+      showAttachmentNotes(ev.slot, ev.notes);
+      break;
     case 'status': {
       const phase = ev.phase === 'thinking'
         ? `Round ${ev.iteration}: generating solution…`
@@ -3224,8 +3398,18 @@ function renderSavedRun(snap) {
   finalize(resultsMap, snap.models.map((m) => m.slot)); // rebuild the scorecard from saved results
 }
 
+// Visible record of provider-specific attachment handling for this slot (e.g.
+// "image auto-scaled to 6764×4512 for gpt-6-sol (…)"). textContent only.
+function showAttachmentNotes(slot, notes) {
+  const el = $(`#att-note-${slot}`);
+  if (!el || !Array.isArray(notes) || !notes.length) return;
+  el.textContent = notes.map((n) => `ℹ ${n}`).join('\n');
+  el.classList.remove('hidden');
+}
+
 // Repaint one column from a saved/finished result (mirrors the live 'done' handler; never auto-runs).
 function applyResultToColumn(slot, r) {
+  if (Array.isArray(r.attachmentNotes)) showAttachmentNotes(slot, r.attachmentNotes);
   if (r.code != null) $(`#code-${slot}`).textContent = r.code;
   setThink(slot, r.reasoning, r.reasoningTokens != null ? r.reasoningTokens : null);
   // saved/finished view: show code & reasoning from the top, not the streamed bottom
