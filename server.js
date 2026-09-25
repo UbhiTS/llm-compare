@@ -38,6 +38,7 @@ const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
+const { scrubError, maskKnown } = require('./src/secrets');
 
 // Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
 // request references cached files that have expired, answer 409 with the list
@@ -48,10 +49,10 @@ async function attachmentsOr409(res, raw, errorShape) {
     return await normalizeAttachmentsAsync(raw);
   } catch (e) {
     if (e && e.code === 'ATTACHMENT_EXPIRED') {
-      res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: e.message, expired: e.expired });
+      res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: scrubError(e.message), expired: e.expired });
       return null;
     }
-    res.status(400).json({ ...errorShape, error: String((e && e.message) || e) });
+    res.status(400).json({ ...errorShape, error: scrubError(String((e && e.message) || e)) });
     return null;
   }
 }
@@ -91,6 +92,36 @@ app.use((req, res, next) => {
     isLocal ? "frame-ancestors *" : "frame-ancestors 'none'",
     "object-src 'none'",
   ].join('; '));
+  next();
+});
+
+// Defense in depth (R6): every /api/* response body — JSON, NDJSON stream,
+// errors — has any configured secret value (server keys + this request's BYOK
+// keys) masked before it leaves the process. Exact-value masking only, so
+// normal model output is never rewritten.
+app.use('/api', (req, res, next) => {
+  const origWrite = res.write.bind(res);
+  const origEnd = res.end.bind(res);
+  const textual = () => /json|ndjson|text/i.test(String(res.getHeader('Content-Type') || 'application/json'));
+  const scrub = (chunk, enc) => {
+    if (chunk == null || !textual()) return chunk;
+    const byok = (req.body && typeof req.body === 'object' && req.body.keys) || null;
+    if (typeof chunk === 'string') return maskKnown(chunk, byok);
+    if (Buffer.isBuffer(chunk)) {
+      const str = chunk.toString('utf8');
+      const masked = maskKnown(str, byok);
+      return masked === str ? chunk : Buffer.from(masked, 'utf8');
+    }
+    return chunk;
+  };
+  res.write = (chunk, enc, cb) => origWrite(scrub(chunk, enc), enc, cb);
+  res.end = (chunk, enc, cb) => {
+    if (typeof chunk === 'function') return origEnd(chunk);
+    const out = scrub(chunk, enc);
+    // res.send() set Content-Length for the unmasked body; keep it consistent.
+    if (out !== chunk && out != null && !res.headersSent) res.setHeader('Content-Length', Buffer.byteLength(out));
+    return origEnd(out, enc, cb);
+  };
   next();
 });
 
@@ -178,7 +209,7 @@ app.post('/api/auth/setup', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.json({ ok: true, user: { username: user.username, role: user.role } });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -216,7 +247,7 @@ app.get('/auth/google/callback', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.redirect('/');
   } catch (e) {
-    res.redirect('/login?error=' + encodeURIComponent(String((e && e.message) || e)));
+    res.redirect('/login?error=' + encodeURIComponent(scrubError(String((e && e.message) || e))));
   }
 });
 
@@ -318,7 +349,7 @@ app.post('/api/auth/password', async (req, res) => {
     );
     res.json({ ok: true });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -333,7 +364,7 @@ app.post('/api/auth/users', requireAdmin, async (req, res) => {
     await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user');
     res.json({ ok: true, users: auth.listUsers() });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -342,7 +373,7 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
     auth.deleteUser(req.params.username, req.user.username);
     res.json({ ok: true, users: auth.listUsers() });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -458,7 +489,7 @@ app.put('/api/global-keys', requireAdmin, async (req, res) => {
     console.log(`[globalKeys] ${req.user.username} updated ${name}`);
     res.json({ ok: true, keys });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -481,7 +512,7 @@ app.post('/api/execute', async (req, res) => {
     });
     res.json(result);
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -530,7 +561,7 @@ app.post('/api/judge', async (req, res) => {
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
     res.json({ ok: true, ...verdict });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -545,7 +576,7 @@ app.post('/api/web-game', async (req, res) => {
     const { id, cached } = await buildWebGame(code);
     res.json({ ok: true, id, cached, url: `/games/${id}/` });
   } catch (e) {
-    res.status(400).json({ error: String((e && e.message) || e) });
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
 
@@ -609,7 +640,7 @@ app.post('/api/attachments/inspect', async (req, res) => {
     res.json({ ok: true, attachments: items });
   } catch (e) {
     const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;
-    res.status(status).json({ ok: false, error: e.message || String(e), code: e && e.code, expired: e && e.expired });
+    res.status(status).json({ ok: false, error: scrubError(e.message || String(e)), code: e && e.code, expired: e && e.expired });
   }
 });
 
@@ -628,7 +659,7 @@ app.post('/api/attachments/upload',
       const items = await inspectAttachmentsAsync(raw);
       res.json({ ok: true, attachments: items });
     } catch (e) {
-      res.status((e && e.status) || 400).json({ ok: false, error: (e && e.message) || String(e) });
+      res.status((e && e.status) || 400).json({ ok: false, error: scrubError((e && e.message) || String(e)) });
     }
   },
   (err, _req, res, next) => {
@@ -747,7 +778,7 @@ app.post('/api/run', async (req, res) => {
   try {
     results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair });
   } catch (e) {
-    if (!aborted) emit({ type: 'error', message: String((e && e.message) || e) });
+    if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   }
   finished = true;
   if (aborted) return res.end();   // nothing to log: the client threw this run away

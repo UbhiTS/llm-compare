@@ -7,6 +7,7 @@
 
 const { runAgent } = require('./agent');
 const { thinkingProfile } = require('./providers');
+const { scrubError } = require('./secrets');
 
 async function runComparison({ task, models, maxIterations, emit, keys, signal, repair }) {
   emit({
@@ -33,7 +34,8 @@ async function runComparison({ task, models, maxIterations, emit, keys, signal, 
         emit({ type: 'done', slot: m.slot, result });
         return result;
       } catch (e) {
-        const message = String((e && e.message) || e);
+        // Never let an upstream URL, header or key (server or BYOK) reach the browser.
+        const message = scrubError(String((e && e.message) || e), keys);
         emit({ type: 'model_error', slot: m.slot, label: m.label, message });
         return { slot: m.slot, label: m.label, error: message };
       }

@@ -25,6 +25,8 @@ const REDACTIONS = [
 function redact(s) {
   let out = String(s);
   for (const [re, rep] of REDACTIONS) out = out.replace(re, rep);
+  // Exact configured secret values + provider URL/key patterns (see secrets.js).
+  try { out = require('./secrets').scrubError(out); } catch (_) { /* keep pattern-redacted */ }
   return out;
 }
 
@@ -53,8 +55,17 @@ function write(severity, fields, args) {
 
 let installed = false;
 function install() {
-  if (installed || !jsonMode()) return;
+  if (installed) return;
   installed = true;
+  if (!jsonMode()) {
+    // Text mode (local): same plain output, but secrets are still redacted.
+    const wrap = (fn) => (...a) => fn(redact(util.format(...a)));
+    console.log = wrap(orig.log);
+    console.info = wrap(orig.info);
+    console.warn = wrap(orig.warn);
+    console.error = wrap(orig.error);
+    return;
+  }
   console.log = (...a) => write('INFO', null, a);
   console.info = (...a) => write('INFO', null, a);
   console.warn = (...a) => write('WARNING', null, a);

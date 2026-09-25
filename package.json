@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js",
-    "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js"
+    "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js && node test/smoke-secrets.js"
   },
   "engines": {
     "node": ">=18"

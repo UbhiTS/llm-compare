@@ -90,6 +90,78 @@ const ok = (m) => console.log('✓ ' + m);
   assert(!a.error && a.costUsd >= 0, 'D4: other slot keeps working');
   ok('D4 orchestrator: failed OpenAI slot → model_error (unpriced), Gemini slot unaffected');
 
+  // ------------------------------------------------ D4 universal: every provider
+  // Each provider gets 429 / 403 / 404 from upstream. It must throw a labelled
+  // error naming the requested model, and every upstream request must target
+  // that same model (no claude-opus-5-5 / gpt-oss / other substitution).
+  process.env.CLAUDE_BEARER_TOKEN = 'test-bearer-token-followup';
+  process.env.MOONSHOT_API_KEY = 'test-moonshot-key-followup';
+  process.env.ANTHROPIC_API_KEY = 'test-anthropic-key-followup';
+  process.env.GEMINI_API_KEY = 'test-gemini-key-followup';
+  const modelInReq = (c) => {
+    const m = c.url.match(/\/models\/([^/:?]+)[:?]/);
+    return (c.body && c.body.model) || (m && decodeURIComponent(m[1])) || null;
+  };
+  const cases = [
+    { name: 'Vertex Claude (stream)', call: { provider: 'agentplatform', publisher: 'anthropic', model: 'claude-fable-5-1', onDelta: () => {} } },
+    { name: 'Vertex Claude (non-stream)', call: { provider: 'agentplatform', publisher: 'anthropic', model: 'claude-mythos-5' } },
+    { name: 'Vertex Gemini (stream)', call: { provider: 'agentplatform', publisher: 'google', model: 'gemini-3.8-flash', onDelta: () => {} } },
+    { name: 'Vertex Gemini (non-stream)', call: { provider: 'agentplatform', publisher: 'google', model: 'gemini-3.6-flash' } },
+    { name: 'Gemini API (generativelanguage)', call: { provider: 'gemini', model: 'gemini-3.5-flash' } },
+    { name: 'Vertex MaaS (stream)', call: { provider: 'agentplatform', endpointType: 'openai-maas', model: 'deepseek-ai/deepseek-v3.2-maas', region: 'global', onDelta: () => {} } },
+    { name: 'Vertex MaaS (non-stream)', call: { provider: 'agentplatform', endpointType: 'openai-maas', model: 'xai/grok-4.6', region: 'global' } },
+    { name: 'OpenAI (stream)', call: { provider: 'openai', model: 'gpt-6-terra', onDelta: () => {} } },
+    { name: 'Moonshot (stream)', call: { provider: 'moonshot', model: 'kimi-k3', onDelta: () => {} } },
+    { name: 'Anthropic direct', call: { provider: 'anthropic', model: 'claude-sonnet-5' } },
+  ];
+  for (const status of [429, 403, 404]) {
+    for (const c of cases) {
+      calls = [];
+      handler = () => json(status, { error: { code: status, message: `mock ${status}` } }, { 'Retry-After': '0' });
+      let err = null;
+      try { await complete({ ...c.call, messages: [{ role: 'user', content: 'hi' }] }); } catch (e) { err = e; }
+      assert(err, `D4-all: ${c.name} ${status} must throw (not succeed via another model)`);
+      assert(err.message.includes(`"${c.call.model}"`) && err.message.includes(String(status)), `D4-all: ${c.name} ${status} error must name the model + status: ${err.message.slice(0, 160)}`);
+      const targets = [...new Set(calls.map(modelInReq).filter(Boolean))];
+      assert.deepStrictEqual(targets, [c.call.model], `D4-all: ${c.name} ${status} requested other models: ${targets}`);
+    }
+  }
+  ok(`D4 universal: ${cases.length} provider paths × 429/403/404 → labelled error, only the requested model is ever called`);
+
+  // Orchestrator with Claude-quota-0 + a working Gemini: Claude slot fails, unpriced; Gemini + judge unaffected.
+  handler = (u) => {
+    if (u.includes('publishers/anthropic')) return json(429, { error: { message: 'quota 0' } }, { 'Retry-After': '0' });
+    if (u.includes(':streamGenerateContent')) return new Response(sse(['data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: '```javascript\nfunction minMeetingRooms(){return 0;}\n```' }] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 } })]), { status: 200 });
+    if (u.includes(':generateContent')) return json(200, { candidates: [{ content: { parts: [{ text: '{"scores":[]}' }] } }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 5 } });
+    return json(500, {});
+  };
+  const ev2 = [];
+  const res2 = await runComparison({ task, models: [modelFromCatalog('A', 'gemini-3.8-flash'), modelFromCatalog('C', 'claude-fable-5-1')], maxIterations: 1, emit: (e) => ev2.push(e) });
+  const cErr = ev2.find((e) => e.type === 'model_error' && e.slot === 'C');
+  assert(cErr && /claude-fable-5-1/.test(cErr.message) && !/claude-opus-5-5/.test(JSON.stringify(ev2)), 'D4-all: Fable slot fails labelled, Opus 5.5 never appears');
+  assert(res2.find((r) => r.slot === 'C').costUsd == null && !res2.find((r) => r.slot === 'A').error, 'D4-all: failed slot unpriced; Gemini slot fine');
+  ok('D4 universal orchestrator: quota-0 Claude slot → labelled unpriced error; no Opus 5.5 substitution; other slot fine');
+
+  // ------------------------------------------------------------------ R6
+  // Gemini keys travel in x-goog-api-key, never in the URL (all 3 Gemini paths).
+  for (const c of cases.filter((x) => /Gemini/.test(x.name))) {
+    calls = []; const seen = [];
+    handler = (u, o) => { seen.push({ u, h: o.headers || {} }); return json(400, { error: { message: 'bad' } }); };
+    try { await complete({ ...c.call, messages: [{ role: 'user', content: 'hi' }] }); } catch (_) { /* expected */ }
+    assert(seen.length && seen.every((x) => !/[?&]key=/.test(x.u) && x.h['x-goog-api-key']), `R6: ${c.name} must send key via header only`);
+  }
+  // Errors that echo keys / URLs / tokens are scrubbed before reaching the client.
+  const { scrubError } = require('../src/secrets');
+  const dirty = `bad ${process.env.AGENT_PLATFORM_API_KEY} https://aiplatform.googleapis.com/v1/x:gen?key=${process.env.AGENT_PLATFORM_API_KEY} Authorization: Bearer ya29.abcdefghijklmnop sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ x-goog-api-key: AQ.Abcdefghijklmnopqrstuvwxyz0123`;
+  const clean = scrubError(dirty, { agentplatform: 'AIzaBYOKabcdefghijklmnopqrstu' });
+  assert(!clean.includes(process.env.AGENT_PLATFORM_API_KEY) && !/key=/.test(clean) && !/ya29\.a|sk-proj-A|AQ\.A/.test(clean), 'R6: scrubError removes keys, key=, tokens: ' + clean);
+  // Network errors are re-thrown without the undici cause / URL.
+  handler = (u) => { throw new TypeError(`fetch failed ${u}`, { cause: Object.assign(new Error(`connect ECONNREFUSED ${u}?key=SECRETSECRETSECRET`), { code: 'ECONNREFUSED' }) }); };
+  let netErr = null;
+  try { await providerFetch('https://aiplatform.googleapis.com/v1/x:gen?key=SECRETSECRETSECRET', { method: 'POST' }); } catch (e) { netErr = e; }
+  assert(netErr && /ECONNREFUSED/.test(netErr.message) && !/SECRET|key=|googleapis/.test(netErr.message + String(netErr.cause || '')), 'R6: network error sanitized: ' + (netErr && netErr.message));
+  ok('R6: Gemini keys header-only on all paths; scrubError + sanitized network errors');
+
   // ------------------------------------------------------------------ O1
   const U = 'https://api.openai.com/v1/chat/completions';
   let n = 0;

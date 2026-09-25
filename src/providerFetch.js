@@ -61,7 +61,7 @@ function sleep(ms, signal) {
 
 class ProviderTimeoutError extends Error {
   constructor(provider, ms) {
-    super(`${provider.toLowerCase()} provider did not respond within ${Math.round(ms / 1000)}s (PROVIDER_TIMEOUT_MS)`);
+    super(`${provider.toLowerCase()} provider did not respond within ${ms >= 1000 ? Math.round(ms / 1000) + 's' : ms + 'ms'} (PROVIDER_TIMEOUT_MS)`);
     this.name = 'ProviderTimeoutError';
   }
 }
@@ -88,6 +88,16 @@ async function attempt(url, opts, timeoutMs, provider) {
   }
 }
 
+// undici network errors carry a `cause` (and sometimes the request URL). Re-throw
+// a plain error with only a stable code so nothing request-specific can leak.
+function sanitizedNetworkError(e, provider) {
+  if (e instanceof ProviderTimeoutError) return e;
+  const code = (e && e.cause && (e.cause.code || e.cause.name)) || (e && e.code) || (e && e.name) || 'ERROR';
+  const err = new Error(`${provider.toLowerCase()} provider network error (${String(code).replace(/[^A-Za-z0-9_]/g, '')})`);
+  err.name = 'ProviderNetworkError';
+  return err;
+}
+
 async function providerFetch(url, opts = {}) {
   const provider = providerOf(url);
   const timeoutMs = knob('TIMEOUT_MS', provider);
@@ -103,7 +113,7 @@ async function providerFetch(url, opts = {}) {
     } catch (e) {
       // Caller cancelled → propagate immediately, never retry.
       if (clientSignal && clientSignal.aborted) throw e;
-      if (i >= maxRetries) throw e;
+      if (i >= maxRetries) throw sanitizedNetworkError(e, provider);
       await sleep(backoffMs(i, base, max), clientSignal);
       continue;
     }
