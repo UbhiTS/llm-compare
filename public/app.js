@@ -1863,8 +1863,7 @@ function renderTaskMeta() {
 function renderTaskPrompt() {
   const ta = $('#customPrompt');
   const tp = $('#taskPrompt');
-  const attBtn = $('#attachFilesBtn');
-  const codingWrap = $('#codingTogglesWrap');
+  const attWrap = $('#customAttachmentsWrap');
   const t = currentTask();
   const isCustom = $('#taskSelect').value === 'custom';
 
@@ -1874,19 +1873,14 @@ function renderTaskPrompt() {
       tp.classList.add('hidden');
     }
     if (ta) ta.classList.remove('hidden');
-    if (attBtn) attBtn.classList.remove('hidden');
+    if (attWrap) attWrap.classList.remove('hidden');
   } else {
     if (tp) {
       tp.textContent = t.prompt;
       tp.classList.remove('hidden');
     }
     if (ta) ta.classList.add('hidden');
-    if (attBtn) attBtn.classList.add('hidden');
-  }
-
-  // Only show coding-specific toggles (Self-repair / Warmup) when the selected task has executable code tests
-  if (codingWrap) {
-    codingWrap.classList.toggle('hidden', !t.executable);
+    if (attWrap) attWrap.classList.add('hidden');
   }
 
   renderTaskMeta();
@@ -1926,58 +1920,35 @@ function buildThinkingDropdownOptions(c, currentEffort) {
   return `<option value="fixed" selected>${esc(fixedLabel)}</option>`;
 }
 
-// Inline Card Header with direct Provider ▸ Model ▸ Thinking selectors (single source of truth)
-function buildInlineCardCascader(m, isRestore) {
-  if (isRestore) {
-    return `<div class="col-id">
-      <div class="col-title-row">
-        <span class="col-slot-pill" style="background:${slotColor(m.slot)}22;color:${slotColor(m.slot)};border-color:${slotColor(m.slot)}55">${esc(m.slot)}</span>
-        <span class="col-title">${esc(m.label)}</span>
-        ${m.external ? '<span class="ext-badge">EXT</span>' : '<span class="vtx-badge">VERTEX</span>'}
-      </div>
-      <div class="col-sub-row">
-        <span class="col-sub">${esc(m.provider)} · ${esc(m.model)}</span>
-        ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
-        ${thinkTag(m.thinking)}
-      </div>
-    </div>`;
+function providerBadgeHtml(c) {
+  if (!c) return '';
+  if (c.provider === 'openai') {
+    return '<span class="ext-badge" title="Direct OpenAI API">OPENAI API</span>';
   }
+  if (c.external || c.provider === 'moonshot') {
+    return '<span class="ext-badge" title="External API Key">EXT API</span>';
+  }
+  return '<span class="vtx-badge" title="Google Cloud Vertex AI">VERTEX AI</span>';
+}
 
+// Clean Read-Only Model Identity Header inside each Arena Output Card
+// (Model selection happens in Step 2 above, keeping Arena output cards uncluttered)
+function buildInlineCardCascader(m, isRestore) {
   const slot = m.slot;
   const cid = SLOT_ASSIGN[slot] || m.catalogId || m.id;
   const c = catalog().find((x) => x.id === cid) || m;
-  const curFamily = providerFamilyOf(c);
-  const curEffort = SLOT_EFFORT[slot] || m.effort || '';
-
-  const familyOptions = PROVIDER_FAMILIES.map((pf) => {
-    const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
-    const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
-    if (!totalCount) return '';
-    const shortFam = pf.label.replace(/\s*\(.*\)/, '');
-    return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(shortFam)}</option>`;
-  }).join('');
-
-  const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
-  const modelOptions = modelsInFamily.map((mc) => {
-    const av = modelAvailability(mc);
-    const suffix = !av.ok ? ' (No Key)' : '';
-    return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
-  }).join('');
-
-  const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
-
+  const ctxVal = (m && m.context) || (c && c.context) || 128000;
+  const ctxStr = ctxVal >= 1000000 ? `${(ctxVal / 1000000).toFixed(0)}M ctx` : `${Math.round(ctxVal / 1000)}K ctx`;
   return `<div class="col-id col-cascader" data-slot="${esc(slot)}">
-    <div class="col-selector-bar">
-      <span class="col-slot-pill" style="background:${slotColor(slot)}22;color:${slotColor(slot)};border-color:${slotColor(slot)}55" title="Slot ${esc(slot)}">${esc(slot)}</span>
-      <select class="slot-provider-select col-inline-select col-prov-sel" data-slot="${esc(slot)}" title="Provider family" aria-label="Provider for Slot ${esc(slot)}">${familyOptions}</select>
-      <span class="col-sel-sep">▸</span>
-      <select class="slot-model-select col-inline-select col-mod-sel" data-slot="${esc(slot)}" title="Select model for Slot ${esc(slot)}" aria-label="Model for Slot ${esc(slot)}">${modelOptions}</select>
-      <select class="slot-think-select col-inline-select col-thk-sel" data-slot="${esc(slot)}" title="Thinking / reasoning depth" aria-label="Thinking mode for Slot ${esc(slot)}">${thinkOptions}</select>
+    <div class="col-title-row">
+      <span class="col-slot-pill" style="background:${slotColor(slot)}22;color:${slotColor(slot)};border-color:${slotColor(slot)}55">Slot ${esc(slot)}</span>
+      <span class="col-title">${esc(m.label)}</span>
+      ${providerBadgeHtml(m)}
     </div>
     <div class="col-sub-row">
-      ${c.external ? '<span class="ext-badge" title="External API Key">EXT</span>' : '<span class="vtx-badge" title="Google Cloud Vertex AI">VERTEX AI</span>'}
-      ${m.price ? `<span class="col-price" title="Input / Output price per 1M tokens">${priceTag(m)} / 1M</span>` : ''}
-      <span class="col-ctx-tag" title="Context window">${c.context >= 1000000 ? `${(c.context / 1000000).toFixed(0)}M` : `${Math.round((c.context || 128000) / 1000)}K`} ctx</span>
+      ${m.price ? `<span class="col-price">${priceTag(m)} / 1M</span>` : ''}
+      <span class="col-ctx-tag">${esc(ctxStr)}</span>
+      ${thinkTag(m.thinking)}
     </div>
   </div>`;
 }
@@ -2028,7 +1999,7 @@ function bindCascadingSelects(root) {
 
 let _toolbarBound = false;
 function renderModelEditors() {
-  // Bind top-bar lineup preset buttons & Add Model button once
+  // Bind Step 2 preset buttons & Add Model button once
   if (!_toolbarBound) {
     _toolbarBound = true;
     const addBtn = $('#addSlotBtn');
@@ -2037,11 +2008,69 @@ function renderModelEditors() {
       btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
     });
   }
+  const badge = $('#slotCountBadge');
+  if (badge) badge.textContent = `${SLOT_IDS.length} of ${MAX_SLOTS} active`;
   const addBtn = $('#addSlotBtn');
   if (addBtn) {
     addBtn.disabled = SLOT_IDS.length >= MAX_SLOTS;
     addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? `Max ${MAX_SLOTS} models` : `+ Add model (${SLOT_IDS.length}/${MAX_SLOTS})`;
   }
+
+  const grid = $('#slotConfiguratorGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  grid.dataset.slotCount = String(SLOT_IDS.length);
+  grid.style.setProperty('--slot-count', String(Math.max(1, SLOT_IDS.length)));
+
+  SLOT_IDS.forEach((slot) => {
+    const cid = SLOT_ASSIGN[slot];
+    const c = catalog().find((x) => x.id === cid) || catalog()[0];
+    if (!c) return;
+    const curFamily = providerFamilyOf(c);
+    const curEffort = SLOT_EFFORT[slot] || '';
+
+    const familyOptions = PROVIDER_FAMILIES.map((pf) => {
+      const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
+      const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
+      if (!totalCount) return '';
+      const shortFam = pf.label.replace(/\s*\(.*\)/, '');
+      return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(shortFam)}</option>`;
+    }).join('');
+
+    const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
+    const modelOptions = modelsInFamily.map((mc) => {
+      const av = modelAvailability(mc);
+      const suffix = !av.ok ? ' (No Key)' : '';
+      return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
+    }).join('');
+
+    const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
+
+    const card = el('div', 'slot-cfg-card');
+    card.style.setProperty('--slot-accent', slotColor(slot));
+    card.innerHTML = `
+      <div class="scc-head">
+        <span class="scc-slot-badge" style="background:${slotColor(slot)}22;color:${slotColor(slot)};border-color:${slotColor(slot)}55">Slot ${esc(slot)}</span>
+        <span class="scc-ic">${modelIconSvg(c)}</span>
+        <strong class="scc-name">${esc(c.label)}</strong>
+        ${providerBadgeHtml(c)}
+        <span class="scc-price">${priceTag(c)}/1M</span>
+        ${SLOT_IDS.length > MIN_SLOTS ? `<button type="button" class="scc-remove" data-slot="${esc(slot)}" title="Remove Slot ${esc(slot)}">&times;</button>` : ''}
+      </div>
+      <div class="scc-inline-controls">
+        <select class="slot-provider-select col-inline-select col-prov-sel" data-slot="${esc(slot)}" title="Provider family" aria-label="Provider for Slot ${esc(slot)}">${familyOptions}</select>
+        <span class="col-sel-sep">▸</span>
+        <select class="slot-model-select col-inline-select col-mod-sel" data-slot="${esc(slot)}" title="Model for Slot ${esc(slot)}" aria-label="Model for Slot ${esc(slot)}">${modelOptions}</select>
+        <select class="slot-think-select col-inline-select col-thk-sel" data-slot="${esc(slot)}" title="Thinking / reasoning mode" aria-label="Thinking mode for Slot ${esc(slot)}">${thinkOptions}</select>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+
+  bindCascadingSelects(grid);
+  grid.querySelectorAll('.scc-remove').forEach((btn) => {
+    btn.addEventListener('click', () => clearSlot(btn.dataset.slot));
+  });
 }
 
 // Track per-slot raw vs formatted view preference for non-executable prose tasks

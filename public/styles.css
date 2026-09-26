@@ -1313,77 +1313,171 @@ a.ud-item[hidden] { display: none; }
 }
 
 /* ============================================================================
-   2026-09 Streamlined 2-Row Controls, Unified Composer & Inline Card Selectors
+   2026-09 3-Step Workflow: 1. Task & Prompt -> 2. Select Models -> 3. Run
    ============================================================================ */
 
 .controls {
-  padding: 16px 20px 18px;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
-.control-row.control-row-top {
+.step-block {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step-block + .step-block {
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* Uniform Step Header Bar */
+.step-header {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
-.task-field {
-  flex: 1 1 320px;
-  min-width: 240px;
-}
-
-.task-select-wrap {
+.step-header-left,
+.step-header-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
-.task-select-wrap select {
-  flex: 1 1 240px;
-  min-width: 200px;
-  height: 40px;
-  padding: 0 12px;
+.step-header-right {
+  margin-left: auto;
 }
 
-.lineup-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.lineup-presets {
+.step-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  padding: 4px 6px;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #5e8bff, #6d5bd0);
+  box-shadow: 0 2px 8px rgba(94, 139, 255, 0.4);
+  flex-shrink: 0;
+}
+
+.step-title {
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text);
+  margin: 0;
+}
+
+.step-sub-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 8px;
+  border-radius: 4px;
   background: var(--well);
   border: 1px solid var(--border);
 }
 
-.lineup-label {
-  font-size: 10.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+/* Uniform 30px Bar Buttons used across Step 1, Step 2, and Step 3 */
+.bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 11px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
   color: var(--muted);
-  padding: 0 6px;
-}
-
-.ctl-btn.compact {
-  height: 36px;
-  padding: 0 12px;
-  font-size: 12.5px;
-}
-
-/* Unified Prompt & Attachment Composer Card */
-.composer-card {
-  margin-top: 12px;
   background: var(--well);
   border: 1px solid var(--border-hi);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bar-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--well));
+}
+
+.bar-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.bar-btn.bar-btn-accent {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border-hi));
+  background: color-mix(in srgb, var(--accent) 10%, var(--well));
+}
+
+.bar-btn.bar-btn-accent:hover:not(:disabled) {
+  color: #fff;
+  background: linear-gradient(135deg, #5e8bff, #6d5bd0);
+  border-color: transparent;
+}
+
+.bar-btn.subtle {
+  color: var(--faint);
+  border-style: dashed;
+}
+
+.bar-btn.subtle:hover:not(:disabled) {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.bar-btn.is-copied {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.55);
+  background: rgba(20, 83, 45, 0.4);
+}
+
+.bar-btn.toggle .ar-led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: 0 0 auto;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bar-btn.toggle.is-on {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-hi));
+  background: color-mix(in srgb, var(--accent) 15%, var(--well));
+}
+
+.bar-btn.toggle.is-on .ar-led {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* Step 1: Unified Task Selector + Prompt Composer Card */
+.composer-card {
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+  border-radius: 6px;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -1400,8 +1494,25 @@ a.ud-item[hidden] { display: none; }
   background: color-mix(in srgb, var(--accent) 8%, var(--well));
 }
 
+.composer-select-row {
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--surface) 60%, var(--well));
+  border-bottom: 1px solid var(--border);
+}
+
+.composer-select-row select {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 4px;
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+}
+
 .composer-body {
-  padding: 10px 14px 6px;
+  padding: 10px 14px 12px;
 }
 
 .composer-body .custom-prompt {
@@ -1413,7 +1524,7 @@ a.ud-item[hidden] { display: none; }
   font-size: 14px;
   line-height: 1.55;
   resize: vertical;
-  min-height: 64px;
+  min-height: 68px;
   box-shadow: none !important;
 }
 
@@ -1423,75 +1534,37 @@ a.ud-item[hidden] { display: none; }
 }
 
 .composer-body .task-prompt {
-  margin: 2px 0 4px;
-  max-height: 200px;
+  margin: 2px 0;
+  max-height: 180px;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
-.composer-body .ca-list {
+.composer-attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px dashed var(--border);
 }
 
-.composer-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding: 8px 12px;
-  background: color-mix(in srgb, var(--surface) 65%, var(--well));
-  border-top: 1px solid var(--border);
-}
-
-.composer-footer-left,
-.composer-footer-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.composer-footer-right {
-  margin-left: auto;
-}
-
-.composer-tool-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 30px;
-  padding: 0 10px;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--muted);
-  background: var(--well);
-  border: 1px solid var(--border);
-  cursor: pointer;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
-}
-
-.composer-tool-btn:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.composer-tool-btn.subtle {
+.ca-drop-hint {
+  font-size: 11.5px;
   color: var(--faint);
-  border-style: dashed;
-}
-
-.composer-tool-btn.subtle:hover {
-  color: var(--bad);
-  border-color: var(--bad);
 }
 
 .composer-token-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  box-sizing: border-box;
   font-family: "JetBrains Mono", monospace;
   font-size: 11px;
   color: var(--muted);
-  padding: 3px 8px;
+  padding: 0 9px;
+  border-radius: 5px;
   background: var(--well);
   border: 1px solid var(--border);
   white-space: nowrap;
@@ -1506,6 +1579,176 @@ a.ud-item[hidden] { display: none; }
   color: #ff8787;
   border-color: rgba(255, 107, 107, 0.5);
   background: rgba(255, 107, 107, 0.08);
+}
+
+/* Step 2: Select Models — Compact Slot Configurator Grid */
+.mc-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mc-preset-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.slot-configurator-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--slot-count, 3), minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 2px;
+}
+
+@media (max-width: 1100px) {
+  .slot-configurator-grid {
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  }
+}
+
+.slot-cfg-card {
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+  border-top: 2.5px solid var(--slot-accent, var(--accent));
+  border-radius: 6px;
+  padding: 9px 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.scc-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.scc-name {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scc-inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+
+.col-inline-select {
+  height: 28px;
+  padding: 0 4px 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background-color: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-hi);
+  border-radius: 4px;
+  cursor: pointer;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.col-inline-select:hover {
+  border-color: var(--accent);
+}
+
+.col-inline-select.col-prov-sel {
+  flex: 0 0 92px;
+  color: var(--muted);
+}
+
+.col-inline-select.col-mod-sel {
+  flex: 1 1 0;
+  min-width: 0;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.col-inline-select.col-thk-sel {
+  flex: 0 0 128px;
+  padding: 0 4px 0 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  background-color: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
+.task-prompt,
+.custom-prompt,
+.md-output,
+.code-wrap pre {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-hi) transparent;
+}
+
+.task-prompt::-webkit-scrollbar,
+.custom-prompt::-webkit-scrollbar,
+.md-output::-webkit-scrollbar,
+.code-wrap pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.task-prompt::-webkit-scrollbar-track,
+.custom-prompt::-webkit-scrollbar-track,
+.md-output::-webkit-scrollbar-track,
+.code-wrap pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.task-prompt::-webkit-scrollbar-thumb,
+.custom-prompt::-webkit-scrollbar-thumb,
+.md-output::-webkit-scrollbar-thumb,
+.code-wrap pre::-webkit-scrollbar-thumb {
+  background: var(--border-hi);
+  border-radius: 3px;
+}
+
+.col-sel-sep {
+  color: var(--faint);
+  font-size: 10px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* Step 3: Execution Bar (Auto-run, Auto-fix, Quota, and Run Comparison) */
+.step-block.step-run {
+  padding-top: 14px;
+}
+
+.execution-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 70%, var(--well));
+  border: 1px solid var(--border-hi);
+}
+
+.exec-bar-left,
+.exec-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.exec-bar-right {
+  margin-left: auto;
 }
 
 .coding-toggles-wrap {
@@ -1524,81 +1767,32 @@ a.ud-item[hidden] { display: none; }
   background: rgba(52, 224, 161, 0.18) !important;
 }
 
-/* Inline Card Header Selector Bar (Provider ▸ Model ▸ Thinking) */
+.run-btn-main {
+  height: 36px;
+  border-radius: 5px;
+  padding: 0 18px !important;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+/* Arena Output Cards Header & Formatted Markdown */
 .col-head {
-  padding: 11px 14px;
-  gap: 9px;
-  align-items: flex-start;
+  padding: 12px 15px;
+  gap: 10px;
+  align-items: center;
+}
+
+.col-head .col-title {
+  font-size: 16.5px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .col-head .col-ic .mi {
   width: 28px;
   height: 28px;
-  margin-top: 2px;
-}
-
-.col-id.col-cascader {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.col-selector-bar {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
-}
-
-.col-inline-select {
-  height: 28px;
-  padding: 0 22px 0 8px;
-  font-size: 12px;
-  font-weight: 600;
-  background-color: var(--well);
-  color: var(--text);
-  border: 1px solid var(--border-hi);
-  border-radius: 4px;
-  cursor: pointer;
-  max-width: 100%;
-  text-overflow: ellipsis;
-}
-
-.col-inline-select:hover {
-  border-color: var(--accent);
-}
-
-.col-inline-select.col-prov-sel {
-  font-size: 11.5px;
-  color: var(--muted);
-  flex: 0 1 auto;
-}
-
-.col-inline-select.col-mod-sel {
-  font-family: "Space Grotesk", Inter, sans-serif;
-  font-weight: 700;
-  font-size: 13px;
-  color: var(--text);
-  flex: 1 1 135px;
-  min-width: 115px;
-}
-
-.col-inline-select.col-thk-sel {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
-  background-color: color-mix(in srgb, var(--accent) 8%, var(--well));
-  flex: 0 1 auto;
-}
-
-.col-sel-sep {
-  color: var(--faint);
-  font-size: 10px;
-  user-select: none;
 }
 
 .col-ctx-tag {
@@ -1624,7 +1818,6 @@ a.ud-item[hidden] { display: none; }
   font-size: 13.5px;
 }
 
-/* Formatted Markdown & Wrapped Code Output inside Arena Cards */
 .code-wrap {
   position: relative;
   padding: 11px 15px;
