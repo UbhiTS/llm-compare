@@ -51,6 +51,24 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(thinkingProfile(gemini37Slot).level, 'medium', 'Gemini 3.7 Flash should show its medium default');
 
+// Verify documented defaults for the 3-slot Flagships lineup (Gemini 3.8 Flash, Claude Opus 5.5, GPT-6 Sol)
+const gemini38Slot = modelFromCatalog('A', 'gemini-3.8-flash');
+assert.strictEqual(thinkingOptions(gemini38Slot).defaultValue, 'medium', 'Gemini 3.8 Flash default thinkingLevel should be medium');
+assert.strictEqual(thinkingProfile(gemini38Slot).level, 'medium', 'Gemini 3.8 Flash thinkingProfile should show medium (default)');
+
+const claudeOpus55Slot = modelFromCatalog('B', 'claude-opus-5-5');
+assert.strictEqual(thinkingOptions(claudeOpus55Slot).defaultValue, 'high', 'Claude Opus 5.5 default effort should be high');
+assert.deepStrictEqual(
+  thinkingOptions(claudeOpus55Slot).options.map((o) => o.value),
+  ['low', 'medium', 'high', 'xhigh', 'max'],
+  'Claude Opus 5.5 should expose low, medium, high, xhigh, max effort options'
+);
+assert.strictEqual(thinkingProfile(claudeOpus55Slot).level, 'high', 'Claude Opus 5.5 thinkingProfile should show high');
+
+const gpt6SolSlot = modelFromCatalog('C', 'gpt-6-sol');
+assert.strictEqual(thinkingOptions(gpt6SolSlot).defaultValue, 'medium', 'GPT-6 Sol default reasoning effort should be medium');
+assert.strictEqual(thinkingProfile(gpt6SolSlot).level, 'medium', 'GPT-6 Sol thinkingProfile should show medium');
+
 const resolvedGemini37 = resolveModels([{
   slot: 'A', catalogId: 'gemini-3.7-flash', model: 'tampered-model', provider: 'tampered-provider',
   price: { input: 0, output: 0 }, effort: 'high',

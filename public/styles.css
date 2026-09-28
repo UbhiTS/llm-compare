@@ -1674,7 +1674,7 @@ a.ud-item[hidden] { display: none; }
 }
 
 .col-inline-select.col-thk-sel {
-  flex: 0 0 128px;
+  flex: 0 0 138px;
   padding: 0 4px 0 6px;
   font-family: "JetBrains Mono", monospace;
   font-size: 10.5px;

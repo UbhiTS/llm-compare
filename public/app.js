@@ -779,13 +779,32 @@ function seedSlots() {
   const usable = (list) => (list || [])
     .map((m) => {
       const rawId = m.catalogId || m.id;
-      return { id: RETIRED_MODEL_MAP[rawId] || rawId, effort: m.effort || null, slot: m.slot || null };
+      const mappedId = RETIRED_MODEL_MAP[rawId] || rawId;
+      const c = catalog().find((x) => x.id === mappedId);
+      const defVal = c && c.thinkingOptions && c.thinkingOptions.defaultValue;
+      const eff = (m.effort && m.effort !== defVal) ? m.effort : null;
+      return { id: mappedId, effort: eff, slot: m.slot || null };
     })
     .filter((m) => { const c = catalog().find((x) => x.id === m.id); return c && modelAvailability(c).ok; })
     .slice(0, MAX_SLOTS);
 
   let list = usable(rawList);
   if (!list.length) list = usable(CONFIG.models);
+
+  // Heal legacy Flagships preset state where gemini-3.8-flash and gpt-6-sol had
+  // hardcoded `effort: 'high'` instead of their documented `medium` defaults.
+  const hasLegacyFlagshipHigh = list.some((m) => m.id === 'gemini-3.8-flash' && m.effort === 'high')
+    && list.some((m) => m.id === 'gpt-6-sol' && m.effort === 'high');
+  if (hasLegacyFlagshipHigh) {
+    list = list.map((m) => ({
+      ...m,
+      id: m.id === 'claude-opus-5' ? 'claude-opus-5-5' : m.id,
+      effort: null,
+    }));
+    setTimeout(() => {
+      if (typeof saveUserPreferencesDebounced === 'function') saveUserPreferencesDebounced();
+    }, 50);
+  }
 
   const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 3));
   SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
@@ -801,8 +820,14 @@ function seedSlots() {
 function modelFromCatalogId(slot, id, duplicateCatalogIds) {
   const c = catalog().find((x) => x.id === id);
   if (!c) return null;
-  const eff = SLOT_EFFORT[slot] || undefined;
-  const effDisplay = eff || (c.thinking && c.thinking.label) || 'default';
+  const defVal = c.thinkingOptions && c.thinkingOptions.defaultValue;
+  const rawEff = SLOT_EFFORT[slot] || null;
+  const eff = (rawEff && rawEff !== defVal) ? rawEff : undefined;
+  const matchedOpt = eff && c.thinkingOptions && Array.isArray(c.thinkingOptions.options)
+    ? c.thinkingOptions.options.find((o) => o.value === eff)
+    : null;
+  const effectiveThinking = (matchedOpt && matchedOpt.profile) || c.thinking || null;
+  const effDisplay = eff || defVal || (c.thinking && c.thinking.label) || 'default';
   const label = (duplicateCatalogIds && duplicateCatalogIds.has(c.id))
     ? `${c.label} (${effDisplay})`
     : c.label;
@@ -816,7 +841,7 @@ function modelFromCatalogId(slot, id, duplicateCatalogIds) {
     model: c.model,
     price: { input: c.price.input, output: c.price.output },
     external: !!c.external,
-    thinking: c.thinking || null,
+    thinking: effectiveThinking,
     thinkingOptions: c.thinkingOptions || null,
     effort: eff,
   };
@@ -847,12 +872,11 @@ function assignToSlot(catalogId, slot, effortOverride) {
   const c = catalog().find((x) => x.id === catalogId);
   if (!c || !modelAvailability(c).ok) return;
   SLOT_ASSIGN[slot] = catalogId;
+  const defVal = c.thinkingOptions && c.thinkingOptions.defaultValue;
   if (effortOverride !== undefined) {
-    SLOT_EFFORT[slot] = effortOverride || null;
-  } else if (c.thinkingOptions && c.thinkingOptions.configurable) {
-    const valid = c.thinkingOptions.options.some((o) => o.value === (SLOT_EFFORT[slot] || ''));
-    if (!valid) SLOT_EFFORT[slot] = null;
+    SLOT_EFFORT[slot] = (effortOverride && effortOverride !== defVal) ? effortOverride : null;
   } else {
+    // Switching models resets the slot to the newly selected model's documented default
     SLOT_EFFORT[slot] = null;
   }
   afterSlotChange();
@@ -903,20 +927,23 @@ function applyPreset(presetName) {
   let target = [];
   if (presetName === 'frontier') {
     target = [
-      { id: 'gemini-3.8-flash',    effort: 'high' },
-      { id: 'claude-opus-5-5',     effort: 'high' },
-      { id: 'gpt-6-sol',           effort: 'high' },
+      { id: 'gemini-3.8-flash',    effort: null },
+      { id: 'claude-opus-5-5',     effort: null },
+      { id: 'gpt-6-sol',           effort: null },
     ];
   } else if (presetName === 'fast') {
+    const fastThird = catalog().find((x) => x.id === 'gpt-6-luna' && modelAvailability(x).ok)
+      ? 'gpt-6-luna'
+      : 'grok-4.20-non-reasoning';
     target = [
-      { id: 'gemini-3.5-flash-lite',       effort: 'minimal' },
-      { id: 'claude-haiku-4-5',            effort: null },
-      { id: 'grok-4.1-fast-non-reasoning', effort: null },
+      { id: 'gemini-3.8-flash',    effort: null },
+      { id: 'claude-sonnet-5',     effort: null },
+      { id: fastThird,             effort: null },
     ];
   } else if (presetName === 'same-model-thinking') {
     target = [
       { id: 'gemini-3.8-flash', effort: 'low' },
-      { id: 'gemini-3.8-flash', effort: 'medium' },
+      { id: 'gemini-3.8-flash', effort: null },
       { id: 'gemini-3.8-flash', effort: 'high' },
     ];
   } else if (presetName === 'grok-reasoning') {
@@ -1990,7 +2017,10 @@ function bindCascadingSelects(root) {
         assignToSlot(siblingId, slot, null);
       } else if (val.startsWith('effort:')) {
         const eff = val.slice('effort:'.length);
-        SLOT_EFFORT[slot] = eff || null;
+        const cid = SLOT_ASSIGN[slot];
+        const c = catalog().find((x) => x.id === cid);
+        const defVal = c && c.thinkingOptions && c.thinkingOptions.defaultValue;
+        SLOT_EFFORT[slot] = (eff && eff !== defVal) ? eff : null;
         afterSlotChange();
       }
     });

@@ -49,8 +49,10 @@ function claudeModelVersion(model) {
 // max. Sending an unsupported level is a 400, so each model lists its own set.
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CLAUDE_EFFORT_SUPPORT = {
+  'claude-fable-5-1':  ['low', 'medium', 'high', 'xhigh', 'max'],
   'claude-fable-5':    ['low', 'medium', 'high', 'xhigh', 'max'],
   'claude-mythos-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-5-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
   'claude-opus-5':     ['low', 'medium', 'high', 'xhigh', 'max'],
   'claude-opus-4-8':   ['low', 'medium', 'high', 'xhigh', 'max'],
   'claude-opus-4-7':   ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -125,11 +127,12 @@ const GEMINI_LEVELS = {
   'gemini-3.6-flash':       ['minimal', 'low', 'medium', 'high'],
   'gemini-3.5-flash':       ['minimal', 'low', 'medium', 'high'],
   'gemini-3.5-flash-lite':  ['minimal', 'low', 'medium', 'high'],
+  'gemini-3.1-pro':         ['low', 'medium', 'high'],
   'gemini-3.1-pro-preview': ['low', 'medium', 'high'],
 };
 const GEMINI_DEFAULT_LEVEL = {
-  'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
-  'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro-preview': 'high',
+  'gemini-3.8-flash': 'medium', 'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
+  'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro': 'high', 'gemini-3.1-pro-preview': 'high',
 };
 function geminiLevelsFor(model) { return GEMINI_LEVELS[String(model || '')] || ['low', 'medium', 'high']; }
 
@@ -222,7 +225,7 @@ function thinkingOptions({ provider, publisher, model, endpointType, thinkingMod
   }
   if (provider === 'agentplatform') {
     const levels = geminiLevelsFor(model);
-    const def = GEMINI_DEFAULT_LEVEL[String(model || '')] || 'high';
+    const def = GEMINI_DEFAULT_LEVEL[String(model || '')] || (/pro/i.test(String(model || '')) ? 'high' : 'medium');
     const formatted = formatEffortOptions(levels, def);
     return {
       configurable: true,
