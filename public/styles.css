@@ -706,6 +706,10 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 @keyframes bar-rise { from { transform: scaleY(0); } to { transform: scaleY(1); } }
 
 .foot { max-width: var(--maxw); margin: 32px auto 0; color: var(--faint); font-size: 12.5px; text-align: center; }
+.foot-credit[hidden] { display: none !important; }
+.foot-heart { color: #e25555; display: inline-block; vertical-align: -1px; }
+.foot-credit a { color: var(--muted); text-decoration: none; font-weight: 500; transition: color .15s ease; }
+.foot-credit a:hover { color: var(--accent); text-decoration: underline; }
 
 /* ---------- Towers of Hanoi visualizer ---------- */
 .exec-viz { margin-top: 10px; }

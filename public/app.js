@@ -191,6 +191,9 @@ async function init() {
 let ME = null;
 function initUserMenu(me) {
   ME = me || null;
+  const isGoogleUser = Boolean(ME && typeof ME.username === 'string' && /@google\.com$/i.test(ME.username.trim()));
+  const creditEl = $('#googleFooterCredit');
+  if (creditEl) creditEl.hidden = !isGoogleUser;
   const menu = $('#userMenu');
   if (!menu || !ME) return;
   menu.hidden = false;
