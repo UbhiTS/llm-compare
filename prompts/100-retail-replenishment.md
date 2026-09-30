@@ -1,7 +1,7 @@
 ---
 id: retail-replenishment
 title: Retail: multi-store demand forecast + replenishment plan
-category: business
+category: retail
 language: null
 functionName: solution
 executable: false

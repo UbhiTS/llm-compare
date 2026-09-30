@@ -222,6 +222,12 @@ select option { color: var(--text); background: var(--bg); }
 .task-meta.is-business { color: #2fd9a6; border-color: rgba(47,217,166,.45); }
 .task-meta.is-security { color: #ff6b8b; border-color: rgba(255,107,139,.45); }
 .task-meta.is-general { color: var(--text); border-color: rgba(179,136,255,.4); }
+.task-meta.is-enterprise { color: #818cf8; border-color: rgba(129,140,248,.45); }
+.task-meta.is-retail { color: #f59e0b; border-color: rgba(245,158,11,.45); }
+.task-meta.is-semiconductor { color: #38bdf8; border-color: rgba(56,189,248,.45); }
+.task-meta.is-transport { color: #a78bfa; border-color: rgba(167,139,250,.45); }
+.task-meta.is-finance { color: #34d399; border-color: rgba(52,211,153,.45); }
+.task-meta.is-healthcare { color: #f43f5e; border-color: rgba(244,63,94,.45); }
 .custom-prompt { width: 100%; margin-top: 10px; line-height: 1.5; resize: vertical; }
 
 /* ---------- custom prompt multi-attachment dropzone & chips ---------- */

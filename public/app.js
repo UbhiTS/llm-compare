@@ -58,6 +58,8 @@ function modelIconSvg(m) {
   if (s.indexOf('qwen') >= 0 || s.indexOf('alibaba') >= 0) return ICON_QWEN;
   return ICON_GENERIC;
 }
+const ICON_PDF = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
+const ICON_TRASH = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
 // A compact, distinct name for tight spaces — drops the family prefix so the two
 // Geminis read as "3.5 Flash" / "3.1 Pro" instead of both truncating to "Ge…".
 function shortLabel(label) {
@@ -81,10 +83,16 @@ function initTheme() {
 
 const TASK_CATEGORIES = [
   ['custom', '✏️ Custom Prompt'],
+  ['enterprise', '🏢 Enterprise'],
+  ['retail', '🛍️ Retail & Commerce'],
+  ['semiconductor', '⚡ Semiconductor & EDA'],
+  ['transport', '🚆 Transport & Logistics'],
+  ['finance', '💳 Financial Services'],
+  ['healthcare', '🏥 Healthcare & Bio'],
   ['security', '🛡️ Security'],
-  ['business', '📊 Business'],
   ['coding', '💻 Coding'],
   ['games', '🎮 Games'],
+  ['business', '📊 Business'],
   ['general', '🌐 General'],
 ];
 
@@ -2197,7 +2205,19 @@ function renderTaskMeta() {
   const meta = $('#taskMeta');
   if (!meta) return;
   const catKey = t.category || 'general';
-  const catLabel = ({ security: 'Security', coding: 'Coding', games: 'Games', business: 'Business', general: 'General' })[catKey] || 'General';
+  const catLabel = ({
+    enterprise: 'Enterprise',
+    retail: 'Retail',
+    semiconductor: 'Semiconductor',
+    transport: 'Transport',
+    finance: 'Finance',
+    healthcare: 'Healthcare',
+    security: 'Security',
+    coding: 'Coding',
+    games: 'Games',
+    business: 'Business',
+    general: 'General',
+  })[catKey] || 'General';
   const bits = [catLabel];
   if (t.language) bits.push(t.language);
   if (t.testCount) bits.push(`${t.testCount} hidden tests`);
@@ -4134,7 +4154,11 @@ function histRowHtml(h) {
   const who = (historyScope === 'all' && !historyUserFilter && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
   return `<div class="hist-row">
     <div class="hist-main"><div class="hist-title">${esc(h.title)}${who}</div><div class="hist-when">${esc(fmtWhen(h.at))}</div><div class="hist-chips">${chips}</div></div>
-    <div class="hist-act"><button class="submit-btn hist-restore" type="button" data-id="${esc(h.id)}">Restore ▸</button><button class="bar-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Download PDF report for this run">📄 PDF</button><button class="u-del hist-del" type="button" data-id="${esc(h.id)}">Delete</button></div>
+    <div class="hist-act">
+      <button class="hist-btn hist-restore" type="button" data-id="${esc(h.id)}" title="Restore this comparison to the arena">Restore ▸</button>
+      <button class="hist-btn hist-icon-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Export PDF report for this run" aria-label="Export PDF report">${ICON_PDF}</button>
+      <button class="hist-btn hist-icon-btn hist-del" type="button" data-id="${esc(h.id)}" title="Delete this run from history" aria-label="Delete run">${ICON_TRASH}</button>
+    </div>
   </div>`;
 }
 
@@ -4339,10 +4363,10 @@ async function exportCurrentRunPdf(triggerBtn) {
 
 async function exportHistoryRunPdf(id, triggerBtn) {
   if (!id) return;
-  const origText = triggerBtn ? triggerBtn.textContent : '';
+  const origHtml = triggerBtn ? triggerBtn.innerHTML : '';
   if (triggerBtn) {
     triggerBtn.disabled = true;
-    triggerBtn.textContent = '⏳ PDF…';
+    triggerBtn.innerHTML = '⏳';
   }
   try {
     const resp = await fetch('/api/history/' + encodeURIComponent(id) + '/pdf', { credentials: 'same-origin' });
@@ -4355,10 +4379,10 @@ async function exportHistoryRunPdf(id, triggerBtn) {
     const fname = filenameFromDisposition(resp.headers.get('content-disposition'), `llm-compare-${id}.pdf`);
     downloadBlob(blob, fname);
     if (triggerBtn) {
-      triggerBtn.textContent = '✓ PDF';
+      triggerBtn.innerHTML = '✓';
       setTimeout(() => {
         triggerBtn.disabled = false;
-        triggerBtn.textContent = origText;
+        triggerBtn.innerHTML = origHtml;
       }, 1400);
       return;
     }
@@ -4367,7 +4391,7 @@ async function exportHistoryRunPdf(id, triggerBtn) {
   }
   if (triggerBtn) {
     triggerBtn.disabled = false;
-    triggerBtn.textContent = origText;
+    triggerBtn.innerHTML = origHtml;
   }
 }
 
