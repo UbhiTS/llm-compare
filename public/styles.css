@@ -220,6 +220,7 @@ select option { color: var(--text); background: var(--bg); }
 .task-meta.is-coding { color: var(--accent); border-color: rgba(94,139,255,.4); }
 .task-meta.is-games { color: #ff9e6d; border-color: rgba(255,158,109,.45); }
 .task-meta.is-business { color: #2fd9a6; border-color: rgba(47,217,166,.45); }
+.task-meta.is-security { color: #ff6b8b; border-color: rgba(255,107,139,.45); }
 .task-meta.is-general { color: var(--text); border-color: rgba(179,136,255,.4); }
 .custom-prompt { width: 100%; margin-top: 10px; line-height: 1.5; resize: vertical; }
 
@@ -1499,13 +1500,15 @@ a.ud-item[hidden] { display: none; }
 }
 
 .composer-select-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   background: color-mix(in srgb, var(--surface) 60%, var(--well));
   border-bottom: 1px solid var(--border);
 }
 
 .composer-select-row select {
-  width: 100%;
   height: 36px;
   padding: 0 12px;
   font-size: 13.5px;
@@ -1513,6 +1516,44 @@ a.ud-item[hidden] { display: none; }
   border-radius: 4px;
   background: var(--well);
   border: 1px solid var(--border-hi);
+}
+
+#categorySelect {
+  flex: 0 0 240px;
+  width: 240px;
+}
+
+.composer-select-sep {
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+#taskSelect {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+#taskSelect:disabled {
+  opacity: 0.75;
+  cursor: default;
+}
+
+@media (max-width: 640px) {
+  .composer-select-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  #categorySelect,
+  #taskSelect {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+  .composer-select-sep {
+    display: none;
+  }
 }
 
 .composer-body {
@@ -1941,4 +1982,95 @@ a.ud-item[hidden] { display: none; }
   border: 1px solid var(--border);
   white-space: normal;
 }
+
+/* PDF Export Buttons & Scorecard Header Actions */
+.sc-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.export-pdf-btn {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-hi)) !important;
+  color: var(--accent) !important;
+  background: color-mix(in srgb, var(--accent) 11%, transparent) !important;
+  font-weight: 600;
+}
+
+.export-pdf-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+  border-color: var(--accent) !important;
+}
+
+.export-pdf-cta {
+  height: 34px;
+  padding: 0 14px !important;
+  font-size: 12.5px;
+  font-weight: 600;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border-hi));
+  background: color-mix(in srgb, var(--accent) 14%, var(--well));
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.export-pdf-cta:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 24%, var(--well));
+  border-color: var(--accent);
+}
+
+.export-pdf-cta:disabled,
+.export-pdf-btn:disabled,
+.hist-pdf-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.hist-pdf-btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-hi));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.hist-pdf-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: var(--accent);
+}
+
+@media print {
+  .aurora,
+  .topbar-right,
+  .step-models,
+  .step-run,
+  .composer-attach-bar,
+  .code-toolbar,
+  .col-head-actions,
+  .sc-head-actions,
+  .jp-controls {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  .md-output,
+  .code-wrap pre,
+  .think-pre {
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .sc-details {
+    display: block !important;
+  }
+}
+
 

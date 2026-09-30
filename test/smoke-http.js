@@ -173,6 +173,20 @@ async function waitUp() {
   r = await req('GET', '/api/history/doesnotexist');
   check('GET /api/history/:id unknown -> 404', r.status === 404, { status: r.status, shape: shape(r.json) });
 
+  r = await req('GET', '/api/history/doesnotexist/pdf');
+  check('GET /api/history/:id/pdf unknown -> 404', r.status === 404, { status: r.status, shape: shape(r.json) });
+
+  r = await req('POST', '/api/export-pdf', {
+    body: {
+      taskId: 'custom',
+      taskTitle: 'Smoke PDF Test',
+      prompt: 'Compare latency and cost.',
+      models: [{ slot: 'A', label: 'Gemini 3.8 Flash', provider: 'agentplatform', model: 'gemini-3.8-flash-preview' }],
+      results: { A: { slot: 'A', label: 'Gemini 3.8 Flash', promptTokens: 50, completionTokens: 120, reasoningTokens: 20, totalTokens: 170, wallMs: 850, tokensPerSec: 141.2, costUsd: 0.0004, code: 'Smoke PDF response body.' } },
+    },
+  });
+  check('POST /api/export-pdf generates %PDF-1.4 document', r.status === 200 && /^%PDF-1\.4/.test(r.text) && /application\/pdf/i.test(r.headers.get('content-type') || ''), { status: r.status, shape: `pdf(${r.text.length}B)` });
+
   r = await req('GET', '/api/history/..%2F..%2Fetc%2Fpasswd');
   check('GET /api/history/:id traversal -> 404', r.status === 404, { status: r.status });
 

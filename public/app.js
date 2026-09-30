@@ -79,6 +79,72 @@ function initTheme() {
   if (sw) sw.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
 }
 
+const TASK_CATEGORIES = [
+  ['custom', '✏️ Custom Prompt'],
+  ['security', '🛡️ Security'],
+  ['business', '📊 Business'],
+  ['coding', '💻 Coding'],
+  ['games', '🎮 Games'],
+  ['general', '🌐 General'],
+];
+
+function taskTagLabel(t) {
+  return t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
+}
+
+function populateTaskSelect(catKey, preferredTaskId) {
+  const ts = $('#taskSelect');
+  if (!ts) return;
+  ts.innerHTML = '';
+
+  if (!catKey || catKey === 'custom') {
+    const customOpt = el('option');
+    customOpt.value = 'custom';
+    customOpt.textContent = 'Custom Prompt — Freeform & File Attachments';
+    customOpt.selected = true;
+    ts.appendChild(customOpt);
+    ts.value = 'custom';
+    ts.disabled = true;
+    return;
+  }
+
+  const tasks = (CONFIG && Array.isArray(CONFIG.tasks) ? CONFIG.tasks : [])
+    .filter((t) => (t.category || 'general') === catKey);
+
+  tasks.forEach((t) => {
+    const o = el('option');
+    o.value = t.id;
+    o.textContent = `${t.title}  (${taskTagLabel(t)})`;
+    ts.appendChild(o);
+  });
+
+  ts.disabled = false;
+  if (preferredTaskId && tasks.some((t) => t.id === preferredTaskId)) {
+    ts.value = preferredTaskId;
+  } else if (tasks.length > 0) {
+    ts.value = tasks[0].id;
+  }
+}
+
+function selectTaskById(taskId) {
+  const cs = $('#categorySelect');
+  if (!taskId || taskId === 'custom') {
+    if (cs) cs.value = 'custom';
+    populateTaskSelect('custom', 'custom');
+    return;
+  }
+  const tasks = (CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [];
+  const found = tasks.find((t) => t.id === taskId);
+  if (found) {
+    const cat = found.category || 'general';
+    if (cs) cs.value = cat;
+    populateTaskSelect(cat, found.id);
+  } else {
+    if (cs) cs.value = 'custom';
+    populateTaskSelect('custom', 'custom');
+  }
+}
+
 // ---------- init ----------
 init();
 async function init() {
@@ -94,47 +160,53 @@ async function init() {
   seedSlots();
   syncModelsFromSlots();
 
-
-  // task select — always default to Custom Prompt at the very top on every load
+  // 2-stage category -> filtered task selector (always defaults to Custom Prompt on load)
+  const cs = $('#categorySelect');
   const ts = $('#taskSelect');
-  const customOg = el('optgroup');
-  customOg.label = 'Custom';
-  const customOpt = el('option');
-  customOpt.value = 'custom';
-  customOpt.textContent = 'Custom Prompt';
-  customOpt.selected = true;
-  customOg.appendChild(customOpt);
-  ts.appendChild(customOg);
-
-  const tag = (t) => t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
-  [['business', 'Business'], ['coding', 'Coding'], ['games', 'Games'], ['general', 'General']].forEach(([cat, label]) => {
-    const inCat = CONFIG.tasks.filter((t) => (t.category || 'general') === cat);
-    if (!inCat.length) return;
-    const og = el('optgroup'); og.label = label;
-    inCat.forEach((t) => {
+  if (cs) {
+    cs.innerHTML = '';
+    TASK_CATEGORIES.forEach(([cat, label]) => {
+      if (cat === 'custom') {
+        const o = el('option');
+        o.value = 'custom';
+        o.textContent = label;
+        cs.appendChild(o);
+        return;
+      }
+      const inCat = CONFIG.tasks.filter((t) => (t.category || 'general') === cat);
+      if (!inCat.length) return;
       const o = el('option');
-      o.value = t.id;
-      o.textContent = `${t.title}  (${tag(t)})`;
-      og.appendChild(o);
+      o.value = cat;
+      o.textContent = `${label} (${inCat.length})`;
+      cs.appendChild(o);
     });
-    ts.appendChild(og);
-  });
-  ts.addEventListener('change', () => {
+  }
+
+  const onTaskSelectionChange = () => {
     renderTaskPrompt();
     $('#scorecard').classList.add('hidden');
     { const jb = $('#jumpScorecardBtn'); if (jb) jb.classList.add('hidden'); }
+    { const pb = $('#exportPdfTopBtn'); if (pb) pb.classList.add('hidden'); }
     buildArena();
     saveUserPreferencesDebounced();
-  });
+  };
+
+  if (cs) {
+    cs.addEventListener('change', () => {
+      populateTaskSelect(cs.value);
+      onTaskSelectionChange();
+    });
+  }
+  if (ts) {
+    ts.addEventListener('change', onTaskSelectionChange);
+  }
   initAttachmentsUI();
 
-  // Restore user's last used prompt and task selection (per user)
+  // Restore user's last used custom prompt text, while keeping Custom Prompt as default on load
   const me = CONFIG && CONFIG.me;
   const userPrompt = (me && me.preferences && typeof me.preferences.prompt === 'string' && me.preferences.prompt)
     || (me && typeof me.lastPrompt === 'string' && me.lastPrompt)
     || loadLocalPrompt();
-  const userTaskId = (me && me.preferences && typeof me.preferences.taskId === 'string' && me.preferences.taskId)
-    || loadLocalTaskId();
 
   const customTa = $('#customPrompt');
   if (customTa && typeof userPrompt === 'string' && userPrompt) {
@@ -144,11 +216,7 @@ async function init() {
     customTa.addEventListener('input', () => saveUserPreferencesDebounced());
   }
 
-  if (userTaskId && [].slice.call(ts.options).some((o) => o.value === userTaskId)) {
-    ts.value = userTaskId;
-  } else {
-    ts.value = 'custom';
-  }
+  selectTaskById('custom');
   renderTaskPrompt();
 
   renderModelEditors();
@@ -167,6 +235,10 @@ async function init() {
       });
     }
   }
+  ['#exportPdfTopBtn', '#exportPdfBtn'].forEach((sel) => {
+    const b = $(sel);
+    if (b) b.addEventListener('click', () => exportCurrentRunPdf(b));
+  });
   ['#autoRun', '#autoFix'].forEach((sel) => {
     const b = $(sel);
     if (!b) return;
@@ -1878,7 +1950,7 @@ function renderTaskMeta() {
   const meta = $('#taskMeta');
   if (!meta) return;
   const catKey = t.category || 'general';
-  const catLabel = ({ coding: 'Coding', games: 'Games', business: 'Business', general: 'General' })[catKey] || 'General';
+  const catLabel = ({ security: 'Security', coding: 'Coding', games: 'Games', business: 'Business', general: 'General' })[catKey] || 'General';
   const bits = [catLabel];
   if (t.language) bits.push(t.language);
   if (t.testCount) bits.push(`${t.testCount} hidden tests`);
@@ -2936,6 +3008,7 @@ async function run() {
   $('#scorecard').classList.add('hidden');
   const jumpBtn = $('#jumpScorecardBtn');
   if (jumpBtn) jumpBtn.classList.add('hidden');
+  { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.add('hidden'); }
 
   buildArena();
   const slots = slotIds();
@@ -3237,8 +3310,10 @@ function handleEvent(ev, results, own) {
       {
         const sc = $('#scorecard');
         const jumpBtn = $('#jumpScorecardBtn');
-        if (sc && !sc.classList.contains('hidden') && jumpBtn) {
-          jumpBtn.classList.remove('hidden');
+        const pdfTopBtn = $('#exportPdfTopBtn');
+        if (sc && !sc.classList.contains('hidden')) {
+          if (jumpBtn) jumpBtn.classList.remove('hidden');
+          if (pdfTopBtn) pdfTopBtn.classList.remove('hidden');
         }
       }
       break;
@@ -3273,6 +3348,7 @@ function finalize(resultsMap, slots) {
 
 function buildScorecard(results) {
   $('#scorecard').classList.remove('hidden');
+  { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.remove('hidden'); }
 
   const minCost = Math.min(...results.map((r) => Math.max(r.costUsd, 1e-9)));
   const minWall = Math.min(...results.map((r) => r.wallMs));
@@ -3679,6 +3755,7 @@ function paintHistoryModal() {
   { const nx = body.querySelector('.u-pg-next');
     if (nx) nx.addEventListener('click', () => { usersPage++; paintHistoryModal(); }); }
   body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
+  body.querySelectorAll('.hist-pdf-btn').forEach((b) => b.addEventListener('click', () => exportHistoryRunPdf(b.dataset.id, b)));
   body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => deleteHistoryRun(b.dataset.id)));
   const prev = body.querySelector('.hist-pg-prev');
   if (prev) prev.addEventListener('click', () => { if (historyPage > 0) { historyPage--; paintHistoryModal(); } });
@@ -3705,7 +3782,7 @@ function histRowHtml(h) {
   const who = (historyScope === 'all' && !historyUserFilter && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
   return `<div class="hist-row">
     <div class="hist-main"><div class="hist-title">${esc(h.title)}${who}</div><div class="hist-when">${esc(fmtWhen(h.at))}</div><div class="hist-chips">${chips}</div></div>
-    <div class="hist-act"><button class="submit-btn hist-restore" data-id="${esc(h.id)}">Restore ▸</button><button class="u-del hist-del" data-id="${esc(h.id)}">Delete</button></div>
+    <div class="hist-act"><button class="submit-btn hist-restore" type="button" data-id="${esc(h.id)}">Restore ▸</button><button class="bar-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Download PDF report for this run">📄 PDF</button><button class="u-del hist-del" type="button" data-id="${esc(h.id)}">Delete</button></div>
   </div>`;
 }
 
@@ -3753,14 +3830,11 @@ async function restoreHistory(id) {
     if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
     const snap = j.run;
     closeAuthModal();
-    const sel = $('#taskSelect');
-    if ([].slice.call(sel.options).some((o) => o.value === snap.taskId)) {
-      sel.value = snap.taskId;
-      if (snap.taskId === 'custom' && snap.prompt && $('#customPrompt')) {
-        $('#customPrompt').value = snap.prompt;
-      }
-      renderTaskPrompt();
+    selectTaskById(snap.taskId);
+    if ((!snap.taskId || snap.taskId === 'custom') && snap.prompt && $('#customPrompt')) {
+      $('#customPrompt').value = snap.prompt;
     }
+    renderTaskPrompt();
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
     $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) { window.alert(e.message); }
@@ -3793,8 +3867,134 @@ function renderSavedRun(snap) {
   LAST_RESULTS = resultsMap;
   finalize(resultsMap, snap.models.map((m) => m.slot)); // rebuild the scorecard from saved results
   const jumpBtn = $('#jumpScorecardBtn');
+  const pdfTopBtn = $('#exportPdfTopBtn');
   const sc = $('#scorecard');
-  if (jumpBtn && sc && !sc.classList.contains('hidden')) jumpBtn.classList.remove('hidden');
+  if (sc && !sc.classList.contains('hidden')) {
+    if (jumpBtn) jumpBtn.classList.remove('hidden');
+    if (pdfTopBtn) pdfTopBtn.classList.remove('hidden');
+  }
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename || 'llm-compare-report.pdf';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    try { document.body.removeChild(a); } catch (_) {}
+    URL.revokeObjectURL(url);
+  }, 400);
+}
+
+function filenameFromDisposition(headerVal, fallback) {
+  if (!headerVal) return fallback;
+  const m = String(headerVal).match(/filename="?([^";]+)"?/i);
+  return (m && m[1]) ? m[1] : fallback;
+}
+
+async function exportCurrentRunPdf(triggerBtn) {
+  const resultKeys = Object.keys(LAST_RESULTS || {});
+  if (!resultKeys.length) {
+    window.alert('Run a comparison first (or restore one from History) to export a PDF report.');
+    return;
+  }
+  const task = currentTask();
+  const activeModels = (ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS;
+  const promptText = task.id === 'custom'
+    ? (($('#customPrompt') && $('#customPrompt').value) || '').trim()
+    : (task.prompt || '');
+  const execOutputs = {};
+  activeModels.forEach((m) => {
+    const outEl = $(`#exec-out-${m.slot}`);
+    if (outEl && !outEl.classList.contains('hidden') && outEl.textContent && outEl.textContent.trim()) {
+      execOutputs[m.slot] = outEl.textContent.trim();
+    }
+  });
+
+  const btn = triggerBtn || $('#exportPdfBtn') || $('#exportPdfTopBtn');
+  const origText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Exporting PDF…';
+  }
+  try {
+    const resp = await fetch('/api/export-pdf', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        taskId: task.id,
+        taskTitle: task.title || 'Custom prompt',
+        prompt: promptText,
+        models: activeModels,
+        results: LAST_RESULTS,
+        judge: _judgeScored || null,
+        execOutputs,
+        at: Date.now(),
+      }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      throw new Error(errJson.error || `PDF export failed (${resp.status}).`);
+    }
+    const blob = await resp.blob();
+    const fname = filenameFromDisposition(
+      resp.headers.get('content-disposition'),
+      `llm-compare-${(task.id || 'report')}-${new Date().toISOString().slice(0, 10)}.pdf`
+    );
+    downloadBlob(blob, fname);
+    if (btn) {
+      btn.textContent = '✓ Downloaded PDF';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }, 1600);
+      return;
+    }
+  } catch (e) {
+    window.alert(e.message || 'Could not export PDF.');
+  }
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = origText;
+  }
+}
+
+async function exportHistoryRunPdf(id, triggerBtn) {
+  if (!id) return;
+  const origText = triggerBtn ? triggerBtn.textContent : '';
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.textContent = '⏳ PDF…';
+  }
+  try {
+    const resp = await fetch('/api/history/' + encodeURIComponent(id) + '/pdf', { credentials: 'same-origin' });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      throw new Error(errJson.error || `Failed to export PDF (${resp.status}).`);
+    }
+    const blob = await resp.blob();
+    const fname = filenameFromDisposition(resp.headers.get('content-disposition'), `llm-compare-${id}.pdf`);
+    downloadBlob(blob, fname);
+    if (triggerBtn) {
+      triggerBtn.textContent = '✓ PDF';
+      setTimeout(() => {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = origText;
+      }, 1400);
+      return;
+    }
+  } catch (e) {
+    window.alert(e.message || 'Could not export PDF.');
+  }
+  if (triggerBtn) {
+    triggerBtn.disabled = false;
+    triggerBtn.textContent = origText;
+  }
 }
 
 // Visible record of provider-specific attachment handling for this slot (e.g.

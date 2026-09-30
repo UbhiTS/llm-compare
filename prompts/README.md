@@ -11,7 +11,7 @@ prompt, edit its file's body and restart.
 ---
 id: my-task                 # required, unique, kebab-case
 title: My Great Task        # required, shown in the dropdown
-category: coding            # coding | general
+category: coding            # security | business | coding | games | general
 language: python            # javascript | python | null  (null for prose tasks)
 functionName: solution      # the JS function name for graded tasks; else "solution"
 executable: true            # true -> shows a "Run code" button (JS = run hidden tests, Python = run program)

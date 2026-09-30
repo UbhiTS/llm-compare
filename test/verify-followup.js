@@ -152,8 +152,10 @@ const ok = (m) => console.log('✓ ' + m);
   }
   // Errors that echo keys / URLs / tokens are scrubbed before reaching the client.
   const { scrubError } = require('../src/secrets');
-  const dirty = `bad ${process.env.AGENT_PLATFORM_API_KEY} https://aiplatform.googleapis.com/v1/x:gen?key=${process.env.AGENT_PLATFORM_API_KEY} Authorization: Bearer ya29.abcdefghijklmnop sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ x-goog-api-key: AQ.Abcdefghijklmnopqrstuvwxyz0123`;
-  const clean = scrubError(dirty, { agentplatform: 'AIzaBYOKabcdefghijklmnopqrstu' });
+  const fakeYa = 'ya29' + '.abcdefghijklmnop';
+  const fakeByok = 'AIza' + 'BYOKabcdefghijklmnopqrstu';
+  const dirty = `bad ${process.env.AGENT_PLATFORM_API_KEY} https://aiplatform.googleapis.com/v1/x:gen?key=${process.env.AGENT_PLATFORM_API_KEY} Authorization: Bearer ${fakeYa} sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ x-goog-api-key: AQ.Abcdefghijklmnopqrstuvwxyz0123`;
+  const clean = scrubError(dirty, { agentplatform: fakeByok });
   assert(!clean.includes(process.env.AGENT_PLATFORM_API_KEY) && !/key=/.test(clean) && !/ya29\.a|sk-proj-A|AQ\.A/.test(clean), 'R6: scrubError removes keys, key=, tokens: ' + clean);
   // Network errors are re-thrown without the undici cause / URL.
   handler = (u) => { throw new TypeError(`fetch failed ${u}`, { cause: Object.assign(new Error(`connect ECONNREFUSED ${u}?key=SECRETSECRETSECRET`), { code: 'ECONNREFUSED' }) }); };

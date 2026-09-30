@@ -39,6 +39,7 @@ const globalKeys = require('./src/globalKeys');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
+const { buildComparisonPdf, pdfFilename } = require('./src/pdfReport');
 
 // Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
 // request references cached files that have expired, answer 409 with the list
@@ -476,6 +477,70 @@ app.get('/api/history/:id', (req, res) => {
   const rec = history.getRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
   if (!rec) return res.status(404).json({ error: 'Run not found.' });
   res.json({ run: rec });
+});
+
+app.get('/api/history/:id/pdf', (req, res) => {
+  const rec = history.getRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!rec) return res.status(404).json({ error: 'Run not found.' });
+  try {
+    const foundTask = TASKS.find((t) => t.id === rec.taskId);
+    const pdfBuf = buildComparisonPdf({
+      ...rec,
+      task: foundTask || null,
+      taskTitle: rec.title || (foundTask && foundTask.title) || 'Comparison Report',
+      prompt: rec.prompt || (foundTask && foundTask.prompt) || '',
+    });
+    const filename = pdfFilename(rec.title || rec.taskId || 'comparison', rec.at);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(pdfBuf.length));
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(pdfBuf);
+  } catch (e) {
+    res.status(500).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.post('/api/export-pdf', (req, res) => {
+  const body = req.body || {};
+  const foundTask = TASKS.find((t) => t.id === body.taskId);
+  const rawResults = body.results;
+  const hasResults = Array.isArray(rawResults)
+    ? rawResults.length > 0
+    : (rawResults && typeof rawResults === 'object' && Object.keys(rawResults).length > 0)
+      || (Array.isArray(body.slots) && body.slots.length > 0);
+  if (!hasResults) {
+    return res.status(400).json({ error: 'No comparison results available to export.' });
+  }
+  try {
+    const title = String(body.taskTitle || body.title || (foundTask && foundTask.title) || 'Custom prompt').slice(0, 200);
+    const prompt = String(
+      (typeof body.prompt === 'string' && body.prompt.trim())
+        ? body.prompt
+        : ((foundTask && foundTask.prompt) || '')
+    ).slice(0, 100000);
+    const pdfBuf = buildComparisonPdf({
+      taskId: body.taskId || (foundTask && foundTask.id) || 'custom',
+      taskTitle: title,
+      prompt,
+      task: foundTask || null,
+      models: Array.isArray(body.models) ? body.models : [],
+      results: body.results,
+      slots: body.slots,
+      judge: body.judge || null,
+      execOutputs: body.execOutputs && typeof body.execOutputs === 'object' ? body.execOutputs : null,
+      at: Number(body.at) || Date.now(),
+      user: req.user && req.user.username,
+    });
+    const filename = pdfFilename(title || body.taskId || 'comparison', body.at);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(pdfBuf.length));
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(pdfBuf);
+  } catch (e) {
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
 });
 
 app.delete('/api/history/:id', (req, res) => {
