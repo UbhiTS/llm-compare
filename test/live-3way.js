@@ -2,7 +2,7 @@ require('dotenv').config();
 const { runComparison } = require('../src/orchestrator');
 const { TASKS } = require('../src/tasks');
 const { DEFAULT_MODELS } = require('../src/pricing');
-const task = TASKS.find(t => t.id === 'meeting-rooms');
+const task = TASKS.find(t => t.id === 'compiler-vm');
 const reasoning = {};
 (async () => {
   const results = await runComparison({

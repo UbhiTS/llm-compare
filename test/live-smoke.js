@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { runAgent } = require('../src/agent');
 const { TASKS } = require('../src/tasks');
-const task = TASKS.find(t => t.id === 'meeting-rooms');
+const task = TASKS.find(t => t.id === 'compiler-vm');
 const modelConfig = { slot: 'A', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash', price: { input: 0.10, output: 0.40 } };
 (async () => {
   console.log('LIVE call -> Agent Platform / gemini-3.5-flash, task:', task.title);

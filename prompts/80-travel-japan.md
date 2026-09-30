@@ -6,39 +6,59 @@ language: null
 functionName: solution
 executable: false
 ---
-Act as an expert travel planner and financial estimator. Create a comprehensive, detailed 14-day itinerary and full budget breakdown for a family trip to Japan (2 adults, 2 children, ages 8 and 11). We will be flying out of San Francisco International Airport (SFO). Assume travel in the spring shoulder season (late March / early April) unless you note otherwise.
+Act as an expert international travel planner, cultural concierge, and master financial estimator. Create an exhaustive, decision-ready 14-day itinerary and comprehensive financial model for a family trip to Japan (2 adults, 2 children, ages 8 and 11) flying out of San Francisco International Airport (SFO). Assume travel during the spring shoulder season (late March / early April, cherry blossom / Sakura season).
 
-The itinerary should focus heavily on the Kansai region, specifically Kyoto and Osaka, and must include the following specific locations:
-- Osaka: A full day dedicated to Universal Studios Japan (USJ).
-- Kyoto: Dedicated time for the Arashiyama Bamboo Forest, Fushimi Inari Taisha, Kiyomizu-dera, and an evening exploring Pontocho Alley.
+The itinerary must focus heavily on the Kansai region (Kyoto, Osaka, Nara, Uji, Mount Koya) with an optional scenic transit via Tokyo or Hiroshima, and must incorporate specific flagship destinations:
+- Osaka: Universal Studios Japan (USJ) full-day itinerary, Dotonbori food exploration, Osaka Castle, and Shinsekai.
+- Kyoto: Arashiyama Bamboo Forest & Monkey Park, Fushimi Inari Taisha early-morning climb, Kiyomizu-dera & Higashiyama preservation district, Kinkaku-ji, Gion evening cultural walk, and Pontocho Alley dining.
+- Day excursions: Nara deer park & Todai-ji Great Buddha, and traditional green tea culture in Uji.
 
-Please structure the response with a day-by-day schedule (morning / afternoon / evening), followed by a complete logistical breakdown and cost estimation (in USD) that includes:
+### Structure & Required Deliverables:
 
-1. Flights & Pre-Departure Logistics
-- Estimated costs for round-trip rideshare transportation to and from SFO.
-- Estimated costs for round-trip, direct or 1-stop flights to Japan (e.g., flying into KIX, or into HND/NRT and taking the bullet train).
-- Essential travel tech (e.g., Pocket Wi-Fi or 4x eSIMs, universal power adapters).
+#### 1. Trip at a Glance & Flight Logistics
+- Executive summary table: dates, destination cities, base hotels, primary transit modes, and total high/expected/low budget ranges.
+- Flight logistics: comparative analysis between flying directly into Kansai International (KIX) versus flying into Tokyo (HND/NRT) and taking the Tokaido Shinkansen bullet train to Kyoto. Include flight price estimates, airline options, seat selection strategies for families, and airport transfers (Haruka Express vs. Narita Express).
 
-2. Accommodations
-- Recommendations and nightly cost estimates for family-friendly hotels or traditional Ryokans in Kyoto and Osaka that can comfortably accommodate four people.
+#### 2. Day-by-Day Detailed Itinerary (Days 1 through 14)
+For every single day (Day 1 through Day 14), provide a dedicated `### Day X: [Title]` section featuring a clean, structured Markdown table with columns:
+- **Time Slot** (Morning, Afternoon, Evening)
+- **Activity & Key Sights** (specific temple, landmark, or experience)
+- **Transit & Route** (exact rail line, station names, transfers, or walking directions)
+- **Estimated Cost** (JPY and USD per family)
+Include practical operational advice under each table (e.g. advance timed-entry ticket requirements, crowd avoidance tips, stroller/walking endurance notes for kids).
 
-3. Ground Transportation in Japan
-- Transportation from the arrival airport to the first hotel.
-- A cost-benefit analysis on renting a car versus relying on public transit for this specific Kyoto/Osaka route. If a car rental is recommended, include estimates for the rental, International Driving Permit, tolls, and parking.
-- If public transit is recommended instead, estimate the costs for local IC cards (Suica/ICOCA) or regional rail passes for the family.
+#### 3. Accommodations Matrix
+- Complete lodging comparison table: recommended family-friendly hotels or traditional Ryokan in Kyoto, Osaka, and Mount Koya.
+- Table columns: City, Property Name, Room Type (Western quad vs. Japanese tatami/futon), Nightly Rate (JPY & USD), Inclusions (e.g. Kaiseki breakfast/dinner, onsen access), and Proximity to major transit hubs.
 
-4. Activities & Entrance Fees
-- Itemized ticket costs for all planned shrines and temples.
-- Ticket costs for Universal Studios Japan, including recommendations and pricing for Express Passes to avoid long lines.
+#### 4. Ground Transportation & Rail Pass Optimization
+- Rigorous financial cost-benefit analysis: JR Whole Japan Rail Pass vs. Regional Kansai Area Pass vs. Pay-as-you-go IC Cards (ICOCA / Suica).
+- Itemize point-to-point Shinkansen and express train fares for the family to mathematically prove whether a rail pass breaks even.
+- Bullet train seat reservation guidelines (including oversized baggage rules).
 
-5. Consumables & Daily Living
-- A realistic daily food budget for a family of four, broken down by category (e.g., convenience-store breakfasts, casual lunches, sit-down dinners).
-- An allowance for general consumables (vending-machine drinks, street-food snacks, souvenirs).
+#### 5. Activities, Admissions & Express Pass Logistics
+- Itemized entrance fees for all planned shrines, castles, and temples.
+- Universal Studios Japan detailed breakdown: Studio Passes + Universal Express Pass 7/4 recommendations to guarantee Super Nintendo World and Wizarding World of Harry Potter entry times without 3-hour queues.
 
-Conclude with a structured, itemized budget table summarizing the low-end, expected, and high-end total estimates for the entire trip, plus a per-person and per-day figure.
+#### 6. Dining, Dietary & Daily Living Model
+- Daily meal budget broken down into tiers: convenience store (konbini) quick breakfasts, casual lunch noodle shops, sit-down dinners, and street-food snacking allowances.
+- Dietary guidance and Japanese phrases/apps for family dining.
+- Pocket Wi-Fi router rental vs. multiple eSIMs cost comparison table.
 
-Presentation - make it look genuinely professional: format the whole plan as a polished **Markdown** document a family would be delighted to print.
-- Lead with a short **Trip at a glance** summary (dates, cities, headline budget range) before the day-by-day detail.
-- Give each day its own `###` heading with a clean **morning / afternoon / evening** table (time-of-day, activity, area, rough cost).
-- Put flights, lodging, ground transport, tickets, and the final budget in well-formed **Markdown tables** with bold headers and USD figures; **bold** every subtotal and total.
-- Use bullet lists and small polished touches (e.g. 💡 tips, ⭐ must-dos) sparingly; keep it skimmable - no code or raw text dumps.
+#### 7. Master Budget & Financial Summary Table
+- A complete, itemized financial summary table categorizing all costs into Low, Expected, and High ranges (in USD):
+  - International Airfare
+  - Lodging & Ryokan
+  - Ground Transportation & Trains
+  - Activities, Sightseeing & USJ Passes
+  - Food & Beverage
+  - Connectivity & Incidentals
+  - Emergency Contingency (10%)
+- Final summary row calculating total cost, cost per person, and average daily cost.
+
+---
+### Presentation Standards:
+- Present the entire guide as a polished, publication-ready Markdown dossier.
+- Use clean, well-aligned Markdown tables for all logistical, daily, and financial schedules.
+- Bold key numbers, train lines, station names, and recommendations for effortless skimming.
+- Provide complete day-by-day itineraries for all 14 days without skipping days or using placeholder shortcuts.

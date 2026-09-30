@@ -83,38 +83,140 @@ assert.strictEqual(
   'catalog resolution should reject unsupported minimal thinking'
 );
 
-// Buggy: frees a room only when a meeting ENDS STRICTLY before the next starts,
-// so touching intervals ([1,5] & [5,9]) are wrongly counted as overlapping.
+// Buggy: adds an extra 1 to every binary addition result, failing test assertions.
 const BUGGY = fence(`
-function minMeetingRooms(intervals){
-  if(!intervals || intervals.length===0) return 0;
-  const n = intervals.length;
-  const starts = intervals.map(i=>i[0]).sort((a,b)=>a-b);
-  const ends   = intervals.map(i=>i[1]).sort((a,b)=>a-b);
-  let rooms=0, max=0, e=0;
-  for(let s=0;s<n;s++){
-    while(e<n && ends[e] < starts[s]){ e++; rooms--; }   // BUG: should be <=
-    rooms++; if(rooms>max) max=rooms;
+function compileAndExecuteVM(ast, options) {
+  function fold(n) {
+    if (!n || typeof n !== "object") return n;
+    if (n.type === "BinaryExpr") {
+      const l = fold(n.left), r = fold(n.right);
+      if (l.type === "Literal" && r.type === "Literal") {
+        if (n.op === "+") return { type: "Literal", value: l.value + r.value + 1 }; // BUG: + 1
+        if (n.op === "*") return { type: "Literal", value: l.value * r.value };
+        if (n.op === "-") return { type: "Literal", value: l.value - r.value };
+      }
+      return { ...n, left: l, right: r };
+    }
+    if (n.type === "ReturnStmt") return { ...n, value: fold(n.value) };
+    if (n.type === "Program") return { ...n, body: (n.body || []).map(fold) };
+    return n;
   }
-  return max;
+  const opt = fold(ast);
+  let res = null;
+  if (opt.body && opt.body[0] && opt.body[0].type === "ReturnStmt") {
+    res = opt.body[0].value ? opt.body[0].value.value : null;
+  }
+  return { status: "SUCCESS", result: res, stdout: [], stats: { gasUsed: 1, constantsFolded: 1, bytecodeLength: 1 } };
 }`);
 
 const CORRECT = fence(`
-function minMeetingRooms(intervals){
-  if(!intervals || intervals.length===0) return 0;
-  const n = intervals.length;
-  const starts = intervals.map(i=>i[0]).sort((a,b)=>a-b);
-  const ends   = intervals.map(i=>i[1]).sort((a,b)=>a-b);
-  let rooms=0, max=0, e=0;
-  for(let s=0;s<n;s++){
-    while(e<n && ends[e] <= starts[s]){ e++; rooms--; }  // touching frees room
-    rooms++; if(rooms>max) max=rooms;
+function compileAndExecuteVM(ast, options = {}) {
+  const optimize = options.optimize !== false;
+  let constantsFolded = 0;
+  function fold(n) {
+    if (!n || typeof n !== "object") return n;
+    if (n.type === "BinaryExpr") {
+      const l = fold(n.left), r = fold(n.right);
+      if (optimize && l.type === "Literal" && r.type === "Literal" && typeof l.value === "number" && typeof r.value === "number") {
+        let val;
+        switch (n.op) {
+          case "+": val = l.value + r.value; break;
+          case "-": val = l.value - r.value; break;
+          case "*": val = l.value * r.value; break;
+          case "/": val = r.value !== 0 ? Math.floor(l.value / r.value) : null; break;
+          case "%": val = r.value !== 0 ? l.value % r.value : null; break;
+          case "==": val = l.value === r.value; break;
+          case "!=": val = l.value !== r.value; break;
+          case "<": val = l.value < r.value; break;
+          case "<=": val = l.value <= r.value; break;
+          case ">": val = l.value > r.value; break;
+          case ">=": val = l.value >= r.value; break;
+        }
+        if (val !== undefined && val !== null) { constantsFolded++; return { type: "Literal", value: val }; }
+      }
+      return { ...n, left: l, right: r };
+    }
+    if (n.type === "IfStmt") {
+      const c = fold(n.condition);
+      if (optimize && c.type === "Literal" && typeof c.value === "boolean") {
+        constantsFolded++;
+        return c.value ? fold(n.thenBranch) : (n.elseBranch ? fold(n.elseBranch) : { type: "Empty" });
+      }
+      return { ...n, condition: c, thenBranch: fold(n.thenBranch), elseBranch: fold(n.elseBranch) };
+    }
+    if (n.type === "BlockStmt") return { ...n, statements: (n.statements || []).map(fold).filter(s => s && s.type !== "Empty") };
+    if (n.type === "VarDecl") return { ...n, init: fold(n.init) };
+    if (n.type === "AssignStmt") return { ...n, value: fold(n.value) };
+    if (n.type === "ReturnStmt") return { ...n, value: fold(n.value) };
+    if (n.type === "WhileStmt") return { ...n, condition: fold(n.condition), body: fold(n.body) };
+    if (n.type === "PrintStmt") return { ...n, expr: fold(n.expr) };
+    return n;
   }
-  return max;
+  const opt = optimize ? fold(ast) : ast;
+  const bytecode = [];
+  function emit(op, arg) { const idx = bytecode.length; bytecode.push(arg !== undefined ? [op, arg] : [op]); return idx; }
+  function compileExpr(e) {
+    if (!e) return;
+    if (e.type === "Literal") emit("PUSH", e.value);
+    else if (e.type === "VarExpr") emit("LOAD", e.name);
+    else if (e.type === "BinaryExpr") {
+      compileExpr(e.left); compileExpr(e.right);
+      const ops = { "+": "ADD", "-": "SUB", "*": "MUL", "/": "DIV", "%": "MOD", "==": "EQ", "!=": "NEQ", "<": "LT", "<=": "LTE", ">": "GT", ">=": "GTE" };
+      if (ops[e.op]) emit(ops[e.op]);
+    }
+  }
+  function compileStmt(s) {
+    if (!s || s.type === "Empty") return;
+    if (s.type === "VarDecl" || s.type === "AssignStmt") { compileExpr(s.init || s.value); emit("STORE", s.name); }
+    else if (s.type === "PrintStmt") { compileExpr(s.expr); emit("PRINT"); }
+    else if (s.type === "ReturnStmt") { compileExpr(s.value); emit("RET"); }
+    else if (s.type === "BlockStmt") { (s.statements || []).forEach(compileStmt); }
+    else if (s.type === "IfStmt") {
+      compileExpr(s.condition); const jf = emit("JUMP_IF_FALSE", 0); compileStmt(s.thenBranch);
+      if (s.elseBranch && s.elseBranch.type !== "Empty") {
+        const jend = emit("JUMP", 0); bytecode[jf][1] = bytecode.length; compileStmt(s.elseBranch); bytecode[jend][1] = bytecode.length;
+      } else bytecode[jf][1] = bytecode.length;
+    } else if (s.type === "WhileStmt") {
+      const start = bytecode.length; compileExpr(s.condition); const jf = emit("JUMP_IF_FALSE", 0);
+      compileStmt(s.body); emit("JUMP", start); bytecode[jf][1] = bytecode.length;
+    }
+  }
+  if (opt.type === "Program") (opt.body || []).forEach(compileStmt); else compileStmt(opt);
+  emit("HALT");
+  const stack = [], memory = {}, stdout = [];
+  let ip = 0, gasUsed = 0, res = null;
+  const maxGas = options.maxGas || 10000;
+  while (ip < bytecode.length) {
+    if (gasUsed >= maxGas) return { status: "OUT_OF_GAS", result: null, stdout, stats: { gasUsed, constantsFolded, bytecodeLength: bytecode.length } };
+    gasUsed++;
+    const [inst, arg] = bytecode[ip++];
+    switch (inst) {
+      case "PUSH": stack.push(arg); break;
+      case "LOAD": stack.push(memory[arg] !== undefined ? memory[arg] : null); break;
+      case "STORE": memory[arg] = stack.pop(); break;
+      case "ADD": { const b = stack.pop(), a = stack.pop(); stack.push(a + b); break; }
+      case "SUB": { const b = stack.pop(), a = stack.pop(); stack.push(a - b); break; }
+      case "MUL": { const b = stack.pop(), a = stack.pop(); stack.push(a * b); break; }
+      case "DIV": { const b = stack.pop(), a = stack.pop(); stack.push(b !== 0 ? Math.floor(a / b) : null); break; }
+      case "MOD": { const b = stack.pop(), a = stack.pop(); stack.push(b !== 0 ? a % b : null); break; }
+      case "EQ": { const b = stack.pop(), a = stack.pop(); stack.push(a === b); break; }
+      case "NEQ": { const b = stack.pop(), a = stack.pop(); stack.push(a !== b); break; }
+      case "LT": { const b = stack.pop(), a = stack.pop(); stack.push(a < b); break; }
+      case "LTE": { const b = stack.pop(), a = stack.pop(); stack.push(a <= b); break; }
+      case "GT": { const b = stack.pop(), a = stack.pop(); stack.push(a > b); break; }
+      case "GTE": { const b = stack.pop(), a = stack.pop(); stack.push(a >= b); break; }
+      case "PRINT": stdout.push(String(stack.pop())); break;
+      case "JUMP": ip = arg; break;
+      case "JUMP_IF_FALSE": { const cond = stack.pop(); if (!cond) ip = arg; break; }
+      case "RET": res = stack.pop(); ip = bytecode.length; break;
+      case "HALT": ip = bytecode.length; break;
+    }
+  }
+  return { status: "SUCCESS", result: res !== null ? res : (stack.length ? stack[stack.length - 1] : null), stdout, stats: { gasUsed, constantsFolded, bytecodeLength: bytecode.length } };
 }`);
 
 // ---- 1) runner sanity ----
-const task = TASKS.find((t) => t.id === 'meeting-rooms');
+const task = TASKS.find((t) => t.id === 'compiler-vm');
 function strip(f) { return f.replace(/```(?:javascript)?/g, '').replace(/```/g, '').trim(); }
 const buggyRes = runTests(strip(BUGGY), task.functionName, task.testCases);
 const correctRes = runTests(strip(CORRECT), task.functionName, task.testCases);

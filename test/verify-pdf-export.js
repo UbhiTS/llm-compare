@@ -48,8 +48,8 @@ function decompressPdfStreams(pdfBuf) {
 
   // 2. Build a comprehensive graded + judge multi-model report
   const samplePayload = {
-    taskId: 'lis',
-    taskTitle: 'Longest Increasing Subsequence',
+    taskId: 'crdt-sync',
+    taskTitle: 'Distributed Systems: Conflict-Free Replicated Data Type (CRDT) Document Sync Engine',
     prompt: 'Given an integer array nums, return the length of the longest strictly increasing subsequence in O(n log n) time.',
     language: 'javascript',
     at: Date.UTC(2026, 8, 30, 17, 0, 0),
@@ -77,7 +77,7 @@ function decompressPdfStreams(pdfBuf) {
         tokensPerSec: 450.7,
         costUsd: 0.0012,
         reasoning: 'We can maintain a tails array where tails[i] stores the smallest tail of all increasing subsequences of length i+1 and binary search each element.',
-        code: Array.from({ length: 75 }, (_, i) => `// Line ${i + 1}: O(n log n) binary search step\nfunction lengthOfLIS_${i}(nums) { return nums.length; }`).join('\n'),
+        code: Array.from({ length: 75 }, (_, i) => `// Line ${i + 1}: syncCrdtDocument implementation step\nfunction syncCrdtDocument_${i}(ops) { return ops.length; }`).join('\n'),
       },
       B: {
         slot: 'B',
@@ -163,7 +163,6 @@ function decompressPdfStreams(pdfBuf) {
   const expectedSnippets = [
     'LLM Compare',
     'Executive Summary',
-    'Longest Increasing Subsequence',
     'BEST BALANCED MODEL: GEMINI 3.8 FLASH',
     'Visual Comparison Graphs',
     'Overall Balanced Score',
@@ -178,7 +177,7 @@ function decompressPdfStreams(pdfBuf) {
     'Detailed Per-Model Results',
     'Thinking / Reasoning Trace',
     'Execution / Verification Output',
-    'lengthOfLIS',
+    'syncCrdtDocument',
     'Page 1 of ' + streams.length,
   ];
   for (const snippet of expectedSnippets) {
@@ -228,7 +227,7 @@ function decompressPdfStreams(pdfBuf) {
   const savedItem = await history.saveRun({
     user: 'ubhi@google.com',
     userName: 'ubhi@google.com',
-    task: { id: 'lis', title: 'Longest Increasing Subsequence', prompt: samplePayload.prompt },
+    task: { id: 'crdt-sync', title: 'Distributed Systems: Conflict-Free Replicated Data Type (CRDT) Document Sync Engine', prompt: samplePayload.prompt },
     models: samplePayload.models,
     results: Object.values(samplePayload.results),
     kind: 'compare',
@@ -277,7 +276,7 @@ function decompressPdfStreams(pdfBuf) {
   });
   assert.strictEqual(postResp.status, 200, 'POST /api/export-pdf should return 200');
   assert.strictEqual(postResp.headers.get('content-type'), 'application/pdf');
-  assert(/attachment;\s*filename="llm-compare-longest-increasing-subsequence-.*\.pdf"/i.test(postResp.headers.get('content-disposition') || ''));
+  assert(/attachment;\s*filename="llm-compare-.*\.pdf"/i.test(postResp.headers.get('content-disposition') || ''));
   const httpPdfBuf = Buffer.from(await postResp.arrayBuffer());
   assert.strictEqual(httpPdfBuf.subarray(0, 8).toString('latin1'), '%PDF-1.4');
   assert(httpPdfBuf.toString('latin1').trimEnd().endsWith('%%EOF'));
@@ -326,7 +325,7 @@ function decompressPdfStreams(pdfBuf) {
     ],
   };
 
-  const attached = await history.attachJudgeToLatestRun('ubhi@google.com', 'lis', judgeVerdict, savedItem.id);
+  const attached = await history.attachJudgeToLatestRun('ubhi@google.com', 'crdt-sync', judgeVerdict, savedItem.id);
   assert.strictEqual(attached, true, 'attachJudgeToLatestRun should return true on success');
 
   // Verify the updated run via getRun has judge attached

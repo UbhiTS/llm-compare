@@ -240,8 +240,44 @@ async function waitUp() {
   r = await req('POST', '/api/execute', { body: { language: 'python', code: 'print("hi from python")', taskId: 'hanoi-python' } });
   check('execute: python program', r.status === 200 && r.json && r.json.kind === 'program' && /hi from python/.test(r.json.stdout), { status: r.status, shape: shape(r.json) });
 
-  r = await req('POST', '/api/execute', { body: { language: 'javascript', taskId: 'lis', code: 'function lengthOfLIS(a){const t=[];for(const x of a){let l=0,h=t.length;while(l<h){const m=(l+h)>>1;if(t[m]<x)l=m+1;else h=m;}t[l]=x;}return t.length;}' } });
-  check('execute: javascript tests (correct LIS)', r.status === 200 && r.json && r.json.kind === 'tests' && r.json.passed === r.json.total && r.json.total === 10, { status: r.status, shape: `passed=${r.json && r.json.passed}/${r.json && r.json.total}` });
+  const crdtCode = `function syncCrdtDocument(localState, operations, options = {}) {
+    const state = JSON.parse(JSON.stringify(localState));
+    state.clock = state.clock || {}; state.characters = state.characters || []; state.attributes = state.attributes || {};
+    let operationsApplied = 0, tombstonesPurged = 0;
+    (operations || []).forEach(op => {
+      if (op.origin && op.seq !== undefined) state.clock[op.origin] = Math.max(state.clock[op.origin] || 0, op.seq);
+      if (op.type === "INSERT") {
+        const charObj = { id: op.charId, char: op.char, afterId: op.afterId || null, beforeId: op.beforeId || null, deleted: false };
+        let insertIdx = 0;
+        if (op.afterId) {
+          const afterIdx = state.characters.findIndex(c => c.id.replica === op.afterId.replica && c.id.seq === op.afterId.seq);
+          insertIdx = afterIdx !== -1 ? afterIdx + 1 : state.characters.length;
+        }
+        while (insertIdx < state.characters.length) {
+          const nextChar = state.characters[insertIdx];
+          if (op.afterId && (!nextChar.afterId || nextChar.afterId.replica !== op.afterId.replica || nextChar.afterId.seq !== op.afterId.seq)) break;
+          if (charObj.id.replica < nextChar.id.replica) insertIdx++; else break;
+        }
+        if (!state.characters.some(c => c.id.replica === charObj.id.replica && c.id.seq === charObj.id.seq)) { state.characters.splice(insertIdx, 0, charObj); operationsApplied++; }
+      } else if (op.type === "DELETE") {
+        const target = state.characters.find(c => c.id.replica === op.charId.replica && c.id.seq === op.charId.seq);
+        if (target && !target.deleted) { target.deleted = true; operationsApplied++; }
+      } else if (op.type === "SET_ATTR") {
+        const existing = state.attributes[op.attrKey], ts = op.timestamp || 0;
+        if (!existing || ts > existing.timestamp || (ts === existing.timestamp && op.origin > existing.replica)) { state.attributes[op.attrKey] = { value: op.attrVal, timestamp: ts, replica: op.origin }; operationsApplied++; }
+      }
+    });
+    if (options.compact && options.minObservedClock) {
+      const initialLen = state.characters.length;
+      state.characters = state.characters.filter(c => !c.deleted || !Object.keys(options.minObservedClock).every(r => (options.minObservedClock[r] || 0) >= c.id.seq));
+      tombstonesPurged = initialLen - state.characters.length;
+    }
+    const text = state.characters.filter(c => !c.deleted).map(c => c.char).join("");
+    const attributes = {}; for (const k of Object.keys(state.attributes)) attributes[k] = state.attributes[k].value;
+    return { nextState: state, text, attributes, stats: { operationsApplied, tombstonesPurged } };
+  }`;
+  r = await req('POST', '/api/execute', { body: { language: 'javascript', taskId: 'crdt-sync', code: crdtCode } });
+  check('execute: javascript tests (correct CRDT)', r.status === 200 && r.json && r.json.kind === 'tests' && r.json.passed === r.json.total && r.json.total === 12, { status: r.status, shape: `passed=${r.json && r.json.passed}/${r.json && r.json.total}` });
 
   r = await req('POST', '/api/execute', { body: { language: 'ruby', code: 'x' } });
   check('execute: unsupported language -> 400', r.status === 400, { status: r.status });
@@ -292,7 +328,7 @@ async function waitUp() {
   const bigLogin = await req('POST', '/api/auth/login', { raw: JSON.stringify({ username: 'x', password: 'y', pad: 'A'.repeat(8 * 1024 * 1024) }) });
   probe('SEC-06 unauthenticated 8 MB JSON body parsed pre-auth (/api/auth/login)', bigLogin.status !== 413, `status=${bigLogin.status}`);
 
-  r = await req('POST', '/api/execute', { body: { language: 'javascript', taskId: 'lis', code: 'var __esc; try { __esc = typeof this.constructor.constructor("return process")().pid; } catch (e) { __esc = "blocked"; } function lengthOfLIS(){ return __esc; }' } });
+  r = await req('POST', '/api/execute', { body: { language: 'javascript', taskId: 'crdt-sync', code: 'var __esc; try { __esc = typeof this.constructor.constructor("return process")().pid; } catch (e) { __esc = "blocked"; } function syncCrdtDocument(){ return __esc; }' } });
   const got = r.json && r.json.failing && r.json.failing[0] && r.json.failing[0].gotStr;
   probe('SEC-02 vm sandbox escape to host `process` via /api/execute', got === '"number"', `gotStr=${got}`);
 

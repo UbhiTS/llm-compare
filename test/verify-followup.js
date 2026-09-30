@@ -72,11 +72,11 @@ const ok = (m) => console.log('✓ ' + m);
   ok('D4 OpenAI 404/429 → labelled error for the requested model; no gpt-6-astra/gpt-6-sol/gpt-oss substitution (stream + non-stream)');
 
   // Orchestrator: OpenAI slot fails with a labelled model_error, Gemini slot still finishes and is priced.
-  const task = TASKS.find((t) => t.id === 'meeting-rooms');
+  const task = TASKS.find((t) => t.id === 'compiler-vm');
   handler = (u) => {
     if (u.includes('api.openai.com')) return json(429, { error: { message: 'quota' } });
     if (u.includes(':streamGenerateContent')) {
-      return new Response(sse(['data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: '```javascript\nfunction minMeetingRooms(){return 0;}\n```' }] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 } })]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      return new Response(sse(['data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: '```javascript\nfunction compileAndExecuteVM(){return {status:"SUCCESS",result:null,stdout:[],stats:{gasUsed:0,constantsFolded:0,bytecodeLength:0}};}\n```' }] } }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 } })]), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
     }
     return json(500, { error: 'unexpected ' + u });
   };

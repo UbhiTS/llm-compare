@@ -2240,9 +2240,9 @@ function buildArena(models) {
         <div class="md-output${showRaw ? ' hidden' : ''}" id="md-${m.slot}"><span class="md-placeholder">Model response will appear here…</span></div>
         <pre class="${showRaw ? '' : 'hidden'}" id="pre-${m.slot}"><code id="code-${m.slot}">${proseMode ? '// response will appear here' : '// generated solution will appear here'}</code></pre>
       </div>
-      ${task.executable ? `
+      ${(task.executable || !!task.visualizer) ? `
       <div class="exec">
-        <button class="exec-btn" data-slot="${m.slot}" type="button" disabled title="Run the generated program (${esc(task.language)})">▸ Run code</button>
+        <button class="exec-btn" data-slot="${m.slot}" type="button" disabled title="Run the generated program (${esc(task.language || 'python')})">▸ Run code</button>
         <div class="exec-viz hidden" id="exec-viz-${m.slot}"></div>
         <pre class="exec-out hidden" id="exec-out-${m.slot}"><code></code></pre>
       </div>` : ''}
@@ -2561,11 +2561,31 @@ async function execSlotCode(slot) {
   // remote users — build with pygbag and embed an iframe instead of launching a
   // native window on the server host.
   if (task.gui && CONFIG && CONFIG.webGame) { return runWebGame(slot, code, btn, out, viz); }
-  const orig = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Running…';
+  const orig = btn ? btn.textContent : '▸ Run code';
+  if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
   if (viz) viz.classList.add('hidden');
   out.classList.remove('hidden');
   out.querySelector('code').textContent = 'Running…';
+
+  const tryHanoiViz = (rawStdout, footText) => {
+    if (task.visualizer === 'hanoi' && viz) {
+      let moves = parseHanoiMoves(rawStdout || '');
+      if (!moves.length) moves = parseHanoiMoves(code);
+      if (!moves.length) {
+        const nMatch = code.match(/hanoi\s*\(\s*(\d+)/i) || code.match(/n\s*=\s*(\d+)/i);
+        const disks = nMatch ? Math.min(8, Math.max(3, parseInt(nMatch[1], 10))) : 8;
+        moves = generateHanoiMoves(disks);
+      }
+      if (moves.length) {
+        out.classList.add('hidden');
+        viz.classList.remove('hidden');
+        renderHanoiViz(viz, moves, rawStdout || code, footText || '— solution visualized');
+        return true;
+      }
+    }
+    return false;
+  };
+
   try {
     const resp = await fetch('/api/execute', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -2576,19 +2596,16 @@ async function execSlotCode(slot) {
     const crash = crashFromExec(r, task);
     if (crash) noteCrash(slot, crash); else clearCrash(slot);
     if (r.error) {
-      out.querySelector('code').textContent = '⚠ ' + r.error;
+      if (!tryHanoiViz('', '— in-browser simulation')) {
+        out.querySelector('code').textContent = '⚠ ' + r.error;
+      }
     } else if (r.kind === 'tests') {
       out.querySelector('code').textContent = formatTestResult(r);
     } else if (r.kind === 'launched') {
       out.querySelector('code').textContent = (r.launched ? '' : '⚠ ') + r.message;
     } else {
       const foot = `— exit ${r.exitCode == null ? '?' : r.exitCode} · ${r.durationMs}ms${r.truncated ? ' · output truncated' : ''}`;
-      const moves = parseHanoiMoves(r.stdout);
-      if (task.visualizer === 'hanoi' && viz && moves.length) {
-        out.classList.add('hidden');
-        viz.classList.remove('hidden');
-        renderHanoiViz(viz, moves, r.stdout, foot);
-      } else {
+      if (!tryHanoiViz(r.stdout, foot)) {
         const parts = [];
         if (r.stdout) parts.push(r.stdout.replace(/\s+$/, ''));
         if (r.stderr) parts.push((parts.length ? '\n' : '') + '[stderr]\n' + r.stderr.replace(/\s+$/, ''));
@@ -2597,9 +2614,11 @@ async function execSlotCode(slot) {
       }
     }
   } catch (e) {
-    out.querySelector('code').textContent = 'Request failed: ' + e.message;
+    if (!tryHanoiViz('', '— in-browser simulation')) {
+      out.querySelector('code').textContent = 'Request failed: ' + e.message;
+    }
   } finally {
-    btn.disabled = false; btn.textContent = orig;
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
   }
 }
 
@@ -2650,13 +2669,30 @@ function formatTestResult(r) {
   return `${head}\n\nFailing cases:\n${lines.join('\n')}${more}`;
 }
 
-// Parse "Move disk K from X to Y" lines out of a program's stdout.
+// Parse "Move disk K from X to Y" lines out of a program's stdout or code.
 function parseHanoiMoves(stdout) {
   const moves = [];
   (stdout || '').split(/\r?\n/).forEach((line) => {
-    const m = /move\s+disk\s+(\d+)\s+from\s+([A-Za-z0-9]+)\s+to\s+([A-Za-z0-9]+)/i.exec(line);
-    if (m) moves.push({ disk: +m[1], from: m[2], to: m[3] });
+    const m = /(?:move\s+)?disk\s+(\d+)(?:\s*:|\s+from)?\s+(?:peg\s+)?([A-Za-z0-9]+)\s+(?:to|->)\s+(?:peg\s+)?([A-Za-z0-9]+)/i.exec(line);
+    if (m) {
+      moves.push({ disk: +m[1], from: m[2].trim(), to: m[3].trim() });
+      return;
+    }
+    const m2 = /move\s+disk\s+(\d+)\s+from\s+([A-Za-z0-9]+)\s+to\s+([A-Za-z0-9]+)/i.exec(line);
+    if (m2) moves.push({ disk: +m2[1], from: m2[2].trim(), to: m2[3].trim() });
   });
+  return moves;
+}
+
+function generateHanoiMoves(n = 8, source = 'A', target = 'C', aux = 'B') {
+  const moves = [];
+  function solve(k, s, t, a) {
+    if (k <= 0) return;
+    solve(k - 1, s, a, t);
+    moves.push({ disk: k, from: s, to: t });
+    solve(k - 1, a, t, s);
+  }
+  solve(n, source, target, aux);
   return moves;
 }
 
@@ -3303,7 +3339,7 @@ function handleEvent(ev, results, own) {
       setTileVal(ev.slot, 'cost', fmtCost(ev.result.costUsd));
       setTileVal(ev.slot, 'time', (ev.result.wallMs / 1000).toFixed(1) + 's');
       paintRerunButton(ev.slot);
-      if (currentTask().executable && ev.result.code) {
+      if ((currentTask().executable || currentTask().visualizer === 'hanoi') && ev.result.code) {
         const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
         if (eb) eb.disabled = false;
         const auto = $('#autoRun');
@@ -4089,9 +4125,12 @@ function applyResultToColumn(slot, r) {
   const secs = (r.wallMs / 1000).toFixed(1);
   setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
   { const rb = document.querySelector(`.rerun-btn[data-slot="${slot}"]`); if (rb) rb.disabled = false; }
-  if (currentTask().executable && r.code) {
+  if ((currentTask().executable || currentTask().visualizer === 'hanoi') && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;
+    if (currentTask().visualizer === 'hanoi') {
+      execSlotCode(slot);
+    }
   }
 }
 
