@@ -2024,6 +2024,21 @@ a.ud-item[hidden] { display: none; }
   border-color: var(--accent);
 }
 
+.sc-actions-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 18px 0 6px;
+}
+
+.sc-actions-bar.hidden {
+  display: none !important;
+}
+
+.jp-controls .ctl-btn.export-pdf-cta {
+  height: 42px;
+  padding: 0 16px !important;
+}
+
 .export-pdf-cta:disabled,
 .export-pdf-btn:disabled,
 .hist-pdf-btn:disabled {
@@ -2055,7 +2070,8 @@ a.ud-item[hidden] { display: none; }
   .code-toolbar,
   .col-head-actions,
   .sc-head-actions,
-  .jp-controls {
+  .jp-controls,
+  .sc-actions-bar {
     display: none !important;
   }
   body {

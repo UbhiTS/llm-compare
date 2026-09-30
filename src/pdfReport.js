@@ -1626,7 +1626,21 @@ function renderMetricsTableAndJudge(doc, r) {
           { key: 'actionability', label: 'Actionability' },
         ];
 
-    const estJudgeH = 44 + jRanked.length * 22 + (j.why ? 32 : 10);
+    const critW = 46;
+    const modelW = 118;
+    const overallW = 48;
+    const noteW = CONTENT_W - modelW - overallW - criteria.length * critW;
+
+    const rowItems = jRanked.map((res) => {
+      const noteLines = wrapText(res.note || '—', noteW - 12, 7.2);
+      const rH = Math.max(22, 8 + noteLines.length * 9.5);
+      return { res, noteLines, rH };
+    });
+    const whyLines = j.why ? wrapText(`Judge Rationale: ${j.why}`, CONTENT_W - 16, 7.6) : [];
+    const whyH = whyLines.length ? (8 + whyLines.length * 10) : 0;
+    const totalRowsH = rowItems.reduce((acc, x) => acc + x.rH, 0);
+    const maxSinglePageH = PAGE_H - M_TOP - M_BOTTOM - 20;
+    const estJudgeH = Math.min(maxSinglePageH, 44 + totalRowsH + whyH + 12);
     doc.ensureSpace(estJudgeH);
 
     const jy = doc.cursorY;
@@ -1650,10 +1664,6 @@ function renderMetricsTableAndJudge(doc, r) {
     }
 
     let jCurY = jy + 20;
-    const critW = 46;
-    const modelW = 118;
-    const overallW = 48;
-    const noteW = CONTENT_W - modelW - overallW - criteria.length * critW;
 
     // Subheader row
     doc.rect(M_LEFT, jCurY, CONTENT_W, 16, { fill: COLORS.cardAltBg, stroke: COLORS.cardBorder, lineWidth: 0.5 });
@@ -1669,10 +1679,12 @@ function renderMetricsTableAndJudge(doc, r) {
     doc.text("Judge's Note", jx + 6, jCurY + 4, { font: 'F2', size: 7.2, color: COLORS.textDark });
     jCurY += 16;
 
-    jRanked.forEach((res, idx) => {
+    rowItems.forEach(({ res, noteLines, rH }, idx) => {
+      doc.cursorY = jCurY;
+      doc.ensureSpace(rH);
+      jCurY = doc.cursorY;
+
       const isWin = res.slot === j.winnerSlot;
-      const noteLines = wrapText(res.note || '—', noteW - 12, 7.2).slice(0, 2);
-      const rH = Math.max(20, 8 + noteLines.length * 9.5);
       doc.rect(M_LEFT, jCurY, CONTENT_W, rH, {
         fill: isWin ? COLORS.goodBg : (idx % 2 === 0 ? [1, 1, 1] : COLORS.cardBg),
         stroke: isWin ? COLORS.goodBorder : COLORS.divider,
@@ -1724,9 +1736,11 @@ function renderMetricsTableAndJudge(doc, r) {
       jCurY += rH;
     });
 
-    if (j.why) {
-      const whyLines = wrapText(`Judge Rationale: ${j.why}`, CONTENT_W - 16, 7.6).slice(0, 3);
-      const whyH = 8 + whyLines.length * 10;
+    if (whyLines.length) {
+      doc.cursorY = jCurY;
+      doc.ensureSpace(whyH + 8);
+      jCurY = doc.cursorY;
+
       doc.rect(M_LEFT, jCurY, CONTENT_W, whyH, { fill: COLORS.cardBg, stroke: COLORS.cardBorder, lineWidth: 0.5 });
       whyLines.forEach((wl, wIdx) => {
         doc.text(wl, M_LEFT + 8, jCurY + 4 + wIdx * 10, {

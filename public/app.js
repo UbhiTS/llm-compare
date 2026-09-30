@@ -235,10 +235,7 @@ async function init() {
       });
     }
   }
-  ['#exportPdfTopBtn', '#exportPdfBtn'].forEach((sel) => {
-    const b = $(sel);
-    if (b) b.addEventListener('click', () => exportCurrentRunPdf(b));
-  });
+  document.querySelectorAll('.export-pdf-cta, .export-pdf-btn').forEach((b) => b.addEventListener('click', () => exportCurrentRunPdf(b)));
   ['#autoRun', '#autoFix'].forEach((sel) => {
     const b = $(sel);
     if (!b) return;
@@ -2297,6 +2294,8 @@ function buildArena(models) {
 // happen on the server (src/judge.js); the UI's job is to make the setup
 // legible — who is judging, and that they judged blind.
 let _judgeScored = null;
+let _currentRunId = null;
+let _lastRunId = null;
 
 function judgeableEntries() {
   return (ARENA_MODELS || MODELS)
@@ -2354,6 +2353,7 @@ async function runJudge() {
   out.innerHTML = '<p class="jp-status">The judge is reading all answers…</p>';
   try {
     const judgeBody = () => JSON.stringify({
+      runId: _lastRunId || _currentRunId || undefined,
       taskId: currentTask().id,
       prompt: $('#customPrompt').value,
       attachments: currentAttachmentsPayload(),
@@ -2385,35 +2385,50 @@ async function runJudge() {
 
 function renderJudge(r) {
   const out = $('#judgeOut');
-  if (!out) return;
+  if (!out || !r || !Array.isArray(r.results)) return;
+  const criteria = Array.isArray(r.criteria) && r.criteria.length
+    ? r.criteria
+    : [
+        { key: 'completeness', label: 'Completeness' },
+        { key: 'accuracy', label: 'Accuracy' },
+        { key: 'structure', label: 'Structure' },
+        { key: 'actionability', label: 'Actionability' },
+      ];
   const ranked = r.results.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
   const best = ranked.length ? ranked[0].overall : 0;
   const rows = ranked.map((res) => {
-    const cells = r.criteria.map((c) => {
-      const v = res.scores[c.key];
+    const scores = res.scores || {};
+    const cells = criteria.map((c) => {
+      const v = scores[c.key];
       return `<td class="jr-score"><span class="jr-bar" style="width:${v ? v * 10 : 0}%"></span><b>${v == null ? '—' : v}</b></td>`;
     }).join('');
     const win = res.slot === r.winnerSlot;
     return `<tr class="${win ? 'jr-win' : ''}" style="--accent:${slotColor(res.slot)}">` +
       `<td class="jr-name"><span class="jr-dot"></span>${esc(res.label)}` +
       `${win ? '<span class="jr-badge">judge’s pick</span>' : ''}` +
-      `<span class="jr-blind">seen as ${esc(res.blindId)}</span></td>` +
+      `<span class="jr-blind">seen as ${esc(res.blindId || '?')}</span></td>` +
       `<td class="jr-overall"><b>${res.overall == null ? '—' : res.overall}</b><i>/10</i></td>` +
       cells +
-      `<td class="jr-note">${esc(res.note)}</td></tr>`;
+      `<td class="jr-note">${esc(res.note || '')}</td></tr>`;
   }).join('');
-  const heads = r.criteria.map((c) => `<th>${esc(c.label)}</th>`).join('');
+  const heads = criteria.map((c) => `<th>${esc(c.label)}</th>`).join('');
   const sent = r.charsSent ? ` · ${fmtInt(r.charsSent)} chars sent in full` : '';
   const trim = r.truncated
     ? `<p class="jp-warn">⚠ The combined answers exceeded the transport budget, so the longest were shortened. The judge was told which ones and instructed not to penalise them for it — but scores here are less reliable than on a run that fits.</p>`
     : '';
+  const judgeLabel = (r.judge && r.judge.label) || 'Judge';
+  const judgeModel = (r.judge && r.judge.model) || '';
+  const blindOrderText = Array.isArray(r.blindOrder) ? r.blindOrder.map((s) => String(s).split('=')[0]).join(' → ') : '';
   out.innerHTML =
-    `<div class="jp-meta">Judged by <b>${esc(r.judge.label)}</b> · ${esc(r.judge.model)} · blind order ${esc(r.blindOrder.map((s) => s.split('=')[0]).join(' → '))}${sent}</div>` +
+    `<div class="jp-meta">Judged by <b>${esc(judgeLabel)}</b>${judgeModel ? ` · ${esc(judgeModel)}` : ''}${blindOrderText ? ` · blind order ${esc(blindOrderText)}` : ''}${sent}</div>` +
     trim +
     `<div class="table-wrap"><table class="judge-table"><thead><tr><th>Model</th><th>Overall</th>${heads}<th>Judge’s comment</th></tr></thead><tbody>${rows}</tbody></table></div>` +
     (r.why ? `<p class="jp-why"><b>Why:</b> ${esc(r.why)}</p>` : '') +
     `<p class="jp-fine">Scores are one model’s opinion, not a measurement. ${best ? '' : ''}The judge saw the answers in a shuffled order with all model names removed.</p>`;
 }
+
+const onJudgeClick = runJudge;
+const renderJudgeVerdict = renderJudge;
 
 // ---------- crash detection & repair ----------------------------------------
 // A slot's code can fail in four ways we can actually observe: the WASM build
@@ -3008,6 +3023,7 @@ async function run() {
   // A new comparison gets a fresh repair allowance per slot.
   Object.keys(AUTOFIXED).forEach((k) => delete AUTOFIXED[k]);
   _judgeScored = null;
+  _currentRunId = null;
   { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
   Object.keys(CRASH).forEach((k) => clearCrash(k));
   $('#scorecard').classList.add('hidden');
@@ -3310,6 +3326,8 @@ function handleEvent(ev, results, own) {
       setStatus(ev.slot, 'Error: ' + esc(ev.message), 'err');
       break;
     case 'all_done':
+      _lastRunId = (ev && ev.runId) || null;
+      _currentRunId = _lastRunId;
       finalize(results);   // re-runs merge into LAST_RESULTS, so the scorecard reflects every slot
       // Show the non-intrusive "🏆 View Scorecard ▾" pill in the composer footer instead of yanking the user's scroll position
       {
@@ -3378,6 +3396,15 @@ function buildScorecard(results) {
   renderModelLegend(scored);
   renderMetricGrid(scored, isCustom);
   setupJudgePanel(scored, isCustom);
+  const jp = $('#judgePanel');
+  const scActions = $('#scorecardActions');
+  if (scActions) {
+    if (jp && !jp.classList.contains('hidden')) {
+      scActions.classList.add('hidden');
+    } else {
+      scActions.classList.remove('hidden');
+    }
+  }
   renderTable(scored, isCustom);
 }
 let _lastScored = null;
@@ -3428,7 +3455,7 @@ function mpGradient(dir, alpha) {
 
 function metricList(isCustom) {
   const metrics = [];
-  if (!isCustom) metrics.push({ label: 'Correctness', icon: 'correct', dir: 'higher', hint: '↑ higher is better', get: (r) => (r.correctness == null ? 0 : r.correctness), fmt: (v) => Math.round(v) + '%' });
+  if (!isCustom) metrics.push({ label: 'Correctness', icon: 'correct', dir: 'higher', hint: '↑ higher is better', min: 0, max: 100, get: (r) => (r.correctness == null ? 0 : r.correctness), fmt: (v) => Math.round(v) + '%' });
   metrics.push({ label: 'Cost / task', icon: 'cost', dir: 'lower', hint: '↓ lower is better', get: (r) => Math.max(r.costUsd || 0, 0), fmt: (v) => fmtCost(v) });
   metrics.push({ label: 'Wall time', icon: 'time', dir: 'lower', hint: '↓ lower is better', get: (r) => (r.wallMs || 0) / 1000, fmt: (v) => v.toFixed(1) + 's' });
   metrics.push({ label: 'Tokens / sec', icon: 'speed', dir: 'higher', hint: '↑ higher is better', get: (r) => r.tokensPerSec || 0, fmt: (v) => fmtInt(Math.round(v)) });
@@ -3442,7 +3469,7 @@ function mpHead(m) {
 }
 
 function mpBars(m, vals, n) {
-  const max = Math.max(...vals.map((x) => x.v), 1e-9);
+  const max = m.max != null ? m.max : Math.max(...vals.map((x) => x.v), 1e-9);
   const fill = m.dir === 'neutral'
     ? 'background:var(--mp-neutral)'
     : `background-image:${mpGradient(m.dir, 1)};background-size:100% ${MP_H}px;background-position:left bottom;background-repeat:no-repeat`;
@@ -3460,7 +3487,9 @@ function mpBars(m, vals, n) {
 
 function mpScale(m, vals) {
   const nums = vals.map((x) => x.v);
-  const max = Math.max(...nums), min = Math.min(...nums);
+  const hasFixedBounds = m.min != null && m.max != null;
+  const min = hasFixedBounds ? m.min : Math.min(...nums);
+  const max = hasFixedBounds ? m.max : Math.max(...nums);
   const span = (max - min) || 1;
   // Position ALWAYS follows the value — low left, high right — exactly like the
   // bars view, where height is the value. It's the GRADIENT that flips so green
@@ -3472,7 +3501,14 @@ function mpScale(m, vals) {
       ? 'linear-gradient(90deg, #d03b3b 0%, #fab219 52%, #0ca30c 100%)'  // high = good = green on the right
       : 'linear-gradient(90deg, #0ca30c 0%, #fab219 52%, #d03b3b 100%)'; // low = good = green on the left
   const rows = vals.map(({ r, v }) => {
-    const pct = ((v - min) / span) * 100;        // 0% = lowest value, 100% = highest
+    let pct;
+    if (hasFixedBounds) {
+      pct = Math.max(0, Math.min(100, ((v - min) / span) * 100));
+    } else if (max === min) {
+      pct = m.dir === 'higher' ? 100 : (m.dir === 'lower' ? 0 : 50);
+    } else {
+      pct = Math.max(0, Math.min(100, ((v - min) / span) * 100));
+    }
     return `<div class="mp-row" title="${esc(r.label)}: ${esc(m.fmt(v))}">
       <span class="mp-rname">${modelIconSvg(r)}<span>${esc(shortLabel(r.label))}</span></span>
       <span class="mp-track" style="background-image:${track}"><span class="mp-mark" style="left:calc(${pct.toFixed(1)}% - 3px)"></span></span>
@@ -3861,6 +3897,10 @@ async function deleteHistoryRun(id) {
 // task's saved snapshot and any in-flight wall timer, then rebuilds empty columns.
 // Repaint the arena + scorecard from a saved snapshot (used by History → Restore).
 function renderSavedRun(snap) {
+  _lastRunId = snap.id || null;
+  _currentRunId = snap.id || null;
+  _judgeScored = snap.judge || null;
+  { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
   buildArena(snap.models);
   const resultsMap = {};
   snap.slots.forEach(({ slot, data }) => {
@@ -3871,6 +3911,14 @@ function renderSavedRun(snap) {
   });
   LAST_RESULTS = resultsMap;
   finalize(resultsMap, snap.models.map((m) => m.slot)); // rebuild the scorecard from saved results
+  if (snap.judge) {
+    _judgeScored = snap.judge;
+    const jb = $('#judgeBody');
+    if (jb) jb.classList.remove('hidden');
+    const panel = $('#judgePanel');
+    if (panel) panel.classList.remove('hidden');
+    renderJudge(snap.judge);
+  }
   const jumpBtn = $('#jumpScorecardBtn');
   const pdfTopBtn = $('#exportPdfTopBtn');
   const sc = $('#scorecard');
@@ -3918,7 +3966,7 @@ async function exportCurrentRunPdf(triggerBtn) {
     }
   });
 
-  const btn = triggerBtn || $('#exportPdfBtn') || $('#exportPdfTopBtn');
+  const btn = triggerBtn || $('#exportPdfBtn') || $('#exportPdfScorecardBtn') || $('#exportPdfTopBtn');
   const origText = btn ? btn.textContent : '';
   if (btn) {
     btn.disabled = true;
@@ -3930,6 +3978,7 @@ async function exportCurrentRunPdf(triggerBtn) {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        runId: _currentRunId || undefined,
         taskId: task.id,
         taskTitle: task.title || 'Custom prompt',
         prompt: promptText,

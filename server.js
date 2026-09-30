@@ -519,6 +519,9 @@ app.post('/api/export-pdf', (req, res) => {
         ? body.prompt
         : ((foundTask && foundTask.prompt) || '')
     ).slice(0, 100000);
+    const savedRec = (!body.judge && (body.runId || body.id))
+      ? history.getRun(body.runId || body.id, { username: req.user.username, isAdmin: req.user.role === 'admin' })
+      : null;
     const pdfBuf = buildComparisonPdf({
       taskId: body.taskId || (foundTask && foundTask.id) || 'custom',
       taskTitle: title,
@@ -527,7 +530,7 @@ app.post('/api/export-pdf', (req, res) => {
       models: Array.isArray(body.models) ? body.models : [],
       results: body.results,
       slots: body.slots,
-      judge: body.judge || null,
+      judge: body.judge || (savedRec && savedRec.judge) || null,
       execOutputs: body.execOutputs && typeof body.execOutputs === 'object' ? body.execOutputs : null,
       at: Number(body.at) || Date.now(),
       user: req.user && req.user.username,
@@ -639,6 +642,7 @@ app.post('/api/judge', async (req, res) => {
 
   try {
     const verdict = await judgeOutputs({ task, entries: clean, judge, keys });
+    await history.attachJudgeToLatestRun(req.user.username, task.id, verdict, req.body && req.body.runId);
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
     res.json({ ok: true, ...verdict });
   } catch (e) {
@@ -875,9 +879,10 @@ app.post('/api/run', async (req, res) => {
     console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
   });
 
+  const runId = history.newId();
   let results = null;
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair, runId });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   }
@@ -890,6 +895,7 @@ app.post('/api/run', async (req, res) => {
   // history), so a user cannot forge or tamper with the log.
   if (Array.isArray(results)) {
     history.saveRun({
+      id: runId,
       user: req.user.username,
       userName: req.user.username,
       task,

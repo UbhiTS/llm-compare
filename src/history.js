@@ -378,6 +378,7 @@ function listItem(meta) {
 
 function cachePayload(id, rec) {
   if (!id || !rec) return;
+  if (!rec._cachedMtime) rec._cachedMtime = Date.now();
   if (fullPayloadCache.size >= MAX_PAYLOAD_CACHE) {
     const oldest = fullPayloadCache.keys().next().value;
     fullPayloadCache.delete(oldest);
@@ -387,9 +388,9 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
-async function saveRun({ user, userName, task, customPrompt, models, results, kind }) {
+async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge }) {
   try {
-    const id = newId();
+    const id = safeId(passedId) || newId();
     const at = Date.now();
     const u = norm(user);
     const uKey = userKey(u);
@@ -410,6 +411,7 @@ async function saveRun({ user, userName, task, customPrompt, models, results, ki
       })),
       slots: (models || []).map((m) => ({ slot: m.slot, data: (results || []).find((r) => r && r.slot === m.slot) || null })),
       summary: summarize(models, results),
+      judge: judge || null,
     };
 
     // 1. Update SQLite & in-memory metadata index immediately
@@ -675,6 +677,22 @@ function getRun(id, { username, isAdmin }) {
 
   if (fullPayloadCache.has(sid)) {
     const cached = fullPayloadCache.get(sid);
+    const meta = metaById.get(sid);
+    const ownerKey = (meta && meta.userKey) || myKey;
+    const fp = path.join(BASE_DIR, ownerKey, sid + '.json');
+    try {
+      if (fs.existsSync(fp)) {
+        const st = fs.statSync(fp);
+        if (st.mtimeMs > (cached._cachedMtime || 0)) {
+          const fresh = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          if (fresh) {
+            fresh._cachedMtime = st.mtimeMs;
+            cachePayload(sid, fresh);
+            if (isAdmin || userKey(fresh.user) === myKey) return fresh;
+          }
+        }
+      }
+    } catch (_) {}
     if (isAdmin || userKey(cached.user) === myKey) return cached;
     return null;
   }
@@ -773,6 +791,59 @@ function usageSummary() {
   return { generatedAt: Date.now(), dayStartUtc: startOfDay, totals: { users: users.length, totalRuns, runsToday }, users };
 }
 
+// Attach a completed Blind LLM-as-Judge evaluation to a saved history run so
+// History -> Restore and GET /api/history/:id/pdf include the Judge verdict.
+async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
+  try {
+    if (!judgeVerdict || typeof judgeVerdict !== 'object') return false;
+    const u = norm(username);
+    if (!u) return false;
+    const uKey = userKey(u);
+    ensureOwnerLoadedSync(uKey);
+
+    let targetId = safeId(runId);
+    if (targetId && !metaById.has(targetId)) {
+      const candidateFp = path.join(BASE_DIR, uKey, targetId + '.json');
+      if (!fs.existsSync(candidateFp)) {
+        targetId = null;
+      }
+    }
+    if (!targetId) {
+      const userRuns = [];
+      for (const m of metaById.values()) {
+        if (m.userKey === uKey) userRuns.push(m);
+      }
+      userRuns.sort((a, b) => b.at - a.at);
+      const match = (taskId && userRuns.find((m) => m.taskId === taskId)) || userRuns[0];
+      targetId = match ? match.id : null;
+    }
+    if (!targetId) return false;
+
+    const meta = metaById.get(targetId);
+    const ownerKey = (meta && meta.userKey) || uKey;
+    const fp = path.join(BASE_DIR, ownerKey, targetId + '.json');
+    let rec = fullPayloadCache.get(targetId);
+    if (!rec && fs.existsSync(fp)) {
+      try { rec = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (_) {}
+    }
+    if (!rec) return false;
+
+    rec.judge = judgeVerdict;
+    cachePayload(targetId, rec);
+
+    const dir = path.join(BASE_DIR, ownerKey);
+    await fsp.mkdir(dir, { recursive: true });
+    const tmp = path.join(dir, `${targetId}.json.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+    await fsp.writeFile(tmp, JSON.stringify(rec));
+    await fsp.rename(tmp, fp);
+    return true;
+  } catch (e) {
+    console.warn('[history] attachJudgeToLatestRun failed:', (e && e.message) || e);
+    return false;
+  }
+}
+
 initSqlite();
 
-module.exports = { saveRun, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, BASE_DIR };
+module.exports = { saveRun, attachJudgeToLatestRun, newId, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, BASE_DIR };
+

@@ -9,7 +9,7 @@ const { runAgent } = require('./agent');
 const { thinkingProfile } = require('./providers');
 const { scrubError } = require('./secrets');
 
-async function runComparison({ task, models, maxIterations, emit, keys, signal, repair }) {
+async function runComparison({ task, models, maxIterations, emit, keys, signal, repair, runId }) {
   emit({
     type: 'start',
     task: {
@@ -42,7 +42,7 @@ async function runComparison({ task, models, maxIterations, emit, keys, signal, 
     })
   );
 
-  emit({ type: 'all_done', results });
+  emit(runId ? { type: 'all_done', results, runId } : { type: 'all_done', results });
   return results;
 }
 

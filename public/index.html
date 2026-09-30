@@ -163,7 +163,6 @@
           <button type="button" class="mv-btn active" data-view="bars" title="Vertical bars — height shows the value">▮ Bars</button>
           <button type="button" class="mv-btn" data-view="scale" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
         </div>
-        <button type="button" id="exportPdfBtn" class="ctl-btn export-pdf-cta" title="Download a full PDF report with executive summary, comparison graphs, metrics table, and detailed model outputs">📄 Export PDF</button>
       </div>
     </div>
 
@@ -171,21 +170,26 @@
     <div id="metricGrid" class="metric-grid"></div>
 
     <section id="judgePanel" class="judge-panel hidden">
-      <div class="jp-head">
-        <div>
-          <h3>Quality score</h3>
-          <p class="jp-sub">This task has no hidden tests, so speed and cost are the only hard numbers above. Have a model score the actual answers.</p>
+      <div id="judgeBody">
+        <div class="jp-head">
+          <div>
+            <h3>Quality score</h3>
+            <p class="jp-sub">This task has no hidden tests, so speed and cost are the only hard numbers above. Have a model score the actual answers.</p>
+          </div>
+          <div class="jp-controls">
+            <label for="judgeModel">Judge</label>
+            <select id="judgeModel"></select>
+            <button id="judgeBtn" class="ctl-btn primary" type="button">Evaluate blind ▸</button>
+            <button type="button" id="exportPdfBtn" class="ctl-btn export-pdf-cta" title="Download a full PDF report with executive summary, comparison graphs, metrics table, and detailed model outputs">📄 Export PDF</button>
+          </div>
         </div>
-        <div class="jp-controls">
-          <label for="judgeModel">Judge</label>
-          <select id="judgeModel"></select>
-          <button id="judgeBtn" class="ctl-btn primary" type="button">Evaluate blind ▸</button>
-        </div>
+        <p class="jp-note">The judge is shown the answers only &mdash; model names are removed and the order is shuffled before it sees them. It never learns who wrote what.</p>
+        <p id="judgeWarn" class="jp-warn hidden"></p>
+        <div id="judgeOut" class="jp-out"></div>
       </div>
-      <p class="jp-note">The judge is shown the answers only &mdash; model names are removed and the order is shuffled before it sees them. It never learns who wrote what.</p>
-      <p id="judgeWarn" class="jp-warn hidden"></p>
-      <div id="judgeOut" class="jp-out"></div>
     </section>
+
+    <div id="scorecardActions" class="sc-actions-bar hidden"><button type="button" id="exportPdfScorecardBtn" class="ctl-btn export-pdf-cta" title="Download a full PDF report with executive summary, comparison graphs, metrics table, and detailed model outputs">📄 Export PDF</button></div>
 
     <details class="sc-details">
       <summary>Full metrics table</summary>

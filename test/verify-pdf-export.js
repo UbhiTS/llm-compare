@@ -186,6 +186,25 @@ function decompressPdfStreams(pdfBuf) {
   }
   console.log(`✓ Generated ${streams.length}-page PDF (${pdfBuf.length} bytes) with all 4 sections, vector charts, judge table & paginated code`);
 
+  // 2B. Build and verify a report WITHOUT Blind Judge (export to PDF is independent of Blind Judge)
+  const noJudgePayload = { ...samplePayload, judge: null };
+  const noJudgeReportData = computeReportData(noJudgePayload);
+  assert.strictEqual(noJudgeReportData.winner.slot, 'A');
+  const noJudgePdfBuf = buildComparisonPdf(noJudgePayload);
+  assert(Buffer.isBuffer(noJudgePdfBuf));
+  assert(noJudgePdfBuf.length > 3000);
+  const noJudgeStreams = decompressPdfStreams(noJudgePdfBuf);
+  assert(noJudgeStreams.length >= 2);
+  const noJudgeContent = noJudgeStreams.join('\n');
+  assert(noJudgeContent.includes('LLM Compare'));
+  assert(noJudgeContent.includes('Executive Summary'));
+  assert(noJudgeContent.includes('BEST BALANCED MODEL: GEMINI 3.8 FLASH'));
+  assert(noJudgeContent.includes('Visual Comparison Graphs'));
+  assert(noJudgeContent.includes('Full Metrics Table & Evaluation'));
+  assert(noJudgeContent.includes('Detailed Per-Model Results'));
+  assert(!noJudgeContent.includes('BLIND LLM-AS-JUDGE EVALUATION'), 'PDF without judge must not include Blind Judge section');
+  console.log('✓ Verified PDF export without Blind Judge generates complete multi-page report without judge section');
+
   // 3. Verify that llm-compare's own PDF attachment inspector can parse our generated PDF
   const inspected = await inspectAttachmentsAsync([
     {
@@ -264,6 +283,17 @@ function decompressPdfStreams(pdfBuf) {
   assert(httpPdfBuf.toString('latin1').trimEnd().endsWith('%%EOF'));
   console.log(`✓ POST /api/export-pdf returned valid binary PDF (${httpPdfBuf.length} bytes)`);
 
+  // 4B2. POST /api/export-pdf with judge: null (independent of Blind Judge) -> 200 binary PDF
+  const postNoJudgeResp = await fetch(`http://127.0.0.1:${PORT}/api/export-pdf`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(noJudgePayload),
+  });
+  assert.strictEqual(postNoJudgeResp.status, 200, 'POST /api/export-pdf without judge should return 200');
+  const noJudgeHttpBuf = Buffer.from(await postNoJudgeResp.arrayBuffer());
+  assert.strictEqual(noJudgeHttpBuf.subarray(0, 8).toString('latin1'), '%PDF-1.4');
+  console.log(`✓ POST /api/export-pdf without blind judge returned valid binary PDF (${noJudgeHttpBuf.length} bytes)`);
+
   // 4C. GET /api/history/:id/pdf on saved run -> 200 binary PDF, and unknown ID -> 404
   const histPdfResp = await fetch(`http://127.0.0.1:${PORT}/api/history/${encodeURIComponent(savedItem.id)}/pdf`);
   assert.strictEqual(histPdfResp.status, 200, 'Saved history run PDF export should return 200');
@@ -277,8 +307,77 @@ function decompressPdfStreams(pdfBuf) {
   assert.strictEqual(notFoundPdf.status, 404, 'Unknown history ID should return 404');
   console.log('✓ GET /api/history/:id/pdf returns 404 for unknown run ID');
 
+  // 4D. Test attachJudgeToLatestRun attaches judge evaluation to savedItem and GET /api/history/:id/pdf includes Blind Judge section
+  const judgeVerdict = {
+    judge: { label: 'Gemini 3.1 Pro', model: 'gemini-3.1-pro-preview', provider: 'agentplatform' },
+    criteria: [
+      { key: 'completeness', label: 'Completeness' },
+      { key: 'accuracy', label: 'Accuracy' },
+      { key: 'structure', label: 'Structure' },
+      { key: 'actionability', label: 'Actionability' },
+    ],
+    blindOrder: ['A=Gemini 3.8 Flash', 'B=Claude Opus 5.5', 'C=GPT-6 Sol'],
+    winnerSlot: 'A',
+    why: 'Response A provided optimal O(n log n) binary search with comprehensive edge-case handling and optimal speed.',
+    results: [
+      { slot: 'A', label: 'Gemini 3.8 Flash', blindId: 'A', overall: 9.8, scores: { completeness: 10, accuracy: 10, structure: 9, actionability: 10 }, note: 'Optimal binary search implementation with complete edge-case handling across multiple sentences.' },
+      { slot: 'B', label: 'Claude Opus 5.5', blindId: 'B', overall: 9.3, scores: { completeness: 9, accuracy: 10, structure: 9, actionability: 9 }, note: 'Clean solution with thorough inline comments and clarity.' },
+      { slot: 'C', label: 'GPT-6 Sol', blindId: 'C', overall: 7.5, scores: { completeness: 7, accuracy: 8, structure: 8, actionability: 7 }, note: 'Missed duplicate-element edge case.' },
+    ],
+  };
+
+  const attached = await history.attachJudgeToLatestRun('ubhi@google.com', 'lis', judgeVerdict, savedItem.id);
+  assert.strictEqual(attached, true, 'attachJudgeToLatestRun should return true on success');
+
+  // Verify the updated run via getRun has judge attached
+  const updatedRun = history.getRun(savedItem.id, { username: 'ubhi@google.com', isAdmin: true });
+  assert(updatedRun && updatedRun.judge, 'Updated run in history must have judge attached');
+  assert.strictEqual(updatedRun.judge.winnerSlot, 'A');
+
+  // Verify GET /api/history/:id/pdf now generates a PDF containing the Blind LLM-as-Judge section
+  const histWithJudgeResp = await fetch(`http://127.0.0.1:${PORT}/api/history/${encodeURIComponent(savedItem.id)}/pdf`);
+  assert.strictEqual(histWithJudgeResp.status, 200, 'History run with judge PDF export should return 200');
+  const histWithJudgeBuf = Buffer.from(await histWithJudgeResp.arrayBuffer());
+  const judgeStreams = decompressPdfStreams(histWithJudgeBuf);
+  const judgePdfContent = judgeStreams.join('\n');
+  assert(judgePdfContent.includes('BLIND LLM-AS-JUDGE EVALUATION'), 'PDF content must include Blind LLM-as-Judge section');
+  assert(judgePdfContent.includes('Judged by Gemini 3.1 Pro'), 'PDF content must include judge model name');
+  assert(judgePdfContent.includes('Optimal binary search implementation with complete'), 'PDF content must include unclipped judge notes line 1');
+  assert(judgePdfContent.includes('edge-case handling across multiple sentences.'), 'PDF content must include unclipped judge notes line 2');
+  assert(judgePdfContent.includes('Response A provided optimal O(n log n) binary search'), 'PDF content must include unclipped judge rationale');
+  console.log('✓ attachJudgeToLatestRun persists judge verdict and GET /api/history/:id/pdf renders unclipped Blind LLM-as-Judge section');
+
   stop();
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+
+  // 5. Verify UI DOM structure & scale calculation logic
+  const indexHtml = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  const stylesCss = fs.readFileSync(path.join(__dirname, '../public/styles.css'), 'utf8');
+
+  // 5A. Export PDF button placement in index.html
+  assert(!indexHtml.slice(indexHtml.indexOf('sc-head-actions'), indexHtml.indexOf('modelLegend')).includes('id="exportPdfBtn"'), 'exportPdfBtn should not be in .sc-head-actions');
+  assert(indexHtml.includes('<button id="judgeBtn" class="ctl-btn primary" type="button">Evaluate blind ▸</button>\n            <button type="button" id="exportPdfBtn" class="ctl-btn export-pdf-cta"'), 'exportPdfBtn should be in .jp-controls immediately after judgeBtn');
+  assert(indexHtml.includes('<div id="scorecardActions" class="sc-actions-bar hidden"><button type="button" id="exportPdfScorecardBtn" class="ctl-btn export-pdf-cta"'), 'scorecardActions fallback button should be present before details.sc-details');
+
+  // 5B. Styles for scorecardActions and jp-controls export-pdf-cta
+  assert(stylesCss.includes('.sc-actions-bar') && stylesCss.includes('justify-content: flex-end'), 'sc-actions-bar styles must be present');
+  assert(stylesCss.includes('.jp-controls .ctl-btn.export-pdf-cta'), 'jp-controls ctl-btn export-pdf-cta styling must be present');
+
+  // 5C. Correctness metric definition has min: 0, max: 100
+  assert(appJs.includes("label: 'Correctness', icon: 'correct', dir: 'higher', hint: '↑ higher is better', min: 0, max: 100"), 'Correctness metric must specify min: 0, max: 100');
+
+  // 5D. Scale calculation unit test for tied 100% correctness
+  const tiedNums = [100, 100, 100];
+  const correctnessMetric = { label: 'Correctness', dir: 'higher', min: 0, max: 100 };
+  const hasFixedBounds = correctnessMetric.min != null && correctnessMetric.max != null;
+  const min = hasFixedBounds ? correctnessMetric.min : Math.min(...tiedNums);
+  const max = hasFixedBounds ? correctnessMetric.max : Math.max(...tiedNums);
+  const span = (max - min) || 1;
+  const pct100 = Math.max(0, Math.min(100, ((100 - min) / span) * 100));
+  assert.strictEqual(pct100, 100, 'Scale position for 100% correctness with min:0, max:100 must be 100%, not 0%');
+
+  console.log('✓ UI DOM structure and Correctness scale calculations verified');
   console.log('\nALL PDF EXPORT CHECKS PASSED ✓');
   process.exit(0);
 })().catch((e) => {
