@@ -126,7 +126,81 @@ const USER_BOB = 'bob@example.com';
   assert.strictEqual(reloadedBob.slots.length, 2);
   console.log('✓ Preferences survive module re-instantiation and reload from disk/SQLite');
 
-  console.log('\nALL USER PREFERENCE CHECKS PASSED ✓');
+  // 7. Retain attachments in history records
+  const sampleAttachment = {
+    name: 'architecture-diagram.png',
+    mimeType: 'image/png',
+    kind: 'image',
+    size: 102400,
+    isEmpty: false,
+    pageCount: 0,
+    data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    textContent: '',
+    estimatedTokens: 258,
+  };
+
+  const runWithAttachment = await history.saveRun({
+    user: USER_ALICE,
+    userName: USER_ALICE,
+    task: {
+      id: 'custom',
+      title: 'Custom prompt with attachment',
+      prompt: 'Review the attached architecture diagram.',
+      attachments: [sampleAttachment],
+    },
+    customPrompt: 'Review the attached architecture diagram.',
+    kind: 'compare',
+    models: [{ slot: 'A', catalogId: 'gemini-3.8-flash', label: 'Flash' }],
+    results: [{ slot: 'A', code: 'looks good', costUsd: 0.001, wallMs: 150 }],
+    rememberPrompt: false, // User ran with checkbox unchecked!
+  });
+
+  const fullRunRecord = history.getRun(runWithAttachment.id, { username: USER_ALICE, isAdmin: true });
+  assert(fullRunRecord, 'Saved run must be retrievable from history');
+  assert(Array.isArray(fullRunRecord.attachments), 'Run record must contain attachments array');
+  assert.strictEqual(fullRunRecord.attachments.length, 1);
+  assert.strictEqual(fullRunRecord.attachments[0].name, 'architecture-diagram.png');
+  assert.strictEqual(fullRunRecord.attachments[0].data, sampleAttachment.data);
+  console.log('✓ Attachments are retained in history run records');
+
+  // 8. rememberPrompt: false does NOT overwrite remembered prompt & attachments
+  const aliceAfterUncheckedRun = history.getUserPreferences(USER_ALICE);
+  assert.strictEqual(aliceAfterUncheckedRun.prompt, 'Single rerun prompt', 'rememberPrompt: false must not overwrite remembered prompt');
+  console.log('✓ rememberPrompt: false preserves remembered baseline without overwriting');
+
+  // 9. rememberPrompt: true explicitly updates remembered prompt & attachments
+  await history.saveRun({
+    user: USER_ALICE,
+    userName: USER_ALICE,
+    task: {
+      id: 'custom',
+      title: 'Custom prompt to remember',
+      prompt: 'Remembered baseline prompt with file.',
+      attachments: [sampleAttachment],
+    },
+    customPrompt: 'Remembered baseline prompt with file.',
+    kind: 'compare',
+    models: [{ slot: 'A', catalogId: 'gemini-3.8-flash', label: 'Flash' }],
+    results: [{ slot: 'A', code: 'done', costUsd: 0.001, wallMs: 120 }],
+    rememberPrompt: true, // User checked [x] Remember prompt & files!
+  });
+
+  const aliceRemembered = history.getUserPreferences(USER_ALICE);
+  assert.strictEqual(aliceRemembered.prompt, 'Remembered baseline prompt with file.');
+  assert.strictEqual(aliceRemembered.remembered, true);
+  assert(Array.isArray(aliceRemembered.attachments) && aliceRemembered.attachments.length === 1);
+  assert.strictEqual(aliceRemembered.attachments[0].name, 'architecture-diagram.png');
+  console.log('✓ rememberPrompt: true updates remembered prompt, attachments, and remembered status');
+
+  // 10. Unchecking or resetting remembered preference clears prompt & attachments
+  history.saveUserPreferences(USER_ALICE, { remembered: false });
+  const aliceCleared = history.getUserPreferences(USER_ALICE);
+  assert.strictEqual(aliceCleared.prompt, '');
+  assert.strictEqual(aliceCleared.remembered, false);
+  assert.deepStrictEqual(aliceCleared.attachments, []);
+  console.log('✓ Explicitly unchecking remembered preference clears saved prompt and attachments');
+
+  console.log('\nALL USER PREFERENCE & ATTACHMENT CHECKS PASSED ✓');
 })().catch((e) => {
   console.error('\nFAILED:', e);
   process.exit(1);

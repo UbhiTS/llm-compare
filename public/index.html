@@ -142,6 +142,10 @@
         </div>
 
         <div class="exec-bar-right">
+          <label id="rememberPromptWrap" class="remember-prompt-wrap" title="Keep this prompt and attached files as your default when returning to LLMcompare">
+            <input type="checkbox" id="rememberPromptCheckbox" class="remember-prompt-check">
+            <span class="remember-prompt-label">Remember prompt &amp; files</span>
+          </label>
           <button type="button" id="jumpScorecardBtn" class="bar-btn jump-scorecard-btn hidden" title="Jump to comparison scorecard">🏆 Scorecard ↓</button>
           <button type="button" id="exportPdfTopBtn" class="bar-btn export-pdf-btn hidden" title="Export summary, graphs, and detailed model outputs to PDF">📄 Export PDF</button>
           <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>

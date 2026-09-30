@@ -104,9 +104,13 @@ function initSqlite() {
           prompt TEXT,
           task_id TEXT,
           slots_json TEXT,
+          attachments_json TEXT,
+          remembered INTEGER,
           updated_at INTEGER
         );
       `);
+      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN attachments_json TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN remembered INTEGER;`); } catch (_) {}
       stmts = {
         upsert: sqliteDb.prepare(`
           INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json)
@@ -121,13 +125,15 @@ function initSqlite() {
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
-          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)
+          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, remembered, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_key) DO UPDATE SET
             user = excluded.user,
             prompt = excluded.prompt,
             task_id = excluded.task_id,
             slots_json = excluded.slots_json,
+            attachments_json = excluded.attachments_json,
+            remembered = excluded.remembered,
             updated_at = excluded.updated_at
         `),
         allPrefs: sqliteDb.prepare(`SELECT * FROM user_prefs`),
@@ -140,7 +146,9 @@ function initSqlite() {
         const prefRows = stmts.allPrefs.all();
         for (const pr of prefRows) {
           let slots = null;
+          let attachments = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
+          try { attachments = JSON.parse(pr.attachments_json || '[]'); } catch (_) {}
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           prefsByUserKey.set(pr.user_key, {
             user: pr.user,
@@ -148,6 +156,8 @@ function initSqlite() {
             taskId: pr.task_id || 'custom',
             slots,
             models,
+            attachments: Array.isArray(attachments) ? attachments : [],
+            remembered: Boolean(pr.remembered),
             updatedAt: Number(pr.updated_at) || 0,
           });
         }
@@ -388,7 +398,7 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
-async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge }) {
+async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge, rememberPrompt }) {
   try {
     const id = safeId(passedId) || newId();
     const at = Date.now();
@@ -397,6 +407,28 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
     const promptText = (typeof customPrompt === 'string' && customPrompt.trim())
       ? customPrompt
       : ((task && typeof task.prompt === 'string') ? task.prompt : '');
+
+    const rawAttachments = (task && Array.isArray(task.attachments)) ? task.attachments : [];
+    const attachments = rawAttachments.map((a) => ({
+      name: a.name,
+      mimeType: a.mimeType,
+      kind: a.kind,
+      size: Number(a.size) || 0,
+      isEmpty: Boolean(a.isEmpty),
+      pageCount: Number(a.pageCount) || 0,
+      warning: a.warning || null,
+      optBadge: a.optBadge || null,
+      sha1: a.sha1 || null,
+      sha256: a.sha256 || null,
+      data: a.data || '',
+      textContent: a.textContent || '',
+      claudeDataBase64: a.claudeDataBase64 || undefined,
+      claudeMimeType: a.claudeMimeType || undefined,
+      fitDataBase64: a.fitDataBase64 || undefined,
+      fitMimeType: a.fitMimeType || undefined,
+      estimatedTokens: a.estimatedTokens || undefined,
+    }));
+
     const record = {
       v: 1, id, at,
       user: u, userKey: uKey, userName: userName || user,
@@ -404,6 +436,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
       title: (task && task.title) || (task && task.id) || 'Run',
       prompt: promptText,
       kind: kind === 'single' ? 'single' : 'compare',
+      attachments,
       models: (models || []).map((m) => ({
         slot: m.slot, catalogId: m.catalogId, label: m.label,
         provider: m.provider, model: m.model, publisher: m.publisher, price: m.price,
@@ -420,25 +453,33 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
     cachePayload(id, record);
 
     // Update user preferences for remembered prompt and models selection on the slots
-    if (kind !== 'single') {
-      const runSlots = (models || [])
-        .filter((m) => m && m.catalogId)
-        .map((m) => ({
-          slot: m.slot || null,
-          catalogId: m.catalogId,
-          effort: m.effort || null,
-        }));
+    const cur = getUserPreferences(u);
+    const shouldRemember = (rememberPrompt !== undefined) ? Boolean(rememberPrompt) : true;
+    const runSlots = (kind !== 'single' && Array.isArray(models) && models.length)
+      ? models
+          .filter((m) => m && m.catalogId)
+          .map((m) => ({
+            slot: m.slot || null,
+            catalogId: m.catalogId,
+            effort: m.effort || null,
+          }))
+      : ((cur && cur.slots) || null);
+
+    if (shouldRemember) {
       saveUserPreferences(u, {
         prompt: promptText,
-        taskId: (task && task.id) || 'custom',
+        attachments,
+        remembered: true,
+        taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
         slots: runSlots,
       });
-    } else if (promptText) {
-      const cur = getUserPreferences(u);
+    } else {
       saveUserPreferences(u, {
-        prompt: promptText,
+        prompt: (cur && cur.prompt) || '',
+        attachments: (cur && cur.attachments) || [],
+        remembered: (cur && cur.remembered) !== undefined ? cur.remembered : false,
         taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
-        slots: cur && cur.slots,
+        slots: runSlots,
       });
     }
 
@@ -516,7 +557,11 @@ function getUserPreferences(username) {
       prefsByUserKey.set(key, p);
     }
   }
-  return p || { prompt: '', taskId: 'custom', slots: null, models: null };
+  if (p) {
+    if (!Array.isArray(p.attachments)) p.attachments = [];
+    if (p.remembered === undefined) p.remembered = false;
+  }
+  return p || { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], remembered: false };
 }
 
 // Per-user promise chain so rapid concurrent saveUserPreferences calls
@@ -530,9 +575,43 @@ function saveUserPreferences(username, newPrefs) {
   const key = userKey(u);
   const current = getUserPreferences(u) || {};
 
-  const prompt = typeof newPrefs.prompt === 'string'
-    ? newPrefs.prompt.slice(0, 500000)
-    : (current.prompt || '');
+  let remembered = (current && current.remembered) !== undefined ? current.remembered : false;
+  if (newPrefs.remembered !== undefined) {
+    remembered = Boolean(newPrefs.remembered);
+  }
+
+  let prompt = current.prompt || '';
+  let attachments = Array.isArray(current.attachments) ? current.attachments : [];
+
+  if (newPrefs.remembered === false) {
+    prompt = '';
+    attachments = [];
+  } else {
+    if (typeof newPrefs.prompt === 'string') {
+      prompt = newPrefs.prompt.slice(0, 500000);
+    }
+    if (Array.isArray(newPrefs.attachments)) {
+      attachments = newPrefs.attachments.slice(0, 10).map((a) => ({
+        name: String(a.name || 'file').slice(0, 200),
+        mimeType: String(a.mimeType || 'application/octet-stream').slice(0, 100),
+        size: Number(a.size) || 0,
+        isEmpty: Boolean(a.isEmpty),
+        pageCount: Number(a.pageCount) || 0,
+        warning: a.warning ? String(a.warning).slice(0, 200) : null,
+        optBadge: a.optBadge ? String(a.optBadge).slice(0, 200) : null,
+        sha1: a.sha1 ? String(a.sha1).slice(0, 64) : null,
+        sha256: a.sha256 ? String(a.sha256).slice(0, 64) : null,
+        data: typeof a.data === 'string' ? a.data : '',
+        textContent: typeof a.textContent === 'string' ? a.textContent.slice(0, 2500000) : '',
+        claudeDataBase64: typeof a.claudeDataBase64 === 'string' ? a.claudeDataBase64 : undefined,
+        claudeMimeType: a.claudeMimeType ? String(a.claudeMimeType) : undefined,
+        fitDataBase64: typeof a.fitDataBase64 === 'string' ? a.fitDataBase64 : undefined,
+        fitMimeType: a.fitMimeType ? String(a.fitMimeType) : undefined,
+        estimatedTokens: Number(a.estimatedTokens) || undefined,
+      }));
+    }
+  }
+
   const taskId = typeof newPrefs.taskId === 'string'
     ? newPrefs.taskId.slice(0, 100)
     : (current.taskId || 'custom');
@@ -569,6 +648,8 @@ function saveUserPreferences(username, newPrefs) {
     taskId,
     slots,
     models,
+    attachments,
+    remembered: Boolean(remembered),
     updatedAt,
   };
 
@@ -582,6 +663,8 @@ function saveUserPreferences(username, newPrefs) {
         prompt,
         taskId,
         JSON.stringify(slots || []),
+        JSON.stringify(attachments || []),
+        remembered ? 1 : 0,
         updatedAt
       );
       schedulePersistSnapshot();

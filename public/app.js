@@ -202,18 +202,57 @@ async function init() {
   }
   initAttachmentsUI();
 
-  // Restore user's last used custom prompt text, while keeping Custom Prompt as default on load
+  // Restore user's remembered custom prompt text & attachments (if explicitly remembered)
   const me = CONFIG && CONFIG.me;
-  const userPrompt = (me && me.preferences && typeof me.preferences.prompt === 'string' && me.preferences.prompt)
-    || (me && typeof me.lastPrompt === 'string' && me.lastPrompt)
-    || loadLocalPrompt();
+  const prefs = (me && me.preferences) || {};
+  let userPrompt = '';
+  let userAttachments = [];
+  let isRemembered = Boolean(prefs.remembered);
+
+  if (isRemembered && (prefs.prompt || (Array.isArray(prefs.attachments) && prefs.attachments.length))) {
+    userPrompt = prefs.prompt || '';
+    userAttachments = prefs.attachments || [];
+  }
 
   const customTa = $('#customPrompt');
-  if (customTa && typeof userPrompt === 'string' && userPrompt) {
-    customTa.value = userPrompt;
+  const cb = $('#rememberPromptCheckbox');
+  const wrap = $('#rememberPromptWrap');
+
+  (async () => {
+    if (!isRemembered) {
+      try {
+        const idbPref = await idbLoadPref((me && me.username) || 'default');
+        if (idbPref && (idbPref.prompt || (Array.isArray(idbPref.attachments) && idbPref.attachments.length))) {
+          userPrompt = idbPref.prompt || '';
+          userAttachments = idbPref.attachments || [];
+          isRemembered = true;
+        }
+      } catch (_) {}
+    }
+
+    if (isRemembered && (userPrompt || userAttachments.length)) {
+      if (customTa && userPrompt) customTa.value = userPrompt;
+      if (userAttachments.length) restoreCustomAttachmentsFromData(userAttachments);
+      SAVED_BASELINE_SIG = getPromptStateSignature();
+      if (cb) cb.checked = true;
+      if (wrap) wrap.classList.add('is-remembered');
+    } else {
+      SAVED_BASELINE_SIG = null;
+      if (cb) cb.checked = false;
+      if (wrap) wrap.classList.remove('is-remembered');
+    }
+    renderContextMeter();
+  })();
+
+  if (cb) {
+    cb.addEventListener('change', onRememberCheckboxChange);
   }
+
   if (customTa) {
-    customTa.addEventListener('input', () => saveUserPreferencesDebounced());
+    customTa.addEventListener('input', () => {
+      checkPromptDirty();
+      renderContextMeter();
+    });
   }
 
   selectTaskById('custom');
@@ -757,6 +796,206 @@ function loadLocalTaskId() {
   } catch (_) { return null; }
 }
 
+// ---------- IndexedDB Offline & Large Attachment Store for Preferences ----------
+function openPrefDb() {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open('ullm_pref_store', 1);
+      req.onupgradeneeded = () => {
+        try { req.result.createObjectStore('prefs'); } catch (_) {}
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+async function idbSavePref(user, data) {
+  try {
+    const db = await openPrefDb();
+    if (!db) return;
+    const tx = db.transaction('prefs', 'readwrite');
+    tx.objectStore('prefs').put(data, user);
+  } catch (_) {}
+}
+
+async function idbLoadPref(user) {
+  try {
+    const db = await openPrefDb();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      const tx = db.transaction('prefs', 'readonly');
+      const req = tx.objectStore('prefs').get(user);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function idbClearPref(user) {
+  try {
+    const db = await openPrefDb();
+    if (!db) return;
+    const tx = db.transaction('prefs', 'readwrite');
+    tx.objectStore('prefs').delete(user);
+  } catch (_) {}
+}
+
+function serializeAttachmentsForPref() {
+  return CUSTOM_ATTACHMENTS.map((a) => ({
+    name: a.name,
+    mimeType: a.mimeType,
+    size: a.size,
+    isEmpty: Boolean(a.isEmpty),
+    pageCount: a.pageCount || 0,
+    warning: a.warning || null,
+    optBadge: a.optBadge || null,
+    sha1: a.sha1 || null,
+    sha256: a.sha256 || null,
+    cached: Boolean(a.cached),
+    data: a.data || '',
+    textContent: a.textContent || '',
+    previewUrl: a.previewUrl || null,
+    claudeDataBase64: a.claudeDataBase64 || undefined,
+    claudeMimeType: a.claudeMimeType || undefined,
+    fitDataBase64: a.fitDataBase64 || undefined,
+    fitMimeType: a.fitMimeType || undefined,
+    estimatedTokens: a.estimatedTokens || undefined,
+  }));
+}
+
+function restoreCustomAttachmentsFromData(list) {
+  if (!Array.isArray(list) || !list.length) {
+    clearAttachments();
+    return;
+  }
+  CUSTOM_ATTACHMENTS = list.map((a) => {
+    const lowerName = String(a.name || '').toLowerCase();
+    const mimeType = a.mimeType || (lowerName.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
+    const isImage = !a.isEmpty && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
+    const previewUrl = a.previewUrl || (isImage && a.data ? `data:${mimeType};base64,${a.data}` : null);
+    const attObj = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: a.name || 'file',
+      mimeType,
+      size: Number(a.size) || (a.data ? Math.round(a.data.length * 0.75) : 0),
+      isEmpty: Boolean(a.isEmpty),
+      pageCount: Number(a.pageCount) || 0,
+      warning: a.warning || null,
+      optBadge: a.optBadge || null,
+      sha1: a.sha1 || null,
+      sha256: a.sha256 || null,
+      cached: Boolean(a.cached),
+      estimatedTokens: Number(a.estimatedTokens) || 0,
+      data: a.data || '',
+      textContent: a.textContent || '',
+      previewUrl,
+    };
+    if (a.claudeDataBase64) {
+      attObj.claudeDataBase64 = a.claudeDataBase64;
+      attObj.claudeMimeType = a.claudeMimeType || 'image/webp';
+    }
+    if (a.fitDataBase64) {
+      attObj.fitDataBase64 = a.fitDataBase64;
+      attObj.fitMimeType = a.fitMimeType || 'image/jpeg';
+    }
+    return attObj;
+  });
+
+  renderAttachments();
+  renderTaskMeta();
+
+  // Inspect on server in background to warm server cache & verify token count
+  CUSTOM_ATTACHMENTS.forEach((att) => {
+    if (att.data || att.textContent) {
+      inspectAttachmentOnServer(att);
+    }
+  });
+}
+
+let SAVED_BASELINE_SIG = null;
+
+function getPromptStateSignature() {
+  const customTa = $('#customPrompt');
+  const text = (customTa && customTa.value) ? customTa.value.trim() : '';
+  const atts = CUSTOM_ATTACHMENTS.map((a) => `${a.name}:${a.size}:${a.mimeType}:${(a.sha256 || a.sha1 || (a.data || '').length)}`).sort().join('|');
+  return `${text}:::${atts}`;
+}
+
+function checkPromptDirty() {
+  const cb = $('#rememberPromptCheckbox');
+  const wrap = $('#rememberPromptWrap');
+  if (!cb) return;
+  const currentSig = getPromptStateSignature();
+  const isMatch = Boolean(SAVED_BASELINE_SIG && currentSig === SAVED_BASELINE_SIG);
+  cb.checked = isMatch;
+  if (wrap) {
+    if (isMatch) wrap.classList.add('is-remembered');
+    else wrap.classList.remove('is-remembered');
+  }
+}
+
+async function onRememberCheckboxChange() {
+  const cb = $('#rememberPromptCheckbox');
+  const wrap = $('#rememberPromptWrap');
+  if (!cb) return;
+  if (cb.checked) {
+    SAVED_BASELINE_SIG = getPromptStateSignature();
+    if (wrap) wrap.classList.add('is-remembered');
+    await saveRememberedPromptAndAttachments(true);
+  } else {
+    SAVED_BASELINE_SIG = null;
+    if (wrap) wrap.classList.remove('is-remembered');
+    await saveRememberedPromptAndAttachments(false);
+  }
+}
+
+async function saveRememberedPromptAndAttachments(remembered) {
+  if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
+  const uname = CONFIG.me.username;
+  const customPromptEl = $('#customPrompt');
+  const prompt = (customPromptEl && customPromptEl.value) || '';
+  const attachments = serializeAttachmentsForPref();
+
+  const payload = {
+    remembered: Boolean(remembered),
+    prompt: remembered ? prompt : '',
+    attachments: remembered ? attachments : [],
+  };
+
+  if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
+  CONFIG.me.preferences.remembered = Boolean(remembered);
+  CONFIG.me.preferences.prompt = remembered ? prompt : '';
+  CONFIG.me.preferences.attachments = remembered ? attachments : [];
+  if (remembered) {
+    CONFIG.me.lastPrompt = prompt;
+  }
+
+  // 1. IndexedDB
+  try {
+    if (remembered) {
+      await idbSavePref(uname, { prompt, attachments });
+    } else {
+      await idbClearPref(uname);
+    }
+  } catch (_) {}
+
+  // 2. Server preferences
+  try {
+    await fetch('/api/me/preferences', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      credentials: 'same-origin',
+    });
+  } catch (_) {}
+}
+
 let _prefSaveTimer = null;
 function saveUserPreferencesDebounced() {
   if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
@@ -783,16 +1022,32 @@ function saveUserPreferencesImmediate() {
     effort: SLOT_EFFORT[s] || null,
   })).filter((s) => s.catalogId);
 
+  const cb = $('#rememberPromptCheckbox');
+  const isCustom = taskId === 'custom';
+  const shouldRemember = Boolean(cb && cb.checked && isCustom);
+
   const payload = {
-    prompt,
     taskId,
     slots,
     models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
   };
 
+  if (shouldRemember) {
+    payload.remembered = true;
+    payload.prompt = prompt;
+    payload.attachments = serializeAttachmentsForPref();
+  }
+
   if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
-  Object.assign(CONFIG.me.preferences, payload);
-  CONFIG.me.lastPrompt = prompt;
+  if (shouldRemember) {
+    CONFIG.me.preferences.prompt = prompt;
+    CONFIG.me.preferences.attachments = payload.attachments;
+    CONFIG.me.preferences.remembered = true;
+    CONFIG.me.lastPrompt = prompt;
+  }
+  CONFIG.me.preferences.slots = slots;
+  CONFIG.me.preferences.models = payload.models;
+  CONFIG.me.preferences.taskId = taskId;
   CONFIG.me.lastModels = payload.models;
 
   try {
@@ -1627,6 +1882,7 @@ async function addAttachmentFiles(fileList) {
   }
   renderAttachments();
   renderTaskMeta();
+  checkPromptDirty();
 }
 
 function removeAttachment(id) {
@@ -1635,6 +1891,7 @@ function removeAttachment(id) {
   renderSizeWarnings();
   renderAttachments();
   renderTaskMeta();
+  checkPromptDirty();
 }
 
 function clearAttachments() {
@@ -1645,6 +1902,7 @@ function clearAttachments() {
   if (inp) inp.value = '';
   renderAttachments();
   renderTaskMeta();
+  checkPromptDirty();
 }
 
 function renderContextMeter() {
@@ -1955,6 +2213,7 @@ function renderTaskPrompt() {
   const ta = $('#customPrompt');
   const tp = $('#taskPrompt');
   const attWrap = $('#customAttachmentsWrap');
+  const rememberWrap = $('#rememberPromptWrap');
   const t = currentTask();
   const isCustom = $('#taskSelect').value === 'custom';
 
@@ -1965,6 +2224,7 @@ function renderTaskPrompt() {
     }
     if (ta) ta.classList.remove('hidden');
     if (attWrap) attWrap.classList.remove('hidden');
+    if (rememberWrap) rememberWrap.classList.remove('hidden');
   } else {
     if (tp) {
       tp.textContent = t.prompt;
@@ -1972,6 +2232,7 @@ function renderTaskPrompt() {
     }
     if (ta) ta.classList.add('hidden');
     if (attWrap) attWrap.classList.add('hidden');
+    if (rememberWrap) rememberWrap.classList.add('hidden');
   }
 
   renderTaskMeta();
@@ -2448,9 +2709,13 @@ function slotCode(slot) {
 }
 
 // Decide whether an /api/execute result represents a real failure. A GUI task
-// hitting the time limit is NOT a crash — that's just a game loop running.
 function crashFromExec(r, task) {
-  if (!r || r.error) return r && r.error ? { error: r.error, source: 'run' } : null;
+  if (!r) return null;
+  // Code execution disabled on the server (e.g. Cloud Run ENABLE_CODE_EXEC=0) is a platform setting, not a code crash.
+  if (r.error && /code execution is disabled/i.test(r.error)) return null;
+  // Visualizer tasks (e.g. Hanoi) that run in-browser are handled by the visualizer and not code crashes.
+  if (task && task.visualizer === 'hanoi') return null;
+  if (r.error) return { error: r.error, source: 'run' };
   if (r.kind === 'tests') {
     return r.passed === r.total ? null
       : { error: formatTestResult(r), source: 'tests' };
@@ -2577,6 +2842,7 @@ async function execSlotCode(slot) {
         moves = generateHanoiMoves(disks);
       }
       if (moves.length) {
+        clearCrash(slot);
         out.classList.add('hidden');
         viz.classList.remove('hidden');
         renderHanoiViz(viz, moves, rawStdout || code, footText || '— solution visualized');
@@ -2593,30 +2859,35 @@ async function execSlotCode(slot) {
     });
     if (resp.status === 401) { window.location.replace('/login'); return; }
     const r = await resp.json();
+
+    // Visualizer tasks (e.g. Hanoi) handle moves and simulation directly in browser; never show false-positive crash
+    if (task.visualizer === 'hanoi' && tryHanoiViz(r ? r.stdout : '', `— exit ${r && r.exitCode == null ? '?' : r.exitCode} · ${(r && r.durationMs) || 0}ms`)) {
+      clearCrash(slot);
+      return;
+    }
+
     const crash = crashFromExec(r, task);
     if (crash) noteCrash(slot, crash); else clearCrash(slot);
     if (r.error) {
-      if (!tryHanoiViz('', '— in-browser simulation')) {
-        out.querySelector('code').textContent = '⚠ ' + r.error;
-      }
+      out.querySelector('code').textContent = '⚠ ' + r.error;
     } else if (r.kind === 'tests') {
       out.querySelector('code').textContent = formatTestResult(r);
     } else if (r.kind === 'launched') {
       out.querySelector('code').textContent = (r.launched ? '' : '⚠ ') + r.message;
     } else {
       const foot = `— exit ${r.exitCode == null ? '?' : r.exitCode} · ${r.durationMs}ms${r.truncated ? ' · output truncated' : ''}`;
-      if (!tryHanoiViz(r.stdout, foot)) {
-        const parts = [];
-        if (r.stdout) parts.push(r.stdout.replace(/\s+$/, ''));
-        if (r.stderr) parts.push((parts.length ? '\n' : '') + '[stderr]\n' + r.stderr.replace(/\s+$/, ''));
-        if (r.timedOut) parts.push('\n⏱ Hit the time limit — likely an interactive/graphical program (e.g. a Pygame game loop). Run it locally with a display to use it.');
-        out.querySelector('code').textContent = (parts.join('\n').trim() || '(no output)') + '\n\n' + foot;
-      }
+      const parts = [];
+      if (r.stdout) parts.push(r.stdout.replace(/\s+$/, ''));
+      if (r.stderr) parts.push((parts.length ? '\n' : '') + '[stderr]\n' + r.stderr.replace(/\s+$/, ''));
+      if (r.timedOut) parts.push('\n⏱ Hit the time limit — likely an interactive/graphical program (e.g. a Pygame game loop). Run it locally with a display to use it.');
+      out.querySelector('code').textContent = (parts.join('\n').trim() || '(no output)') + '\n\n' + foot;
     }
   } catch (e) {
-    if (!tryHanoiViz('', '— in-browser simulation')) {
-      out.querySelector('code').textContent = 'Request failed: ' + e.message;
+    if (task.visualizer === 'hanoi' && tryHanoiViz('', '— in-browser simulation')) {
+      clearCrash(slot);
+      return;
     }
+    out.querySelector('code').textContent = 'Request failed: ' + e.message;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
   }
@@ -3098,6 +3369,9 @@ async function run() {
     slots.forEach((s) => { if (!wallFinished.has(s) && ownsSlot(own, s)) setTileVal(s, 'time', secs); });
   }, 100);
 
+  const cb = $('#rememberPromptCheckbox');
+  const rememberPrompt = Boolean(cb && cb.checked && $('#taskSelect').value === 'custom');
+
   const payload = {
     taskId: $('#taskSelect').value,
     maxIterations: 1, // single-shot: correctness = the model's first-attempt pass rate (no self-debug retries)
@@ -3105,6 +3379,7 @@ async function run() {
     customPrompt: $('#customPrompt').value,
     attachments: currentAttachmentsPayload(),
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
+    rememberPrompt,
   };
 
   saveUserPreferencesImmediate();
@@ -3911,6 +4186,15 @@ async function restoreHistory(id) {
     if ((!snap.taskId || snap.taskId === 'custom') && snap.prompt && $('#customPrompt')) {
       $('#customPrompt').value = snap.prompt;
     }
+    if ((!snap.taskId || snap.taskId === 'custom') && Array.isArray(snap.attachments) && snap.attachments.length) {
+      restoreCustomAttachmentsFromData(snap.attachments);
+    } else if (!snap.taskId || snap.taskId === 'custom') {
+      clearAttachments();
+    }
+    const cb = $('#rememberPromptCheckbox');
+    const wrap = $('#rememberPromptWrap');
+    if (cb) cb.checked = false;
+    if (wrap) wrap.classList.remove('is-remembered');
     renderTaskPrompt();
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
     $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });

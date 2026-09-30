@@ -894,6 +894,9 @@ app.post('/api/run', async (req, res) => {
   // instance). The server is the source of truth (the browser never writes
   // history), so a user cannot forge or tamper with the log.
   if (Array.isArray(results)) {
+    const rememberPromptOpt = (req.body && req.body.rememberPrompt !== undefined)
+      ? Boolean(req.body.rememberPrompt)
+      : undefined;
     history.saveRun({
       id: runId,
       user: req.user.username,
@@ -903,6 +906,7 @@ app.post('/api/run', async (req, res) => {
       models: chosenModels,
       results,
       kind,
+      rememberPrompt: rememberPromptOpt,
     }).catch(() => {});
   }
   res.end();
