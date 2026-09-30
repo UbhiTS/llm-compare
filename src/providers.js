@@ -799,9 +799,11 @@ async function anthropic({ model, system, messages, keys, signal }) {
   if (!r.ok) throw statusError(`Anthropic ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
   const text = (j.content || []).map((c) => c.text || '').join('');
+  const stopReason = j.stop_reason || null;
   const u = j.usage || {};
   return {
     text,
+    stopReason,
     promptTokens: u.input_tokens ?? estimateTokens(messages, system),
     completionTokens: u.output_tokens ?? estimateTokens([{ content: text }]),
     latencyMs,
@@ -939,6 +941,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
 
   const blocks = j.content || [];
   const text = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('');
+  const stopReason = j.stop_reason || null;
   const reasoning = (routedNote + blocks
     .filter((b) => b.type === 'thinking')
     .map((b) => b.thinking || '')
@@ -958,6 +961,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
     promptTokens: u.input_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
+    stopReason,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
@@ -1089,10 +1093,12 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
   if (!r.ok) throw await upstreamError(CLAUDE_CFG, model, r);
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Claude (Agent Platform) ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`); }
 
-  let answer = '', reasoning = routedNote, inTok = 0, outTok = 0, thinkTok = 0;
+  let answer = '', reasoning = routedNote, inTok = 0, outTok = 0, thinkTok = 0, stopReason = null;
   await readSSE(r, (ev) => {
-    if (ev.type === 'message_start' && ev.message?.usage) inTok = ev.message.usage.input_tokens || inTok;
-    else if (ev.type === 'content_block_delta') {
+    if (ev.type === 'message_start') {
+      if (ev.message?.usage) inTok = ev.message.usage.input_tokens || inTok;
+      if (ev.message?.stop_reason) stopReason = ev.message.stop_reason;
+    } else if (ev.type === 'content_block_delta') {
       const d = ev.delta || {};
       if (d.type === 'text_delta') answer += d.text || '';
       else if (d.type === 'thinking_delta') reasoning += d.thinking || '';
@@ -1103,17 +1109,21 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
         const curOut = outTok ? Math.max(outTok, estAns + curThink) : (estAns + curThink);
         onDelta({ answer, reasoning, runningOut: curOut, runningThink: curThink });
       }
-    } else if (ev.type === 'message_delta' && ev.usage) {
-      outTok = ev.usage.output_tokens || outTok;
-      if (ev.usage.output_tokens_details?.thinking_tokens) {
-        thinkTok = ev.usage.output_tokens_details.thinking_tokens;
-      } else if (outTok > 0) {
-        const ansEst = estimateTokens([{ content: answer }]);
-        const reasonEst = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
-        const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
-        thinkTok = reasonEst > 0 ? Math.min(outTok, Math.max(reasonEst, impliedThink)) : impliedThink;
+    } else if (ev.type === 'message_delta') {
+      if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
+      else if (ev.stop_reason) stopReason = ev.stop_reason;
+      if (ev.usage) {
+        outTok = ev.usage.output_tokens || outTok;
+        if (ev.usage.output_tokens_details?.thinking_tokens) {
+          thinkTok = ev.usage.output_tokens_details.thinking_tokens;
+        } else if (outTok > 0) {
+          const ansEst = estimateTokens([{ content: answer }]);
+          const reasonEst = reasoning ? estimateTokens([{ content: reasoning }]) : 0;
+          const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
+          thinkTok = reasonEst > 0 ? Math.min(outTok, Math.max(reasonEst, impliedThink)) : impliedThink;
+        }
+        if (onDelta) onDelta({ answer, reasoning, runningOut: outTok, runningThink: thinkTok });
       }
-      if (onDelta) onDelta({ answer, reasoning, runningOut: outTok, runningThink: thinkTok });
     }
   });
   const latencyMs = Date.now() - t0;
@@ -1127,6 +1137,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
     promptTokens: inTok || estimateTokens(messages, system),
     completionTokens: totalOut,
     latencyMs,
+    stopReason,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
