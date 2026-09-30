@@ -417,8 +417,7 @@ app.get('/api/config', (req, res) => {
       // GUI (Pygame) tasks run in the user's browser via the WASM build
       // (/api/web-game), not server-side /api/execute — so they stay runnable
       // when ENABLE_CODE_EXEC=0 as long as web-game building is enabled.
-      // Custom in-browser visualizers (like Towers of Hanoi) also stay executable.
-      executable: !!t.executable && (executionEnabled() || (!!t.gui && webGameEnabled()) || !!t.visualizer),
+      executable: !!t.executable && (executionEnabled() || (!!t.gui && webGameEnabled())),
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
