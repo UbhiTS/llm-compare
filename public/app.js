@@ -684,36 +684,28 @@ const PROVIDER_FAMILIES = [
 // can toggle between Reasoning and Standard variants of the same family cleanly.
 const REASONING_SIBLING_PAIRS = {
   'grok-4.20-reasoning':      [
-    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought)' },
-    { id: 'grok-4.20-non-reasoning', label: 'Standard (Fast Direct)' },
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning', groupLabel: 'Grok 4.20' },
+    { id: 'grok-4.20-non-reasoning', label: 'Standard',  groupLabel: 'Grok 4.20' },
   ],
   'grok-4.20-non-reasoning':  [
-    { id: 'grok-4.20-reasoning',     label: 'Reasoning (Chain-of-Thought)' },
-    { id: 'grok-4.20-non-reasoning', label: 'Standard (Fast Direct)' },
+    { id: 'grok-4.20-reasoning',     label: 'Reasoning', groupLabel: 'Grok 4.20' },
+    { id: 'grok-4.20-non-reasoning', label: 'Standard',  groupLabel: 'Grok 4.20' },
   ],
   'grok-4.1-fast-reasoning': [
-    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT)' },
-    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard (Ultra-Fast)' },
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning', groupLabel: 'Grok 4.1 Fast' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard',  groupLabel: 'Grok 4.1 Fast' },
   ],
   'grok-4.1-fast-non-reasoning': [
-    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning (Fast CoT)' },
-    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard (Ultra-Fast)' },
+    { id: 'grok-4.1-fast-reasoning',     label: 'Reasoning', groupLabel: 'Grok 4.1 Fast' },
+    { id: 'grok-4.1-fast-non-reasoning', label: 'Standard',  groupLabel: 'Grok 4.1 Fast' },
   ],
   'qwen3-next-80b-a3b-thinking-maas': [
-    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought)' },
-    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Standard)' },
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Reasoning', groupLabel: 'Qwen3 Next 80B' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Standard',  groupLabel: 'Qwen3 Next 80B' },
   ],
   'qwen3-next-80b-a3b-instruct-maas': [
-    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Thinking (Chain-of-Thought)' },
-    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Instruct (Standard)' },
-  ],
-  'deepseek-r1-0528-maas': [
-    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1)' },
-    { id: 'deepseek-v3.2-maas',    label: 'Standard (DeepSeek V3.2)' },
-  ],
-  'deepseek-v3.2-maas': [
-    { id: 'deepseek-r1-0528-maas', label: 'Reasoning (DeepSeek R1)' },
-    { id: 'deepseek-v3.2-maas',    label: 'Standard (DeepSeek V3.2)' },
+    { id: 'qwen3-next-80b-a3b-thinking-maas', label: 'Reasoning', groupLabel: 'Qwen3 Next 80B' },
+    { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Standard',  groupLabel: 'Qwen3 Next 80B' },
   ],
 };
 
@@ -2143,7 +2135,20 @@ function renderModelEditors() {
     }).join('');
 
     const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
+    const seenSiblingGroups = new Set();
     const modelOptions = modelsInFamily.map((mc) => {
+      const siblings = REASONING_SIBLING_PAIRS[mc.id];
+      if (siblings && siblings.length) {
+        const primaryId = siblings[0].id;
+        if (seenSiblingGroups.has(primaryId)) return '';
+        seenSiblingGroups.add(primaryId);
+        const isGroupActive = siblings.some((s) => s.id === c.id);
+        const optVal = isGroupActive ? c.id : primaryId;
+        const groupLabel = siblings[0].groupLabel || mc.label.replace(/\s*\((Reasoning|Standard|Thinking|Instruct)\)\s*$/i, '');
+        const av = modelAvailability(mc);
+        const suffix = !av.ok ? ' (No Key)' : '';
+        return `<option value="${esc(optVal)}"${isGroupActive ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(groupLabel)}${esc(suffix)}</option>`;
+      }
       const av = modelAvailability(mc);
       const suffix = !av.ok ? ' (No Key)' : '';
       return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
