@@ -106,12 +106,14 @@ function initSqlite() {
           slots_json TEXT,
           attachments_json TEXT,
           saved_prompts_json TEXT,
+          saved_presets_json TEXT,
           remembered INTEGER,
           updated_at INTEGER
         );
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN attachments_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN remembered INTEGER;`); } catch (_) {}
       stmts = {
         upsert: sqliteDb.prepare(`
@@ -127,8 +129,8 @@ function initSqlite() {
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
-          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, saved_prompts_json, remembered, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, saved_prompts_json, saved_presets_json, remembered, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_key) DO UPDATE SET
             user = excluded.user,
             prompt = excluded.prompt,
@@ -136,6 +138,7 @@ function initSqlite() {
             slots_json = excluded.slots_json,
             attachments_json = excluded.attachments_json,
             saved_prompts_json = excluded.saved_prompts_json,
+            saved_presets_json = excluded.saved_presets_json,
             remembered = excluded.remembered,
             updated_at = excluded.updated_at
         `),
@@ -148,21 +151,26 @@ function initSqlite() {
       try {
         const prefRows = stmts.allPrefs.all();
         for (const pr of prefRows) {
+          const rowUser = norm(pr.user);
+          if (!rowUser || userKey(rowUser) !== pr.user_key) continue;
           let slots = null;
           let attachments = [];
           let savedPrompts = [];
+          let savedPresets = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
           try { attachments = JSON.parse(pr.attachments_json || '[]'); } catch (_) {}
           try { savedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
+          try { savedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           prefsByUserKey.set(pr.user_key, {
-            user: pr.user,
+            user: rowUser,
             prompt: pr.prompt || '',
             taskId: pr.task_id || 'custom',
             slots,
             models,
             attachments: Array.isArray(attachments) ? attachments : [],
             savedPrompts: Array.isArray(savedPrompts) ? savedPrompts : [],
+            savedPresets: Array.isArray(savedPresets) ? savedPresets : [],
             remembered: Boolean(pr.remembered),
             updatedAt: Number(pr.updated_at) || 0,
           });
@@ -541,6 +549,7 @@ function derivePrefsFromHistory(u, key) {
 }
 
 const MAX_SAVED_PROMPTS = 50;
+const MAX_SAVED_PRESETS = 30;
 
 function sanitizeAttachmentsArray(list) {
   if (!Array.isArray(list)) return [];
@@ -603,20 +612,73 @@ function sanitizeSavedPromptsList(list) {
   return out;
 }
 
-// Get remembered preferences for a specific user (prompt, taskId, slots, savedPrompts)
+function sanitizeSavedPresetItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const rawSlots = Array.isArray(item.slots) ? item.slots : (Array.isArray(item.models) ? item.models : []);
+  const slots = rawSlots
+    .slice(0, 6)
+    .filter((s) => s && typeof (s.catalogId || s.id) === 'string' && String(s.catalogId || s.id).trim())
+    .map((s, idx) => ({
+      slot: (typeof s.slot === 'string' && /^[A-F]$/.test(s.slot)) ? s.slot : String.fromCharCode(65 + idx),
+      catalogId: String(s.catalogId || s.id).trim().slice(0, 80),
+      effort: (typeof s.effort === 'string' && s.effort.trim()) ? s.effort.trim().slice(0, 40) : null,
+    }));
+  if (!slots.length) return null;
+  const rawId = typeof item.id === 'string' ? item.id.trim() : '';
+  const id = /^[a-zA-Z0-9_-]{4,64}$/.test(rawId)
+    ? rawId
+    : `mp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+  const rawTitle = typeof item.title === 'string' ? item.title.trim() : '';
+  const fallbackTitle = slots.map((s) => s.catalogId).join(' vs ').slice(0, 64) || 'Saved Model Preset';
+  const title = (rawTitle || fallbackTitle).slice(0, 100);
+  const now = Date.now();
+  return {
+    id,
+    title,
+    slots,
+    createdAt: Number(item.createdAt) || now,
+    updatedAt: Number(item.updatedAt) || now,
+  };
+}
+
+function sanitizeSavedPresetsList(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seenIds = new Set();
+  for (const raw of list) {
+    const clean = sanitizeSavedPresetItem(raw);
+    if (!clean || seenIds.has(clean.id)) continue;
+    seenIds.add(clean.id);
+    out.push(clean);
+    if (out.length >= MAX_SAVED_PRESETS) break;
+  }
+  return out;
+}
+
+// Get remembered preferences for a specific user (prompt, taskId, slots, savedPrompts, savedPresets)
+// Strictly isolated by normalized username + SHA-256 userKey; returns a defensive copy.
 function getUserPreferences(username) {
   const u = norm(username);
-  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], remembered: false };
+  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], savedPresets: [], remembered: false };
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
   let p = prefsByUserKey.get(key);
+  // Privacy guard: verify cached entry belongs to this exact normalized user
+  if (p && p.user && norm(p.user) !== u) {
+    prefsByUserKey.delete(key);
+    p = null;
+  }
   if (!p) {
     const fp = path.join(BASE_DIR, key, 'prefs.json');
     try {
       if (fs.existsSync(fp)) {
         const raw = fs.readFileSync(fp, 'utf8');
-        p = JSON.parse(raw);
-        if (p) prefsByUserKey.set(key, p);
+        const parsed = JSON.parse(raw);
+        if (parsed && (!parsed.user || norm(parsed.user) === u)) {
+          parsed.user = u;
+          p = parsed;
+          prefsByUserKey.set(key, p);
+        }
       }
     } catch (_) {}
   }
@@ -629,9 +691,22 @@ function getUserPreferences(username) {
   if (p) {
     if (!Array.isArray(p.attachments)) p.attachments = [];
     if (!Array.isArray(p.savedPrompts)) p.savedPrompts = [];
+    if (!Array.isArray(p.savedPresets)) p.savedPresets = [];
     if (p.remembered === undefined) p.remembered = false;
+    return {
+      user: u,
+      prompt: p.prompt || '',
+      taskId: p.taskId || 'custom',
+      slots: Array.isArray(p.slots) ? p.slots.map((s) => ({ ...s })) : null,
+      models: Array.isArray(p.models) ? p.models.map((m) => ({ ...m })) : null,
+      attachments: p.attachments.slice(),
+      savedPrompts: p.savedPrompts.slice(),
+      savedPresets: p.savedPresets.slice(),
+      remembered: Boolean(p.remembered),
+      updatedAt: p.updatedAt || 0,
+    };
   }
-  return p || { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], remembered: false };
+  return { user: u, prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], savedPresets: [], remembered: false };
 }
 
 // Per-user promise chain so rapid concurrent saveUserPreferences calls
@@ -668,6 +743,10 @@ function saveUserPreferences(username, newPrefs) {
   const savedPrompts = Array.isArray(newPrefs.savedPrompts)
     ? sanitizeSavedPromptsList(newPrefs.savedPrompts)
     : (Array.isArray(current.savedPrompts) ? current.savedPrompts : []);
+
+  const savedPresets = Array.isArray(newPrefs.savedPresets)
+    ? sanitizeSavedPresetsList(newPrefs.savedPresets)
+    : (Array.isArray(current.savedPresets) ? current.savedPresets : []);
 
   const taskId = typeof newPrefs.taskId === 'string'
     ? newPrefs.taskId.slice(0, 100)
@@ -707,6 +786,7 @@ function saveUserPreferences(username, newPrefs) {
     models,
     attachments,
     savedPrompts,
+    savedPresets,
     remembered: Boolean(remembered),
     updatedAt,
   };
@@ -723,6 +803,7 @@ function saveUserPreferences(username, newPrefs) {
         JSON.stringify(slots || []),
         JSON.stringify(attachments || []),
         JSON.stringify(savedPrompts || []),
+        JSON.stringify(savedPresets || []),
         remembered ? 1 : 0,
         updatedAt
       );
@@ -757,7 +838,7 @@ function saveUserPreferences(username, newPrefs) {
 // List a user's saved prompts library (newest / most recently updated first).
 function listSavedPrompts(username) {
   const p = getUserPreferences(username);
-  return Array.isArray(p && p.savedPrompts) ? p.savedPrompts : [];
+  return Array.isArray(p && p.savedPrompts) ? p.savedPrompts.slice() : [];
 }
 
 // Save or update a named prompt in the user's saved prompts library.
@@ -769,7 +850,7 @@ function saveUserPrompt(username, item) {
   const existing = listSavedPrompts(u).slice();
   const now = Date.now();
   const matchIdx = existing.findIndex((x) =>
-    x.id === clean.id || (item && !item.id && x.title.toLowerCase() === clean.title.toLowerCase())
+    (item && item.id && x.id === clean.id) || (item && !item.id && x.title.toLowerCase() === clean.title.toLowerCase())
   );
   let savedEntry;
   if (matchIdx >= 0) {
@@ -782,8 +863,11 @@ function saveUserPrompt(username, item) {
     };
     existing.splice(matchIdx, 1);
   } else {
+    // Always mint a fresh server-side ID when creating a new entry so users can never collide or spoof IDs
+    const freshId = `sp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
     savedEntry = {
       ...clean,
+      id: freshId,
       createdAt: now,
       updatedAt: now,
     };
@@ -805,6 +889,61 @@ function deleteUserPrompt(username, promptId) {
     saveUserPreferences(u, { savedPrompts: filtered });
   }
   return { ok: true, removed, savedPrompts: filtered };
+}
+
+// List a user's saved model presets library (newest / most recently updated first).
+function listSavedPresets(username) {
+  const p = getUserPreferences(username);
+  return Array.isArray(p && p.savedPresets) ? p.savedPresets.slice() : [];
+}
+
+// Save or update a named model preset in the user's saved presets library.
+function saveUserPreset(username, item) {
+  const u = norm(username);
+  if (!u) throw new Error('User is required.');
+  const clean = sanitizeSavedPresetItem(item);
+  if (!clean) throw new Error('Select at least one model before saving a preset.');
+  const existing = listSavedPresets(u).slice();
+  const now = Date.now();
+  const matchIdx = existing.findIndex((x) =>
+    (item && item.id && x.id === clean.id) || (item && !item.id && x.title.toLowerCase() === clean.title.toLowerCase())
+  );
+  let savedEntry;
+  if (matchIdx >= 0) {
+    const prev = existing[matchIdx];
+    savedEntry = {
+      ...clean,
+      id: prev.id,
+      createdAt: prev.createdAt || now,
+      updatedAt: now,
+    };
+    existing.splice(matchIdx, 1);
+  } else {
+    const freshId = `mp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+    savedEntry = {
+      ...clean,
+      id: freshId,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+  const updatedList = [savedEntry, ...existing].slice(0, MAX_SAVED_PRESETS);
+  saveUserPreferences(u, { savedPresets: updatedList });
+  return { ok: true, saved: savedEntry, preset: savedEntry, savedPresets: updatedList };
+}
+
+// Delete a saved model preset by ID from the user's library.
+function deleteUserPreset(username, presetId) {
+  const u = norm(username);
+  if (!u) return { ok: false, removed: false, savedPresets: [] };
+  const sid = String(presetId || '').trim();
+  const existing = listSavedPresets(u);
+  const filtered = existing.filter((x) => x && x.id !== sid);
+  const removed = filtered.length !== existing.length;
+  if (removed) {
+    saveUserPreferences(u, { savedPresets: filtered });
+  }
+  return { ok: true, removed, savedPresets: filtered };
 }
 
 // Instant (<0.1ms) lookup of the user's last used prompt
@@ -844,11 +983,12 @@ function lastModels(username) {
 
 // Instant (<0.1ms) list of a single user's runs (newest first).
 function listRuns(username) {
-  const key = userKey(username);
+  const u = norm(username);
+  const key = userKey(u);
   ensureOwnerLoadedSync(key);
   const out = [];
   for (const m of metaById.values()) {
-    if (m.userKey === key) out.push(listItem(m));
+    if (m.userKey === key && (!m.user || norm(m.user) === u)) out.push(listItem(m));
   }
   out.sort((a, b) => b.at - a.at);
   return out.slice(0, MAX_LIST_PER_USER);
@@ -997,10 +1137,16 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
     ensureOwnerLoadedSync(uKey);
 
     let targetId = safeId(runId);
-    if (targetId && !metaById.has(targetId)) {
-      const candidateFp = path.join(BASE_DIR, uKey, targetId + '.json');
-      if (!fs.existsSync(candidateFp)) {
-        targetId = null;
+    if (targetId) {
+      const existingMeta = metaById.get(targetId);
+      if (existingMeta) {
+        // Privacy guard: a user may only attach a judge verdict to their OWN run
+        if (existingMeta.userKey !== uKey) return false;
+      } else {
+        const candidateFp = path.join(BASE_DIR, uKey, targetId + '.json');
+        if (!fs.existsSync(candidateFp)) {
+          targetId = null;
+        }
       }
     }
     if (!targetId) {
@@ -1015,13 +1161,14 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
     if (!targetId) return false;
 
     const meta = metaById.get(targetId);
-    const ownerKey = (meta && meta.userKey) || uKey;
+    if (meta && meta.userKey !== uKey) return false;
+    const ownerKey = uKey;
     const fp = path.join(BASE_DIR, ownerKey, targetId + '.json');
     let rec = fullPayloadCache.get(targetId);
     if (!rec && fs.existsSync(fp)) {
       try { rec = JSON.parse(fs.readFileSync(fp, 'utf8')); } catch (_) {}
     }
-    if (!rec) return false;
+    if (!rec || userKey(rec.user) !== uKey) return false;
 
     rec.judge = judgeVerdict;
     cachePayload(targetId, rec);
@@ -1040,5 +1187,25 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
 
 initSqlite();
 
-module.exports = { saveRun, attachJudgeToLatestRun, newId, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, listSavedPrompts, saveUserPrompt, deleteUserPrompt, BASE_DIR };
+module.exports = {
+  saveRun,
+  attachJudgeToLatestRun,
+  newId,
+  listRuns,
+  listAllRuns,
+  getRun,
+  deleteRun,
+  usageSummary,
+  lastModels,
+  lastPrompt,
+  getUserPreferences,
+  saveUserPreferences,
+  listSavedPrompts,
+  saveUserPrompt,
+  deleteUserPrompt,
+  listSavedPresets,
+  saveUserPreset,
+  deleteUserPreset,
+  BASE_DIR,
+};
 

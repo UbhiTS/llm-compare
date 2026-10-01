@@ -12,11 +12,25 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { listSavedPrompts, saveUserPrompt, deleteUserPrompt, getUserPreferences } = require('../src/history');
+const {
+  listSavedPrompts,
+  saveUserPrompt,
+  deleteUserPrompt,
+  listSavedPresets,
+  saveUserPreset,
+  deleteUserPreset,
+  getUserPreferences,
+  saveRun,
+  listRuns,
+  getRun,
+  deleteRun,
+  attachJudgeToLatestRun,
+} = require('../src/history');
 const { sanitizeForPygbag, patchIndexHtml } = require('../src/webGame');
 
-function runTests() {
+async function runTests() {
   const testUser = `adv_test_user_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const otherUser = `adv_other_user_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   // 1. Saved Prompts Library CRUD & Persistence
   assert.deepEqual(listSavedPrompts(testUser), [], 'New user starts with empty saved prompts');
@@ -66,16 +80,111 @@ function runTests() {
   assert.equal(res2.ok, true);
   assert.equal(res2.savedPrompts.length, 2);
 
-  // Delete first prompt
+  // 1b. Saved Model Presets CRUD & Persistence
+  assert.deepEqual(listSavedPresets(testUser), [], 'New user starts with empty saved presets');
+  const preset1 = saveUserPreset(testUser, {
+    title: 'My Vertex Reasoning Trio',
+    slots: [
+      { slot: 'A', catalogId: 'gemini-3.8-flash', effort: 'high' },
+      { slot: 'B', catalogId: 'claude-opus-5-5', effort: null },
+      { slot: 'C', catalogId: 'deepseek-v3.2-maas', effort: null },
+    ],
+  });
+  assert.equal(preset1.ok, true, 'Saving valid model preset succeeds');
+  assert.ok(preset1.saved && preset1.saved.id.startsWith('mp_'), 'Saved preset receives mp_ ID');
+  assert.equal(preset1.savedPresets.length, 1);
+  assert.equal(preset1.savedPresets[0].title, 'My Vertex Reasoning Trio');
+  assert.equal(preset1.savedPresets[0].slots.length, 3);
+  assert.equal(preset1.savedPresets[0].slots[0].catalogId, 'gemini-3.8-flash');
+  assert.equal(preset1.savedPresets[0].slots[0].effort, 'high');
+
+  // Upsert preset by same title updates existing preset
+  const presetUpdate = saveUserPreset(testUser, {
+    title: 'My Vertex Reasoning Trio',
+    slots: [
+      { slot: 'A', catalogId: 'gemini-3.8-flash', effort: 'low' },
+      { slot: 'B', catalogId: 'claude-sonnet-5', effort: null },
+    ],
+  });
+  assert.equal(presetUpdate.ok, true);
+  assert.equal(presetUpdate.savedPresets.length, 1, 'Updating preset by same title does not duplicate');
+  assert.equal(presetUpdate.savedPresets[0].id, preset1.saved.id, 'Preserves original preset ID on update');
+  assert.equal(presetUpdate.savedPresets[0].slots.length, 2);
+
+  // 1c. Strict Multi-User Privacy Isolation (User B vs User A)
+  assert.deepEqual(listSavedPrompts(otherUser), [], 'Other user cannot see testUser saved prompts');
+  assert.deepEqual(listSavedPresets(otherUser), [], 'Other user cannot see testUser saved presets');
+
+  // Other user attempting to delete testUser's prompt or preset fails with removed: false
+  const crossDelPrompt = deleteUserPrompt(otherUser, res1.saved.id);
+  assert.equal(crossDelPrompt.removed, false, 'Other user cannot delete testUser saved prompt');
+  assert.equal(listSavedPrompts(testUser).length, 2, 'testUser prompts remain untouched');
+
+  const crossDelPreset = deleteUserPreset(otherUser, preset1.saved.id);
+  assert.equal(crossDelPreset.removed, false, 'Other user cannot delete testUser saved preset');
+  assert.equal(listSavedPresets(testUser).length, 1, 'testUser presets remain untouched');
+
+  // Other user attempting to spoof testUser's ID on save gets a fresh ID in their own isolated store
+  const spoofPrompt = saveUserPrompt(otherUser, {
+    id: res1.saved.id,
+    title: 'Spoofed Prompt',
+    prompt: 'Trying to overwrite testUser prompt',
+  });
+  assert.notEqual(spoofPrompt.saved.id, res1.saved.id, 'Cross-user ID spoofing on prompt save mints a fresh ID');
+  assert.equal(
+    listSavedPrompts(testUser).find((p) => p.id === res1.saved.id).prompt,
+    'Updated prompt instructions for FinOps BigQuery Cost Audit.',
+    'testUser prompt content was not overwritten by otherUser'
+  );
+
+  const spoofPreset = saveUserPreset(otherUser, {
+    id: preset1.saved.id,
+    title: 'Spoofed Preset',
+    slots: [{ slot: 'A', catalogId: 'gpt-6-sol', effort: null }],
+  });
+  assert.notEqual(spoofPreset.saved.id, preset1.saved.id, 'Cross-user ID spoofing on preset save mints a fresh ID');
+  assert.equal(
+    listSavedPresets(testUser)[0].slots.length,
+    2,
+    'testUser preset was not overwritten by otherUser'
+  );
+
+  // Clean up otherUser's prompt and preset
+  deleteUserPrompt(otherUser, spoofPrompt.saved.id);
+  deleteUserPreset(otherUser, spoofPreset.saved.id);
+
+  // Run & Judge cross-user isolation
+  const userARun = await saveRun({
+    user: testUser,
+    task: { id: 'custom', title: 'Private Architecture Review', category: 'general', prompt: 'Secret prompt' },
+    models: [{ slot: 'A', label: 'Gemini 3.8 Flash', model: 'gemini-3.8-flash' }],
+    results: [{ slot: 'A', code: 'Confidential output', costUsd: 0.001, wallMs: 500 }],
+  });
+  assert.ok(userARun && userARun.id, 'Recorded private run for testUser');
+  assert.equal(listRuns(otherUser).length, 0, 'Other user cannot list testUser runs');
+  assert.equal(getRun(userARun.id, { username: otherUser, isAdmin: false }), null, 'Other user cannot fetch testUser run by ID');
+  assert.equal(
+    await attachJudgeToLatestRun(otherUser, 'custom', { winner: 'A', summary: 'Tampered' }, userARun.id),
+    false,
+    'Other user cannot attach or overwrite judge verdict on testUser runId'
+  );
+  assert.equal(await deleteRun(userARun.id, { username: otherUser, isAdmin: false }), false, 'Other user cannot delete testUser run');
+  assert.equal(await deleteRun(userARun.id, { username: testUser, isAdmin: false }), true, 'Owner can delete their own run');
+
+  // Delete testUser prompts & presets
   const delRes = deleteUserPrompt(testUser, res1.saved.id);
   assert.equal(delRes.ok, true);
   assert.equal(delRes.removed, true);
   assert.equal(delRes.savedPrompts.length, 1);
   assert.equal(delRes.savedPrompts[0].id, res2.saved.id);
-
-  // Clean up second prompt
   deleteUserPrompt(testUser, res2.saved.id);
   assert.equal(listSavedPrompts(testUser).length, 0);
+
+  const delPresetRes = deleteUserPreset(testUser, preset1.saved.id);
+  assert.equal(delPresetRes.ok, true);
+  assert.equal(delPresetRes.removed, true);
+  assert.equal(delPresetRes.savedPresets.length, 0);
+  assert.equal(listSavedPresets(testUser).length, 0);
 
   // 2. Pygame WASM Sanitizer Verification
   const rawGameCode = [
@@ -162,6 +271,10 @@ function runTests() {
     indexHtml.includes(`<span id="appVersion" class="foot-version">v${pkg.version}</span>`),
     'Footer displays matching version number next to LLM Compare'
   );
+  assert.ok(
+    indexHtml.includes('id="savePresetBtn"') && indexHtml.includes('id="userPresetsList"'),
+    'Step 2 includes Save preset button and user presets container'
+  );
   const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
   assert.ok(
     !stylesCss.includes('flex: 0 0 240px'),
@@ -172,8 +285,11 @@ function runTests() {
     'Step 2 model slot dropdowns no longer use fixed 92px/138px widths'
   );
 
-  console.log('✓ All Saved Prompts, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
+  console.log('✓ All Saved Prompts, Saved Model Presets, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }
 
-runTests();
+runTests().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 

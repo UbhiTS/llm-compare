@@ -450,11 +450,12 @@ app.get('/api/config', (req, res) => {
       lastPrompt: history.lastPrompt(req.user.username),   // reopen on their last prompt
       preferences: history.getUserPreferences(req.user.username),
       savedPrompts: history.listSavedPrompts(req.user.username),
+      savedPresets: history.listSavedPresets(req.user.username),
     },
   });
 });
 
-// ---------- user preferences & saved prompts library (per user) ----------
+// ---------- user preferences, saved prompts & saved model presets (per user) ----------
 app.get('/api/me/preferences', (req, res) => {
   res.json({ ok: true, preferences: history.getUserPreferences(req.user.username) });
 });
@@ -481,6 +482,25 @@ app.delete('/api/me/prompts/:id', (req, res) => {
   const out = history.deleteUserPrompt(req.user.username, req.params.id);
   if (!out.removed) return res.status(404).json({ ok: false, error: 'Saved prompt not found.' });
   res.json({ ok: true, removed: true, savedPrompts: out.savedPrompts });
+});
+
+app.get('/api/me/presets', (req, res) => {
+  res.json({ ok: true, savedPresets: history.listSavedPresets(req.user.username) });
+});
+
+app.post('/api/me/presets', (req, res) => {
+  try {
+    const out = history.saveUserPreset(req.user.username, req.body || {});
+    res.json({ ok: true, saved: out.preset, preset: out.preset, savedPresets: out.savedPresets });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.delete('/api/me/presets/:id', (req, res) => {
+  const out = history.deleteUserPreset(req.user.username, req.params.id);
+  if (!out.removed) return res.status(404).json({ ok: false, error: 'Saved model preset not found.' });
+  res.json({ ok: true, removed: true, savedPresets: out.savedPresets });
 });
 
 // ---------- run history (per-user; admins can see everyone) ----------

@@ -98,6 +98,8 @@ const TASK_CATEGORIES = [
 
 let SAVED_PROMPTS = [];
 let ACTIVE_SAVED_PROMPT_ID = null;
+let SAVED_PRESETS = [];
+let ACTIVE_SAVED_PRESET_ID = null;
 
 function isCustomTaskId(val) {
   return !val || val === 'custom' || String(val).startsWith('saved:');
@@ -368,6 +370,7 @@ async function init() {
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
+  SAVED_PRESETS = Array.isArray(CONFIG.me && CONFIG.me.savedPresets) ? CONFIG.me.savedPresets : [];
   initUserMenu(CONFIG.me);
   // Seed the drag-and-drop slots from the server's default selection, then let
   // MODELS be derived from the slots from here on.
@@ -559,9 +562,21 @@ function initUserMenu(me) {
   $('#apiKeysBtn').addEventListener('click', () => { toggle(false); openKeysModal(); });
 }
 
-// ---------- bring-your-own API keys (stored only in this browser) ----------
-function loadKeys() { try { return JSON.parse(localStorage.getItem('ullm.keys') || '{}') || {}; } catch (e) { return {}; } }
-function saveKeys(k) { try { localStorage.setItem('ullm.keys', JSON.stringify(k)); } catch (e) { /* ignore */ } }
+// ---------- bring-your-own API keys (stored only in this browser, scoped per user) ----------
+function loadKeys() {
+  try {
+    const u = getUsername();
+    const scoped = localStorage.getItem('ullm.keys.' + u);
+    if (scoped) return JSON.parse(scoped) || {};
+    return {};
+  } catch (e) { return {}; }
+}
+function saveKeys(k) {
+  try {
+    const u = getUsername();
+    localStorage.setItem('ullm.keys.' + u, JSON.stringify(k));
+  } catch (e) { /* ignore */ }
+}
 function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gemini || k.openai || k.anthropic || k.claudeBearerToken || k.moonshot); }
 
 // Which credential each selected model will actually run on. Mirrors
@@ -1477,7 +1492,7 @@ function clearSlot(slot) {
   afterSlotChange();
 }
 
-function applyPreset(presetName) {
+function builtinPresetSlots(presetName) {
   let target = [];
   if (presetName === 'frontier') {
     target = [
@@ -1513,17 +1528,238 @@ function applyPreset(presetName) {
       { id: 'qwen3-235b-a22b-instruct-maas',  effort: null },
     ];
   }
-  const valid = target.filter((t) => {
+  return target.filter((t) => {
     const c = catalog().find((x) => x.id === t.id);
     return c && modelAvailability(c).ok;
   });
+}
+
+function applyPreset(presetName) {
+  const valid = builtinPresetSlots(presetName);
   if (!valid.length) return;
+  ACTIVE_SAVED_PRESET_ID = null;
   SLOT_IDS = ALL_SLOT_IDS.slice(0, valid.length);
   ALL_SLOT_IDS.forEach((s, i) => {
     SLOT_ASSIGN[s] = valid[i] ? valid[i].id : null;
     SLOT_EFFORT[s] = valid[i] ? valid[i].effort : null;
   });
   afterSlotChange();
+}
+
+function getSavedPresetById(id) {
+  if (!id) return null;
+  const cleanId = String(id).replace(/^preset:/, '');
+  return SAVED_PRESETS.find((p) => p && p.id === cleanId) || null;
+}
+
+function normalizeSlotEffort(catalogId, rawEffort) {
+  const c = catalog().find((x) => x.id === catalogId);
+  const defVal = c && c.thinkingOptions && c.thinkingOptions.defaultValue;
+  const eff = rawEffort ? String(rawEffort).trim() : '';
+  return (eff && eff !== defVal) ? eff : '';
+}
+
+function currentLineupSlots() {
+  return SLOT_IDS.map((s, idx) => ({
+    slot: ALL_SLOT_IDS[idx] || s,
+    catalogId: SLOT_ASSIGN[s] || null,
+    effort: normalizeSlotEffort(SLOT_ASSIGN[s], SLOT_EFFORT[s]) || null,
+  })).filter((s) => s.catalogId);
+}
+
+function lineupSignature(slots) {
+  return (slots || [])
+    .filter((s) => s && (s.catalogId || s.id))
+    .map((s) => {
+      const cid = s.catalogId || s.id;
+      const eff = normalizeSlotEffort(cid, s.effort);
+      return `${cid}:${eff || 'default'}`;
+    })
+    .join('|');
+}
+
+function describePresetTooltip(preset) {
+  if (!preset || !Array.isArray(preset.slots)) return '';
+  return preset.slots.map((s, idx) => {
+    const cid = s.catalogId || s.id;
+    const c = catalog().find((x) => x.id === cid);
+    const label = c ? c.label : cid;
+    const eff = normalizeSlotEffort(cid, s.effort);
+    const slotId = ALL_SLOT_IDS[idx] || s.slot || String.fromCharCode(65 + idx);
+    return `Slot ${slotId}: ${label}${eff ? ` (${eff})` : ''}`;
+  }).join(' · ');
+}
+
+function syncActivePresetState() {
+  const curSig = lineupSignature(currentLineupSlots());
+  const activeSaved = ACTIVE_SAVED_PRESET_ID ? getSavedPresetById(ACTIVE_SAVED_PRESET_ID) : null;
+  if (activeSaved && lineupSignature(activeSaved.slots) === curSig) {
+    // Keep current active saved preset
+  } else {
+    const matchedSaved = SAVED_PRESETS.find((p) => p && Array.isArray(p.slots) && lineupSignature(p.slots) === curSig);
+    ACTIVE_SAVED_PRESET_ID = matchedSaved ? matchedSaved.id : null;
+  }
+
+  // Highlight built-in preset buttons if no saved preset is explicitly active and signature matches
+  document.querySelectorAll('.mc-preset-btn').forEach((btn) => {
+    const pName = btn.dataset.preset;
+    const bSig = lineupSignature(builtinPresetSlots(pName));
+    const isMatched = !ACTIVE_SAVED_PRESET_ID && Boolean(curSig && bSig && curSig === bSig);
+    btn.classList.toggle('is-active', isMatched);
+  });
+
+  const delBtn = $('#deleteSavedPresetBtn');
+  if (delBtn) {
+    const activeItem = ACTIVE_SAVED_PRESET_ID ? getSavedPresetById(ACTIVE_SAVED_PRESET_ID) : null;
+    delBtn.classList.toggle('hidden', !activeItem);
+    if (activeItem) {
+      delBtn.title = `Delete saved model preset "${activeItem.title}" from your library`;
+    }
+  }
+}
+
+function renderUserPresets() {
+  syncActivePresetState();
+  const wrap = $('#userPresetsList');
+  if (!wrap) return;
+  if (!Array.isArray(SAVED_PRESETS) || !SAVED_PRESETS.length) {
+    wrap.innerHTML = '';
+    return;
+  }
+  wrap.innerHTML = SAVED_PRESETS.map((p) => {
+    if (!p || !p.id) return '';
+    const isActive = ACTIVE_SAVED_PRESET_ID === p.id;
+    const tip = describePresetTooltip(p);
+    return (
+      `<span class="mc-user-preset-chip${isActive ? ' is-active' : ''}" data-preset-id="${esc(p.id)}">` +
+        `<button type="button" class="bar-btn mc-user-preset-btn${isActive ? ' is-active' : ''}" data-preset-id="${esc(p.id)}" title="${esc(p.title + (tip ? ' — ' + tip : ''))}">🔖 ${esc(p.title)}</button>` +
+        `<button type="button" class="mc-user-preset-del" data-preset-id="${esc(p.id)}" title="Delete saved preset &quot;${esc(p.title)}&quot;" aria-label="Delete saved preset ${esc(p.title)}">&times;</button>` +
+      `</span>`
+    );
+  }).join('');
+  wrap.querySelectorAll('.mc-user-preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => applySavedPreset(btn.dataset.presetId));
+  });
+  wrap.querySelectorAll('.mc-user-preset-del').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onDeleteSavedPresetClick(btn.dataset.presetId);
+    });
+  });
+}
+
+function applySavedPreset(presetId) {
+  const preset = typeof presetId === 'object' ? presetId : getSavedPresetById(presetId);
+  if (!preset || !Array.isArray(preset.slots) || !preset.slots.length) return;
+  const valid = preset.slots
+    .map((s) => ({
+      id: s.catalogId || s.id,
+      effort: normalizeSlotEffort(s.catalogId || s.id, s.effort) || null,
+    }))
+    .filter((t) => {
+      const c = catalog().find((x) => x.id === t.id);
+      return c && modelAvailability(c).ok;
+    })
+    .slice(0, MAX_SLOTS);
+  if (!valid.length) {
+    window.alert('None of the models in this preset are currently available.');
+    return;
+  }
+  ACTIVE_SAVED_PRESET_ID = preset.id;
+  SLOT_IDS = ALL_SLOT_IDS.slice(0, valid.length);
+  ALL_SLOT_IDS.forEach((s, i) => {
+    SLOT_ASSIGN[s] = valid[i] ? valid[i].id : null;
+    SLOT_EFFORT[s] = valid[i] ? valid[i].effort : null;
+  });
+  afterSlotChange();
+}
+
+async function onSavePresetClick() {
+  const slots = currentLineupSlots();
+  if (!slots.length) {
+    window.alert('Select at least one model slot before saving a preset.');
+    return;
+  }
+  const existing = ACTIVE_SAVED_PRESET_ID ? getSavedPresetById(ACTIVE_SAVED_PRESET_ID) : null;
+  const defaultTitle = existing
+    ? existing.title
+    : slots.map((s) => {
+        const c = catalog().find((x) => x.id === s.catalogId);
+        const base = c ? shortLabel(c.label) : s.catalogId;
+        return s.effort ? `${base} (${s.effort})` : base;
+      }).join(' vs ').slice(0, 60);
+  const rawTitle = window.prompt('Name this model lineup preset for your personal library:', defaultTitle);
+  if (rawTitle === null) return; // cancelled
+  const title = rawTitle.trim() || defaultTitle || 'Saved Lineup';
+  const sameNameExisting = SAVED_PRESETS.find((p) => p && p.title && p.title.toLowerCase() === title.toLowerCase());
+  const updateId = (existing && existing.title.toLowerCase() === title.toLowerCase())
+    ? existing.id
+    : (sameNameExisting ? sameNameExisting.id : undefined);
+
+  const saveBtn = $('#savePresetBtn');
+  const origHtml = saveBtn ? saveBtn.innerHTML : '🔖 Save preset';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+  }
+  try {
+    const resp = await fetch('/api/me/presets', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: updateId,
+        title,
+        slots,
+      }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to save model preset.');
+    SAVED_PRESETS = Array.isArray(data.savedPresets) ? data.savedPresets : SAVED_PRESETS;
+    if (CONFIG && CONFIG.me) CONFIG.me.savedPresets = SAVED_PRESETS;
+    ACTIVE_SAVED_PRESET_ID = (data.saved && data.saved.id) || updateId || null;
+    renderUserPresets();
+    if (saveBtn) {
+      saveBtn.classList.add('is-saved');
+      saveBtn.textContent = '✓ Preset saved';
+      setTimeout(() => {
+        saveBtn.classList.remove('is-saved');
+        saveBtn.innerHTML = origHtml;
+      }, 1600);
+    }
+  } catch (err) {
+    window.alert('Could not save model preset: ' + err.message);
+    if (saveBtn) saveBtn.innerHTML = origHtml;
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+async function onDeleteSavedPresetClick(targetPresetId) {
+  const idToDelete = (typeof targetPresetId === 'string' && targetPresetId) ? targetPresetId : ACTIVE_SAVED_PRESET_ID;
+  const item = getSavedPresetById(idToDelete);
+  if (!item) return;
+  if (!window.confirm(`Delete saved model preset "${item.title}" from your library?`)) return;
+  const delBtn = $('#deleteSavedPresetBtn');
+  if (delBtn) delBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/me/presets/' + encodeURIComponent(item.id), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not delete saved preset.');
+    SAVED_PRESETS = Array.isArray(data.savedPresets) ? data.savedPresets : SAVED_PRESETS.filter((p) => p.id !== item.id);
+    if (CONFIG && CONFIG.me) CONFIG.me.savedPresets = SAVED_PRESETS;
+    if (ACTIVE_SAVED_PRESET_ID === item.id) ACTIVE_SAVED_PRESET_ID = null;
+    renderUserPresets();
+  } catch (err) {
+    window.alert('Could not delete saved preset: ' + err.message);
+  } finally {
+    if (delBtn) delBtn.disabled = false;
+  }
 }
 
 function placeInFirstFreeSlot(catalogId) {
@@ -2618,10 +2854,15 @@ function renderModelEditors() {
     _toolbarBound = true;
     const addBtn = $('#addSlotBtn');
     if (addBtn) addBtn.addEventListener('click', addSlot);
+    const savePresetBtn = $('#savePresetBtn');
+    if (savePresetBtn) savePresetBtn.addEventListener('click', onSavePresetClick);
+    const delPresetBtn = $('#deleteSavedPresetBtn');
+    if (delPresetBtn) delPresetBtn.addEventListener('click', () => onDeleteSavedPresetClick());
     document.querySelectorAll('.mc-preset-btn').forEach((btn) => {
       btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
     });
   }
+  renderUserPresets();
   const badge = $('#slotCountBadge');
   if (badge) badge.textContent = `${SLOT_IDS.length} of ${MAX_SLOTS} active`;
   const addBtn = $('#addSlotBtn');

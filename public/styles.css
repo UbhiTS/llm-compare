@@ -1748,6 +1748,69 @@ a.ud-item[hidden] { display: none; }
   margin-right: 2px;
 }
 
+.mc-preset-btn.is-active,
+.mc-user-preset-btn.is-active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--well));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.mc-user-presets {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mc-user-presets:empty {
+  display: none;
+}
+
+.mc-user-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 5px;
+}
+
+.mc-user-preset-chip .mc-user-preset-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: none;
+  padding-right: 9px;
+}
+
+.mc-user-preset-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 7px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--faint);
+  background: var(--well);
+  border: 1px solid var(--border-hi);
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.mc-user-preset-chip.is-active .mc-user-preset-del {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, var(--well));
+  color: var(--muted);
+}
+
+.mc-user-preset-del:hover {
+  color: var(--bad) !important;
+  border-color: var(--bad) !important;
+  background: color-mix(in srgb, var(--bad) 14%, var(--well)) !important;
+}
+
 .slot-configurator-grid {
   display: grid;
   grid-template-columns: repeat(var(--slot-count, 3), minmax(260px, 1fr));

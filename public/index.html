@@ -8,13 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.1" />
+  <link rel="stylesheet" href="styles.css?v=1.0.2" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.1" defer></script>
+  <script src="app.js?v=1.0.2" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -121,7 +121,10 @@
             <button type="button" class="bar-btn mc-preset-btn" data-preset="fast" title="Gemini 3.8 Flash · Claude Sonnet 5 · GPT-6 Luna">⚡ Fast</button>
             <button type="button" class="bar-btn mc-preset-btn" data-preset="same-model-thinking" title="Compare Gemini 3.8 Flash across Low, Medium (default), and High thinking modes">🧠 Thinking A/B/C</button>
             <button type="button" class="bar-btn mc-preset-btn" data-preset="open-maas" title="Llama 4 Maverick · DeepSeek V3.2 · Qwen 3 235B (100% Vertex AI MaaS)">☁️ Vertex MaaS</button>
+            <span id="userPresetsList" class="mc-user-presets"></span>
           </div>
+          <button type="button" id="savePresetBtn" class="bar-btn" title="Save the current model lineup &amp; thinking modes as a reusable preset in your personal library">🔖 Save preset</button>
+          <button type="button" id="deleteSavedPresetBtn" class="bar-btn subtle hidden" title="Delete the active saved model preset from your library">🗑 Delete preset</button>
           <button type="button" id="addSlotBtn" class="bar-btn bar-btn-accent" title="Add another model column to the comparison (up to 6)">+ Add model (3/6)</button>
         </div>
       </div>
@@ -214,6 +217,6 @@
     </details>
   </section>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.1</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.2</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>
