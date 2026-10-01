@@ -219,6 +219,22 @@ function selectTaskById(taskId) {
   }
 }
 
+function resetCustomComposerToBlank(opts) {
+  const customTa = $('#customPrompt');
+  if (customTa) customTa.value = '';
+  clearAttachments();
+  ACTIVE_SAVED_PROMPT_ID = null;
+  const cb = $('#rememberPromptCheckbox');
+  const wrap = $('#rememberPromptWrap');
+  if (cb) cb.checked = false;
+  if (wrap) wrap.classList.remove('is-remembered');
+  syncSavedPromptButtons();
+  renderTaskPrompt();
+  if (opts && opts.focus && customTa && !customTa.classList.contains('hidden')) {
+    try { customTa.focus(); } catch (_) {}
+  }
+}
+
 function applySavedPromptToComposer(savedItem) {
   if (!savedItem) return;
   const customTa = $('#customPrompt');
@@ -228,6 +244,10 @@ function applySavedPromptToComposer(savedItem) {
   } else {
     clearAttachments();
   }
+  const cb = $('#rememberPromptCheckbox');
+  const wrap = $('#rememberPromptWrap');
+  if (cb) cb.checked = false;
+  if (wrap) wrap.classList.remove('is-remembered');
   ACTIVE_SAVED_PROMPT_ID = savedItem.id;
   syncSavedPromptButtons();
   renderTaskPrompt();
@@ -325,7 +345,8 @@ async function onDeleteSavedPromptClick() {
     ACTIVE_SAVED_PROMPT_ID = null;
     updateCategoryCustomOptionCount();
     populateTaskSelect('custom', 'custom');
-    renderTaskPrompt();
+    resetCustomComposerToBlank({ focus: true });
+    saveUserPreferencesDebounced();
   } catch (err) {
     window.alert('Could not delete saved prompt: ' + err.message);
   } finally {
@@ -376,6 +397,8 @@ async function init() {
     if (String(selVal).startsWith('saved:')) {
       const savedItem = getSavedPromptById(selVal);
       if (savedItem) applySavedPromptToComposer(savedItem);
+    } else if (selVal === 'custom') {
+      resetCustomComposerToBlank({ focus: true });
     }
     syncSavedPromptButtons();
     renderTaskPrompt();
