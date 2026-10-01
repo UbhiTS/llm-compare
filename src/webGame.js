@@ -29,41 +29,119 @@ function webGameEnabled() { return process.env.ENABLE_WEB_GAME !== '0'; }
 function idFor(code) { return crypto.createHash('sha256').update(code).digest('hex').slice(0, 16); }
 function webDirFor(id) { return path.join(ROOT, id, 'build', 'web'); }
 
-// Make LLM-generated pygame code survive pygbag's WASM runtime. The big one:
-// `import pygame.gfxdraw` — gfxdraw isn't in pygbag's pygame-ce build, and the
-// failed import triggers pygbag's pip-install fallback, which fetches a
-// non-existent PyPI package and crashes the async loop *during import* (before a
-// single frame renders). Models emit this constantly (often unused). We strip the
-// import and shim pygame.gfxdraw to a no-op so import-only games run and any real
-// usage degrades gracefully (that draw is skipped) instead of killing the game.
+const MAX_CACHED_GAMES = Number(process.env.MAX_CACHED_WEB_GAMES) || 25;
+
+const SAFE_ENV_KEYS = [
+  'PATH', 'HOME', 'USERPROFILE', 'TMPDIR', 'TEMP', 'TMP',
+  'LANG', 'LC_ALL', 'SystemRoot', 'WINDIR', 'COMSPEC',
+  'APPDATA', 'LOCALAPPDATA', 'PYTHONPATH', 'VIRTUAL_ENV',
+];
+
+function buildSafeGameEnv() {
+  const env = { PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+  for (const k of SAFE_ENV_KEYS) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  return env;
+}
+
+function pruneOldGames() {
+  if (games.size <= MAX_CACHED_GAMES) return;
+  const entries = Array.from(games.entries()).sort((a, b) => (a[1].builtAt || 0) - (b[1].builtAt || 0));
+  while (games.size > MAX_CACHED_GAMES && entries.length) {
+    const [oldId] = entries.shift();
+    if (building.has(oldId)) continue;
+    games.delete(oldId);
+    try {
+      fs.rmSync(path.join(ROOT, oldId), { recursive: true, force: true });
+    } catch (_) { /* best effort */ }
+  }
+}
+
+// Make LLM-generated pygame code survive pygbag's WASM runtime and distinguish
+// real unhandled crashes from caught per-frame try/except logs.
+// 1. Strip `import pygame.gfxdraw` (not in pygbag's pygame-ce build; triggers a
+//    failing PyPI fetch during import) and shim `pygame.gfxdraw` to a no-op.
+// 2. Shim `pygame.event.get_events` -> `pygame.event.get` and `Rect.padded` if called.
+// 3. Wrap `pygame.mixer` so headless/autoplay-blocked browser audio never crashes init.
+// 4. Neutralize `sys.exit()` / `exit()` / `quit()` so `SystemExit` doesn't kill WASM.
+// 5. Emit `___ULLM_GAME_BOOTED___` when `pygame.display.set_mode` succeeds, and
+//    emit `___ULLM_FATAL_PYTHON_CRASH___` ONLY when an unhandled exception escapes
+//    the game loop or top-level `asyncio.run(main())`.
 function sanitizeForPygbag(code) {
   const src = String(code || '');
-  const usesGfx = /(^|\n)\s*import\s+pygame\.gfxdraw\b/.test(src) || /(^|\n)\s*from\s+pygame\s+import\b[^\n]*\bgfxdraw\b/.test(src);
-  if (!usesGfx) return src;
-  let out = src
-    .replace(/^([ \t]*)import\s+pygame\.gfxdraw(?:\s+as\s+\w+)?[ \t]*$/gm, '$1pass  # pygbag: pygame.gfxdraw not available in WASM (shimmed below)')
-    .replace(/^([ \t]*)from\s+pygame\s+import\s+gfxdraw[ \t]*$/gm, '$1pass  # pygbag: gfxdraw import removed (shimmed below)');
-  const shim = [
-    'import pygame as _pgb_pygame',
-    'if not hasattr(_pgb_pygame, "gfxdraw"):',
-    '    class _PgbNoGfxdraw:',
-    '        def __getattr__(self, _name):',
-    '            return lambda *a, **k: None',
-    '    _pgb_pygame.gfxdraw = _PgbNoGfxdraw()',
-    '',
+  if (src.includes('# --- ullm pygbag WASM compatibility & crash-detection preamble ---')) {
+    return src;
+  }
+  const out = src
+    .replace(/^([ \t]*)import\s+pygame\.gfxdraw(?:\s+as\s+\w+)?[ \t]*$/gm, '$1pass  # pygbag: pygame.gfxdraw shimmed below')
+    .replace(/^([ \t]*)from\s+pygame\s+import\s+gfxdraw[ \t]*$/gm, '$1pass  # pygbag: gfxdraw import shimmed below');
+
+  const preamble = [
+    '# --- ullm pygbag WASM compatibility & crash-detection preamble ---',
+    'import sys as _pgb_sys, builtins as _pgb_builtins, traceback as _pgb_tb, asyncio as _pgb_asyncio',
+    '_pgb_sys.exit = lambda *a, **k: None',
+    '_pgb_builtins.exit = lambda *a, **k: None',
+    '_pgb_builtins.quit = lambda *a, **k: None',
+    'def _pgb_excepthook(exc_type, exc_val, exc_tb):',
+    '    if exc_type is SystemExit or exc_type is KeyboardInterrupt:',
+    '        return',
+    '    try:',
+    '        _pgb_sys.stderr.write("\\n___ULLM_FATAL_PYTHON_CRASH___\\n")',
+    '        _pgb_tb.print_exception(exc_type, exc_val, exc_tb, file=_pgb_sys.stderr)',
+    '    except Exception:',
+    '        pass',
+    '_pgb_sys.excepthook = _pgb_excepthook',
+    '_pgb_orig_asyncio_run = _pgb_asyncio.run',
+    'def _pgb_safe_asyncio_run(coro, *a, **k):',
+    '    async def _pgb_runner():',
+    '        try:',
+    '            return await coro',
+    '        except (SystemExit, KeyboardInterrupt, _pgb_asyncio.CancelledError):',
+    '            return None',
+    '        except Exception:',
+    '            _pgb_sys.stderr.write("\\n___ULLM_FATAL_PYTHON_CRASH___\\n")',
+    '            _pgb_tb.print_exc(file=_pgb_sys.stderr)',
+    '            return None',
+    '    return _pgb_orig_asyncio_run(_pgb_runner(), *a, **k)',
+    '_pgb_asyncio.run = _pgb_safe_asyncio_run',
+    'try:',
+    '    import pygame as _pgb_pygame',
+    '    if not hasattr(_pgb_pygame, "gfxdraw"):',
+    '        class _PgbNoGfxdraw:',
+    '            def __getattr__(self, _name):',
+    '                return lambda *a, **k: None',
+    '        _pgb_pygame.gfxdraw = _PgbNoGfxdraw()',
+    '    if hasattr(_pgb_pygame, "event") and not hasattr(_pgb_pygame.event, "get_events"):',
+    '        _pgb_pygame.event.get_events = _pgb_pygame.event.get',
+    '    if hasattr(_pgb_pygame, "mixer") and hasattr(_pgb_pygame.mixer, "init"):',
+    '        _pgb_orig_mixer_init = _pgb_pygame.mixer.init',
+    '        def _pgb_safe_mixer_init(*a, **k):',
+    '            try: return _pgb_orig_mixer_init(*a, **k)',
+    '            except Exception: return None',
+    '        _pgb_pygame.mixer.init = _pgb_safe_mixer_init',
+    '    if hasattr(_pgb_pygame, "display") and hasattr(_pgb_pygame.display, "set_mode"):',
+    '        _pgb_orig_set_mode = _pgb_pygame.display.set_mode',
+    '        _pgb_boot_printed = False',
+    '        def _pgb_set_mode(*a, **k):',
+    '            global _pgb_boot_printed',
+    '            surf = _pgb_orig_set_mode(*a, **k)',
+    '            if not _pgb_boot_printed:',
+    '                _pgb_boot_printed = True',
+    '                try: print("___ULLM_GAME_BOOTED___", flush=True)',
+    '                except Exception: pass',
+    '            return surf',
+    '        _pgb_pygame.display.set_mode = _pgb_set_mode',
+    'except Exception:',
+    '    pass',
+    '# --- end ullm preamble ---',
     '',
   ].join('\n');
-  return shim + out;
+
+  return preamble + out;
 }
 
 // A build is only reusable once pygbag has finished AND patchIndexHtml has run.
-// pygbag writes index.html partway through, so "index.html exists" is NOT the
-// same as "this bundle works": an unpatched loader still points at the dead
-// browserfs CDN and sits on "Loading..." forever. A build that times out, fails
-// or is interrupted after pygbag emits index.html would otherwise leave that
-// broken file on disk and be served as a cache hit for every later request with
-// the same code -- which is exactly what makes replaying a history item hang,
-// since the same source always hashes to the same id.
 const READY_FILE = '.ullm-ready';
 
 function isBuilt(webDir) {
@@ -83,33 +161,41 @@ async function buildWebGame(code) {
 
   const p = (async () => {
     const appDir = path.join(ROOT, id);
-    // Clear anything a previous failed attempt left behind, so we never build on
-    // top of a half-written bundle.
     try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
     fs.mkdirSync(appDir, { recursive: true });
-    fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(code), 'utf8'); // pygbag entry point must be main.py
-    await runPygbag(appDir);
-    const idxPath = path.join(webDir, 'index.html');
-    if (!fs.existsSync(idxPath)) {
-      throw new Error('pygbag finished but produced no build/web/index.html');
+    try {
+      fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(code), 'utf8');
+      await runPygbag(appDir);
+      const idxPath = path.join(webDir, 'index.html');
+      if (!fs.existsSync(idxPath)) {
+        throw new Error('pygbag finished but produced no build/web/index.html');
+      }
+      patchIndexHtml(idxPath);
+      if (!fs.readFileSync(idxPath, 'utf8').includes('<script id="ullm-diag">')) {
+        throw new Error('pygbag output could not be patched (the loader would hang)');
+      }
+      fs.writeFileSync(path.join(webDir, READY_FILE), String(Date.now()), 'utf8');
+      games.set(id, { dir: webDir, builtAt: Date.now() });
+      pruneOldGames();
+    } catch (err) {
+      try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) {}
+      throw err;
     }
-    patchIndexHtml(idxPath);
-    // patchIndexHtml swallows its own errors, so confirm the marker it always
-    // appends actually landed. Failing loudly beats serving a page that hangs.
-    if (!fs.readFileSync(idxPath, 'utf8').includes('ullm-diag')) {
-      throw new Error('pygbag output could not be patched (the loader would hang)');
-    }
-    fs.writeFileSync(path.join(webDir, READY_FILE), String(Date.now()), 'utf8');
-    games.set(id, { dir: webDir, builtAt: Date.now() });
   })();
   building.set(id, p);
   try { await p; } finally { building.delete(id); }
   return { id, cached: false };
 }
 
-// pygbag 0.9.3's generated loader references browserfs.min.js at a CDN path that
-// now 404s (the pygame-web CDN dropped it), which leaves the game stuck on
-// "Loading…". Repoint it at a reliable copy on jsdelivr so BrowserFS resolves.
+// Patch pygbag 0.9.3's generated index.html:
+// 1. Repoint dead browserfs CDN URL to jsdelivr and set ume_block:0 for auto-start.
+// 2. Isolate same-origin capabilities (localStorage, sessionStorage, indexedDB,
+//    window.parent, window.top, and /api/* requests) so untrusted Python code
+//    running in Pygbag WASM cannot read user BYOK keys or call authenticated APIs.
+// 3. Force full-viewport canvas CSS and permanently hide pygbag's #pyconsole, #dlg,
+//    #box, and #infobox overlays so the console NEVER splits half-code / half-game.
+// 4. Only emit `game-error` to the parent when `___ULLM_FATAL_PYTHON_CRASH___`
+//    occurs or when the canvas fails to initialize after 45s.
 function patchIndexHtml(idxPath) {
   try {
     let html = fs.readFileSync(idxPath, 'utf8');
@@ -117,79 +203,81 @@ function patchIndexHtml(idxPath) {
       /https:\/\/pygame-web\.github\.io\/cdn\/[0-9.]+\/+browserfs\.min\.js/g,
       'https://cdn.jsdelivr.net/npm/browserfs@1.4.3/dist/browserfs.min.js',
     );
-    // Auto-start the game instead of blocking on a user click. pygbag computes
-    // MM.UME = !ume_block, so the default ume_block:1 leaves MM.UME false and the
-    // loader sits waiting for a gesture — which, embedded in an iframe that just
-    // reads "Loading…", the user has no idea they need to make. ume_block:0 starts
-    // the game immediately; the audio context simply resumes on the first click.
     html = html.replace(/ume_block\s*:\s*1/g, 'ume_block : 0');
-    // pygbag's loader resolves PACKAGE wheels (pygame_ce, numpy, ...) against its
-    // own dev-server default, http://localhost:8000/cdn/, not the "-CDN-" base
-    // declared in its package index. Nothing serves :8000 here and our CSP blocks
-    // it, so the wheel fetch fails, pygame never imports, and the loader sits
-    // there with the tab pinned — the "frozen game" symptom. The URL is built at
-    // runtime, so it cannot be patched statically; rewrite it on the way out
-    // instead. Injected into <head> so it is installed before any fetch happens.
-    if (html.indexOf('ullm-cdn-fix') < 0) {
-      // Plain prefix matching, deliberately no regex literal: a regex here has to
-      // survive being written into a JS string and then into HTML, and an escaping
-      // slip silently produces an invalid literal that throws at parse time — which
-      // would leave the rewrite silently doing nothing.
-      const fix = [
+
+    if (html.indexOf('<script id="ullm-cdn-fix">') < 0) {
+      const headPatch = [
+        '<style id="ullm-game-css">',
+        'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:#000!important;}',
+        'canvas.emscripten,#canvas{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;object-fit:contain!important;display:block!important;margin:auto!important;z-index:10!important;background:#000!important;}',
+        '#pyconsole,#dlg,#box,#terminal,#system,#transfer,#status,#infobox{display:none!important;visibility:hidden!important;height:0!important;max-height:0!important;overflow:hidden!important;pointer-events:none!important;z-index:-1!important;}',
+        '</style>',
         '<script id="ullm-cdn-fix">(function(){',
+        // Capture parent postMessage before shadowing window.parent/top
+        'var rawParent=(window.parent&&window.parent!==window)?window.parent:null;',
+        'var postUp=rawParent?rawParent.postMessage.bind(rawParent):function(){};',
+        'var origin=window.location.origin;',
+        'Object.defineProperty(window,"__ullmPost",{value:function(msg){try{postUp(msg,origin);}catch(e){}},writable:false,configurable:false});',
+        // Isolate storage & parent frame access so untrusted WASM Python cannot read ullm.keys
+        'function memStore(){var d=Object.create(null);return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[k]=String(v);},removeItem:function(k){delete d[k];},clear:function(){d=Object.create(null);},key:function(i){return Object.keys(d)[i]||null;},get length(){return Object.keys(d).length;}};}',
+        'try{Object.defineProperty(window,"localStorage",{value:memStore(),configurable:false});}catch(e){}',
+        'try{Object.defineProperty(window,"sessionStorage",{value:memStore(),configurable:false});}catch(e){}',
+        'try{Object.defineProperty(window,"indexedDB",{get:function(){return null;},configurable:false});}catch(e){}',
+        'try{Object.defineProperty(window,"parent",{get:function(){return window;},configurable:false});}catch(e){}',
+        'try{Object.defineProperty(window,"top",{get:function(){return window;},configurable:false});}catch(e){}',
+        'try{Object.defineProperty(window,"frameElement",{get:function(){return null;},configurable:false});}catch(e){}',
+        // Rewrite localhost:8000 wheel URLs and block same-origin /api/* or /auth/* requests
         'var BAD=["http://localhost:8000/","https://localhost:8000/"];',
         'var GOOD="https://pygame-web.github.io/";',
         'function fx(u){u=String(u);for(var i=0;i<BAD.length;i++){',
         'if(u.slice(0,BAD[i].length)===BAD[i])return GOOD+u.slice(BAD[i].length);}',
         'return u;}',
+        'function blocked(u){try{var p=new URL(String(u),window.location.href);if(p.origin===origin&&(/^\\/(api|auth)(\\/|$)/i.test(p.pathname)))return true;}catch(e){}return false;}',
         'var of=window.fetch;',
         'window.fetch=function(i,o){',
+        'var u=(typeof i==="string")?i:(i&&i.url)||"";',
+        'if(blocked(u))return Promise.reject(new Error("Blocked by sandbox"));',
         'if(typeof i==="string")i=fx(i);',
         'else if(i&&i.url){var n=fx(i.url);if(n!==i.url)i=new Request(n,i);}',
         'return of.call(this,i,o);};',
         'var oo=XMLHttpRequest.prototype.open;',
         'XMLHttpRequest.prototype.open=function(m,u){',
+        'if(blocked(u))throw new Error("Blocked by sandbox");',
         'var a=[].slice.call(arguments);a[1]=fx(u);return oo.apply(this,a);};',
         '})();<' + '/script>',
       ].join('');
-      html = html.replace(/<head>/i, '<head>' + fix);
+      html = html.replace(/<head>/i, '<head>' + headPatch);
     }
-    // Make the game page self-diagnosing: surface real errors (ignoring browser-
-    // extension noise like the injected share-modal.js), and if pygbag's loader
-    // never hands off, drop its "Loading…" overlay after a grace period so a
-    // running or frozen game is visible instead of a perpetual spinner.
-    if (html.indexOf('ullm-diag') < 0) {
-      // The page is served from our own origin and framed by the arena, so it can
-      // post failures straight up to the parent, which turns them into a "Fix it"
-      // offer. Three signals, in descending confidence:
-      //   python  — a real traceback scraped out of pygbag's console element
-      //   js      — a window error / unhandled rejection (extension noise filtered)
-      //   nostart — the canvas was never sized, i.e. it died during import or setup
+
+    if (html.indexOf('<script id="ullm-diag">') < 0) {
       const diag = [
-        '<script>(function(){',
-        'var seen={};',
+        '<script id="ullm-diag">(function(){',
+        'var seen={},booted=false;',
+        'function post(obj){if(typeof window.__ullmPost==="function")window.__ullmPost(obj);}',
+        'function markBooted(){if(booted)return;booted=true;post({__ullm:"game-booted"});}',
         'function report(kind,text){text=String(text||"").slice(0,2000);var k=kind+"|"+text;',
         'if(seen[k])return;seen[k]=1;',
-        'try{parent.postMessage({__ullm:"game-error",kind:kind,message:text},location.origin);}catch(e){}}',
-        'function box(){var e=document.getElementById("ullm-diag");if(!e){e=document.createElement("div");e.id="ullm-diag";',
-        'e.style.cssText="position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:rgba(30,0,0,.92);color:#ff9b9b;font:12px/1.4 monospace;padding:8px 10px;white-space:pre-wrap;max-height:45%;overflow:auto";',
-        'document.body.appendChild(e);}return e;}',
-        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0;}',
-        'window.addEventListener("error",function(e){var src=(e&&e.filename)||"";var m=(e&&e.message)||String(e);',
-        'if(noise(src)||noise(m))return;box().textContent+="JS error: "+m+(src?(" @ "+src+":"+(e.lineno||"")):"")+"\\n";',
-        'report("js",m+(src?(" @ "+src):""));});',
-        'window.addEventListener("unhandledrejection",function(e){var r=e&&e.reason;var m=(r&&r.message)||r;',
-        'if(noise(m))return;box().textContent+="Promise rejected: "+m+"\\n";report("js","Unhandled rejection: "+m);});',
-        // pygbag prints Python tracebacks into #pyconsole (a textarea in 0.9.x).
-        'function scanPy(){var pc=document.getElementById("pyconsole");if(!pc)return;',
-        'var t=pc.value||pc.textContent||"";var i=t.lastIndexOf("Traceback (most recent call last)");',
-        'if(i>=0)report("python",t.slice(i));}',
-        'setInterval(scanPy,2000);',
-        'setTimeout(function(){var ib=document.getElementById("infobox");if(ib)ib.style.display="none";',
-        'var c=document.getElementById("canvas");if(c&&c.width<=1){var pc=document.getElementById("pyconsole");',
-        'if(pc){pc.hidden=false;pc.style.cssText="position:fixed;left:0;right:0;bottom:0;height:45%;z-index:2147483646;background:#000;color:#ddd;overflow:auto;font:11px monospace";}',
-        'scanPy();',
-        'report("nostart","The game never started: after 15 seconds its canvas had still not been initialised. This usually means an exception was raised during import or setup, before the display was created.");}},15000);',
+        'post({__ullm:"game-error",kind:kind,message:text});}',
+        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0||s.indexOf("NotAllowedError")>=0||s.indexOf("AudioContext")>=0||s.indexOf("play()")>=0||s.indexOf("ResizeObserver")>=0||s.indexOf("Blocked by sandbox")>=0;}',
+        'window.addEventListener("error",function(e){if(booted)return;var src=(e&&e.filename)||"";var m=(e&&e.message)||String(e);',
+        'if(noise(src)||noise(m))return;if(/SyntaxError|ReferenceError|RangeError|WebAssembly|RuntimeError/i.test(m))report("js",m+(src?(" @ "+src):""));});',
+        'window.addEventListener("unhandledrejection",function(e){if(booted)return;var r=e&&e.reason;var m=(r&&r.message)||String(r||"");',
+        'if(noise(m))return;if(/WebAssembly|RuntimeError|BadGzipFile/i.test(m))report("js","Unhandled rejection: "+m);});',
+        'function scanPy(){',
+        'var c=document.getElementById("canvas");if(c&&c.width>1&&c.height>1)markBooted();',
+        'var pc=document.getElementById("pyconsole");if(!pc)return;',
+        'var t=pc.value||pc.textContent||"";',
+        'if(t.indexOf("___ULLM_GAME_BOOTED___")>=0)markBooted();',
+        'var f=t.lastIndexOf("___ULLM_FATAL_PYTHON_CRASH___");',
+        'if(f>=0){var sub=t.slice(f+"___ULLM_FATAL_PYTHON_CRASH___".length).trim();report("python",sub||"Unhandled Python exception in game.");return;}',
+        'if(!booted){var tb=t.lastIndexOf("Traceback (most recent call last)");',
+        'if(tb>=0&&/SyntaxError:|IndentationError:|ImportError:|ModuleNotFoundError:|NameError:/.test(t.slice(tb))){report("python",t.slice(tb));}}',
+        '}',
+        'setInterval(scanPy,1500);',
+        'setTimeout(function(){scanPy();if(!booted){var c=document.getElementById("canvas");if(!c||c.width<=1){',
+        'var pc=document.getElementById("pyconsole");var t=(pc&&(pc.value||pc.textContent))||"";var i=t.lastIndexOf("Traceback (most recent call last)");',
+        'if(i>=0)report("python",t.slice(i));',
+        'else report("nostart","The game never started: after 45 seconds its canvas had still not been initialised.");}}},45000);',
         '})();</script>',
       ].join('');
       if (html.indexOf('</body>') >= 0) html = html.replace('</body>', diag + '\n</body>');
@@ -204,13 +292,7 @@ function runPygbag(appDir) {
     const args = ['-m', 'pygbag', '--build', path.join(appDir, 'main.py')];
     let child;
     try {
-      // PEP 540 UTF-8 mode. pygbag opens main.py with the interpreter's default
-      // encoding, which on Windows is cp1252 — so a single non-ASCII character in
-      // the generated source (models routinely emit arrows in a controls legend:
-      // "Left/Right ← →") crashes the build with UnicodeDecodeError before any
-      // bundle is produced. Forcing UTF-8 makes the build locale-independent and
-      // identical to the Linux container.
-      const env = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' };
+      const env = buildSafeGameEnv();
       child = spawn(PYTHON_CMD, args, { cwd: appDir, windowsHide: true, env });
     } catch (e) { return reject(new Error('Failed to start pygbag: ' + e.message)); }
     let log = '';
@@ -236,11 +318,19 @@ function runPygbag(appDir) {
 function gameDir(id) {
   if (!/^[a-f0-9]{16}$/.test(String(id || ''))) return null; // ids are sha256 prefixes
   const g = games.get(id);
-  if (g) return g.dir;
+  if (g) {
+    g.builtAt = Date.now();
+    return g.dir;
+  }
   // survive a server restart: re-adopt a build that's still on disk
   const dir = webDirFor(id);
-  if (isBuilt(dir)) { games.set(id, { dir, builtAt: Date.now() }); return dir; }
+  if (isBuilt(dir)) {
+    games.set(id, { dir, builtAt: Date.now() });
+    pruneOldGames();
+    return dir;
+  }
   return null;
 }
 
-module.exports = { buildWebGame, gameDir, webGameEnabled, idFor };
+module.exports = { buildWebGame, gameDir, webGameEnabled, idFor, sanitizeForPygbag, patchIndexHtml };
+

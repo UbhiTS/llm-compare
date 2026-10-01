@@ -96,6 +96,50 @@ const TASK_CATEGORIES = [
   ['general', '🌐 General'],
 ];
 
+let SAVED_PROMPTS = [];
+let ACTIVE_SAVED_PROMPT_ID = null;
+
+function isCustomTaskId(val) {
+  return !val || val === 'custom' || String(val).startsWith('saved:');
+}
+
+function isCustomTaskSelected() {
+  const ts = $('#taskSelect');
+  return isCustomTaskId(ts && ts.value);
+}
+
+function getSavedPromptById(id) {
+  if (!id) return null;
+  const cleanId = String(id).replace(/^saved:/, '');
+  return SAVED_PROMPTS.find((p) => p && p.id === cleanId) || null;
+}
+
+function updateCategoryCustomOptionCount() {
+  const cs = $('#categorySelect');
+  if (!cs) return;
+  const opt = cs.querySelector('option[value="custom"]');
+  if (!opt) return;
+  opt.textContent = SAVED_PROMPTS.length > 0
+    ? `✏️ Custom & Saved Prompts (${SAVED_PROMPTS.length})`
+    : '✏️ Custom Prompt';
+}
+
+function syncSavedPromptButtons() {
+  const saveBtn = $('#savePromptBtn');
+  const delBtn = $('#deleteSavedPromptBtn');
+  const isCustom = isCustomTaskSelected();
+  if (saveBtn) {
+    saveBtn.classList.toggle('hidden', !isCustom);
+  }
+  const ts = $('#taskSelect');
+  const selectedVal = (ts && ts.value) || 'custom';
+  const savedItem = String(selectedVal).startsWith('saved:') ? getSavedPromptById(selectedVal) : null;
+  ACTIVE_SAVED_PROMPT_ID = savedItem ? savedItem.id : null;
+  if (delBtn) {
+    delBtn.classList.toggle('hidden', !isCustom || !savedItem);
+  }
+}
+
 function taskTagLabel(t) {
   return t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
 }
@@ -108,11 +152,32 @@ function populateTaskSelect(catKey, preferredTaskId) {
   if (!catKey || catKey === 'custom') {
     const customOpt = el('option');
     customOpt.value = 'custom';
-    customOpt.textContent = 'Custom Prompt — Freeform & File Attachments';
-    customOpt.selected = true;
+    customOpt.textContent = SAVED_PROMPTS.length > 0
+      ? '✏️ New / Freeform Custom Prompt & File Attachments'
+      : 'Custom Prompt — Freeform & File Attachments';
     ts.appendChild(customOpt);
-    ts.value = 'custom';
-    ts.disabled = true;
+
+    if (SAVED_PROMPTS.length > 0) {
+      const grp = document.createElement('optgroup');
+      grp.label = `🔖 My Saved Prompts (${SAVED_PROMPTS.length})`;
+      SAVED_PROMPTS.forEach((p) => {
+        if (!p || !p.id) return;
+        const o = el('option');
+        o.value = `saved:${p.id}`;
+        const attCount = Array.isArray(p.attachments) ? p.attachments.length : 0;
+        const attSuffix = attCount > 0 ? `  (${attCount} file${attCount > 1 ? 's' : ''})` : '';
+        o.textContent = `🔖 ${p.title || 'Saved prompt'}${attSuffix}`;
+        grp.appendChild(o);
+      });
+      ts.appendChild(grp);
+    }
+
+    const wantVal = (preferredTaskId && String(preferredTaskId).startsWith('saved:') && getSavedPromptById(preferredTaskId))
+      ? preferredTaskId
+      : 'custom';
+    ts.value = wantVal;
+    ts.disabled = SAVED_PROMPTS.length === 0;
+    syncSavedPromptButtons();
     return;
   }
 
@@ -132,13 +197,14 @@ function populateTaskSelect(catKey, preferredTaskId) {
   } else if (tasks.length > 0) {
     ts.value = tasks[0].id;
   }
+  syncSavedPromptButtons();
 }
 
 function selectTaskById(taskId) {
   const cs = $('#categorySelect');
-  if (!taskId || taskId === 'custom') {
+  if (!taskId || taskId === 'custom' || String(taskId).startsWith('saved:')) {
     if (cs) cs.value = 'custom';
-    populateTaskSelect('custom', 'custom');
+    populateTaskSelect('custom', taskId || 'custom');
     return;
   }
   const tasks = (CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [];
@@ -153,6 +219,120 @@ function selectTaskById(taskId) {
   }
 }
 
+function applySavedPromptToComposer(savedItem) {
+  if (!savedItem) return;
+  const customTa = $('#customPrompt');
+  if (customTa) customTa.value = savedItem.prompt || '';
+  if (Array.isArray(savedItem.attachments) && savedItem.attachments.length) {
+    restoreCustomAttachmentsFromData(savedItem.attachments);
+  } else {
+    clearAttachments();
+  }
+  ACTIVE_SAVED_PROMPT_ID = savedItem.id;
+  syncSavedPromptButtons();
+  renderTaskPrompt();
+}
+
+async function onSavePromptClick() {
+  const customTa = $('#customPrompt');
+  const promptText = (customTa && customTa.value) || '';
+  if (!promptText.trim() && CUSTOM_ATTACHMENTS.length === 0) {
+    window.alert('Write a custom prompt or attach a file before saving.');
+    if (customTa) customTa.focus();
+    return;
+  }
+  const existing = ACTIVE_SAVED_PROMPT_ID ? getSavedPromptById(ACTIVE_SAVED_PROMPT_ID) : null;
+  const defaultTitle = existing
+    ? existing.title
+    : (promptText.trim().split(/\r?\n/)[0] || (CUSTOM_ATTACHMENTS[0] && CUSTOM_ATTACHMENTS[0].name) || 'Custom Prompt')
+        .replace(/\s+/g, ' ').trim().slice(0, 70);
+  const rawTitle = window.prompt('Name this prompt for your Saved Prompts library:', defaultTitle);
+  if (rawTitle === null) return; // cancelled
+  const title = rawTitle.trim() || defaultTitle || 'Saved Prompt';
+  const updateSameId = existing && existing.title.toLowerCase() === title.toLowerCase() ? existing.id : undefined;
+
+  const saveBtn = $('#savePromptBtn');
+  const origHtml = saveBtn ? saveBtn.innerHTML : '🔖 Save prompt';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+  }
+  try {
+    const attachments = CUSTOM_ATTACHMENTS.map((a) => ({
+      name: a.name,
+      mimeType: a.mimeType,
+      size: a.size,
+      data: a.data || undefined,
+      textContent: a.textContent || undefined,
+      estimatedTokens: a.estimatedTokens,
+      pageCount: a.pageCount,
+      warning: a.warning,
+      sha256: a.sha256,
+      sha1: a.sha1,
+    }));
+    const resp = await fetch('/api/me/prompts', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: updateSameId,
+        title,
+        prompt: promptText,
+        attachments,
+      }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to save prompt.');
+    SAVED_PROMPTS = Array.isArray(data.savedPrompts) ? data.savedPrompts : SAVED_PROMPTS;
+    updateCategoryCustomOptionCount();
+    const savedId = (data.saved && data.saved.id) || updateSameId;
+    populateTaskSelect('custom', savedId ? `saved:${savedId}` : 'custom');
+    renderTaskMeta();
+    if (saveBtn) {
+      saveBtn.classList.add('is-saved');
+      saveBtn.textContent = '✓ Saved to library';
+      setTimeout(() => {
+        saveBtn.classList.remove('is-saved');
+        saveBtn.innerHTML = origHtml;
+      }, 1600);
+    }
+  } catch (err) {
+    window.alert('Could not save prompt: ' + err.message);
+    if (saveBtn) saveBtn.innerHTML = origHtml;
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+async function onDeleteSavedPromptClick() {
+  const ts = $('#taskSelect');
+  const val = (ts && ts.value) || '';
+  const item = String(val).startsWith('saved:') ? getSavedPromptById(val) : null;
+  if (!item) return;
+  if (!window.confirm(`Delete saved prompt "${item.title}" from your library?`)) return;
+  const delBtn = $('#deleteSavedPromptBtn');
+  if (delBtn) delBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/me/prompts/' + encodeURIComponent(item.id), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not delete saved prompt.');
+    SAVED_PROMPTS = Array.isArray(data.savedPrompts) ? data.savedPrompts : SAVED_PROMPTS.filter((p) => p.id !== item.id);
+    ACTIVE_SAVED_PROMPT_ID = null;
+    updateCategoryCustomOptionCount();
+    populateTaskSelect('custom', 'custom');
+    renderTaskPrompt();
+  } catch (err) {
+    window.alert('Could not delete saved prompt: ' + err.message);
+  } finally {
+    if (delBtn) delBtn.disabled = false;
+  }
+}
+
 // ---------- init ----------
 init();
 async function init() {
@@ -162,6 +342,7 @@ async function init() {
   CONFIG = await cfgResp.json();
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
+  SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
   initUserMenu(CONFIG.me);
   // Seed the drag-and-drop slots from the server's default selection, then let
   // MODELS be derived from the slots from here on.
@@ -177,7 +358,7 @@ async function init() {
       if (cat === 'custom') {
         const o = el('option');
         o.value = 'custom';
-        o.textContent = label;
+        o.textContent = SAVED_PROMPTS.length > 0 ? `✏️ Custom & Saved Prompts (${SAVED_PROMPTS.length})` : label;
         cs.appendChild(o);
         return;
       }
@@ -191,6 +372,12 @@ async function init() {
   }
 
   const onTaskSelectionChange = () => {
+    const selVal = (ts && ts.value) || 'custom';
+    if (String(selVal).startsWith('saved:')) {
+      const savedItem = getSavedPromptById(selVal);
+      if (savedItem) applySavedPromptToComposer(savedItem);
+    }
+    syncSavedPromptButtons();
     renderTaskPrompt();
     $('#scorecard').classList.add('hidden');
     { const jb = $('#jumpScorecardBtn'); if (jb) jb.classList.add('hidden'); }
@@ -207,6 +394,12 @@ async function init() {
   }
   if (ts) {
     ts.addEventListener('change', onTaskSelectionChange);
+  }
+  {
+    const sb = $('#savePromptBtn');
+    if (sb) sb.addEventListener('click', onSavePromptClick);
+    const db = $('#deleteSavedPromptBtn');
+    if (db) db.addEventListener('click', onDeleteSavedPromptClick);
   }
   initAttachmentsUI();
 
@@ -263,7 +456,14 @@ async function init() {
     });
   }
 
-  selectTaskById('custom');
+  const initialTask = (prefs.taskId && String(prefs.taskId).startsWith('saved:') && getSavedPromptById(prefs.taskId))
+    ? prefs.taskId
+    : 'custom';
+  selectTaskById(initialTask);
+  if (String(initialTask).startsWith('saved:') && !isRemembered) {
+    const savedItem = getSavedPromptById(initialTask);
+    if (savedItem) applySavedPromptToComposer(savedItem);
+  }
   renderTaskPrompt();
 
   renderModelEditors();
@@ -1031,7 +1231,7 @@ function saveUserPreferencesImmediate() {
   })).filter((s) => s.catalogId);
 
   const cb = $('#rememberPromptCheckbox');
-  const isCustom = taskId === 'custom';
+  const isCustom = isCustomTaskId(taskId);
   const shouldRemember = Boolean(cb && cb.checked && isCustom);
 
   const payload = {
@@ -1330,8 +1530,20 @@ function updateRunButton() {
 }
 
 function currentTask() {
-  const id = $('#taskSelect').value;
-  if (id === 'custom') return { id: 'custom', title: 'Custom prompt', prompt: '', testCount: 0, category: 'general', language: null, executable: false };
+  const id = ($('#taskSelect') && $('#taskSelect').value) || 'custom';
+  if (isCustomTaskId(id)) {
+    const saved = String(id).startsWith('saved:') ? getSavedPromptById(id) : null;
+    return {
+      id: 'custom',
+      savedPromptId: saved ? saved.id : null,
+      title: saved && saved.title ? saved.title : 'Custom prompt',
+      prompt: '',
+      testCount: 0,
+      category: 'general',
+      language: null,
+      executable: false,
+    };
+  }
   return CONFIG.tasks.find((t) => t.id === id) || CONFIG.tasks[0];
 }
 let CUSTOM_ATTACHMENTS = []; // [{ id, name, mimeType, size, data, textContent, previewUrl, estimatedTokens, pageCount, warning }]
@@ -1916,8 +2128,7 @@ function clearAttachments() {
 function renderContextMeter() {
   const meterEl = $('#contextMeterBar');
   const pillEl = $('#composerTokenPill');
-  const sel = $('#taskSelect');
-  if (!sel || sel.value !== 'custom') {
+  if (!isCustomTaskSelected()) {
     if (meterEl) meterEl.classList.add('hidden');
     if (pillEl) pillEl.classList.add('hidden');
     return;
@@ -2042,8 +2253,7 @@ function renderAttachments() {
 }
 
 function currentAttachmentsPayload() {
-  const sel = $('#taskSelect');
-  if (!sel || sel.value !== 'custom' || !CUSTOM_ATTACHMENTS.length) return undefined;
+  if (!isCustomTaskSelected() || !CUSTOM_ATTACHMENTS.length) return undefined;
   return CUSTOM_ATTACHMENTS.map((a) => {
     if (a.cached && (a.sha256 || a.sha1)) {
       return {
@@ -2101,7 +2311,7 @@ function initAttachmentsUI() {
 
   if (copyBtn) {
     copyBtn.addEventListener('click', async () => {
-      const isCustom = $('#taskSelect') && $('#taskSelect').value === 'custom';
+      const isCustom = isCustomTaskSelected();
       const rawText = isCustom
         ? (($('#customPrompt') && $('#customPrompt').value) || '')
         : (($('#taskPrompt') && $('#taskPrompt').textContent) || '');
@@ -2153,7 +2363,7 @@ function initAttachmentsUI() {
   [dz, ta].forEach((target) => {
     if (!target) return;
     target.addEventListener('dragover', (e) => {
-      if ($('#taskSelect').value !== 'custom') return;
+      if (!isCustomTaskSelected()) return;
       e.preventDefault();
       if (dz) dz.classList.add('drag-over');
     });
@@ -2161,7 +2371,7 @@ function initAttachmentsUI() {
       if (dz && !dz.contains(e.relatedTarget)) dz.classList.remove('drag-over');
     });
     target.addEventListener('drop', (e) => {
-      if ($('#taskSelect').value !== 'custom') return;
+      if (!isCustomTaskSelected()) return;
       if (dz) dz.classList.remove('drag-over');
       const dt = e.dataTransfer;
       if (dt && dt.files && dt.files.length) {
@@ -2182,7 +2392,7 @@ function initAttachmentsUI() {
       }
     });
     ta.addEventListener('paste', (e) => {
-      if ($('#taskSelect').value !== 'custom') return;
+      if (!isCustomTaskSelected()) return;
       const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
       const pastedFiles = [];
@@ -2222,6 +2432,7 @@ function renderTaskMeta() {
   if (t.language) bits.push(t.language);
   if (t.testCount) bits.push(`${t.testCount} hidden tests`);
   if (t.executable) bits.push('runnable \u25b8');
+  if (t.savedPromptId) bits.push('🔖 saved prompt');
   if (t.id === 'custom' && CUSTOM_ATTACHMENTS.length) {
     bits.push(`${CUSTOM_ATTACHMENTS.length} attachment${CUSTOM_ATTACHMENTS.length > 1 ? 's' : ''}`);
   }
@@ -2235,7 +2446,7 @@ function renderTaskPrompt() {
   const attWrap = $('#customAttachmentsWrap');
   const rememberWrap = $('#rememberPromptWrap');
   const t = currentTask();
-  const isCustom = $('#taskSelect').value === 'custom';
+  const isCustom = isCustomTaskSelected();
 
   if (isCustom) {
     if (tp) {
@@ -2255,6 +2466,7 @@ function renderTaskPrompt() {
     if (rememberWrap) rememberWrap.classList.add('hidden');
   }
 
+  syncSavedPromptButtons();
   renderTaskMeta();
   renderContextMeter();
 }
@@ -2809,16 +3021,21 @@ async function repairSlot(slot, automatic) {
   await rerunSlot(slot, { code: c.code, error: c.error });
 }
 
-// The framed game page posts its own failures up to us. Match the reporting
+// The framed game page posts its own status/failures up to us. Match the reporting
 // window back to a slot by comparing it with each column's iframe.
 window.addEventListener('message', (e) => {
   const d = e && e.data;
-  if (!d || d.__ullm !== 'game-error' || e.origin !== window.location.origin) return;
+  if (!d || (d.__ullm !== 'game-error' && d.__ullm !== 'game-booted') || e.origin !== window.location.origin) return;
   const frames = document.querySelectorAll('.game-frame');
   for (const f of frames) {
     if (f.contentWindow === e.source) {
       const slot = (f.closest('.col') || {}).dataset && f.closest('.col').dataset.slot;
-      if (slot) noteCrash(slot, { error: d.message, source: d.kind });
+      if (!slot) return;
+      if (d.__ullm === 'game-booted') {
+        clearCrash(slot);
+      } else if (d.__ullm === 'game-error') {
+        noteCrash(slot, { error: d.message, source: d.kind });
+      }
       return;
     }
   }
@@ -2933,12 +3150,24 @@ async function runWebGame(slot, code, btn, out, viz) {
     clearCrash(slot);      // a clean build supersedes any earlier failure
     out.classList.add('hidden');
     if (viz) {
+      const colEl = $(`#col-${slot}`);
+      if (colEl) colEl.classList.add('game-code-collapsed');
       viz.classList.remove('hidden');
       viz.innerHTML =
         '<div class="game-wrap"><iframe class="game-frame" src="' + r.url + '" title="' + esc(modelLabel(slot)) +
         '" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
         '<div class="game-bar"><span>Running in your browser via WebAssembly' + (r.cached ? ' · cached build' : '') +
-        '</span><a href="' + r.url + '" target="_blank" rel="noopener">↗ Full screen</a></div>';
+        '</span><div class="game-bar-actions">' +
+        '<button type="button" class="game-code-toggle" data-slot="' + esc(slot) + '" title="Toggle Python source code view">&lt;/&gt; Show code</button>' +
+        '<a href="' + r.url + '" target="_blank" rel="noopener">↗ Full screen</a>' +
+        '</div></div>';
+      const toggleBtn = viz.querySelector('.game-code-toggle');
+      if (toggleBtn && colEl) {
+        toggleBtn.addEventListener('click', () => {
+          const collapsed = colEl.classList.toggle('game-code-collapsed');
+          toggleBtn.innerHTML = collapsed ? '&lt;/&gt; Show code' : '&lt;/&gt; Hide code';
+        });
+      }
     }
   } catch (e) {
     out.classList.remove('hidden');
@@ -3390,10 +3619,12 @@ async function run() {
   }, 100);
 
   const cb = $('#rememberPromptCheckbox');
-  const rememberPrompt = Boolean(cb && cb.checked && $('#taskSelect').value === 'custom');
+  const rememberPrompt = Boolean(cb && cb.checked && isCustomTaskSelected());
+  const curTask = currentTask();
 
   const payload = {
     taskId: $('#taskSelect').value,
+    taskTitle: curTask && curTask.title ? curTask.title : undefined,
     maxIterations: 1, // single-shot: correctness = the model's first-attempt pass rate (no self-debug retries)
     models: MODELS,
     customPrompt: $('#customPrompt').value,
@@ -3473,6 +3704,9 @@ async function rerunSlot(slot, repair) {
   // Reset just this column.
   resetStreamState(slot);
   clearCrash(slot);
+  { const colEl = $(`#col-${slot}`); if (colEl) colEl.classList.remove('game-code-collapsed'); }
+  { const vizEl = $(`#exec-viz-${slot}`); if (vizEl) { vizEl.classList.add('hidden'); vizEl.innerHTML = ''; } }
+  { const outEl = $(`#exec-out-${slot}`); if (outEl) outEl.classList.add('hidden'); }
   delete LAST_RESULTS[slot];
   wallFinished.delete(slot);
   ['tok', 'think', 'tps', 'cost'].forEach((k) => setTileVal(slot, k, 0));
@@ -3488,8 +3722,10 @@ async function rerunSlot(slot, repair) {
   setStatus(slot, 'Queued…', 'run');
 
   try {
+    const curTask = currentTask();
     const st = await streamRun({
       taskId: $('#taskSelect').value,
+      taskTitle: curTask && curTask.title ? curTask.title : undefined,
       maxIterations: 1,
       models: [model],
       mode: 'single',            // draws on the separate single-model re-run budget
@@ -3519,6 +3755,7 @@ async function rerunSlot(slot, repair) {
 function handleEvent(ev, results, own) {
   switch (ev.type) {
     case 'start':
+    case 'ping':
       break;
     case 'quota': // server's authoritative daily-runs count for this run
       if (ev.quota && ev.quota.limited) {
@@ -4207,12 +4444,12 @@ async function restoreHistory(id) {
     const snap = j.run;
     closeAuthModal();
     selectTaskById(snap.taskId);
-    if ((!snap.taskId || snap.taskId === 'custom') && snap.prompt && $('#customPrompt')) {
+    if (isCustomTaskId(snap.taskId) && snap.prompt && $('#customPrompt')) {
       $('#customPrompt').value = snap.prompt;
     }
-    if ((!snap.taskId || snap.taskId === 'custom') && Array.isArray(snap.attachments) && snap.attachments.length) {
+    if (isCustomTaskId(snap.taskId) && Array.isArray(snap.attachments) && snap.attachments.length) {
       restoreCustomAttachmentsFromData(snap.attachments);
-    } else if (!snap.taskId || snap.taskId === 'custom') {
+    } else if (isCustomTaskId(snap.taskId)) {
       clearAttachments();
     }
     const cb = $('#rememberPromptCheckbox');

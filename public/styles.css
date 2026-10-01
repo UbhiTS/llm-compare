@@ -2211,4 +2211,50 @@ a.ud-item[hidden] { display: none; }
   }
 }
 
+/* Saved Prompts Library & Gaming Console Full-Screen Polish */
+#savePromptBtn {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-hi));
+}
+#savePromptBtn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+#savePromptBtn.is-saved {
+  border-color: var(--ok, #22c55e) !important;
+  color: var(--ok, #22c55e) !important;
+}
+#deleteSavedPromptBtn {
+  color: var(--muted);
+}
+#deleteSavedPromptBtn:hover:not(:disabled) {
+  border-color: var(--err, #ef4444);
+  color: var(--err, #ef4444);
+}
+
+/* When a WebAssembly game starts playing in a card, collapse the raw Python source
+   above the canvas so the card doesn't split half-code / half-game screen. */
+.col.game-code-collapsed .code-wrap {
+  display: none !important;
+}
+.game-bar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.game-code-toggle {
+  background: transparent;
+  border: 1px solid var(--border-hi);
+  color: var(--muted);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.game-code-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 

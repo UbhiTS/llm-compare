@@ -447,11 +447,12 @@ app.get('/api/config', (req, res) => {
       lastModels: history.lastModels(req.user.username),   // reopen on their last selection
       lastPrompt: history.lastPrompt(req.user.username),   // reopen on their last prompt
       preferences: history.getUserPreferences(req.user.username),
+      savedPrompts: history.listSavedPrompts(req.user.username),
     },
   });
 });
 
-// ---------- user preferences (remembered prompt, task, slots per user) ----------
+// ---------- user preferences & saved prompts library (per user) ----------
 app.get('/api/me/preferences', (req, res) => {
   res.json({ ok: true, preferences: history.getUserPreferences(req.user.username) });
 });
@@ -459,6 +460,25 @@ app.get('/api/me/preferences', (req, res) => {
 app.post('/api/me/preferences', (req, res) => {
   const prefs = history.saveUserPreferences(req.user.username, req.body || {});
   res.json({ ok: true, preferences: prefs });
+});
+
+app.get('/api/me/prompts', (req, res) => {
+  res.json({ ok: true, savedPrompts: history.listSavedPrompts(req.user.username) });
+});
+
+app.post('/api/me/prompts', (req, res) => {
+  try {
+    const out = history.saveUserPrompt(req.user.username, req.body || {});
+    res.json({ ok: true, saved: out.prompt, prompt: out.prompt, savedPrompts: out.savedPrompts });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.delete('/api/me/prompts/:id', (req, res) => {
+  const out = history.deleteUserPrompt(req.user.username, req.params.id);
+  if (!out.removed) return res.status(404).json({ ok: false, error: 'Saved prompt not found.' });
+  res.json({ ok: true, removed: true, savedPrompts: out.savedPrompts });
 });
 
 // ---------- run history (per-user; admins can see everyone) ----------
@@ -785,13 +805,20 @@ app.post('/api/run', async (req, res) => {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
   let task;
-  if (taskId === 'custom' || taskId === '__custom__') {
+  const isCustomOrSaved = taskId === 'custom' || taskId === '__custom__' || String(taskId || '').startsWith('saved:');
+  if (isCustomOrSaved) {
     const defaultCustomPrompt = attachments.length
       ? 'Analyze the attached file(s) and provide a detailed response.'
       : 'Write a short response.';
+    const explicitTitle = (req.body && typeof req.body.taskTitle === 'string' && req.body.taskTitle.trim())
+      ? req.body.taskTitle.trim().slice(0, 120)
+      : '';
+    const defaultTitle = attachments.length
+      ? `Custom prompt (${attachments.length} attachment${attachments.length > 1 ? 's' : ''})`
+      : 'Custom prompt';
     task = {
       id: 'custom',
-      title: attachments.length ? `Custom prompt (${attachments.length} attachment${attachments.length > 1 ? 's' : ''})` : 'Custom prompt',
+      title: explicitTitle || defaultTitle,
       prompt: (customPrompt || '').trim() || defaultCustomPrompt,
       functionName: 'solution',
       testCases: [], // no hidden tests -> single generation, no self-debug loop
@@ -867,11 +894,21 @@ app.post('/api/run', async (req, res) => {
   const ac = new AbortController();
   let finished = false;
   let aborted = false;
+  // Periodic NDJSON heartbeat so Cloud Run / load balancers never idle-timeout
+  // long-thinking model streams before the first token arrives.
+  const heartbeatTimer = setInterval(() => {
+    if (!finished && !aborted && !res.writableEnded) {
+      emit({ type: 'ping', ts: Date.now() });
+    }
+  }, 15000);
+  if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
+
   // NOTE: this must be res 'close', NOT req 'close'. The request stream closes as
   // soon as its body has been read, which is long before the run ends — listening
   // there aborts every run the instant it starts. res 'close' fires either when
   // the response completes (guarded by `finished`) or when the peer really goes away.
   res.on('close', () => {
+    clearInterval(heartbeatTimer);
     if (finished || res.writableFinished) return;
     aborted = true;
     ac.abort();
@@ -885,6 +922,8 @@ app.post('/api/run', async (req, res) => {
     results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair, runId });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
+  } finally {
+    clearInterval(heartbeatTimer);
   }
   finished = true;
   if (aborted) return res.end();   // nothing to log: the client threw this run away

@@ -105,11 +105,13 @@ function initSqlite() {
           task_id TEXT,
           slots_json TEXT,
           attachments_json TEXT,
+          saved_prompts_json TEXT,
           remembered INTEGER,
           updated_at INTEGER
         );
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN attachments_json TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN remembered INTEGER;`); } catch (_) {}
       stmts = {
         upsert: sqliteDb.prepare(`
@@ -125,14 +127,15 @@ function initSqlite() {
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
-          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, remembered, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, saved_prompts_json, remembered, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_key) DO UPDATE SET
             user = excluded.user,
             prompt = excluded.prompt,
             task_id = excluded.task_id,
             slots_json = excluded.slots_json,
             attachments_json = excluded.attachments_json,
+            saved_prompts_json = excluded.saved_prompts_json,
             remembered = excluded.remembered,
             updated_at = excluded.updated_at
         `),
@@ -147,8 +150,10 @@ function initSqlite() {
         for (const pr of prefRows) {
           let slots = null;
           let attachments = [];
+          let savedPrompts = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
           try { attachments = JSON.parse(pr.attachments_json || '[]'); } catch (_) {}
+          try { savedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           prefsByUserKey.set(pr.user_key, {
             user: pr.user,
@@ -157,6 +162,7 @@ function initSqlite() {
             slots,
             models,
             attachments: Array.isArray(attachments) ? attachments : [],
+            savedPrompts: Array.isArray(savedPrompts) ? savedPrompts : [],
             remembered: Boolean(pr.remembered),
             updatedAt: Number(pr.updated_at) || 0,
           });
@@ -534,10 +540,73 @@ function derivePrefsFromHistory(u, key) {
   };
 }
 
-// Get remembered preferences for a specific user (prompt, taskId, slots)
+const MAX_SAVED_PROMPTS = 50;
+
+function sanitizeAttachmentsArray(list) {
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 10).map((a) => ({
+    name: String((a && a.name) || 'file').slice(0, 200),
+    mimeType: String((a && a.mimeType) || 'application/octet-stream').slice(0, 100),
+    size: Number(a && a.size) || 0,
+    isEmpty: Boolean(a && a.isEmpty),
+    pageCount: Number(a && a.pageCount) || 0,
+    warning: (a && a.warning) ? String(a.warning).slice(0, 200) : null,
+    optBadge: (a && a.optBadge) ? String(a.optBadge).slice(0, 200) : null,
+    sha1: (a && a.sha1) ? String(a.sha1).slice(0, 64) : null,
+    sha256: (a && a.sha256) ? String(a.sha256).slice(0, 64) : null,
+    data: (a && typeof a.data === 'string') ? a.data : '',
+    textContent: (a && typeof a.textContent === 'string') ? a.textContent.slice(0, 2500000) : '',
+    claudeDataBase64: (a && typeof a.claudeDataBase64 === 'string') ? a.claudeDataBase64 : undefined,
+    claudeMimeType: (a && a.claudeMimeType) ? String(a.claudeMimeType) : undefined,
+    fitDataBase64: (a && typeof a.fitDataBase64 === 'string') ? a.fitDataBase64 : undefined,
+    fitMimeType: (a && a.fitMimeType) ? String(a.fitMimeType) : undefined,
+    estimatedTokens: Number(a && a.estimatedTokens) || undefined,
+  }));
+}
+
+function sanitizeSavedPromptItem(item) {
+  if (!item || typeof item !== 'object') return null;
+  const prompt = typeof item.prompt === 'string' ? item.prompt.slice(0, 500000) : '';
+  const attachments = sanitizeAttachmentsArray(item.attachments);
+  if (!prompt.trim() && !attachments.length) return null;
+  const rawId = typeof item.id === 'string' ? item.id.trim() : '';
+  const id = /^[a-zA-Z0-9_-]{4,64}$/.test(rawId)
+    ? rawId
+    : `sp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+  const rawTitle = typeof item.title === 'string' ? item.title.trim() : '';
+  const fallbackTitle = prompt.trim()
+    ? prompt.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ').slice(0, 64)
+    : (attachments.length ? `Saved Files (${attachments.map((a) => a.name).join(', ').slice(0, 48)})` : 'Saved Prompt');
+  const title = (rawTitle || fallbackTitle || 'Saved Prompt').slice(0, 120);
+  const now = Date.now();
+  return {
+    id,
+    title,
+    prompt,
+    attachments,
+    createdAt: Number(item.createdAt) || now,
+    updatedAt: Number(item.updatedAt) || now,
+  };
+}
+
+function sanitizeSavedPromptsList(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seenIds = new Set();
+  for (const raw of list) {
+    const clean = sanitizeSavedPromptItem(raw);
+    if (!clean || seenIds.has(clean.id)) continue;
+    seenIds.add(clean.id);
+    out.push(clean);
+    if (out.length >= MAX_SAVED_PROMPTS) break;
+  }
+  return out;
+}
+
+// Get remembered preferences for a specific user (prompt, taskId, slots, savedPrompts)
 function getUserPreferences(username) {
   const u = norm(username);
-  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null };
+  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], remembered: false };
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
   let p = prefsByUserKey.get(key);
@@ -559,9 +628,10 @@ function getUserPreferences(username) {
   }
   if (p) {
     if (!Array.isArray(p.attachments)) p.attachments = [];
+    if (!Array.isArray(p.savedPrompts)) p.savedPrompts = [];
     if (p.remembered === undefined) p.remembered = false;
   }
-  return p || { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], remembered: false };
+  return p || { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], remembered: false };
 }
 
 // Per-user promise chain so rapid concurrent saveUserPreferences calls
@@ -591,26 +661,13 @@ function saveUserPreferences(username, newPrefs) {
       prompt = newPrefs.prompt.slice(0, 500000);
     }
     if (Array.isArray(newPrefs.attachments)) {
-      attachments = newPrefs.attachments.slice(0, 10).map((a) => ({
-        name: String(a.name || 'file').slice(0, 200),
-        mimeType: String(a.mimeType || 'application/octet-stream').slice(0, 100),
-        size: Number(a.size) || 0,
-        isEmpty: Boolean(a.isEmpty),
-        pageCount: Number(a.pageCount) || 0,
-        warning: a.warning ? String(a.warning).slice(0, 200) : null,
-        optBadge: a.optBadge ? String(a.optBadge).slice(0, 200) : null,
-        sha1: a.sha1 ? String(a.sha1).slice(0, 64) : null,
-        sha256: a.sha256 ? String(a.sha256).slice(0, 64) : null,
-        data: typeof a.data === 'string' ? a.data : '',
-        textContent: typeof a.textContent === 'string' ? a.textContent.slice(0, 2500000) : '',
-        claudeDataBase64: typeof a.claudeDataBase64 === 'string' ? a.claudeDataBase64 : undefined,
-        claudeMimeType: a.claudeMimeType ? String(a.claudeMimeType) : undefined,
-        fitDataBase64: typeof a.fitDataBase64 === 'string' ? a.fitDataBase64 : undefined,
-        fitMimeType: a.fitMimeType ? String(a.fitMimeType) : undefined,
-        estimatedTokens: Number(a.estimatedTokens) || undefined,
-      }));
+      attachments = sanitizeAttachmentsArray(newPrefs.attachments);
     }
   }
+
+  const savedPrompts = Array.isArray(newPrefs.savedPrompts)
+    ? sanitizeSavedPromptsList(newPrefs.savedPrompts)
+    : (Array.isArray(current.savedPrompts) ? current.savedPrompts : []);
 
   const taskId = typeof newPrefs.taskId === 'string'
     ? newPrefs.taskId.slice(0, 100)
@@ -649,6 +706,7 @@ function saveUserPreferences(username, newPrefs) {
     slots,
     models,
     attachments,
+    savedPrompts,
     remembered: Boolean(remembered),
     updatedAt,
   };
@@ -664,6 +722,7 @@ function saveUserPreferences(username, newPrefs) {
         taskId,
         JSON.stringify(slots || []),
         JSON.stringify(attachments || []),
+        JSON.stringify(savedPrompts || []),
         remembered ? 1 : 0,
         updatedAt
       );
@@ -693,6 +752,59 @@ function saveUserPreferences(username, newPrefs) {
   prefWriteChains.set(key, nextChain);
 
   return prefObj;
+}
+
+// List a user's saved prompts library (newest / most recently updated first).
+function listSavedPrompts(username) {
+  const p = getUserPreferences(username);
+  return Array.isArray(p && p.savedPrompts) ? p.savedPrompts : [];
+}
+
+// Save or update a named prompt in the user's saved prompts library.
+function saveUserPrompt(username, item) {
+  const u = norm(username);
+  if (!u) throw new Error('User is required.');
+  const clean = sanitizeSavedPromptItem(item);
+  if (!clean) throw new Error('Please enter a prompt or attach a file before saving.');
+  const existing = listSavedPrompts(u).slice();
+  const now = Date.now();
+  const matchIdx = existing.findIndex((x) =>
+    x.id === clean.id || (item && !item.id && x.title.toLowerCase() === clean.title.toLowerCase())
+  );
+  let savedEntry;
+  if (matchIdx >= 0) {
+    const prev = existing[matchIdx];
+    savedEntry = {
+      ...clean,
+      id: prev.id,
+      createdAt: prev.createdAt || now,
+      updatedAt: now,
+    };
+    existing.splice(matchIdx, 1);
+  } else {
+    savedEntry = {
+      ...clean,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+  const updatedList = [savedEntry, ...existing].slice(0, MAX_SAVED_PROMPTS);
+  saveUserPreferences(u, { savedPrompts: updatedList });
+  return { ok: true, saved: savedEntry, prompt: savedEntry, savedPrompts: updatedList };
+}
+
+// Delete a saved prompt by ID from the user's library.
+function deleteUserPrompt(username, promptId) {
+  const u = norm(username);
+  if (!u) return { ok: false, removed: false, savedPrompts: [] };
+  const sid = String(promptId || '').trim();
+  const existing = listSavedPrompts(u);
+  const filtered = existing.filter((x) => x && x.id !== sid);
+  const removed = filtered.length !== existing.length;
+  if (removed) {
+    saveUserPreferences(u, { savedPrompts: filtered });
+  }
+  return { ok: true, removed, savedPrompts: filtered };
 }
 
 // Instant (<0.1ms) lookup of the user's last used prompt
@@ -928,5 +1040,5 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
 
 initSqlite();
 
-module.exports = { saveRun, attachJudgeToLatestRun, newId, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, BASE_DIR };
+module.exports = { saveRun, attachJudgeToLatestRun, newId, listRuns, listAllRuns, getRun, deleteRun, usageSummary, lastModels, lastPrompt, getUserPreferences, saveUserPreferences, listSavedPrompts, saveUserPrompt, deleteUserPrompt, BASE_DIR };
 
