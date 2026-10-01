@@ -26,6 +26,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
+const vault = require('./vault');
 
 const BASE_DIR = process.env.APP_DATA_DIR
   ? path.join(process.env.APP_DATA_DIR, 'history')
@@ -116,8 +117,12 @@ function initSqlite() {
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
+      let needsVacuum = false;
       // Purge any legacy multi-MB remembered prompt/attachments columns in existing SQLite DBs
-      try { sqliteDb.exec(`UPDATE user_prefs SET prompt = '', attachments_json = '[]', remembered = 0 WHERE prompt != '' OR (attachments_json IS NOT NULL AND attachments_json != '[]');`); } catch (_) {}
+      try {
+        const res = sqliteDb.prepare(`UPDATE user_prefs SET prompt = '', attachments_json = '[]', remembered = 0 WHERE prompt != '' OR (attachments_json IS NOT NULL AND attachments_json != '[]')`).run();
+        if (res && res.changes > 0) needsVacuum = true;
+      } catch (_) {}
       stmts = {
         upsert: sqliteDb.prepare(`
           INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json)
@@ -155,21 +160,43 @@ function initSqlite() {
           const rowUser = norm(pr.user);
           if (!rowUser || userKey(rowUser) !== pr.user_key) continue;
           let slots = null;
-          let savedPrompts = [];
+          let rawSavedPrompts = [];
           let savedPresets = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
-          try { savedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
+          try { rawSavedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
           try { savedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
+          const { list: savedPrompts, hadBlobs } = extractAndStripSavedPrompts(pr.user_key, rawSavedPrompts);
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
-          prefsByUserKey.set(pr.user_key, {
+          const prefEntry = {
             user: rowUser,
             taskId: pr.task_id || 'custom',
             slots,
             models,
-            savedPrompts: Array.isArray(savedPrompts) ? savedPrompts : [],
+            savedPrompts,
             savedPresets: Array.isArray(savedPresets) ? savedPresets : [],
             updatedAt: Number(pr.updated_at) || 0,
-          });
+          };
+          prefsByUserKey.set(pr.user_key, prefEntry);
+          if (hadBlobs) {
+            needsVacuum = true;
+            try {
+              stmts.upsertPref.run(
+                pr.user_key,
+                rowUser,
+                prefEntry.taskId,
+                JSON.stringify(slots || []),
+                JSON.stringify(savedPrompts),
+                JSON.stringify(prefEntry.savedPresets),
+                prefEntry.updatedAt || Date.now()
+              );
+            } catch (_) {}
+            const pfile = path.join(BASE_DIR, pr.user_key, 'prefs.json');
+            fsp.writeFile(pfile, JSON.stringify(prefEntry, null, 2)).catch(() => {});
+          }
+        }
+        if (needsVacuum) {
+          try { sqliteDb.exec('VACUUM;'); } catch (_) {}
+          schedulePersistSnapshot();
         }
       } catch (_) {}
     }
@@ -344,7 +371,9 @@ function ensureOwnerLoadedSync(key) {
         const raw = fs.readFileSync(pfile, 'utf8');
         const p = JSON.parse(raw);
         if (p && typeof p === 'object') {
+          const { list: strippedPrompts, hadBlobs } = extractAndStripSavedPrompts(key, p.savedPrompts);
           const hadLegacyBloat = Boolean(
+            hadBlobs ||
             (typeof p.prompt === 'string' && p.prompt.length > 0) ||
             (Array.isArray(p.attachments) && p.attachments.length > 0) ||
             p.remembered !== undefined
@@ -354,7 +383,7 @@ function ensureOwnerLoadedSync(key) {
             taskId: p.taskId || 'custom',
             slots: Array.isArray(p.slots) ? p.slots : null,
             models: Array.isArray(p.models) ? p.models : null,
-            savedPrompts: sanitizeSavedPromptsList(p.savedPrompts),
+            savedPrompts: strippedPrompts,
             savedPresets: sanitizeSavedPresetsList(p.savedPresets),
             updatedAt: Number(p.updatedAt) || 0,
           };
@@ -445,25 +474,25 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
       : ((task && typeof task.prompt === 'string') ? task.prompt : '');
 
     const rawAttachments = (task && Array.isArray(task.attachments)) ? task.attachments : [];
-    const attachments = rawAttachments.map((a) => ({
-      name: a.name,
-      mimeType: a.mimeType,
-      kind: a.kind,
-      size: Number(a.size) || 0,
-      isEmpty: Boolean(a.isEmpty),
-      pageCount: Number(a.pageCount) || 0,
-      warning: a.warning || null,
-      optBadge: a.optBadge || null,
-      sha1: a.sha1 || null,
-      sha256: a.sha256 || null,
-      data: a.data || '',
-      textContent: a.textContent || '',
-      claudeDataBase64: a.claudeDataBase64 || undefined,
-      claudeMimeType: a.claudeMimeType || undefined,
-      fitDataBase64: a.fitDataBase64 || undefined,
-      fitMimeType: a.fitMimeType || undefined,
-      estimatedTokens: a.estimatedTokens || undefined,
-    }));
+    // Store raw binary attachments in the user's vault (/data/vault/<userKey>/<sha256>.bin)
+    // and store only compact ~180-byte vault pointers inside <runId>.json on disk!
+    const attachments = rawAttachments.map((a) => {
+      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
+      return ptr || {
+        name: a.name,
+        mimeType: a.mimeType,
+        kind: a.kind,
+        size: Number(a.size) || 0,
+        isEmpty: Boolean(a.isEmpty),
+        pageCount: Number(a.pageCount) || 0,
+        warning: a.warning || null,
+        optBadge: a.optBadge || null,
+        sha1: a.sha1 || null,
+        sha256: a.sha256 || null,
+        vaultRef: a.sha256 || a.vaultRef || null,
+        estimatedTokens: a.estimatedTokens || undefined,
+      };
+    });
 
     const record = {
       v: 1, id, at,
@@ -555,13 +584,15 @@ function sanitizeAttachmentsArray(list) {
   return list.slice(0, 10).map((a) => ({
     name: String((a && a.name) || 'file').slice(0, 200),
     mimeType: String((a && a.mimeType) || 'application/octet-stream').slice(0, 100),
+    kind: (a && a.kind) ? String(a.kind).slice(0, 40) : undefined,
     size: Number(a && a.size) || 0,
     isEmpty: Boolean(a && a.isEmpty),
     pageCount: Number(a && a.pageCount) || 0,
     warning: (a && a.warning) ? String(a.warning).slice(0, 200) : null,
     optBadge: (a && a.optBadge) ? String(a.optBadge).slice(0, 200) : null,
     sha1: (a && a.sha1) ? String(a.sha1).slice(0, 64) : null,
-    sha256: (a && a.sha256) ? String(a.sha256) : null,
+    sha256: (a && (a.sha256 || a.vaultRef)) ? String(a.sha256 || a.vaultRef).slice(0, 64) : null,
+    vaultRef: (a && (a.vaultRef || a.sha256)) ? String(a.vaultRef || a.sha256).slice(0, 64) : null,
     data: (a && typeof a.data === 'string') ? a.data : '',
     textContent: (a && typeof a.textContent === 'string') ? a.textContent.slice(0, 2500000) : '',
     claudeDataBase64: (a && typeof a.claudeDataBase64 === 'string') ? a.claudeDataBase64 : undefined,
@@ -569,14 +600,91 @@ function sanitizeAttachmentsArray(list) {
     fitDataBase64: (a && typeof a.fitDataBase64 === 'string') ? a.fitDataBase64 : undefined,
     fitMimeType: (a && a.fitMimeType) ? String(a.fitMimeType) : undefined,
     estimatedTokens: Number(a && a.estimatedTokens) || undefined,
+    hasBlob: Boolean(a && (a.hasBlob || a.vaultRef || a.sha256 || a.data || a.textContent)),
   }));
 }
 
-function sanitizeSavedPromptItem(item) {
+// Convert attachments into compact ~180-byte Per-User Vault pointers (storing any
+// raw binary bytes into `/data/vault/<userKey>/<sha256>.bin`) so `GET /api/config`,
+// SQLite `user_prefs`, and `prefs.json` never contain base64 strings!
+function persistAttachmentsToUserVaultSync(uKey, list) {
+  if (!Array.isArray(list)) return { pointers: [], hadInlineBlobs: false };
+  const pointers = [];
+  let hadInlineBlobs = false;
+  for (const a of list.slice(0, 10)) {
+    if (!a || typeof a !== 'object') continue;
+    if ((a.data && a.data.length > 0) || (a.textContent && a.textContent.length > 0) || a.claudeDataBase64 || a.fitDataBase64) {
+      hadInlineBlobs = true;
+    }
+    if (uKey) {
+      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
+      if (ptr) {
+        pointers.push(ptr);
+        continue;
+      }
+    }
+    pointers.push({
+      name: String(a.name || 'file').slice(0, 200),
+      mimeType: String(a.mimeType || 'application/octet-stream').slice(0, 100),
+      kind: a.kind ? String(a.kind).slice(0, 40) : undefined,
+      size: Number(a.size) || 0,
+      isEmpty: Boolean(a.isEmpty),
+      pageCount: Number(a.pageCount) || 0,
+      warning: a.warning ? String(a.warning).slice(0, 200) : null,
+      optBadge: a.optBadge ? String(a.optBadge).slice(0, 200) : null,
+      sha1: a.sha1 ? String(a.sha1).slice(0, 64) : null,
+      sha256: (a.sha256 || a.vaultRef) ? String(a.sha256 || a.vaultRef).slice(0, 64) : null,
+      vaultRef: (a.vaultRef || a.sha256) ? String(a.vaultRef || a.sha256).slice(0, 64) : null,
+      estimatedTokens: Number(a.estimatedTokens) || undefined,
+      hasBlob: Boolean(a.hasBlob || a.vaultRef || a.sha256 || a.data || a.textContent),
+    });
+  }
+  return { pointers, hadInlineBlobs };
+}
+
+function extractAndStripSavedPrompts(uKey, rawList) {
+  if (!Array.isArray(rawList)) return { list: [], hadBlobs: false };
+  const out = [];
+  const seenIds = new Set();
+  let hadBlobs = false;
+  for (const raw of rawList) {
+    const clean = sanitizeSavedPromptItem(raw, true);
+    if (!clean || seenIds.has(clean.id)) continue;
+    seenIds.add(clean.id);
+
+    // If a legacy `sp_<id>.json` file exists in `/data/history/<uKey>/`, migrate its blobs into the binary vault too
+    let rawAtts = clean.attachments;
+    if (uKey) {
+      const legacySpPath = path.join(BASE_DIR, uKey, `sp_${clean.id}.json`);
+      try {
+        if (fs.existsSync(legacySpPath)) {
+          const parsed = JSON.parse(fs.readFileSync(legacySpPath, 'utf8'));
+          if (parsed && Array.isArray(parsed.attachments) && parsed.attachments.length) {
+            rawAtts = sanitizeAttachmentsArray(parsed.attachments);
+          }
+          fs.unlinkSync(legacySpPath);
+          hadBlobs = true;
+        }
+      } catch (_) {}
+    }
+
+    const { pointers, hadInlineBlobs } = persistAttachmentsToUserVaultSync(uKey, rawAtts);
+    if (hadInlineBlobs) hadBlobs = true;
+
+    out.push({
+      ...clean,
+      attachments: pointers,
+    });
+    if (out.length >= MAX_SAVED_PROMPTS) break;
+  }
+  return { list: out, hadBlobs };
+}
+
+function sanitizeSavedPromptItem(item, keepBlobs = false, uKey = '') {
   if (!item || typeof item !== 'object') return null;
   const prompt = typeof item.prompt === 'string' ? item.prompt.slice(0, 500000) : '';
-  const attachments = sanitizeAttachmentsArray(item.attachments);
-  if (!prompt.trim() && !attachments.length) return null;
+  const fullAttachments = sanitizeAttachmentsArray(item.attachments);
+  if (!prompt.trim() && !fullAttachments.length) return null;
   const rawId = typeof item.id === 'string' ? item.id.trim() : '';
   const id = /^[a-zA-Z0-9_-]{4,64}$/.test(rawId)
     ? rawId
@@ -584,31 +692,21 @@ function sanitizeSavedPromptItem(item) {
   const rawTitle = typeof item.title === 'string' ? item.title.trim() : '';
   const fallbackTitle = prompt.trim()
     ? prompt.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ').slice(0, 64)
-    : (attachments.length ? `Saved Files (${attachments.map((a) => a.name).join(', ').slice(0, 48)})` : 'Saved Prompt');
+    : (fullAttachments.length ? `Saved Files (${fullAttachments.map((a) => a.name).join(', ').slice(0, 48)})` : 'Saved Prompt');
   const title = (rawTitle || fallbackTitle || 'Saved Prompt').slice(0, 120);
   const now = Date.now();
   return {
     id,
     title,
     prompt,
-    attachments,
+    attachments: keepBlobs ? fullAttachments : persistAttachmentsToUserVaultSync(uKey, fullAttachments).pointers,
     createdAt: Number(item.createdAt) || now,
     updatedAt: Number(item.updatedAt) || now,
   };
 }
 
-function sanitizeSavedPromptsList(list) {
-  if (!Array.isArray(list)) return [];
-  const out = [];
-  const seenIds = new Set();
-  for (const raw of list) {
-    const clean = sanitizeSavedPromptItem(raw);
-    if (!clean || seenIds.has(clean.id)) continue;
-    seenIds.add(clean.id);
-    out.push(clean);
-    if (out.length >= MAX_SAVED_PROMPTS) break;
-  }
-  return out;
+function sanitizeSavedPromptsList(list, uKey) {
+  return extractAndStripSavedPrompts(uKey || '', list).list;
 }
 
 function sanitizeSavedPresetItem(item) {
@@ -702,7 +800,7 @@ function saveUserPreferences(username, newPrefs) {
   const current = getUserPreferences(u) || {};
 
   const savedPrompts = Array.isArray(newPrefs.savedPrompts)
-    ? sanitizeSavedPromptsList(newPrefs.savedPrompts)
+    ? sanitizeSavedPromptsList(newPrefs.savedPrompts, key)
     : (Array.isArray(current.savedPrompts) ? current.savedPrompts : []);
 
   const savedPresets = Array.isArray(newPrefs.savedPresets)
@@ -791,45 +889,72 @@ function saveUserPreferences(username, newPrefs) {
 }
 
 // List a user's saved prompts library (newest / most recently updated first).
+// Returns lightweight metadata + prompt text + ~180-byte Per-User Vault pointers.
 function listSavedPrompts(username) {
   const p = getUserPreferences(username);
   return Array.isArray(p && p.savedPrompts) ? p.savedPrompts.slice() : [];
 }
 
+// Fetch a single saved prompt with its attachment blobs hydrated from the user's binary vault.
+function getSavedPrompt(username, promptId) {
+  const u = norm(username);
+  if (!u) return null;
+  const uKey = userKey(u);
+  const sid = String(promptId || '').trim().replace(/^saved:/, '');
+  if (!sid) return null;
+  const list = listSavedPrompts(u);
+  const item = list.find((x) => x && x.id === sid);
+  if (!item) return null;
+  if (!Array.isArray(item.attachments) || !item.attachments.length) {
+    return { ...item, attachments: [] };
+  }
+  const hydratedAtts = item.attachments.map((a) => {
+    const v = vault.readAttachmentFromVaultSync(uKey, a);
+    return v ? { ...a, ...v } : a;
+  });
+  return {
+    ...item,
+    attachments: hydratedAtts,
+  };
+}
+
 // Save or update a named prompt in the user's saved prompts library.
+// Raw attachment binaries are stored AS-IS in `/data/vault/<userKey>/<sha256>.bin`,
+// while `savedPrompts` only stores the compact ~180-byte vault pointer.
 function saveUserPrompt(username, item) {
   const u = norm(username);
   if (!u) throw new Error('User is required.');
-  const clean = sanitizeSavedPromptItem(item);
-  if (!clean) throw new Error('Please enter a prompt or attach a file before saving.');
+  const uKey = userKey(u);
+  const cleanFull = sanitizeSavedPromptItem(item, true, uKey);
+  if (!cleanFull) throw new Error('Please enter a prompt or attach a file before saving.');
   const existing = listSavedPrompts(u).slice();
   const now = Date.now();
   const matchIdx = existing.findIndex((x) =>
-    (item && item.id && x.id === clean.id) || (item && !item.id && x.title.toLowerCase() === clean.title.toLowerCase())
+    (item && item.id && x.id === cleanFull.id) || (item && !item.id && x.title.toLowerCase() === cleanFull.title.toLowerCase())
   );
-  let savedEntry;
+  let targetId;
+  let createdAt = now;
   if (matchIdx >= 0) {
     const prev = existing[matchIdx];
-    savedEntry = {
-      ...clean,
-      id: prev.id,
-      createdAt: prev.createdAt || now,
-      updatedAt: now,
-    };
+    targetId = prev.id;
+    createdAt = prev.createdAt || now;
     existing.splice(matchIdx, 1);
   } else {
     // Always mint a fresh server-side ID when creating a new entry so users can never collide or spoof IDs
-    const freshId = `sp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
-    savedEntry = {
-      ...clean,
-      id: freshId,
-      createdAt: now,
-      updatedAt: now,
-    };
+    targetId = `sp_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
   }
-  const updatedList = [savedEntry, ...existing].slice(0, MAX_SAVED_PROMPTS);
+  const { pointers } = persistAttachmentsToUserVaultSync(uKey, cleanFull.attachments || []);
+
+  const metaEntry = {
+    ...cleanFull,
+    id: targetId,
+    attachments: pointers,
+    createdAt,
+    updatedAt: now,
+  };
+  const updatedList = [metaEntry, ...existing].slice(0, MAX_SAVED_PROMPTS);
   saveUserPreferences(u, { savedPrompts: updatedList });
-  return { ok: true, saved: savedEntry, prompt: savedEntry, savedPrompts: updatedList };
+  return { ok: true, saved: metaEntry, prompt: metaEntry, savedPrompts: updatedList };
 }
 
 // Delete a saved prompt by ID from the user's library.
@@ -950,6 +1075,44 @@ function listAllRuns() {
   return all.slice(0, MAX_LIST_ALL);
 }
 
+function hydrateRunAttachmentsForReturn(rec, fp) {
+  if (!rec || !Array.isArray(rec.attachments) || !rec.attachments.length) return rec;
+  const ownerKey = rec.userKey || userKey(rec.user);
+  let migratedLegacyInline = false;
+  const hydrated = rec.attachments.map((a) => {
+    if (!a || typeof a !== 'object') return a;
+    // If an older <runId>.json on disk still had inline base64 data, migrate it to the user's binary vault
+    if (ownerKey && ((a.data && a.data.length > 0) || (a.textContent && a.textContent.length > 0))) {
+      const ptr = vault.storeAttachmentInVaultSync(ownerKey, a);
+      if (ptr) {
+        migratedLegacyInline = true;
+        // For small attachments (<= 256 KB), keep inline data in the returned object for instant preview/tests
+        if ((Number(ptr.size) || 0) <= 262144) {
+          return { ...ptr, data: a.data || '', textContent: a.textContent || '' };
+        }
+        return ptr;
+      }
+    }
+    // If stored as a vault pointer and small (<= 256 KB), hydrate data/textContent from the binary vault
+    if (ownerKey && (a.vaultRef || a.sha256 || a.sha1) && !a.data && (Number(a.size) || 0) <= 262144) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a);
+      if (fromVault) {
+        return { ...a, data: fromVault.data || '', textContent: fromVault.textContent || '' };
+      }
+    }
+    return a;
+  });
+
+  if (migratedLegacyInline && fp) {
+    const diskRec = {
+      ...rec,
+      attachments: rec.attachments.map((a) => vault.storeAttachmentInVaultSync(ownerKey, a) || a),
+    };
+    fsp.writeFile(fp, JSON.stringify(diskRec)).catch(() => {});
+  }
+  return { ...rec, attachments: hydrated };
+}
+
 // Fetch one full record (with code & thinking traces) when a user clicks Restore.
 function getRun(id, { username, isAdmin }) {
   const sid = safeId(id);
@@ -969,12 +1132,12 @@ function getRun(id, { username, isAdmin }) {
           if (fresh) {
             fresh._cachedMtime = st.mtimeMs;
             cachePayload(sid, fresh);
-            if (isAdmin || userKey(fresh.user) === myKey) return fresh;
+            if (isAdmin || userKey(fresh.user) === myKey) return hydrateRunAttachmentsForReturn(fresh, fp);
           }
         }
       }
     } catch (_) {}
-    if (isAdmin || userKey(cached.user) === myKey) return cached;
+    if (isAdmin || userKey(cached.user) === myKey) return hydrateRunAttachmentsForReturn(cached, fp);
     return null;
   }
 
@@ -985,7 +1148,7 @@ function getRun(id, { username, isAdmin }) {
     const fp = path.join(BASE_DIR, meta.userKey, sid + '.json');
     try {
       const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-      if (rec) { cachePayload(sid, rec); return rec; }
+      if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp); }
     } catch (_) {}
   }
 
@@ -994,7 +1157,7 @@ function getRun(id, { username, isAdmin }) {
   try {
     if (fs.existsSync(mine)) {
       const own = JSON.parse(fs.readFileSync(mine, 'utf8'));
-      if (own) { cachePayload(sid, own); return own; }
+      if (own) { cachePayload(sid, own); return hydrateRunAttachmentsForReturn(own, mine); }
     }
   } catch (_) {}
 
@@ -1005,7 +1168,7 @@ function getRun(id, { username, isAdmin }) {
       const fp = path.join(BASE_DIR, k, sid + '.json');
       if (fs.existsSync(fp)) {
         const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-        if (rec) { cachePayload(sid, rec); return rec; }
+        if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp); }
       }
     }
   } catch (_) {}
@@ -1146,11 +1309,13 @@ module.exports = {
   getUserPreferences,
   saveUserPreferences,
   listSavedPrompts,
+  getSavedPrompt,
   saveUserPrompt,
   deleteUserPrompt,
   listSavedPresets,
   saveUserPreset,
   deleteUserPreset,
+  vault,
   BASE_DIR,
 };
 

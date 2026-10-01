@@ -9,6 +9,7 @@ const zlib = require('zlib');
 const path = require('path');
 const crypto = require('crypto');
 const { imageDimensionsFromBase64 } = require('./imageInfo');
+const vault = require('./vault');
 
 const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB per file
@@ -535,10 +536,20 @@ function cacheEvict(sha256) {
   if (old.sha1 && SHA1_INDEX.get(old.sha1) === sha256) SHA1_INDEX.delete(old.sha1);
 }
 
-function cacheSetAttachment(sha256, attObj) {
+function cacheSetAttachment(sha256, attObj, username = null) {
   if (!sha256 || !attObj) return;
+  const prev = ATTACHMENT_CACHE.get(sha256);
+  const owners = (prev && prev._owners instanceof Set) ? new Set(prev._owners) : (attObj._owners instanceof Set ? new Set(attObj._owners) : null);
   if (ATTACHMENT_CACHE.has(sha256)) cacheEvict(sha256);
-  ATTACHMENT_CACHE.set(sha256, { ...attObj });
+  const nextObj = { ...attObj };
+  if (username) {
+    const uSet = owners || new Set();
+    uSet.add(String(username).trim().toLowerCase());
+    nextObj._owners = uSet;
+  } else if (owners) {
+    nextObj._owners = owners;
+  }
+  ATTACHMENT_CACHE.set(sha256, nextObj);
   if (attObj.sha1) SHA1_INDEX.set(attObj.sha1, sha256);
   cacheBytes += approxBytes(attObj);
   // Evict least-recently-used entries beyond the count OR byte budget (always keep the newest).
@@ -566,11 +577,12 @@ class AttachmentExpiredError extends Error {
 // `pre` (optional): Map(index -> { pdf, zip }) of extraction results computed
 // off the main thread by normalizeAttachmentsAsync. Extraction is a pure
 // function of the file bytes, so the output is identical either way.
-function normalizeAttachments(rawList, pre = null) {
+function normalizeAttachments(rawList, pre = null, opts = null) {
   if (!Array.isArray(rawList) || !rawList.length) return [];
   const out = [];
   const seenHashes = new Set();
   const expired = [];
+  const username = opts && opts.username ? String(opts.username).trim().toLowerCase() : null;
 
   for (let i = 0; i < Math.min(rawList.length, MAX_ATTACHMENTS); i++) {
     const item = rawList[i];
@@ -579,14 +591,57 @@ function normalizeAttachments(rawList, pre = null) {
     const data = sanitizeBase64(item.data || item.dataBase64);
     const providedText = typeof item.textContent === 'string' ? item.textContent.slice(0, MAX_SINGLE_TEXT_CHARS) : '';
 
-    // Fast-path: resolve from the server-side LRU cache when the client passes
-    // `{ sha256, name }` (current) or `{ sha1, name }` (older clients).
-    if ((item.sha256 || item.sha1) && !data && !providedText) {
-      const cached = (item.sha256 && cacheGetAttachment(String(item.sha256))) || (item.sha1 && cacheGetAttachment(String(item.sha1)));
+    // Fast-path: resolve from the server-side LRU cache or the user's persistent
+    // binary vault (/data/vault/<userKey>/) when the client passes
+    // `{ sha256, name }` (current), `{ vaultRef, name }`, or `{ sha1, name }`.
+    const refSha256 = item.sha256 || item.vaultRef;
+    if ((refSha256 || item.sha1) && !data && !providedText) {
+      let cached = (refSha256 && cacheGetAttachment(String(refSha256))) || (item.sha1 && cacheGetAttachment(String(item.sha1)));
+      if (cached && username && cached._owners instanceof Set && !cached._owners.has(username)) {
+        cached = null;
+      }
+      if (!cached && username) {
+        const fromVault = vault.readAttachmentFromVaultSync(username, item);
+        if (fromVault) {
+          // Ensure kind/textContent/estimatedTokens are fully populated if the vault entry came from a raw binary migration
+          const vMime = inferMimeType(fromVault.name || name, fromVault.mimeType);
+          const vKind = classifyAttachment(vMime, fromVault.name || name, fromVault.isEmpty);
+          fromVault.mimeType = vMime;
+          fromVault.kind = vKind;
+          if (!fromVault.textContent && fromVault.data) {
+            const vBuf = Buffer.from(fromVault.data, 'base64');
+            if (vKind === 'pdf') {
+              const pdfInfo = inspectPdfBuffer(vBuf);
+              fromVault.pageCount = fromVault.pageCount || pdfInfo.pageCount;
+              fromVault.isEncrypted = pdfInfo.isEncrypted;
+              fromVault.pdfEncrypted = pdfInfo.isEncrypted;
+              fromVault.isScannedOrImageOnly = pdfInfo.isScannedOrImageOnly;
+              fromVault.pdfMeta = { pageCount: fromVault.pageCount, isEncrypted: pdfInfo.isEncrypted, isScannedOrImageOnly: pdfInfo.isScannedOrImageOnly };
+              fromVault.textContent = pdfInfo.textContent || '';
+              fromVault.extractedText = fromVault.textContent;
+            } else if (vKind === 'archive_doc') {
+              const extracted = extractZipOrOfficeText(vBuf);
+              if (extracted) {
+                fromVault.textContent = extracted;
+                fromVault.extractedText = extracted;
+                fromVault.kind = 'text';
+              }
+            } else if (vKind === 'text' && !isLikelyBinaryBuffer(vBuf)) {
+              fromVault.textContent = vBuf.toString('utf8').replace(/\0/g, '').slice(0, MAX_SINGLE_TEXT_CHARS);
+              fromVault.extractedText = fromVault.textContent;
+            }
+          }
+          if (!fromVault.estimatedTokens) {
+            fromVault.estimatedTokens = estimateAttachmentTokens(fromVault);
+          }
+          cacheSetAttachment(fromVault.sha256, fromVault, username);
+          cached = fromVault;
+        }
+      }
       if (!cached) {
         // Reference-only item whose bytes are gone: flag it, never fall through
         // to an empty buffer.
-        expired.push({ name, sha1: item.sha1 ? String(item.sha1).slice(0, 64) : null, sha256: item.sha256 ? String(item.sha256).slice(0, 64) : null });
+        expired.push({ name, sha1: item.sha1 ? String(item.sha1).slice(0, 64) : null, sha256: refSha256 ? String(refSha256).slice(0, 64) : null });
         continue;
       }
       if (cached) {
@@ -606,7 +661,10 @@ function normalizeAttachments(rawList, pre = null) {
           applyFitCopy(cached, copy);
           if (copy.status === 'ok') refreshed = true;
         }
-        if (refreshed) cacheSetAttachment(cached.sha256, cached);
+        if (refreshed) {
+          cacheSetAttachment(cached.sha256, cached, username);
+          if (username) vault.storeAttachmentInVaultAsync(username, cached).catch(() => {});
+        }
         out.push({
           ...cached,
           name: item.name ? name : cached.name,
@@ -697,6 +755,7 @@ function normalizeAttachments(rawList, pre = null) {
     const attObj = {
       sha1: contentSha1,
       sha256: contentSha256,
+      vaultRef: contentSha256,
       name,
       mimeType,
       kind,
@@ -719,7 +778,12 @@ function normalizeAttachments(rawList, pre = null) {
     applyFitCopy(attObj, validateFitCopy(item, kind, attObj.data));
     attObj.estimatedTokens = estimateAttachmentTokens(attObj);
     // One entry per file, keyed by SHA-256; SHA1_INDEX resolves legacy sha1 refs.
-    if (!isEmpty) cacheSetAttachment(contentSha256, attObj);
+    if (!isEmpty) {
+      cacheSetAttachment(contentSha256, attObj, username);
+      if (username) {
+        vault.storeAttachmentInVaultAsync(username, { ...attObj, rawBuffer: buf }).catch(() => {});
+      }
+    }
     out.push(attObj);
   }
   if (expired.length) throw new AttachmentExpiredError(expired);
@@ -738,10 +802,10 @@ function extractForWorker(op, buf) {
 // caps (boundedInflate) apply inside the worker exactly as inline. Falls back
 // to inline parsing if workers are disabled (ATTACHMENT_WORKERS=0) or a worker
 // fails, so behaviour never regresses.
-async function normalizeAttachmentsAsync(rawList) {
+async function normalizeAttachmentsAsync(rawList, opts = null) {
   if (!Array.isArray(rawList) || !rawList.length) return [];
   const worker = require('./attachmentWorker');
-  if (!worker.enabled()) return normalizeAttachments(rawList);
+  if (!worker.enabled()) return normalizeAttachments(rawList, null, opts);
   const jobs = [];
   for (let i = 0; i < Math.min(rawList.length, MAX_ATTACHMENTS); i++) {
     const item = rawList[i];
@@ -760,18 +824,18 @@ async function normalizeAttachmentsAsync(rawList) {
   for (const r of await Promise.all(jobs)) {
     if (r) pre.set(r[0], { [r[1]]: r[2] });
   }
-  return normalizeAttachments(rawList, pre);
+  return normalizeAttachments(rawList, pre, opts);
 }
 
-async function inspectAttachmentsAsync(rawList) {
-  return toInspection(await normalizeAttachmentsAsync(rawList));
+async function inspectAttachmentsAsync(rawList, opts = null) {
+  return toInspection(await normalizeAttachmentsAsync(rawList, opts));
 }
 
 // Lightweight inspection + server-side caching endpoint helper:
 // Normalizes and caches the uploaded attachment(s) by SHA-1 and returns exact token
 // counts, PDF page/encryption metadata, and Office/ZIP extracted text metrics.
-function inspectAttachments(rawList) {
-  return toInspection(normalizeAttachments(rawList));
+function inspectAttachments(rawList, opts = null) {
+  return toInspection(normalizeAttachments(rawList, null, opts));
 }
 
 function toInspection(normalized) {

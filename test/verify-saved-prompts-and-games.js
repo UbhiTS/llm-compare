@@ -285,11 +285,66 @@ async function runTests() {
     'Step 2 model slot dropdowns no longer use fixed 92px/138px widths'
   );
 
-  console.log('✓ All Saved Prompts, Saved Model Presets, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
+  // 5. Per-User Content-Addressable Binary File Vault Verification
+  const { normalizeAttachmentsAsync } = require('../src/attachments');
+  const vault = require('../src/vault');
+  const rawBinaryBuf = Buffer.alloc(64 * 1024, 0x42); // 64 KB binary file
+  const vaultSaveRes = saveUserPrompt(testUser, {
+    title: 'Large Binary Architecture Diagram',
+    prompt: 'Review this architecture binary.',
+    attachments: [
+      {
+        name: 'arch.bin',
+        mimeType: 'application/octet-stream',
+        size: rawBinaryBuf.length,
+        data: rawBinaryBuf.toString('base64'),
+        estimatedTokens: 320,
+      },
+    ],
+  });
+  assert.equal(vaultSaveRes.ok, true);
+  const ptr = vaultSaveRes.saved.attachments[0];
+  assert.ok(ptr.vaultRef && ptr.sha256 === ptr.vaultRef, 'Saved prompt attachment returns SHA-256 vaultRef pointer');
+  assert.equal(ptr.data, undefined, 'Saved prompt pointer never carries inline base64 data');
+  assert.equal(ptr.hasBlob, true, 'Saved prompt pointer marks hasBlob: true');
+
+  // Verify GET /api/config (getUserPreferences) payload remains tiny (< 2 KB) even with 64 KB binary attachment
+  const slimPrefs = getUserPreferences(testUser);
+  const slimJson = JSON.stringify(slimPrefs);
+  assert.ok(
+    slimJson.length < 2048,
+    `getUserPreferences JSON stays ultra-compact (${slimJson.length} bytes < 2048 bytes) because binary lives in per-user vault`
+  );
+
+  // Verify raw binary file exists as-is on disk inside testUser's vault directory
+  const rawFromVault = vault.getVaultRawBinarySync(testUser, ptr.vaultRef);
+  assert.ok(rawFromVault && Buffer.isBuffer(rawFromVault.buffer), 'Raw binary buffer is stored as-is in user vault');
+  assert.equal(rawFromVault.buffer.length, rawBinaryBuf.length, 'Raw binary file size matches original byte-for-byte');
+  assert.equal(Buffer.compare(rawFromVault.buffer, rawBinaryBuf), 0, 'Raw binary content matches original byte-for-byte');
+
+  // Verify normalizeAttachmentsAsync automatically hydrates from testUser's vault when given only the lightweight pointer
+  const hydrated = await normalizeAttachmentsAsync([ptr], { username: testUser });
+  assert.equal(hydrated.length, 1);
+  assert.equal(hydrated[0].sha256, ptr.vaultRef);
+  assert.equal(Buffer.from(hydrated[0].data, 'base64').length, rawBinaryBuf.length, 'Hydrated attachment from vault has full binary data');
+
+  // Verify strict cross-user vault isolation: otherUser cannot read or hydrate testUser's vault file
+  assert.equal(vault.getVaultRawBinarySync(otherUser, ptr.vaultRef), null, 'Other user cannot read testUser raw binary from vault');
+  await assert.rejects(
+    () => normalizeAttachmentsAsync([ptr], { username: otherUser }),
+    (err) => err && err.code === 'ATTACHMENT_EXPIRED',
+    'Other user referencing testUser vaultRef is rejected with ATTACHMENT_EXPIRED'
+  );
+
+  // Clean up testUser vault prompt
+  deleteUserPrompt(testUser, vaultSaveRes.saved.id);
+
+  console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }
 
 runTests().catch((err) => {
   console.error(err);
   process.exit(1);
 });
+
 

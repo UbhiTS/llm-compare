@@ -272,18 +272,40 @@ async function onSavePromptClick() {
     saveBtn.textContent = 'Saving…';
   }
   try {
-    const attachments = CUSTOM_ATTACHMENTS.map((a) => ({
-      name: a.name,
-      mimeType: a.mimeType,
-      size: a.size,
-      data: a.data || undefined,
-      textContent: a.textContent || undefined,
-      estimatedTokens: a.estimatedTokens,
-      pageCount: a.pageCount,
-      warning: a.warning,
-      sha256: a.sha256,
-      sha1: a.sha1,
-    }));
+    const attachments = CUSTOM_ATTACHMENTS.map((a) => {
+      if (a.cached && (a.sha256 || a.vaultRef)) {
+        return {
+          name: a.name,
+          mimeType: a.mimeType,
+          size: a.size,
+          estimatedTokens: a.estimatedTokens,
+          pageCount: a.pageCount,
+          warning: a.warning,
+          optBadge: a.optBadge,
+          sha256: a.sha256 || a.vaultRef,
+          vaultRef: a.vaultRef || a.sha256,
+          sha1: a.sha1,
+        };
+      }
+      return {
+        name: a.name,
+        mimeType: a.mimeType,
+        size: a.size,
+        data: a.data || undefined,
+        textContent: a.textContent || undefined,
+        claudeDataBase64: a.claudeDataBase64 || undefined,
+        claudeMimeType: a.claudeDataBase64 ? a.claudeMimeType : undefined,
+        fitDataBase64: a.fitDataBase64 || undefined,
+        fitMimeType: a.fitDataBase64 ? a.fitMimeType : undefined,
+        estimatedTokens: a.estimatedTokens,
+        pageCount: a.pageCount,
+        warning: a.warning,
+        optBadge: a.optBadge,
+        sha256: a.sha256,
+        vaultRef: a.vaultRef || a.sha256,
+        sha1: a.sha1,
+      };
+    });
     const resp = await fetch('/api/me/prompts', {
       method: 'POST',
       credentials: 'same-origin',
@@ -299,6 +321,9 @@ async function onSavePromptClick() {
     const data = await resp.json();
     if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to save prompt.');
     SAVED_PROMPTS = Array.isArray(data.savedPrompts) ? data.savedPrompts : SAVED_PROMPTS;
+    if (data.saved && Array.isArray(data.saved.attachments)) {
+      restoreCustomAttachmentsFromData(data.saved.attachments);
+    }
     updateCategoryCustomOptionCount();
     const savedId = (data.saved && data.saved.id) || updateSameId;
     populateTaskSelect('custom', savedId ? `saved:${savedId}` : 'custom');
@@ -352,7 +377,9 @@ async function onDeleteSavedPromptClick() {
 init();
 async function init() {
   initTheme();
-  const cfgResp = await fetch('/api/config', { credentials: 'same-origin' });
+  const prefetched = (typeof window !== 'undefined' && window.__ULLM_CONFIG_PROMISE__) || null;
+  if (typeof window !== 'undefined') window.__ULLM_CONFIG_PROMISE__ = null;
+  const cfgResp = await (prefetched || fetch('/api/config', { credentials: 'same-origin' }));
   if (cfgResp.status === 401) { window.location.replace('/login'); return; } // session expired/absent
   CONFIG = await cfgResp.json();
   if (CONFIG && CONFIG.version) {
@@ -1001,7 +1028,11 @@ function restoreCustomAttachmentsFromData(list) {
     const lowerName = String(a.name || '').toLowerCase();
     const mimeType = a.mimeType || (lowerName.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     const isImage = !a.isEmpty && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
-    const previewUrl = a.previewUrl || (isImage && a.data ? `data:${mimeType};base64,${a.data}` : null);
+    const vaultHash = a.vaultRef || a.sha256 || null;
+    const isVaultCached = Boolean(a.cached || vaultHash || a.sha1);
+    const previewUrl = a.previewUrl || (isImage && a.data
+      ? `data:${mimeType};base64,${a.data}`
+      : (isImage && vaultHash ? `/api/me/vault/${encodeURIComponent(vaultHash)}` : null));
     const attObj = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: a.name || 'file',
@@ -1012,8 +1043,9 @@ function restoreCustomAttachmentsFromData(list) {
       warning: a.warning || null,
       optBadge: a.optBadge || null,
       sha1: a.sha1 || null,
-      sha256: a.sha256 || null,
-      cached: Boolean(a.cached),
+      sha256: a.sha256 || vaultHash || null,
+      vaultRef: vaultHash,
+      cached: isVaultCached,
       estimatedTokens: Number(a.estimatedTokens) || 0,
       data: a.data || '',
       textContent: a.textContent || '',
@@ -1033,9 +1065,9 @@ function restoreCustomAttachmentsFromData(list) {
   renderAttachments();
   renderTaskMeta();
 
-  // Inspect on server in background to warm server cache & verify token count
+  // Only inspect on server if this attachment is NOT already in the user's vault/cache
   CUSTOM_ATTACHMENTS.forEach((att) => {
-    if (att.data || att.textContent) {
+    if (!att.cached && (att.data || att.textContent)) {
       inspectAttachmentOnServer(att);
     }
   });
@@ -2292,9 +2324,10 @@ function renderAttachments() {
 function currentAttachmentsPayload() {
   if (!isCustomTaskSelected() || !CUSTOM_ATTACHMENTS.length) return undefined;
   return CUSTOM_ATTACHMENTS.map((a) => {
-    if (a.cached && (a.sha256 || a.sha1)) {
+    if (a.cached && (a.sha256 || a.vaultRef || a.sha1)) {
       return {
-        sha256: a.sha256 || undefined,
+        sha256: a.sha256 || a.vaultRef || undefined,
+        vaultRef: a.vaultRef || a.sha256 || undefined,
         sha1: a.sha1,
         name: a.name,
         mimeType: a.mimeType,

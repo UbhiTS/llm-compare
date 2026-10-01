@@ -47,9 +47,9 @@ const { buildComparisonPdf, pdfFilename } = require('./src/pdfReport');
 // request references cached files that have expired, answer 409 with the list
 // so the client can re-upload — never run with an empty file. Returns null when
 // a response has already been sent.
-async function attachmentsOr409(res, raw, errorShape) {
+async function attachmentsOr409(req, res, raw, errorShape) {
   try {
-    return await normalizeAttachmentsAsync(raw);
+    return await normalizeAttachmentsAsync(raw, { username: req && req.user && req.user.username });
   } catch (e) {
     if (e && e.code === 'ATTACHMENT_EXPIRED') {
       res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: scrubError(e.message), expired: e.expired });
@@ -164,6 +164,17 @@ app.get(['/healthz', '/api/health'], (_req, res) => {
   res.set('Cache-Control', 'no-store');
   if (draining) return res.status(503).json({ ok: false, status: 'draining' });
   return res.json({ ok: true, status: 'ok' });
+});
+
+const FAVICON_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0f1523"/><path d="M32 10 L50 32 L32 54 L14 32 Z" fill="#5e8bff"/></svg>',
+  'utf8'
+);
+app.get('/favicon.ico', (_req, res) => {
+  res.setHeader('Content-Type', 'image/svg+xml');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Content-Length', String(FAVICON_SVG.length));
+  res.end(FAVICON_SVG);
 });
 
 // Login / first-run setup page. Strict per-response CSP with a fresh nonce so
@@ -385,6 +396,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const STATIC_ASSET_MIMES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/theme-init.js': { file: 'theme-init.js', type: 'application/javascript; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
 };
@@ -417,7 +429,7 @@ app.use((req, res, next) => {
     try {
       const str = JSON.stringify(body);
       if (!str || str.length < 1024) return origJson(body);
-      const gz = zlib.gzipSync(Buffer.from(str, 'utf8'), { level: 6 });
+      const gz = zlib.gzipSync(Buffer.from(str, 'utf8'), { level: 1 });
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Content-Encoding', 'gzip');
       res.setHeader('Vary', 'Accept-Encoding');
@@ -437,7 +449,7 @@ app.use((req, res, next) => {
   if (!hit) return next();
   const entry = getCachedStaticAsset(hit.file);
   if (!entry) return next();
-  const hasVersionQuery = Boolean(req.query && req.query.v && (req.path === '/app.js' || req.path === '/styles.css'));
+  const hasVersionQuery = Boolean(req.query && req.query.v && (req.path === '/app.js' || req.path === '/styles.css' || req.path === '/theme-init.js'));
   res.setHeader('Content-Type', hit.type);
   res.setHeader('Cache-Control', hasVersionQuery
     ? 'private, max-age=3600'
@@ -541,6 +553,12 @@ app.get('/api/me/prompts', (req, res) => {
   res.json({ ok: true, savedPrompts: history.listSavedPrompts(req.user.username) });
 });
 
+app.get('/api/me/prompts/:id', (req, res) => {
+  const prompt = history.getSavedPrompt(req.user.username, req.params.id);
+  if (!prompt) return res.status(404).json({ ok: false, error: 'Saved prompt not found.' });
+  res.json({ ok: true, prompt });
+});
+
 app.post('/api/me/prompts', (req, res) => {
   try {
     const out = history.saveUserPrompt(req.user.username, req.body || {});
@@ -554,6 +572,22 @@ app.delete('/api/me/prompts/:id', (req, res) => {
   const out = history.deleteUserPrompt(req.user.username, req.params.id);
   if (!out.removed) return res.status(404).json({ ok: false, error: 'Saved prompt not found.' });
   res.json({ ok: true, removed: true, savedPrompts: out.savedPrompts });
+});
+
+// Serve a raw binary file directly from the authenticated user's personal vault
+// (/data/vault/<userKey>/<sha256>.bin) for image previews and downloads.
+// Strictly scoped to req.user.username so users can never access another user's vault.
+app.get('/api/me/vault/:sha256', (req, res) => {
+  const entry = history.vault.getVaultRawBinarySync(req.user.username, req.params.sha256);
+  if (!entry || !entry.buffer) return res.status(404).json({ ok: false, error: 'Vault file not found.' });
+  const safeMime = /^(image\/(png|jpeg|webp|gif)|application\/pdf|text\/plain)$/i.test(entry.mimeType)
+    ? entry.mimeType
+    : 'application/octet-stream';
+  res.setHeader('Content-Type', safeMime);
+  res.setHeader('Content-Length', String(entry.buffer.length));
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.end(entry.buffer);
 });
 
 app.get('/api/me/presets', (req, res) => {
@@ -719,7 +753,7 @@ app.post('/api/execute', async (req, res) => {
 // no quality signal of their own. Blinding and shuffling happen in src/judge.js.
 app.post('/api/judge', async (req, res) => {
   const { taskId, judge: judgeId, entries, attachments: rawAttachments } = req.body || {};
-  const attachments = await attachmentsOr409(res, rawAttachments, { ok: false });
+  const attachments = await attachmentsOr409(req, res, rawAttachments, { ok: false });
   if (!attachments) return;
   const foundTask = TASKS.find((t) => t.id === taskId);
   const task = foundTask
@@ -829,13 +863,13 @@ function modelUsesOwnKey(m, keys) {
   return false;
 }
 
-// Lightweight attachment inspection & server-side SHA-1 LRU caching endpoint.
+// Lightweight attachment inspection & server-side SHA-1 LRU + per-user binary vault caching endpoint.
 // Called immediately when the user drops/picks files so the UI shows exact server-extracted
-// token counts, PDF page/encryption metadata, and caches the attachment payload by SHA-1.
+// token counts, PDF page/encryption metadata, and stores the raw file in the user's vault.
 app.post('/api/attachments/inspect', async (req, res) => {
   try {
     const rawAttachments = (req.body && req.body.attachments) || [];
-    const items = await inspectAttachmentsAsync(rawAttachments);
+    const items = await inspectAttachmentsAsync(rawAttachments, { username: req.user && req.user.username });
     res.json({ ok: true, attachments: items });
   } catch (e) {
     const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;
@@ -875,7 +909,7 @@ app.post('/api/attachments/upload',
         if (ft) { item.fitDataBase64 = ft.data.toString('base64'); item.fitMimeType = ft.contentType; }
         return item;
       });
-      const items = await inspectAttachmentsAsync(raw);
+      const items = await inspectAttachmentsAsync(raw, { username: req.user && req.user.username });
       res.json({ ok: true, attachments: items });
     } catch (e) {
       res.status((e && e.status) || 400).json({ ok: false, error: scrubError((e && e.message) || String(e)) });
@@ -890,7 +924,7 @@ app.post('/api/run', async (req, res) => {
   const { taskId, models, maxIterations, customPrompt, attachments: rawAttachments } = req.body || {};
   // Resolved BEFORE any quota is consumed, so a 409 (expired cache → client
   // re-uploads and retries) never costs the user a run.
-  const attachments = await attachmentsOr409(res, rawAttachments, { type: 'error' });
+  const attachments = await attachmentsOr409(req, res, rawAttachments, { type: 'error' });
   if (!attachments) return;
   // Sanitize any user-provided ("bring your own") API credentials (strings only).
   const rawKeys = (req.body && req.body.keys) || {};
