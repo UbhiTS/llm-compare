@@ -1030,7 +1030,7 @@ function restoreCustomAttachmentsFromData(list) {
     const isImage = !a.isEmpty && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
     const vaultHash = a.vaultRef || a.sha256 || null;
     const isVaultCached = Boolean(a.cached || vaultHash || a.sha1);
-    const previewUrl = a.previewUrl || (isImage && a.data
+    const previewUrl = a.previewUrl || a.thumbnailUrl || (isImage && a.data
       ? `data:${mimeType};base64,${a.data}`
       : (isImage && vaultHash ? `/api/me/vault/${encodeURIComponent(vaultHash)}` : null));
     const attObj = {

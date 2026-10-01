@@ -574,6 +574,11 @@ app.delete('/api/me/prompts/:id', (req, res) => {
   res.json({ ok: true, removed: true, savedPrompts: out.savedPrompts });
 });
 
+// List the authenticated user's attachment records from the SQLite `user_vault_files` table.
+app.get('/api/me/vault', (req, res) => {
+  res.json({ ok: true, files: history.vault.listUserVaultFiles(req.user.username) });
+});
+
 // Serve a raw binary file directly from the authenticated user's personal vault
 // (/data/vault/<userKey>/<sha256>.bin) for image previews and downloads.
 // Strictly scoped to req.user.username so users can never access another user's vault.
@@ -1140,9 +1145,19 @@ function shutdown(signal) {
   if (draining) { process.exit(0); }
   draining = true;
   log.event('INFO', `[shutdown] ${signal} received — draining for up to ${DRAIN_MS}ms`, { signal, drainMs: DRAIN_MS });
+  const flushPromise = (typeof history.flushSnapshotAsync === 'function')
+    ? history.flushSnapshotAsync().catch(() => {})
+    : Promise.resolve();
   const servers = [server, extraServer].filter(Boolean);
   let open = servers.length;
-  const done = () => { if (--open <= 0) { log.event('INFO', '[shutdown] drained cleanly'); process.exit(0); } };
+  const done = () => {
+    if (--open <= 0) {
+      flushPromise.finally(() => {
+        log.event('INFO', '[shutdown] drained cleanly');
+        process.exit(0);
+      });
+    }
+  };
   for (const s of servers) {
     s.close(done);
     if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
@@ -1153,8 +1168,10 @@ function shutdown(signal) {
     for (const s of servers) if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
   }, 250).unref();
   setTimeout(() => {
-    log.event('WARNING', '[shutdown] drain timeout — exiting with requests still open');
-    process.exit(0);
+    flushPromise.finally(() => {
+      log.event('WARNING', '[shutdown] drain timeout — exiting with requests still open');
+      process.exit(0);
+    });
   }, DRAIN_MS).unref();
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));

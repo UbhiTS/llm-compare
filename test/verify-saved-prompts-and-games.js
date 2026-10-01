@@ -285,28 +285,62 @@ async function runTests() {
     'Step 2 model slot dropdowns no longer use fixed 92px/138px widths'
   );
 
-  // 5. Per-User Content-Addressable Binary File Vault Verification
+  // 5. Per-User Content-Addressable Binary File Vault + SQLite Records Verification
   const { normalizeAttachmentsAsync } = require('../src/attachments');
   const vault = require('../src/vault');
   const rawBinaryBuf = Buffer.alloc(64 * 1024, 0x42); // 64 KB binary file
+  const samplePngBuf = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+    'base64'
+  );
   const vaultSaveRes = saveUserPrompt(testUser, {
     title: 'Large Binary Architecture Diagram',
-    prompt: 'Review this architecture binary.',
+    prompt: 'Review this architecture binary and diagram.',
     attachments: [
       {
         name: 'arch.bin',
         mimeType: 'application/octet-stream',
         size: rawBinaryBuf.length,
         data: rawBinaryBuf.toString('base64'),
+        textContent: 'Extracted architecture specification text',
         estimatedTokens: 320,
+      },
+      {
+        name: 'diagram.png',
+        mimeType: 'image/png',
+        size: samplePngBuf.length,
+        data: samplePngBuf.toString('base64'),
+        estimatedTokens: 258,
       },
     ],
   });
   assert.equal(vaultSaveRes.ok, true);
   const ptr = vaultSaveRes.saved.attachments[0];
+  const imgPtr = vaultSaveRes.saved.attachments[1];
   assert.ok(ptr.vaultRef && ptr.sha256 === ptr.vaultRef, 'Saved prompt attachment returns SHA-256 vaultRef pointer');
   assert.equal(ptr.data, undefined, 'Saved prompt pointer never carries inline base64 data');
   assert.equal(ptr.hasBlob, true, 'Saved prompt pointer marks hasBlob: true');
+  assert.equal(imgPtr.thumbnailUrl, `/api/me/vault/${imgPtr.sha256}`, 'Image attachment pointer carries thumbnailUrl from SQLite record');
+  assert.ok(imgPtr.relPath && imgPtr.relPath.endsWith(`/${imgPtr.sha256}.bin`), 'Attachment pointer carries relative binary path');
+
+  // Verify SQLite `user_vault_files` table records metadata, extractedText, thumbnailUrl, and relPath
+  const userVaultFiles = vault.listUserVaultFiles(testUser);
+  assert.ok(userVaultFiles.length >= 2, 'SQLite user_vault_files lists all stored files for testUser');
+  const binRecord = userVaultFiles.find((f) => f.sha256 === ptr.sha256);
+  const imgRecord = userVaultFiles.find((f) => f.sha256 === imgPtr.sha256);
+  assert.ok(binRecord && binRecord.name === 'arch.bin', 'SQLite user_vault_files stores binary attachment metadata');
+  assert.equal(binRecord.hasExtractedText, true, 'SQLite user_vault_files stores extractedText in DB');
+  assert.ok(imgRecord && imgRecord.thumbnailUrl === `/api/me/vault/${imgPtr.sha256}`, 'SQLite user_vault_files stores image thumbnailUrl');
+  assert.deepEqual(vault.listUserVaultFiles(otherUser), [], 'SQLite user_vault_files is strictly isolated per user');
+
+  // Verify user's vault directory on disk contains ONLY raw .bin files and ZERO .meta.json or .txt sidecars
+  const userVaultDir = vault.getUserVaultDir(testUser);
+  const vaultDiskFiles = fs.readdirSync(userVaultDir);
+  assert.ok(vaultDiskFiles.includes(`${ptr.sha256}.bin`), 'Vault directory stores raw <sha256>.bin file');
+  assert.ok(
+    !vaultDiskFiles.some((f) => f.endsWith('.meta.json') || f.endsWith('.txt')),
+    'Vault directory contains zero .meta.json or .txt sidecar files (all metadata/text lives in SQLite)'
+  );
 
   // Verify GET /api/config (getUserPreferences) payload remains tiny (< 2 KB) even with 64 KB binary attachment
   const slimPrefs = getUserPreferences(testUser);
@@ -322,7 +356,7 @@ async function runTests() {
   assert.equal(rawFromVault.buffer.length, rawBinaryBuf.length, 'Raw binary file size matches original byte-for-byte');
   assert.equal(Buffer.compare(rawFromVault.buffer, rawBinaryBuf), 0, 'Raw binary content matches original byte-for-byte');
 
-  // Verify normalizeAttachmentsAsync automatically hydrates from testUser's vault when given only the lightweight pointer
+  // Verify normalizeAttachmentsAsync automatically hydrates from testUser's vault + SQLite record when given only the lightweight pointer
   const hydrated = await normalizeAttachmentsAsync([ptr], { username: testUser });
   assert.equal(hydrated.length, 1);
   assert.equal(hydrated[0].sha256, ptr.vaultRef);
@@ -339,7 +373,7 @@ async function runTests() {
   // Clean up testUser vault prompt
   deleteUserPrompt(testUser, vaultSaveRes.saved.id);
 
-  console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
+  console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault + SQLite Records, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }
 
 runTests().catch((err) => {

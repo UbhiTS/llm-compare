@@ -117,6 +117,8 @@ function initSqlite() {
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
+      // Bind per-user vault attachment metadata table (`user_vault_files`) to this SQLite DB
+      vault.bindSqlite(sqliteDb, schedulePersistSnapshot);
       let needsVacuum = false;
       // Purge any legacy multi-MB remembered prompt/attachments columns in existing SQLite DBs
       try {
@@ -190,9 +192,10 @@ function initSqlite() {
                 prefEntry.updatedAt || Date.now()
               );
             } catch (_) {}
-            const pfile = path.join(BASE_DIR, pr.user_key, 'prefs.json');
-            fsp.writeFile(pfile, JSON.stringify(prefEntry, null, 2)).catch(() => {});
           }
+          // Remove any legacy prefs.json file now that SQLite `user_prefs` is authoritative
+          const pfile = path.join(BASE_DIR, pr.user_key, 'prefs.json');
+          fsp.unlink(pfile).catch(() => {});
         }
         if (needsVacuum) {
           try { sqliteDb.exec('VACUUM;'); } catch (_) {}
@@ -206,17 +209,23 @@ function initSqlite() {
     stmts = null;
   }
 
-  // Also load PERSIST_INDEX_JSON if present (single-file fast index for any rows not yet in SQLite)
+  // Migrate any legacy PERSIST_INDEX_JSON rows into SQLite once and remove the redundant index.json
   try {
     if (fs.existsSync(PERSIST_INDEX_JSON)) {
       const arr = JSON.parse(fs.readFileSync(PERSIST_INDEX_JSON, 'utf8'));
       if (Array.isArray(arr)) {
         if (arr.length > 0) hadPersistedIndexOnBoot = true;
+        let importedLegacyIdx = 0;
         for (const m of arr) {
           if (m && m.id && !metaById.has(m.id)) {
             upsertMetaInternal(m, false);
+            importedLegacyIdx++;
           }
         }
+        if (importedLegacyIdx > 0) schedulePersistSnapshot();
+      }
+      if (sqliteDb) {
+        fsp.unlink(PERSIST_INDEX_JSON).catch(() => {});
       }
     }
   } catch (_) {}
@@ -299,18 +308,19 @@ function flushSnapshotAsync() {
     try {
       await fsp.mkdir(BASE_DIR, { recursive: true });
       const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-      // 1. Write compact index.json (single sequential file read/write on GCS FUSE)
-      const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
-      const tmpIdx = PERSIST_INDEX_JSON + suffix;
-      await fsp.writeFile(tmpIdx, JSON.stringify(allMeta));
-      await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
-
-      // 2. If SQLite is active in /tmp, checkpoint WAL and copy SQLite snapshot to /data
+      // When SQLite is active in /tmp, checkpoint WAL and atomically snapshot history.sqlite to /data
+      // (no redundant index.json or prefs.json writes on GCS FUSE).
       if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
         try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
         const tmpSqlite = PERSIST_SQLITE_PATH + suffix;
         await fsp.copyFile(LOCAL_SQLITE_PATH, tmpSqlite);
         await fsp.rename(tmpSqlite, PERSIST_SQLITE_PATH);
+      } else {
+        // Fallback only for runtimes without built-in node:sqlite
+        const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
+        const tmpIdx = PERSIST_INDEX_JSON + suffix;
+        await fsp.writeFile(tmpIdx, JSON.stringify(allMeta));
+        await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
       }
     } catch (e) {
       // Non-fatal background snapshot
@@ -359,7 +369,7 @@ function scheduleBackgroundBackfill() {
   if (t.unref) t.unref();
 }
 
-// Synchronous one-time scan for a specific owner key ONLY on first access per key.
+// Synchronous one-time migration check for a specific owner key ONLY on first access per key.
 function ensureOwnerLoadedSync(key) {
   if (!key || loadedOwnerKeys.has(key)) return;
   loadedOwnerKeys.add(key);
@@ -371,25 +381,31 @@ function ensureOwnerLoadedSync(key) {
         const raw = fs.readFileSync(pfile, 'utf8');
         const p = JSON.parse(raw);
         if (p && typeof p === 'object') {
-          const { list: strippedPrompts, hadBlobs } = extractAndStripSavedPrompts(key, p.savedPrompts);
-          const hadLegacyBloat = Boolean(
-            hadBlobs ||
-            (typeof p.prompt === 'string' && p.prompt.length > 0) ||
-            (Array.isArray(p.attachments) && p.attachments.length > 0) ||
-            p.remembered !== undefined
-          );
+          const { list: strippedPrompts } = extractAndStripSavedPrompts(key, p.savedPrompts);
           const cleanPref = {
-            user: p.user || '',
+            user: norm(p.user || ''),
             taskId: p.taskId || 'custom',
             slots: Array.isArray(p.slots) ? p.slots : null,
             models: Array.isArray(p.models) ? p.models : null,
             savedPrompts: strippedPrompts,
             savedPresets: sanitizeSavedPresetsList(p.savedPresets),
-            updatedAt: Number(p.updatedAt) || 0,
+            updatedAt: Number(p.updatedAt) || Date.now(),
           };
           prefsByUserKey.set(key, cleanPref);
-          if (hadLegacyBloat) {
-            fsp.writeFile(pfile, JSON.stringify(cleanPref, null, 2)).catch(() => {});
+          if (stmts && stmts.upsertPref) {
+            try {
+              stmts.upsertPref.run(
+                key,
+                cleanPref.user,
+                cleanPref.taskId,
+                JSON.stringify(cleanPref.slots || []),
+                JSON.stringify(cleanPref.savedPrompts || []),
+                JSON.stringify(cleanPref.savedPresets || []),
+                cleanPref.updatedAt
+              );
+              schedulePersistSnapshot();
+              fsp.unlink(pfile).catch(() => {});
+            } catch (_) {}
           }
         }
       }
@@ -862,9 +878,10 @@ function saveUserPreferences(username, newPrefs) {
       );
       schedulePersistSnapshot();
     } catch (_) {}
+    return prefObj;
   }
 
-  // Persist to disk asynchronously in serialized order per user
+  // Fallback JSON persistence only when built-in node:sqlite is unavailable
   const prevChain = prefWriteChains.get(key) || Promise.resolve();
   const nextChain = prevChain.then(async () => {
     const latest = prefsByUserKey.get(key) || prefObj;
@@ -1315,6 +1332,7 @@ module.exports = {
   listSavedPresets,
   saveUserPreset,
   deleteUserPreset,
+  flushSnapshotAsync,
   vault,
   BASE_DIR,
 };
