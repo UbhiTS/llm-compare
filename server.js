@@ -21,6 +21,7 @@ log.install();
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const zlib = require('zlib');
 const crypto = require('crypto');
 const express = require('express');
 const pkg = require('./package.json');
@@ -379,35 +380,110 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
   }
 });
 
+// ---------- fast in-memory static asset cache + gzip compression ----------
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const STATIC_ASSET_MIMES = {
+  '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
+  '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
+};
+const staticMemCache = new Map();
+
+function getCachedStaticAsset(fileRel) {
+  const fp = path.join(PUBLIC_DIR, fileRel);
+  try {
+    const st = fs.statSync(fp);
+    const prev = staticMemCache.get(fileRel);
+    if (prev && prev.mtimeMs === st.mtimeMs) return prev;
+    const raw = fs.readFileSync(fp);
+    const gz = zlib.gzipSync(raw, { level: 6 });
+    const entry = { mtimeMs: st.mtimeMs, raw, gz };
+    staticMemCache.set(fileRel, entry);
+    return entry;
+  } catch (_) {
+    return null;
+  }
+}
+// Warm static asset cache on boot
+Object.values(STATIC_ASSET_MIMES).forEach((m) => getCachedStaticAsset(m.file));
+
+// Automatically gzip JSON responses > 1 KB when the client accepts gzip
+app.use((req, res, next) => {
+  const origJson = res.json.bind(res);
+  res.json = function gzipJson(body) {
+    const ae = String(req.headers['accept-encoding'] || '');
+    if (!/\bgzip\b/i.test(ae) || res.headersSent) return origJson(body);
+    try {
+      const str = JSON.stringify(body);
+      if (!str || str.length < 1024) return origJson(body);
+      const gz = zlib.gzipSync(Buffer.from(str, 'utf8'), { level: 6 });
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('Vary', 'Accept-Encoding');
+      res.setHeader('Content-Length', String(gz.length));
+      return res.end(gz);
+    } catch (_) {
+      return origJson(body);
+    }
+  };
+  next();
+});
+
 // ---------- static UI (authenticated) ----------
-app.use(express.static(path.join(__dirname, 'public'), {
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+  const hit = STATIC_ASSET_MIMES[req.path];
+  if (!hit) return next();
+  const entry = getCachedStaticAsset(hit.file);
+  if (!entry) return next();
+  const hasVersionQuery = Boolean(req.query && req.query.v && (req.path === '/app.js' || req.path === '/styles.css'));
+  res.setHeader('Content-Type', hit.type);
+  res.setHeader('Cache-Control', hasVersionQuery
+    ? 'private, max-age=3600'
+    : 'no-store, no-cache, must-revalidate');
+  res.setHeader('Vary', 'Accept-Encoding');
+  const ae = String(req.headers['accept-encoding'] || '');
+  if (/\bgzip\b/i.test(ae)) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.setHeader('Content-Length', String(entry.gz.length));
+    return res.end(req.method === 'HEAD' ? undefined : entry.gz);
+  }
+  res.setHeader('Content-Length', String(entry.raw.length));
+  return res.end(req.method === 'HEAD' ? undefined : entry.raw);
+});
+
+app.use(express.static(PUBLIC_DIR, {
   setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate'); },
 }));
+
+// Precompute static catalog metadata once at startup instead of on every /api/config request
+const CATALOG_CONFIG = MODEL_CATALOG.map((m) => {
+  const opts = thinkingOptions(m);
+  return {
+    ...m,
+    thinking: thinkingProfile(m),
+    thinkingOptions: {
+      ...opts,
+      options: opts.options.map((o) => {
+        const prof = thinkingProfile({ ...m, effort: o.value });
+        return { ...o, detail: prof.detail, profile: prof };
+      }),
+    },
+  };
+});
 
 // ===========================================================================
 // APPLICATION API (authenticated)
 // ===========================================================================
 app.get('/api/config', (req, res) => {
+  const codeExecOn = executionEnabled();
+  const webGameOn = webGameEnabled();
+  const prefs = history.getUserPreferences(req.user.username);
   res.json({
     version: pkg.version,
     models: DEFAULT_MODELS,
-    // The fixed set of models a user may add/remove (settings locked). `thinking`
-    // is computed from the provider layer so a card can show the reasoning
-    // level it will be sent before the run starts.
-    catalog: MODEL_CATALOG.map((m) => {
-      const opts = thinkingOptions(m);
-      return {
-        ...m,
-        thinking: thinkingProfile(m),
-        thinkingOptions: {
-          ...opts,
-          options: opts.options.map((o) => {
-            const prof = thinkingProfile({ ...m, effort: o.value });
-            return { ...o, detail: prof.detail, profile: prof };
-          }),
-        },
-      };
-    }),
+    catalog: CATALOG_CONFIG,
     tasks: TASKS.map((t) => ({
       id: t.id,
       title: t.title,
@@ -416,16 +492,10 @@ app.get('/api/config', (req, res) => {
       testCount: t.testCases.length,
       category: t.category || (t.testCases.length ? 'coding' : 'general'),
       language: t.language || null,
-      // GUI (Pygame) tasks run in the user's browser via the WASM build
-      // (/api/web-game), not server-side /api/execute — so they stay runnable
-      // when ENABLE_CODE_EXEC=0 as long as web-game building is enabled.
-      executable: !!t.executable && (executionEnabled() || (!!t.gui && webGameEnabled())),
+      executable: !!t.executable && (codeExecOn || (!!t.gui && webGameOn)),
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
-    // Booleans only — never the values. Uses globalKeys.has() so a key an admin
-    // set in Secret Manager counts, not just the deploy-time env vars; the UI
-    // greys out (and refuses to place) models with no usable key.
     keysPresent: {
       agentplatform: globalKeys.has('AGENT_PLATFORM_API_KEY') || globalKeys.has('GEMINI_API_KEY'),
       claude: autoMintEnabled() || !!process.env.CLAUDE_BEARER_TOKEN,
@@ -434,23 +504,25 @@ app.get('/api/config', (req, res) => {
       anthropic: !!process.env.ANTHROPIC_API_KEY,
       moonshot: globalKeys.has('MOONSHOT_API_KEY'),
     },
-    codeExec: executionEnabled(),
-    webGame: webGameEnabled(),
-    // Shown in the admin "granting access" help so the instructions name the
-    // real project/domains instead of placeholders. Non-secret.
+    codeExec: codeExecOn,
+    webGame: webGameOn,
     gcpProject: process.env.GCP_PROJECT_ID || '',
     allowedDomains: googleAuth.allowedDomains(),
     maxRunsPerDay: auth.MAX_RUNS_PER_DAY,
     maxSingleRunsPerDay: auth.MAX_SINGLE_RUNS_PER_DAY,
     me: {
-      username: req.user.username, role: req.user.role,
+      username: req.user.username,
+      role: req.user.role,
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
-      lastModels: history.lastModels(req.user.username),   // reopen on their last selection
-      lastPrompt: history.lastPrompt(req.user.username),   // reopen on their last prompt
-      preferences: history.getUserPreferences(req.user.username),
-      savedPrompts: history.listSavedPrompts(req.user.username),
-      savedPresets: history.listSavedPresets(req.user.username),
+      lastModels: history.lastModels(req.user.username),
+      preferences: {
+        taskId: prefs.taskId || 'custom',
+        slots: prefs.slots || null,
+        models: prefs.models || null,
+      },
+      savedPrompts: prefs.savedPrompts || [],
+      savedPresets: prefs.savedPresets || [],
     },
   });
 });
@@ -955,9 +1027,6 @@ app.post('/api/run', async (req, res) => {
   // instance). The server is the source of truth (the browser never writes
   // history), so a user cannot forge or tamper with the log.
   if (Array.isArray(results)) {
-    const rememberPromptOpt = (req.body && req.body.rememberPrompt !== undefined)
-      ? Boolean(req.body.rememberPrompt)
-      : undefined;
     history.saveRun({
       id: runId,
       user: req.user.username,
@@ -967,7 +1036,6 @@ app.post('/api/run', async (req, res) => {
       models: chosenModels,
       results,
       kind,
-      rememberPrompt: rememberPromptOpt,
     }).catch(() => {});
   }
   res.end();

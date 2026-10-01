@@ -65,11 +65,14 @@ let stmts = null;
 // Kept 100% in sync with SQLite so both Node 20 and Node 22 answer listRuns /
 // listAllRuns / usageSummary / lastModels in <0.2ms with zero disk I/O!
 const metaById = new Map();
-// Per-user preferences in-memory map: userKey -> { user, prompt, taskId, slots, models, updatedAt }
+// Per-user preferences in-memory map: userKey -> { user, taskId, slots, models, savedPrompts, savedPresets, updatedAt }
 const prefsByUserKey = new Map();
+// Tracks which user keys have already been checked on disk so ensureOwnerLoadedSync is O(1) and never repeats GCS FUSE syscalls
+const loadedOwnerKeys = new Set();
 // Full payload LRU cache for getRun(id): id -> full record
 const fullPayloadCache = new Map();
 const MAX_PAYLOAD_CACHE = 300;
+let hadPersistedIndexOnBoot = false;
 
 function initSqlite() {
   try {
@@ -78,7 +81,10 @@ function initSqlite() {
     // (never open SQLite directly on a GCS FUSE mount to avoid POSIX lock issues).
     if (DatabaseSync) {
       if (fs.existsSync(PERSIST_SQLITE_PATH) && !fs.existsSync(LOCAL_SQLITE_PATH)) {
-        try { fs.copyFileSync(PERSIST_SQLITE_PATH, LOCAL_SQLITE_PATH); } catch (_) {}
+        try {
+          fs.copyFileSync(PERSIST_SQLITE_PATH, LOCAL_SQLITE_PATH);
+          hadPersistedIndexOnBoot = true;
+        } catch (_) {}
       }
       sqliteDb = new DatabaseSync(LOCAL_SQLITE_PATH);
       sqliteDb.exec(`
@@ -101,20 +107,17 @@ function initSqlite() {
         CREATE TABLE IF NOT EXISTS user_prefs (
           user_key TEXT PRIMARY KEY,
           user TEXT NOT NULL,
-          prompt TEXT,
           task_id TEXT,
           slots_json TEXT,
-          attachments_json TEXT,
           saved_prompts_json TEXT,
           saved_presets_json TEXT,
-          remembered INTEGER,
           updated_at INTEGER
         );
       `);
-      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN attachments_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
-      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN remembered INTEGER;`); } catch (_) {}
+      // Purge any legacy multi-MB remembered prompt/attachments columns in existing SQLite DBs
+      try { sqliteDb.exec(`UPDATE user_prefs SET prompt = '', attachments_json = '[]', remembered = 0 WHERE prompt != '' OR (attachments_json IS NOT NULL AND attachments_json != '[]');`); } catch (_) {}
       stmts = {
         upsert: sqliteDb.prepare(`
           INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json)
@@ -129,49 +132,42 @@ function initSqlite() {
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
-          INSERT INTO user_prefs (user_key, user, prompt, task_id, slots_json, attachments_json, saved_prompts_json, saved_presets_json, remembered, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO user_prefs (user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_key) DO UPDATE SET
             user = excluded.user,
-            prompt = excluded.prompt,
             task_id = excluded.task_id,
             slots_json = excluded.slots_json,
-            attachments_json = excluded.attachments_json,
             saved_prompts_json = excluded.saved_prompts_json,
             saved_presets_json = excluded.saved_presets_json,
-            remembered = excluded.remembered,
             updated_at = excluded.updated_at
         `),
-        allPrefs: sqliteDb.prepare(`SELECT * FROM user_prefs`),
+        allPrefs: sqliteDb.prepare(`SELECT user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at FROM user_prefs`),
       };
       const rows = stmts.all.all();
       for (const r of rows) {
         metaById.set(r.id, rowToMeta(r));
       }
+      if (rows.length > 0) hadPersistedIndexOnBoot = true;
       try {
         const prefRows = stmts.allPrefs.all();
         for (const pr of prefRows) {
           const rowUser = norm(pr.user);
           if (!rowUser || userKey(rowUser) !== pr.user_key) continue;
           let slots = null;
-          let attachments = [];
           let savedPrompts = [];
           let savedPresets = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
-          try { attachments = JSON.parse(pr.attachments_json || '[]'); } catch (_) {}
           try { savedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
           try { savedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           prefsByUserKey.set(pr.user_key, {
             user: rowUser,
-            prompt: pr.prompt || '',
             taskId: pr.task_id || 'custom',
             slots,
             models,
-            attachments: Array.isArray(attachments) ? attachments : [],
             savedPrompts: Array.isArray(savedPrompts) ? savedPrompts : [],
             savedPresets: Array.isArray(savedPresets) ? savedPresets : [],
-            remembered: Boolean(pr.remembered),
             updatedAt: Number(pr.updated_at) || 0,
           });
         }
@@ -188,6 +184,7 @@ function initSqlite() {
     if (fs.existsSync(PERSIST_INDEX_JSON)) {
       const arr = JSON.parse(fs.readFileSync(PERSIST_INDEX_JSON, 'utf8'));
       if (Array.isArray(arr)) {
+        if (arr.length > 0) hadPersistedIndexOnBoot = true;
         for (const m of arr) {
           if (m && m.id && !metaById.has(m.id)) {
             upsertMetaInternal(m, false);
@@ -299,6 +296,7 @@ let backfillStarted = false;
 function scheduleBackgroundBackfill() {
   if (backfillStarted) return;
   backfillStarted = true;
+  const delayMs = (hadPersistedIndexOnBoot || metaById.size > 0) ? 15000 : 250;
   const t = setTimeout(async () => {
     try {
       const entries = await fsp.readdir(BASE_DIR).catch(() => []);
@@ -330,23 +328,47 @@ function scheduleBackgroundBackfill() {
         await flushSnapshotAsync();
       }
     } catch (_) {}
-  }, 50);
+  }, delayMs);
   if (t.unref) t.unref();
 }
 
-// Synchronous one-time scan for a specific owner key ONLY if that owner has 0
-// entries in metaById (e.g., unit test that writes files or fresh local dir).
+// Synchronous one-time scan for a specific owner key ONLY on first access per key.
 function ensureOwnerLoadedSync(key) {
+  if (!key || loadedOwnerKeys.has(key)) return;
+  loadedOwnerKeys.add(key);
+
   if (!prefsByUserKey.has(key)) {
     const pfile = path.join(BASE_DIR, key, 'prefs.json');
     try {
       if (fs.existsSync(pfile)) {
         const raw = fs.readFileSync(pfile, 'utf8');
         const p = JSON.parse(raw);
-        if (p) prefsByUserKey.set(key, p);
+        if (p && typeof p === 'object') {
+          const hadLegacyBloat = Boolean(
+            (typeof p.prompt === 'string' && p.prompt.length > 0) ||
+            (Array.isArray(p.attachments) && p.attachments.length > 0) ||
+            p.remembered !== undefined
+          );
+          const cleanPref = {
+            user: p.user || '',
+            taskId: p.taskId || 'custom',
+            slots: Array.isArray(p.slots) ? p.slots : null,
+            models: Array.isArray(p.models) ? p.models : null,
+            savedPrompts: sanitizeSavedPromptsList(p.savedPrompts),
+            savedPresets: sanitizeSavedPresetsList(p.savedPresets),
+            updatedAt: Number(p.updatedAt) || 0,
+          };
+          prefsByUserKey.set(key, cleanPref);
+          if (hadLegacyBloat) {
+            fsp.writeFile(pfile, JSON.stringify(cleanPref, null, 2)).catch(() => {});
+          }
+        }
       }
     } catch (_) {}
   }
+
+  // If the SQLite index snapshot already loaded on boot or this user already has entries, skip synchronous disk scan
+  if (hadPersistedIndexOnBoot) return;
   for (const m of metaById.values()) {
     if (m.userKey === key) return;
   }
@@ -412,7 +434,7 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
-async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge, rememberPrompt }) {
+async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge }) {
   try {
     const id = safeId(passedId) || newId();
     const at = Date.now();
@@ -466,9 +488,8 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
     upsertMetaInternal(meta, true);
     cachePayload(id, record);
 
-    // Update user preferences for remembered prompt and models selection on the slots
+    // Update user preferences for active task and models selection on the slots
     const cur = getUserPreferences(u);
-    const shouldRemember = (rememberPrompt !== undefined) ? Boolean(rememberPrompt) : true;
     const runSlots = (kind !== 'single' && Array.isArray(models) && models.length)
       ? models
           .filter((m) => m && m.catalogId)
@@ -479,23 +500,10 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
           }))
       : ((cur && cur.slots) || null);
 
-    if (shouldRemember) {
-      saveUserPreferences(u, {
-        prompt: promptText,
-        attachments,
-        remembered: true,
-        taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
-        slots: runSlots,
-      });
-    } else {
-      saveUserPreferences(u, {
-        prompt: (cur && cur.prompt) || '',
-        attachments: (cur && cur.attachments) || [],
-        remembered: (cur && cur.remembered) !== undefined ? cur.remembered : false,
-        taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
-        slots: runSlots,
-      });
-    }
+    saveUserPreferences(u, {
+      taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
+      slots: runSlots,
+    });
 
     // 2. Write full record JSON to owner directory for getRun(id) restore
     const dir = path.join(BASE_DIR, uKey);
@@ -512,7 +520,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
   }
 }
 
-// Derive remembered preferences from historical runs if no explicit preferences exist
+// Derive remembered model/task preferences from historical runs if no explicit preferences exist
 function derivePrefsFromHistory(u, key) {
   const userRuns = [];
   for (const m of metaById.values()) {
@@ -524,26 +532,17 @@ function derivePrefsFromHistory(u, key) {
     || userRuns.find((r) => Array.isArray(r.models) && r.models.length);
   if (!pick) return null;
 
-  let prompt = '';
-  if (pick.prompt) {
-    prompt = pick.prompt;
-  } else {
-    try {
-      const full = getRun(pick.id, { username: u, isAdmin: true });
-      if (full && typeof full.prompt === 'string') prompt = full.prompt;
-    } catch (_) {}
-  }
-
   const slots = (pick.models || [])
     .filter((m) => m && m.catalogId)
     .map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null }));
 
   return {
     user: u,
-    prompt: prompt || '',
     taskId: pick.taskId || 'custom',
     slots: slots.length ? slots : null,
     models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
+    savedPrompts: [],
+    savedPresets: [],
     updatedAt: pick.at,
   };
 }
@@ -562,7 +561,7 @@ function sanitizeAttachmentsArray(list) {
     warning: (a && a.warning) ? String(a.warning).slice(0, 200) : null,
     optBadge: (a && a.optBadge) ? String(a.optBadge).slice(0, 200) : null,
     sha1: (a && a.sha1) ? String(a.sha1).slice(0, 64) : null,
-    sha256: (a && a.sha256) ? String(a.sha256).slice(0, 64) : null,
+    sha256: (a && a.sha256) ? String(a.sha256) : null,
     data: (a && typeof a.data === 'string') ? a.data : '',
     textContent: (a && typeof a.textContent === 'string') ? a.textContent.slice(0, 2500000) : '',
     claudeDataBase64: (a && typeof a.claudeDataBase64 === 'string') ? a.claudeDataBase64 : undefined,
@@ -655,11 +654,11 @@ function sanitizeSavedPresetsList(list) {
   return out;
 }
 
-// Get remembered preferences for a specific user (prompt, taskId, slots, savedPrompts, savedPresets)
+// Get preferences for a specific user (taskId, slots, models, savedPrompts, savedPresets)
 // Strictly isolated by normalized username + SHA-256 userKey; returns a defensive copy.
 function getUserPreferences(username) {
   const u = norm(username);
-  if (!u) return { prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], savedPresets: [], remembered: false };
+  if (!u) return { taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [] };
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
   let p = prefsByUserKey.get(key);
@@ -669,76 +668,38 @@ function getUserPreferences(username) {
     p = null;
   }
   if (!p) {
-    const fp = path.join(BASE_DIR, key, 'prefs.json');
-    try {
-      if (fs.existsSync(fp)) {
-        const raw = fs.readFileSync(fp, 'utf8');
-        const parsed = JSON.parse(raw);
-        if (parsed && (!parsed.user || norm(parsed.user) === u)) {
-          parsed.user = u;
-          p = parsed;
-          prefsByUserKey.set(key, p);
-        }
-      }
-    } catch (_) {}
-  }
-  if (!p) {
     p = derivePrefsFromHistory(u, key);
     if (p) {
       prefsByUserKey.set(key, p);
+    } else {
+      // Memoize default empty prefs in memory so repeat calls in the same request / session never hit disk
+      p = { user: u, taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [], updatedAt: 0 };
+      prefsByUserKey.set(key, p);
     }
   }
-  if (p) {
-    if (!Array.isArray(p.attachments)) p.attachments = [];
-    if (!Array.isArray(p.savedPrompts)) p.savedPrompts = [];
-    if (!Array.isArray(p.savedPresets)) p.savedPresets = [];
-    if (p.remembered === undefined) p.remembered = false;
-    return {
-      user: u,
-      prompt: p.prompt || '',
-      taskId: p.taskId || 'custom',
-      slots: Array.isArray(p.slots) ? p.slots.map((s) => ({ ...s })) : null,
-      models: Array.isArray(p.models) ? p.models.map((m) => ({ ...m })) : null,
-      attachments: p.attachments.slice(),
-      savedPrompts: p.savedPrompts.slice(),
-      savedPresets: p.savedPresets.slice(),
-      remembered: Boolean(p.remembered),
-      updatedAt: p.updatedAt || 0,
-    };
-  }
-  return { user: u, prompt: '', taskId: 'custom', slots: null, models: null, attachments: [], savedPrompts: [], savedPresets: [], remembered: false };
+  if (!Array.isArray(p.savedPrompts)) p.savedPrompts = [];
+  if (!Array.isArray(p.savedPresets)) p.savedPresets = [];
+  return {
+    user: u,
+    taskId: p.taskId || 'custom',
+    slots: Array.isArray(p.slots) ? p.slots.map((s) => ({ ...s })) : null,
+    models: Array.isArray(p.models) ? p.models.map((m) => ({ ...m })) : null,
+    savedPrompts: p.savedPrompts.slice(),
+    savedPresets: p.savedPresets.slice(),
+    updatedAt: p.updatedAt || 0,
+  };
 }
 
 // Per-user promise chain so rapid concurrent saveUserPreferences calls
 // always serialize cleanly and write the latest prefsByUserKey snapshot.
 const prefWriteChains = new Map();
 
-// Save remembered preferences for a specific user
+// Save preferences for a specific user
 function saveUserPreferences(username, newPrefs) {
   const u = norm(username);
   if (!u) return null;
   const key = userKey(u);
   const current = getUserPreferences(u) || {};
-
-  let remembered = (current && current.remembered) !== undefined ? current.remembered : false;
-  if (newPrefs.remembered !== undefined) {
-    remembered = Boolean(newPrefs.remembered);
-  }
-
-  let prompt = current.prompt || '';
-  let attachments = Array.isArray(current.attachments) ? current.attachments : [];
-
-  if (newPrefs.remembered === false) {
-    prompt = '';
-    attachments = [];
-  } else {
-    if (typeof newPrefs.prompt === 'string') {
-      prompt = newPrefs.prompt.slice(0, 500000);
-    }
-    if (Array.isArray(newPrefs.attachments)) {
-      attachments = sanitizeAttachmentsArray(newPrefs.attachments);
-    }
-  }
 
   const savedPrompts = Array.isArray(newPrefs.savedPrompts)
     ? sanitizeSavedPromptsList(newPrefs.savedPrompts)
@@ -780,14 +741,11 @@ function saveUserPreferences(username, newPrefs) {
 
   const prefObj = {
     user: u,
-    prompt,
     taskId,
     slots,
     models,
-    attachments,
     savedPrompts,
     savedPresets,
-    remembered: Boolean(remembered),
     updatedAt,
   };
 
@@ -798,13 +756,10 @@ function saveUserPreferences(username, newPrefs) {
       stmts.upsertPref.run(
         key,
         u,
-        prompt,
         taskId,
         JSON.stringify(slots || []),
-        JSON.stringify(attachments || []),
         JSON.stringify(savedPrompts || []),
         JSON.stringify(savedPresets || []),
-        remembered ? 1 : 0,
         updatedAt
       );
       schedulePersistSnapshot();
@@ -944,15 +899,6 @@ function deleteUserPreset(username, presetId) {
     saveUserPreferences(u, { savedPresets: filtered });
   }
   return { ok: true, removed, savedPresets: filtered };
-}
-
-// Instant (<0.1ms) lookup of the user's last used prompt
-function lastPrompt(username) {
-  const p = getUserPreferences(username);
-  if (p && typeof p.prompt === 'string' && p.prompt.trim()) {
-    return p.prompt;
-  }
-  return null;
 }
 
 // Instant (<0.1ms) lookup of the user's most recent model line-up from the SQLite/memory index.
@@ -1197,7 +1143,6 @@ module.exports = {
   deleteRun,
   usageSummary,
   lastModels,
-  lastPrompt,
   getUserPreferences,
   saveUserPreferences,
   listSavedPrompts,

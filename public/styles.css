@@ -1987,42 +1987,6 @@ a.ud-item[hidden] { display: none; }
   background: rgba(52, 224, 161, 0.18) !important;
 }
 
-.remember-prompt-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text-dim);
-  cursor: pointer;
-  user-select: none;
-  padding: 6px 10px;
-  border-radius: 5px;
-  border: 1px solid var(--border-subtle);
-  background: rgba(255, 255, 255, 0.03);
-  transition: all 0.15s ease;
-}
-
-.remember-prompt-wrap:hover {
-  color: var(--text);
-  background: rgba(255, 255, 255, 0.07);
-  border-color: var(--border-hi);
-}
-
-.remember-prompt-wrap.is-remembered {
-  color: #5e8bff;
-  border-color: rgba(94, 139, 255, 0.4);
-  background: rgba(94, 139, 255, 0.09);
-}
-
-.remember-prompt-check {
-  cursor: pointer;
-  accent-color: #5e8bff;
-  width: 15px;
-  height: 15px;
-  margin: 0;
-}
-
 .run-btn-main {
   height: 36px;
   border-radius: 5px;

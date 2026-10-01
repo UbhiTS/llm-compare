@@ -8,13 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.2" />
+  <link rel="stylesheet" href="styles.css?v=1.0.3" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.2" defer></script>
+  <script src="app.js?v=1.0.3" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -147,10 +147,6 @@
         </div>
 
         <div class="exec-bar-right">
-          <label id="rememberPromptWrap" class="remember-prompt-wrap" title="Keep this prompt and attached files as your default when returning to LLMcompare">
-            <input type="checkbox" id="rememberPromptCheckbox" class="remember-prompt-check">
-            <span class="remember-prompt-label">Remember prompt &amp; files</span>
-          </label>
           <button type="button" id="jumpScorecardBtn" class="bar-btn jump-scorecard-btn hidden" title="Jump to comparison scorecard">🏆 Scorecard ↓</button>
           <button type="button" id="exportPdfTopBtn" class="bar-btn export-pdf-btn hidden" title="Export summary, graphs, and detailed model outputs to PDF">📄 Export PDF</button>
           <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>
@@ -217,6 +213,6 @@
     </details>
   </section>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.2</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.3</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

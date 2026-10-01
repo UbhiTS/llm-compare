@@ -226,10 +226,6 @@ function resetCustomComposerToBlank(opts) {
   if (customTa) customTa.value = '';
   clearAttachments();
   ACTIVE_SAVED_PROMPT_ID = null;
-  const cb = $('#rememberPromptCheckbox');
-  const wrap = $('#rememberPromptWrap');
-  if (cb) cb.checked = false;
-  if (wrap) wrap.classList.remove('is-remembered');
   syncSavedPromptButtons();
   renderTaskPrompt();
   if (opts && opts.focus && customTa && !customTa.classList.contains('hidden')) {
@@ -246,10 +242,6 @@ function applySavedPromptToComposer(savedItem) {
   } else {
     clearAttachments();
   }
-  const cb = $('#rememberPromptCheckbox');
-  const wrap = $('#rememberPromptWrap');
-  if (cb) cb.checked = false;
-  if (wrap) wrap.classList.remove('is-remembered');
   ACTIVE_SAVED_PROMPT_ID = savedItem.id;
   syncSavedPromptButtons();
   renderTaskPrompt();
@@ -433,64 +425,27 @@ async function init() {
   }
   initAttachmentsUI();
 
-  // Restore user's remembered custom prompt text & attachments (if explicitly remembered)
   const me = CONFIG && CONFIG.me;
   const prefs = (me && me.preferences) || {};
-  let userPrompt = '';
-  let userAttachments = [];
-  let isRemembered = Boolean(prefs.remembered);
-
-  if (isRemembered && (prefs.prompt || (Array.isArray(prefs.attachments) && prefs.attachments.length))) {
-    userPrompt = prefs.prompt || '';
-    userAttachments = prefs.attachments || [];
-  }
-
   const customTa = $('#customPrompt');
-  const cb = $('#rememberPromptCheckbox');
-  const wrap = $('#rememberPromptWrap');
-
-  (async () => {
-    if (!isRemembered) {
-      try {
-        const idbPref = await idbLoadPref((me && me.username) || 'default');
-        if (idbPref && (idbPref.prompt || (Array.isArray(idbPref.attachments) && idbPref.attachments.length))) {
-          userPrompt = idbPref.prompt || '';
-          userAttachments = idbPref.attachments || [];
-          isRemembered = true;
-        }
-      } catch (_) {}
-    }
-
-    if (isRemembered && (userPrompt || userAttachments.length)) {
-      if (customTa && userPrompt) customTa.value = userPrompt;
-      if (userAttachments.length) restoreCustomAttachmentsFromData(userAttachments);
-      SAVED_BASELINE_SIG = getPromptStateSignature();
-      if (cb) cb.checked = true;
-      if (wrap) wrap.classList.add('is-remembered');
-    } else {
-      SAVED_BASELINE_SIG = null;
-      if (cb) cb.checked = false;
-      if (wrap) wrap.classList.remove('is-remembered');
-    }
-    renderContextMeter();
-  })();
-
-  if (cb) {
-    cb.addEventListener('change', onRememberCheckboxChange);
-  }
-
   if (customTa) {
     customTa.addEventListener('input', () => {
-      checkPromptDirty();
       renderContextMeter();
     });
   }
+
+  // Purge legacy IndexedDB preference store if present from older versions
+  try {
+    if (typeof indexedDB !== 'undefined' && indexedDB.deleteDatabase) {
+      indexedDB.deleteDatabase('ullm_pref_store');
+    }
+  } catch (_) {}
 
   const initialTask = (prefs.taskId && String(prefs.taskId).startsWith('saved:') && getSavedPromptById(prefs.taskId))
     ? prefs.taskId
     : 'custom';
   selectTaskById(initialTask);
-  if (String(initialTask).startsWith('saved:') && !isRemembered) {
+  if (String(initialTask).startsWith('saved:')) {
     const savedItem = getSavedPromptById(initialTask);
     if (savedItem) applySavedPromptToComposer(savedItem);
   }
@@ -1028,15 +983,6 @@ function loadLocalSlots() {
   } catch (_) { return null; }
 }
 
-function loadLocalPrompt() {
-  try {
-    const raw = localStorage.getItem('ullm.pref.' + getUsername());
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    return (obj && typeof obj.prompt === 'string') ? obj.prompt : null;
-  } catch (_) { return null; }
-}
-
 function loadLocalTaskId() {
   try {
     const raw = localStorage.getItem('ullm.pref.' + getUsername());
@@ -1044,79 +990,6 @@ function loadLocalTaskId() {
     const obj = JSON.parse(raw);
     return (obj && typeof obj.taskId === 'string') ? obj.taskId : null;
   } catch (_) { return null; }
-}
-
-// ---------- IndexedDB Offline & Large Attachment Store for Preferences ----------
-function openPrefDb() {
-  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
-  return new Promise((resolve) => {
-    try {
-      const req = indexedDB.open('ullm_pref_store', 1);
-      req.onupgradeneeded = () => {
-        try { req.result.createObjectStore('prefs'); } catch (_) {}
-      };
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    } catch (_) {
-      resolve(null);
-    }
-  });
-}
-
-async function idbSavePref(user, data) {
-  try {
-    const db = await openPrefDb();
-    if (!db) return;
-    const tx = db.transaction('prefs', 'readwrite');
-    tx.objectStore('prefs').put(data, user);
-  } catch (_) {}
-}
-
-async function idbLoadPref(user) {
-  try {
-    const db = await openPrefDb();
-    if (!db) return null;
-    return new Promise((resolve) => {
-      const tx = db.transaction('prefs', 'readonly');
-      const req = tx.objectStore('prefs').get(user);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
-    });
-  } catch (_) {
-    return null;
-  }
-}
-
-async function idbClearPref(user) {
-  try {
-    const db = await openPrefDb();
-    if (!db) return;
-    const tx = db.transaction('prefs', 'readwrite');
-    tx.objectStore('prefs').delete(user);
-  } catch (_) {}
-}
-
-function serializeAttachmentsForPref() {
-  return CUSTOM_ATTACHMENTS.map((a) => ({
-    name: a.name,
-    mimeType: a.mimeType,
-    size: a.size,
-    isEmpty: Boolean(a.isEmpty),
-    pageCount: a.pageCount || 0,
-    warning: a.warning || null,
-    optBadge: a.optBadge || null,
-    sha1: a.sha1 || null,
-    sha256: a.sha256 || null,
-    cached: Boolean(a.cached),
-    data: a.data || '',
-    textContent: a.textContent || '',
-    previewUrl: a.previewUrl || null,
-    claudeDataBase64: a.claudeDataBase64 || undefined,
-    claudeMimeType: a.claudeMimeType || undefined,
-    fitDataBase64: a.fitDataBase64 || undefined,
-    fitMimeType: a.fitMimeType || undefined,
-    estimatedTokens: a.estimatedTokens || undefined,
-  }));
 }
 
 function restoreCustomAttachmentsFromData(list) {
@@ -1168,84 +1041,6 @@ function restoreCustomAttachmentsFromData(list) {
   });
 }
 
-let SAVED_BASELINE_SIG = null;
-
-function getPromptStateSignature() {
-  const customTa = $('#customPrompt');
-  const text = (customTa && customTa.value) ? customTa.value.trim() : '';
-  const atts = CUSTOM_ATTACHMENTS.map((a) => `${a.name}:${a.size}:${a.mimeType}:${(a.sha256 || a.sha1 || (a.data || '').length)}`).sort().join('|');
-  return `${text}:::${atts}`;
-}
-
-function checkPromptDirty() {
-  const cb = $('#rememberPromptCheckbox');
-  const wrap = $('#rememberPromptWrap');
-  if (!cb) return;
-  const currentSig = getPromptStateSignature();
-  const isMatch = Boolean(SAVED_BASELINE_SIG && currentSig === SAVED_BASELINE_SIG);
-  cb.checked = isMatch;
-  if (wrap) {
-    if (isMatch) wrap.classList.add('is-remembered');
-    else wrap.classList.remove('is-remembered');
-  }
-}
-
-async function onRememberCheckboxChange() {
-  const cb = $('#rememberPromptCheckbox');
-  const wrap = $('#rememberPromptWrap');
-  if (!cb) return;
-  if (cb.checked) {
-    SAVED_BASELINE_SIG = getPromptStateSignature();
-    if (wrap) wrap.classList.add('is-remembered');
-    await saveRememberedPromptAndAttachments(true);
-  } else {
-    SAVED_BASELINE_SIG = null;
-    if (wrap) wrap.classList.remove('is-remembered');
-    await saveRememberedPromptAndAttachments(false);
-  }
-}
-
-async function saveRememberedPromptAndAttachments(remembered) {
-  if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
-  const uname = CONFIG.me.username;
-  const customPromptEl = $('#customPrompt');
-  const prompt = (customPromptEl && customPromptEl.value) || '';
-  const attachments = serializeAttachmentsForPref();
-
-  const payload = {
-    remembered: Boolean(remembered),
-    prompt: remembered ? prompt : '',
-    attachments: remembered ? attachments : [],
-  };
-
-  if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
-  CONFIG.me.preferences.remembered = Boolean(remembered);
-  CONFIG.me.preferences.prompt = remembered ? prompt : '';
-  CONFIG.me.preferences.attachments = remembered ? attachments : [];
-  if (remembered) {
-    CONFIG.me.lastPrompt = prompt;
-  }
-
-  // 1. IndexedDB
-  try {
-    if (remembered) {
-      await idbSavePref(uname, { prompt, attachments });
-    } else {
-      await idbClearPref(uname);
-    }
-  } catch (_) {}
-
-  // 2. Server preferences
-  try {
-    await fetch('/api/me/preferences', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      credentials: 'same-origin',
-    });
-  } catch (_) {}
-}
-
 let _prefSaveTimer = null;
 function saveUserPreferencesDebounced() {
   if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
@@ -1262,9 +1057,7 @@ function saveUserPreferencesImmediate() {
   }
   if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
   const uname = CONFIG.me.username;
-  const customPromptEl = $('#customPrompt');
   const taskSelectEl = $('#taskSelect');
-  const prompt = (customPromptEl && customPromptEl.value) || '';
   const taskId = (taskSelectEl && taskSelectEl.value) || 'custom';
   const slots = SLOT_IDS.map((s) => ({
     slot: s,
@@ -1272,29 +1065,13 @@ function saveUserPreferencesImmediate() {
     effort: SLOT_EFFORT[s] || null,
   })).filter((s) => s.catalogId);
 
-  const cb = $('#rememberPromptCheckbox');
-  const isCustom = isCustomTaskId(taskId);
-  const shouldRemember = Boolean(cb && cb.checked && isCustom);
-
   const payload = {
     taskId,
     slots,
     models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
   };
 
-  if (shouldRemember) {
-    payload.remembered = true;
-    payload.prompt = prompt;
-    payload.attachments = serializeAttachmentsForPref();
-  }
-
   if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
-  if (shouldRemember) {
-    CONFIG.me.preferences.prompt = prompt;
-    CONFIG.me.preferences.attachments = payload.attachments;
-    CONFIG.me.preferences.remembered = true;
-    CONFIG.me.lastPrompt = prompt;
-  }
   CONFIG.me.preferences.slots = slots;
   CONFIG.me.preferences.models = payload.models;
   CONFIG.me.preferences.taskId = taskId;
@@ -2365,7 +2142,6 @@ async function addAttachmentFiles(fileList) {
   }
   renderAttachments();
   renderTaskMeta();
-  checkPromptDirty();
 }
 
 function removeAttachment(id) {
@@ -2374,7 +2150,6 @@ function removeAttachment(id) {
   renderSizeWarnings();
   renderAttachments();
   renderTaskMeta();
-  checkPromptDirty();
 }
 
 function clearAttachments() {
@@ -2385,7 +2160,6 @@ function clearAttachments() {
   if (inp) inp.value = '';
   renderAttachments();
   renderTaskMeta();
-  checkPromptDirty();
 }
 
 function renderContextMeter() {
@@ -2707,7 +2481,6 @@ function renderTaskPrompt() {
   const ta = $('#customPrompt');
   const tp = $('#taskPrompt');
   const attWrap = $('#customAttachmentsWrap');
-  const rememberWrap = $('#rememberPromptWrap');
   const t = currentTask();
   const isCustom = isCustomTaskSelected();
 
@@ -2718,7 +2491,6 @@ function renderTaskPrompt() {
     }
     if (ta) ta.classList.remove('hidden');
     if (attWrap) attWrap.classList.remove('hidden');
-    if (rememberWrap) rememberWrap.classList.remove('hidden');
   } else {
     if (tp) {
       tp.textContent = t.prompt;
@@ -2726,7 +2498,6 @@ function renderTaskPrompt() {
     }
     if (ta) ta.classList.add('hidden');
     if (attWrap) attWrap.classList.add('hidden');
-    if (rememberWrap) rememberWrap.classList.add('hidden');
   }
 
   syncSavedPromptButtons();
@@ -3886,8 +3657,6 @@ async function run() {
     slots.forEach((s) => { if (!wallFinished.has(s) && ownsSlot(own, s)) setTileVal(s, 'time', secs); });
   }, 100);
 
-  const cb = $('#rememberPromptCheckbox');
-  const rememberPrompt = Boolean(cb && cb.checked && isCustomTaskSelected());
   const curTask = currentTask();
 
   const payload = {
@@ -3898,7 +3667,6 @@ async function run() {
     customPrompt: $('#customPrompt').value,
     attachments: currentAttachmentsPayload(),
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
-    rememberPrompt,
   };
 
   saveUserPreferencesImmediate();
@@ -4720,10 +4488,6 @@ async function restoreHistory(id) {
     } else if (isCustomTaskId(snap.taskId)) {
       clearAttachments();
     }
-    const cb = $('#rememberPromptCheckbox');
-    const wrap = $('#rememberPromptWrap');
-    if (cb) cb.checked = false;
-    if (wrap) wrap.classList.remove('is-remembered');
     renderTaskPrompt();
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
     $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });

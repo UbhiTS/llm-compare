@@ -157,15 +157,14 @@ async function waitUp() {
 
   r = await req('POST', '/api/me/preferences', {
     body: {
-      prompt: 'Remember this smoke test prompt',
       taskId: 'custom',
       slots: [{ slot: 'A', catalogId: 'gemini-3.8-flash', effort: 'high' }],
     },
   });
-  check('POST /api/me/preferences updates prompt and slots', r.status === 200 && r.json && r.json.ok && r.json.preferences.prompt === 'Remember this smoke test prompt', { status: r.status });
+  check('POST /api/me/preferences updates slots', r.status === 200 && r.json && r.json.ok && Array.isArray(r.json.preferences.slots) && r.json.preferences.slots[0].catalogId === 'gemini-3.8-flash', { status: r.status });
 
   r = await req('GET', '/api/config');
-  check('GET /api/config reflects updated preferences & lastPrompt', r.status === 200 && r.json && r.json.me && r.json.me.lastPrompt === 'Remember this smoke test prompt', { status: r.status });
+  check('GET /api/config reflects updated preferences & lastModels', r.status === 200 && r.json && r.json.me && Array.isArray(r.json.me.lastModels) && r.json.me.lastModels[0].catalogId === 'gemini-3.8-flash', { status: r.status });
 
   r = await req('GET', '/api/history');
   check('GET /api/history', r.status === 200 && r.json && Array.isArray(r.json.runs), { status: r.status, shape: shape(r.json) });

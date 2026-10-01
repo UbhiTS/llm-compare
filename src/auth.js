@@ -161,6 +161,20 @@ async function verifyHash(password, stored) {
   }
   try {
     const existing = ownUser(uname);
+    if (existing && existing.role === 'admin' && existing.hash) {
+      // Verify asynchronously so startup is never blocked by a second 32 MB scryptSync
+      verifyHash(String(pw), existing.hash).then(async (match) => {
+        if (!match) {
+          const freshHash = await hashPassword(String(pw));
+          users[uname] = {
+            username: uname, role: 'admin', hash: freshHash,
+            createdAt: existing.createdAt || new Date().toISOString(),
+          };
+        }
+      }).catch(() => {});
+      console.log(`[auth] break-glass admin "${uname}" ensured from ADMIN_BOOTSTRAP_PASSWORD.`);
+      return;
+    }
     users[uname] = {
       username: uname, role: 'admin', hash: hashPasswordSync(String(pw)),
       createdAt: (existing && existing.createdAt) || new Date().toISOString(),
