@@ -154,7 +154,26 @@ function runTests() {
   );
   fs.rmSync(tmpDir, { recursive: true, force: true });
 
-  console.log('✓ All Saved Prompts & Gaming WASM adversarial checks passed.');
+  // 4. Dropdown Non-Truncation & App Versioning Verification
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.match(pkg.version, /^1\.0\.\d+$/, 'package.json version follows 1.0.x scheme');
+  const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert.ok(
+    indexHtml.includes(`<span id="appVersion" class="foot-version">v${pkg.version}</span>`),
+    'Footer displays matching version number next to LLM Compare'
+  );
+  const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+  assert.ok(
+    !stylesCss.includes('flex: 0 0 240px'),
+    '#categorySelect no longer uses fixed 240px width that truncated text'
+  );
+  assert.ok(
+    !stylesCss.includes('flex: 0 0 92px') && !stylesCss.includes('flex: 0 0 138px'),
+    'Step 2 model slot dropdowns no longer use fixed 92px/138px widths'
+  );
+
+  console.log('✓ All Saved Prompts, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }
 
 runTests();
+

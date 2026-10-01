@@ -23,6 +23,7 @@ const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
+const pkg = require('./package.json');
 
 const { runComparison } = require('./src/orchestrator');
 const { thinkingProfile, thinkingOptions } = require('./src/providers');
@@ -388,6 +389,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 // ===========================================================================
 app.get('/api/config', (req, res) => {
   res.json({
+    version: pkg.version,
     models: DEFAULT_MODELS,
     // The fixed set of models a user may add/remove (settings locked). `thinking`
     // is computed from the provider layer so a card can show the reasoning

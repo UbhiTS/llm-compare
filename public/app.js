@@ -361,6 +361,10 @@ async function init() {
   const cfgResp = await fetch('/api/config', { credentials: 'same-origin' });
   if (cfgResp.status === 401) { window.location.replace('/login'); return; } // session expired/absent
   CONFIG = await cfgResp.json();
+  if (CONFIG && CONFIG.version) {
+    const vEl = $('#appVersion');
+    if (vEl) vEl.textContent = 'v' + String(CONFIG.version).replace(/^v/i, '');
+  }
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
