@@ -16,8 +16,9 @@
 //   • Gemini 3.6 Flash      — $0.75 in / $3.75 out (same introductory rate;
 //       ⚠ both rise to $1.50 / $7.50 on 2027-01-01 — update the catalog then)
 //   • Gemini 3.5 Flash      — $1.50 in / $9.00 out  (Vertex, launched 2026-05-19)
-//   • Gemini 3.5 Flash Lite — $0.30 in / $2.50 out  (Vertex, cheapest option here)
+//   • Gemini 3.5 Flash Lite — $0.30 in / $2.50 out  (Vertex, cheapest 3.5 option)
 //   • Gemini 3.1 Pro        — $2.00 in / $12.00 out (Vertex, ≤200K context)
+//   • Gemini 3.1 Flash Lite — $0.25 in / $1.50 out  (Vertex, 1M context)
 //   • Claude Fable 5        — $10.00 in / $50.00 out (Anthropic list price; launched 2026-06-09)
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8       — $5.00 in / $25.00 out (Anthropic list price)
@@ -41,6 +42,7 @@ const MODEL_CATALOG = [
   { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.5-flash', price: { input: 1.50, output: 9.00 }, context: 1000000 },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.5-flash-lite', price: { input: 0.30, output: 2.50 }, context: 1000000 },
   { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.1-pro-preview', price: { input: 2.00, output: 12.00 }, context: 200000 },
+  { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.1-flash-lite', price: { input: 0.25, output: 1.50 }, context: 1000000 },
 
   // --- 2. Anthropic (Claude — Vertex AI Partner, verified live quota) ---
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },

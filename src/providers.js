@@ -129,10 +129,12 @@ const GEMINI_LEVELS = {
   'gemini-3.5-flash-lite':  ['minimal', 'low', 'medium', 'high'],
   'gemini-3.1-pro':         ['low', 'medium', 'high'],
   'gemini-3.1-pro-preview': ['low', 'medium', 'high'],
+  'gemini-3.1-flash-lite':  ['minimal', 'low', 'medium', 'high'],
 };
 const GEMINI_DEFAULT_LEVEL = {
   'gemini-3.8-flash': 'medium', 'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
   'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro': 'high', 'gemini-3.1-pro-preview': 'high',
+  'gemini-3.1-flash-lite': 'minimal',
 };
 function geminiLevelsFor(model) { return GEMINI_LEVELS[String(model || '')] || ['low', 'medium', 'high']; }
 
