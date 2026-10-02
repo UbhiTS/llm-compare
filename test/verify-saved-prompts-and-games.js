@@ -373,7 +373,76 @@ async function runTests() {
   // Clean up testUser vault prompt
   deleteUserPrompt(testUser, vaultSaveRes.saved.id);
 
-  console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault + SQLite Records, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
+  // 6. Cloud Run Container Redeploy Persistence & Admin Saved Prompts/Presets Counts + Sorting
+  const redeployUser = `redeploy_${Date.now()}@example.com`;
+  const pSave1 = saveUserPrompt(redeployUser, {
+    title: 'Redeploy Durable Prompt 1',
+    prompt: 'Analyze system latency across regions.',
+    attachments: [],
+  });
+  const pSave2 = saveUserPrompt(redeployUser, {
+    title: 'Redeploy Durable Prompt 2',
+    prompt: 'Generate zero-trust firewall rules.',
+    attachments: [],
+  });
+  const mSave1 = saveUserPreset(redeployUser, {
+    title: 'Redeploy Durable Preset',
+    slots: [
+      { slot: 'a', catalogId: 'gemini-3.8-flash', effort: 'medium' },
+      { slot: 'b', catalogId: 'claude-opus-5-5', effort: 'high' },
+    ],
+  });
+  assert.equal(pSave1.ok && pSave2.ok && mSave1.ok, true, 'Saved 2 prompts and 1 preset before simulated container redeploy');
+
+  // Verify Admin usageSummary() includes per-user savedPrompts & savedPresets counts + global totals
+  const historyMod = require('../src/history');
+  const usageBefore = historyMod.usageSummary();
+  assert.ok(usageBefore && usageBefore.totals, 'usageSummary returns totals');
+  assert.ok(usageBefore.totals.totalSavedPrompts >= 2, 'usageSummary totals.totalSavedPrompts includes saved prompts');
+  assert.ok(usageBefore.totals.totalSavedPresets >= 1, 'usageSummary totals.totalSavedPresets includes saved presets');
+  const uRowBefore = (usageBefore.users || []).find((u) => u.user === redeployUser);
+  assert.ok(uRowBefore, 'usageSummary includes user even when user has 0 comparison runs');
+  assert.equal(uRowBefore.savedPrompts, 2, 'Admin usage row shows exact savedPrompts count for user');
+  assert.equal(uRowBefore.savedPresets, 1, 'Admin usage row shows exact savedPresets count for user');
+  assert.equal(uRowBefore.prompt, undefined, 'Admin usage row never leaks private prompt text');
+
+  // Simulate a real Cloud Run container redeploy:
+  // Wipe the ephemeral /tmp SQLite database (and -wal / -shm) WITHOUT waiting for any timers,
+  // clear require.cache, and reload src/history from PERSIST_SQLITE_PATH (/data/history/history.sqlite).
+  const localSqlitePath = historyMod.LOCAL_SQLITE_PATH;
+  const persistSqlitePath = historyMod.PERSIST_SQLITE_PATH;
+  assert.ok(fs.existsSync(persistSqlitePath), 'PERSIST_SQLITE_PATH (/data/history/history.sqlite) exists immediately after save (zero timer delay)');
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { fs.unlinkSync(localSqlitePath + suffix); } catch (_) {}
+  }
+  assert.equal(fs.existsSync(localSqlitePath), false, 'Ephemeral /tmp SQLite file wiped to simulate fresh Cloud Run container boot');
+
+  delete require.cache[require.resolve('../src/history')];
+  const reloadedHistory = require('../src/history');
+  const promptsAfterRedeploy = reloadedHistory.listSavedPrompts(redeployUser);
+  const presetsAfterRedeploy = reloadedHistory.listSavedPresets(redeployUser);
+  assert.equal(promptsAfterRedeploy.length, 2, 'All saved prompts survive Cloud Run container redeploy (/tmp wipe)');
+  assert.equal(promptsAfterRedeploy[0].title, 'Redeploy Durable Prompt 2');
+  assert.equal(promptsAfterRedeploy[1].title, 'Redeploy Durable Prompt 1');
+  assert.equal(presetsAfterRedeploy.length, 1, 'All saved presets survive Cloud Run container redeploy (/tmp wipe)');
+  assert.equal(presetsAfterRedeploy[0].title, 'Redeploy Durable Preset');
+
+  // Verify UI History view sorting & Admin Saved Prompts/Presets columns in public/app.js
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.ok(
+    appJs.includes('function sortUsageUsers(') &&
+    appJs.includes('function sortHistoryRuns(') &&
+    appJs.includes('totalSavedPrompts') &&
+    appJs.includes('totalSavedPresets'),
+    'public/app.js implements Admin Saved Prompts/Presets KPI cards, columns, and interactive sorting for both users and runs'
+  );
+
+  // Clean up redeploy test user
+  reloadedHistory.deleteUserPrompt(redeployUser, pSave1.saved.id);
+  reloadedHistory.deleteUserPrompt(redeployUser, pSave2.saved.id);
+  reloadedHistory.deleteUserPreset(redeployUser, mSave1.saved.id);
+
+  console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault + SQLite Records, Container Redeploy Persistence, Admin Usage Counts & Sorting, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }
 
 runTests().catch((err) => {

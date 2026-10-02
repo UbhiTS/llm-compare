@@ -321,6 +321,8 @@ async function onSavePromptClick() {
     const data = await resp.json();
     if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to save prompt.');
     SAVED_PROMPTS = Array.isArray(data.savedPrompts) ? data.savedPrompts : SAVED_PROMPTS;
+    if (CONFIG && CONFIG.me) CONFIG.me.savedPrompts = SAVED_PROMPTS;
+    saveLocalLibraryBackup();
     if (data.saved && Array.isArray(data.saved.attachments)) {
       restoreCustomAttachmentsFromData(data.saved.attachments);
     }
@@ -361,6 +363,8 @@ async function onDeleteSavedPromptClick() {
     const data = await resp.json();
     if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not delete saved prompt.');
     SAVED_PROMPTS = Array.isArray(data.savedPrompts) ? data.savedPrompts : SAVED_PROMPTS.filter((p) => p.id !== item.id);
+    if (CONFIG && CONFIG.me) CONFIG.me.savedPrompts = SAVED_PROMPTS;
+    saveLocalLibraryBackup();
     ACTIVE_SAVED_PROMPT_ID = null;
     updateCategoryCustomOptionCount();
     populateTaskSelect('custom', 'custom');
@@ -371,6 +375,120 @@ async function onDeleteSavedPromptClick() {
   } finally {
     if (delBtn) delBtn.disabled = false;
   }
+}
+
+function saveLocalLibraryBackup() {
+  try {
+    const uname = getUsername();
+    if (!uname || uname === 'default') return;
+    const prompts = Array.isArray(SAVED_PROMPTS) ? SAVED_PROMPTS.map((p) => ({
+      id: p.id,
+      title: p.title,
+      prompt: p.prompt || '',
+      attachments: Array.isArray(p.attachments) ? p.attachments.map((a) => ({
+        name: a.name,
+        mimeType: a.mimeType,
+        kind: a.kind,
+        size: a.size,
+        pageCount: a.pageCount,
+        warning: a.warning,
+        optBadge: a.optBadge,
+        sha1: a.sha1,
+        sha256: a.sha256,
+        vaultRef: a.vaultRef || a.sha256,
+        thumbnailUrl: a.thumbnailUrl,
+        relPath: a.relPath,
+        estimatedTokens: a.estimatedTokens,
+        hasBlob: a.hasBlob,
+      })) : [],
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    })) : [];
+    const presets = Array.isArray(SAVED_PRESETS) ? SAVED_PRESETS.map((p) => ({
+      id: p.id,
+      title: p.title,
+      slots: Array.isArray(p.slots) ? p.slots : [],
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    })) : [];
+    localStorage.setItem('ullm.library.' + uname, JSON.stringify({
+      savedPrompts: prompts,
+      savedPresets: presets,
+      updatedAt: Date.now(),
+    }));
+  } catch (_) {}
+}
+
+async function restoreLocalLibraryBackupIfNeeded() {
+  try {
+    const uname = getUsername();
+    if (!uname || uname === 'default') return;
+    const raw = localStorage.getItem('ullm.library.' + uname);
+    if (!raw) {
+      if (SAVED_PROMPTS.length > 0 || SAVED_PRESETS.length > 0) {
+        saveLocalLibraryBackup();
+      }
+      return;
+    }
+    const backup = JSON.parse(raw);
+    if (!backup || typeof backup !== 'object') return;
+    let syncedAny = false;
+
+    if (SAVED_PROMPTS.length === 0 && Array.isArray(backup.savedPrompts) && backup.savedPrompts.length > 0) {
+      SAVED_PROMPTS = backup.savedPrompts;
+      if (CONFIG && CONFIG.me) CONFIG.me.savedPrompts = SAVED_PROMPTS;
+      for (const p of backup.savedPrompts) {
+        if (!p || !p.title) continue;
+        try {
+          const r = await fetch('/api/me/prompts', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: p.id,
+              title: p.title,
+              prompt: p.prompt || '',
+              attachments: Array.isArray(p.attachments) ? p.attachments : [],
+            }),
+          });
+          if (r.ok) {
+            const j = await r.json();
+            if (Array.isArray(j.savedPrompts)) SAVED_PROMPTS = j.savedPrompts;
+          }
+        } catch (_) {}
+      }
+      syncedAny = true;
+    }
+
+    if (SAVED_PRESETS.length === 0 && Array.isArray(backup.savedPresets) && backup.savedPresets.length > 0) {
+      SAVED_PRESETS = backup.savedPresets;
+      if (CONFIG && CONFIG.me) CONFIG.me.savedPresets = SAVED_PRESETS;
+      for (const p of backup.savedPresets) {
+        if (!p || !p.title || !Array.isArray(p.slots) || !p.slots.length) continue;
+        try {
+          const r = await fetch('/api/me/presets', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: p.id,
+              title: p.title,
+              slots: p.slots,
+            }),
+          });
+          if (r.ok) {
+            const j = await r.json();
+            if (Array.isArray(j.savedPresets)) SAVED_PRESETS = j.savedPresets;
+          }
+        } catch (_) {}
+      }
+      syncedAny = true;
+    }
+
+    if (SAVED_PROMPTS.length > 0 || SAVED_PRESETS.length > 0 || syncedAny) {
+      saveLocalLibraryBackup();
+    }
+  } catch (_) {}
 }
 
 // ---------- init ----------
@@ -390,6 +508,7 @@ async function init() {
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
   SAVED_PRESETS = Array.isArray(CONFIG.me && CONFIG.me.savedPresets) ? CONFIG.me.savedPresets : [];
+  await restoreLocalLibraryBackupIfNeeded();
   initUserMenu(CONFIG.me);
   // Seed the drag-and-drop slots from the server's default selection, then let
   // MODELS be derived from the slots from here on.
@@ -1527,6 +1646,7 @@ async function onSavePresetClick() {
     if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to save model preset.');
     SAVED_PRESETS = Array.isArray(data.savedPresets) ? data.savedPresets : SAVED_PRESETS;
     if (CONFIG && CONFIG.me) CONFIG.me.savedPresets = SAVED_PRESETS;
+    saveLocalLibraryBackup();
     ACTIVE_SAVED_PRESET_ID = (data.saved && data.saved.id) || updateId || null;
     renderUserPresets();
     if (saveBtn) {
@@ -1562,6 +1682,7 @@ async function onDeleteSavedPresetClick(targetPresetId) {
     if (!resp.ok || !data.ok) throw new Error(data.error || 'Could not delete saved preset.');
     SAVED_PRESETS = Array.isArray(data.savedPresets) ? data.savedPresets : SAVED_PRESETS.filter((p) => p.id !== item.id);
     if (CONFIG && CONFIG.me) CONFIG.me.savedPresets = SAVED_PRESETS;
+    saveLocalLibraryBackup();
     if (ACTIVE_SAVED_PRESET_ID === item.id) ACTIVE_SAVED_PRESET_ID = null;
     renderUserPresets();
   } catch (err) {
@@ -4382,9 +4503,72 @@ function liveCodeView(text) {
 let historyScope = 'me';          // 'all' for admins — they always see everyone
 let historyUserFilter = null;     // set by clicking a user in the usage table
 let historyPage = 0;
+let usersSortKey = 'lastAt';      // 'user' | 'runs' | 'runsToday' | 'savedPrompts' | 'savedPresets' | 'costUsd' | 'lastAt'
+let usersSortDir = 'desc';        // 'asc' | 'desc'
+let runsSortKey = 'at';           // 'at' | 'title' | 'user' | 'cost' | 'correctness'
+let runsSortDir = 'desc';         // 'asc' | 'desc'
 const HIST_PAGE_SIZE = 6;           // rows rendered at once — keeps the DOM small however big history grows
 let _histState = { body: null, runs: [], usage: null, isAdmin: false };
 function fmtWhen(ms) { try { return new Date(ms).toLocaleString(); } catch (e) { return ''; } }
+
+function runTotalCost(r) {
+  return ((r && r.summary) || []).reduce((sum, s) => sum + (Number(s && s.costUsd) || 0), 0);
+}
+
+function runBestScore(r) {
+  const vals = ((r && r.summary) || [])
+    .filter((s) => s && !s.error && s.total)
+    .map((s) => Number(s.correctness) || 0);
+  return vals.length ? Math.max(...vals) : -1;
+}
+
+function sortHistoryRuns(list) {
+  const arr = (list || []).slice();
+  const dir = runsSortDir === 'asc' ? 1 : -1;
+  arr.sort((a, b) => {
+    let cmp = 0;
+    if (runsSortKey === 'title') {
+      cmp = String((a && a.title) || '').localeCompare(String((b && b.title) || ''), undefined, { sensitivity: 'base' });
+    } else if (runsSortKey === 'user') {
+      cmp = String((a && (a.userName || a.user)) || '').localeCompare(String((b && (b.userName || b.user)) || ''), undefined, { sensitivity: 'base' });
+    } else if (runsSortKey === 'cost') {
+      cmp = runTotalCost(a) - runTotalCost(b);
+    } else if (runsSortKey === 'correctness') {
+      cmp = runBestScore(a) - runBestScore(b);
+    } else {
+      cmp = (Number(a && a.at) || 0) - (Number(b && b.at) || 0);
+    }
+    if (cmp !== 0) return cmp * dir;
+    return ((Number(b && b.at) || 0) - (Number(a && a.at) || 0));
+  });
+  return arr;
+}
+
+function sortUsageUsers(list) {
+  const arr = (list || []).slice();
+  const dir = usersSortDir === 'asc' ? 1 : -1;
+  arr.sort((a, b) => {
+    let cmp = 0;
+    if (usersSortKey === 'user') {
+      cmp = String((a && (a.userName || a.user)) || '').localeCompare(String((b && (b.userName || b.user)) || ''), undefined, { sensitivity: 'base' });
+    } else if (usersSortKey === 'runs') {
+      cmp = (Number(a && a.runs) || 0) - (Number(b && b.runs) || 0);
+    } else if (usersSortKey === 'runsToday') {
+      cmp = (Number(a && a.runsToday) || 0) - (Number(b && b.runsToday) || 0);
+    } else if (usersSortKey === 'savedPrompts') {
+      cmp = (Number(a && a.savedPrompts) || 0) - (Number(b && b.savedPrompts) || 0);
+    } else if (usersSortKey === 'savedPresets') {
+      cmp = (Number(a && a.savedPresets) || 0) - (Number(b && b.savedPresets) || 0);
+    } else if (usersSortKey === 'costUsd') {
+      cmp = (Number(a && a.costUsd) || 0) - (Number(b && b.costUsd) || 0);
+    } else {
+      cmp = (Number(a && a.lastAt) || 0) - (Number(b && b.lastAt) || 0);
+    }
+    if (cmp !== 0) return cmp * dir;
+    return String((a && (a.userName || a.user)) || '').localeCompare(String((b && (b.userName || b.user)) || ''), undefined, { sensitivity: 'base' });
+  });
+  return arr;
+}
 
 async function openHistoryModal() {
   const isAdmin = ME && ME.role === 'admin';
@@ -4407,6 +4591,30 @@ async function openHistoryModal() {
   }
 }
 
+function renderRunsSortToolbar(totalCount) {
+  if (!totalCount) return '';
+  const cols = [
+    { key: 'at', label: 'Date / Time', defaultDir: 'desc' },
+    { key: 'title', label: 'Task / Prompt', defaultDir: 'asc' },
+  ];
+  if (historyScope === 'all' && !historyUserFilter) {
+    cols.push({ key: 'user', label: 'User', defaultDir: 'asc' });
+  }
+  cols.push(
+    { key: 'cost', label: 'Run Cost', defaultDir: 'desc' },
+    { key: 'correctness', label: 'Test Score', defaultDir: 'desc' },
+  );
+  const btns = cols.map((c) => {
+    const active = runsSortKey === c.key;
+    const arrow = active ? (runsSortDir === 'asc' ? '▲' : '▼') : '⇅';
+    return `<button type="button" class="hist-sort-btn${active ? ' is-sorted' : ''}" data-run-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort runs by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></button>`;
+  }).join('');
+  return `<div class="hist-toolbar">
+    <span class="hist-toolbar-label">Sort runs (${fmtInt(totalCount)}):</span>
+    <div class="hist-sort-group">${btns}</div>
+  </div>`;
+}
+
 // Render the current page of the already-fetched (light) history list. Called on
 // open, page nav, and after a delete — no refetch, so paging is instant.
 function paintHistoryModal() {
@@ -4422,17 +4630,45 @@ function paintHistoryModal() {
     ? `<div class="hist-filter">Showing runs by <b>${esc(activeName)}</b>
          <button class="hf-clear" type="button">✕ show everyone</button></div>`
     : '';
-  const runs_ = historyUserFilter ? runs.filter((r) => (r.user || r.userName) === historyUserFilter) : runs;
+  const filteredRuns = historyUserFilter ? runs.filter((r) => (r.user || r.userName) === historyUserFilter) : runs;
+  const runs_ = sortHistoryRuns(filteredRuns);
   const total = runs_.length;
   const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
   historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
   const start = historyPage * HIST_PAGE_SIZE;
   const pageRuns = runs_.slice(start, start + HIST_PAGE_SIZE);
+  const sortToolbar = renderRunsSortToolbar(total);
   const rows = total
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
-  body.innerHTML = usagePanel + filterChip + `<div class="hist-list">${rows}</div>` + pager;
+  body.innerHTML = usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
+  // click a column header in the admin usage table → sort users by that column
+  body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    const defDir = th.dataset.defaultDir || 'desc';
+    if (usersSortKey === key) {
+      usersSortDir = usersSortDir === 'desc' ? 'asc' : 'desc';
+    } else {
+      usersSortKey = key;
+      usersSortDir = defDir;
+    }
+    usersPage = 0;
+    paintHistoryModal();
+  }));
+  // click a sort button in the run history toolbar → sort runs by that field
+  body.querySelectorAll('.hist-sort-btn').forEach((btn) => btn.addEventListener('click', () => {
+    const key = btn.dataset.runSort;
+    const defDir = btn.dataset.defaultDir || 'desc';
+    if (runsSortKey === key) {
+      runsSortDir = runsSortDir === 'desc' ? 'asc' : 'desc';
+    } else {
+      runsSortKey = key;
+      runsSortDir = defDir;
+    }
+    historyPage = 0;
+    paintHistoryModal();
+  }));
   // click a user row → show only their runs; click again (or the chip) → everyone
   body.querySelectorAll('.u-row').forEach((r) => r.addEventListener('click', () => {
     historyUserFilter = (historyUserFilter === r.dataset.user) ? null : r.dataset.user;
@@ -4487,7 +4723,7 @@ const USER_PAGE_SIZE = 8;
 let usersPage = 0;
 function renderUsagePanel(u) {
   const t = u.totals || {};
-  const all = u.users || [];
+  const all = sortUsageUsers(u.users || []);
   const pageCount = Math.max(1, Math.ceil(all.length / USER_PAGE_SIZE));
   usersPage = Math.min(Math.max(0, usersPage), pageCount - 1);
   const start = usersPage * USER_PAGE_SIZE;
@@ -4495,10 +4731,30 @@ function renderUsagePanel(u) {
   const rows = page.map((x) => {
     const id = x.user || x.userName;
     const on = historyUserFilter === id;
+    const promptsCnt = Number(x.savedPrompts) || 0;
+    const presetsCnt = Number(x.savedPresets) || 0;
     return `<tr class="u-row${on ? ' active' : ''}" data-user="${esc(id)}" title="Show only this user's runs">
       <td class="u-name">${esc(x.userName || x.user)}${on ? ' <span class="u-tag">filtered</span>' : ''}</td>
-      <td>${fmtInt(x.runs)}</td><td>${fmtInt(x.runsToday)}</td><td>${esc(fmtCost(x.costUsd))}</td>
+      <td>${fmtInt(x.runs || 0)}</td>
+      <td>${fmtInt(x.runsToday || 0)}</td>
+      <td><span class="u-lib-badge${promptsCnt > 0 ? ' has-items' : ''}" title="Saved custom prompts (count only — prompt content is private)">${fmtInt(promptsCnt)}</span></td>
+      <td><span class="u-lib-badge${presetsCnt > 0 ? ' has-items' : ''}" title="Saved model presets (count only — presets are private)">${fmtInt(presetsCnt)}</span></td>
+      <td>${esc(fmtCost(x.costUsd || 0))}</td>
       <td class="hist-when">${esc(x.lastAt ? fmtWhen(x.lastAt) : '—')}</td></tr>`;
+  }).join('');
+  const thCols = [
+    { key: 'user', label: 'User', defaultDir: 'asc' },
+    { key: 'runs', label: 'Runs', defaultDir: 'desc' },
+    { key: 'runsToday', label: 'Today', defaultDir: 'desc' },
+    { key: 'savedPrompts', label: 'Prompts', defaultDir: 'desc' },
+    { key: 'savedPresets', label: 'Presets', defaultDir: 'desc' },
+    { key: 'costUsd', label: 'Cost', defaultDir: 'desc' },
+    { key: 'lastAt', label: 'Last active', defaultDir: 'desc' },
+  ];
+  const thHtml = thCols.map((c) => {
+    const active = usersSortKey === c.key;
+    const arrow = active ? (usersSortDir === 'asc' ? '▲' : '▼') : '⇅';
+    return `<th class="sortable${active ? ' is-sorted' : ''}" data-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></th>`;
   }).join('');
   const pager = all.length > USER_PAGE_SIZE
     ? `<div class="hist-pager users-pager">
@@ -4511,9 +4767,11 @@ function renderUsagePanel(u) {
       <div class="ustat"><div class="uk">Active users</div><div class="uv">${fmtInt(t.users || 0)}</div></div>
       <div class="ustat"><div class="uk">Runs today</div><div class="uv">${fmtInt(t.runsToday || 0)}</div></div>
       <div class="ustat"><div class="uk">Runs total</div><div class="uv">${fmtInt(t.totalRuns || 0)}</div></div>
+      <div class="ustat"><div class="uk">Saved prompts</div><div class="uv">${fmtInt(t.totalSavedPrompts || 0)}</div></div>
+      <div class="ustat"><div class="uk">Saved presets</div><div class="uv">${fmtInt(t.totalSavedPresets || 0)}</div></div>
     </div>
-    ${rows ? `<table class="usage-table"><thead><tr><th>User</th><th>Runs</th><th>Today</th><th>Cost</th><th>Last run</th></tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
-    <p class="hint">Click a user to see only their runs. Today = since 00:00 UTC.</p>
+    ${rows ? `<table class="usage-table"><thead><tr>${thHtml}</tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
+    <p class="hint">Click any column header to sort · Click a user row to filter their runs · Prompt/preset counts respect user privacy (contents remain private). Today = since 00:00 UTC.</p>
   </div>`;
 }
 

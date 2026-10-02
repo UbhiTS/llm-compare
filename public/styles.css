@@ -1045,10 +1045,23 @@ a.ud-item[hidden] { display: none; }
 /* nudge the "Your API keys" menu item when a locked model is clicked */
 .ud-item.nudge { animation: pk-nudge 1.1s ease; background: color-mix(in srgb, var(--accent) 16%, transparent); }
 .usage-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.usage-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; padding: 6px 8px; border-bottom: 1px solid var(--border); }
-.usage-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+.usage-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: .1em; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.usage-table th.sortable { cursor: pointer; user-select: none; transition: color .12s ease, background .12s ease; }
+.usage-table th.sortable:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.usage-table th.sortable.is-sorted { color: var(--accent); border-bottom-color: var(--accent); }
+.sort-ind { font-size: 10px; opacity: 0.65; margin-left: 3px; display: inline-block; }
+.sortable.is-sorted .sort-ind, .hist-sort-btn.is-sorted .sort-ind { opacity: 1; color: var(--accent); }
+.usage-table td { padding: 7px 8px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
 .usage-table td.u-name { font-weight: 600; }
 .usage-table tr:last-child td { border-bottom: none; }
+.u-lib-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--muted); background: var(--bg); border: 1px solid var(--border); }
+.u-lib-badge.has-items { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.hist-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; padding: 6px 10px; background: var(--well); border: 1px solid var(--border); }
+.hist-toolbar-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+.hist-sort-group { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hist-sort-btn { background: var(--bg); border: 1px solid var(--border); color: var(--muted); padding: 4px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit; transition: color .12s ease, border-color .12s ease, background .12s ease; }
+.hist-sort-btn:hover { color: var(--text); border-color: var(--accent); }
+.hist-sort-btn.is-sorted { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

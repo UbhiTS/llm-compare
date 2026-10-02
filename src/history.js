@@ -74,18 +74,130 @@ const loadedOwnerKeys = new Set();
 const fullPayloadCache = new Map();
 const MAX_PAYLOAD_CACHE = 300;
 let hadPersistedIndexOnBoot = false;
+let lastPersistMtimeMs = 0;
+let lastPersistSize = 0;
+let lastPersistCheckAt = 0;
+
+function promptRowToItem(r) {
+  if (!r) return null;
+  let attachments = [];
+  try { attachments = JSON.parse(r.attachments_json || '[]'); } catch (_) {}
+  return {
+    id: r.id,
+    title: r.title || 'Saved Prompt',
+    prompt: typeof r.prompt === 'string' ? r.prompt : '',
+    attachments: Array.isArray(attachments) ? attachments : [],
+    createdAt: Number(r.created_at) || 0,
+    updatedAt: Number(r.updated_at) || 0,
+  };
+}
+
+function presetRowToItem(r) {
+  if (!r) return null;
+  let slots = [];
+  try { slots = JSON.parse(r.slots_json || '[]'); } catch (_) {}
+  return {
+    id: r.id,
+    title: r.title || 'Saved Model Preset',
+    slots: Array.isArray(slots) ? slots : [],
+    createdAt: Number(r.created_at) || 0,
+    updatedAt: Number(r.updated_at) || 0,
+  };
+}
+
+function loadUserSavedPromptsFromDb(uKey) {
+  if (!stmts || !stmts.listPromptsByUser || !uKey) return [];
+  try {
+    return stmts.listPromptsByUser.all(uKey).map(promptRowToItem).filter(Boolean).slice(0, MAX_SAVED_PROMPTS);
+  } catch (_) {
+    return [];
+  }
+}
+
+function loadUserSavedPresetsFromDb(uKey) {
+  if (!stmts || !stmts.listPresetsByUser || !uKey) return [];
+  try {
+    return stmts.listPresetsByUser.all(uKey).map(presetRowToItem).filter(Boolean).slice(0, MAX_SAVED_PRESETS);
+  } catch (_) {
+    return [];
+  }
+}
+
+function syncSavedPromptsTableForUser(uKey, uName, promptsList) {
+  if (!stmts || !stmts.upsertPrompt || !uKey) return;
+  try {
+    const cleanList = Array.isArray(promptsList) ? promptsList.slice(0, MAX_SAVED_PROMPTS) : [];
+    const existingRows = stmts.listPromptsByUser.all(uKey);
+    const keepIds = new Set(cleanList.map((p) => p && p.id).filter(Boolean));
+    for (const r of existingRows) {
+      if (r && r.id && !keepIds.has(r.id)) {
+        stmts.delPrompt.run(uKey, r.id);
+      }
+    }
+    for (const p of cleanList) {
+      if (!p || !p.id) continue;
+      stmts.upsertPrompt.run(
+        uKey,
+        p.id,
+        uName || '',
+        String(p.title || 'Saved Prompt').slice(0, 120),
+        typeof p.prompt === 'string' ? p.prompt : '',
+        JSON.stringify(Array.isArray(p.attachments) ? p.attachments : []),
+        Number(p.createdAt) || Date.now(),
+        Number(p.updatedAt) || Date.now()
+      );
+    }
+  } catch (_) {}
+}
+
+function syncSavedPresetsTableForUser(uKey, uName, presetsList) {
+  if (!stmts || !stmts.upsertPreset || !uKey) return;
+  try {
+    const cleanList = Array.isArray(presetsList) ? presetsList.slice(0, MAX_SAVED_PRESETS) : [];
+    const existingRows = stmts.listPresetsByUser.all(uKey);
+    const keepIds = new Set(cleanList.map((p) => p && p.id).filter(Boolean));
+    for (const r of existingRows) {
+      if (r && r.id && !keepIds.has(r.id)) {
+        stmts.delPreset.run(uKey, r.id);
+      }
+    }
+    for (const p of cleanList) {
+      if (!p || !p.id) continue;
+      stmts.upsertPreset.run(
+        uKey,
+        p.id,
+        uName || '',
+        String(p.title || 'Saved Model Preset').slice(0, 100),
+        JSON.stringify(Array.isArray(p.slots) ? p.slots : []),
+        Number(p.createdAt) || Date.now(),
+        Number(p.updatedAt) || Date.now()
+      );
+    }
+  } catch (_) {}
+}
 
 function initSqlite() {
   try {
     fs.mkdirSync(BASE_DIR, { recursive: true });
-    // If a persisted SQLite DB exists on /data, copy it once to local /tmp
-    // (never open SQLite directly on a GCS FUSE mount to avoid POSIX lock issues).
+    // Always seed local /tmp SQLite from the persistent `/data/history/history.sqlite` volume
+    // on startup using readFileSync + writeFileSync (avoids copy_file_range FUSE issues and
+    // ensures stale /tmp WAL files can never shadow the persistent DB).
     if (DatabaseSync) {
-      if (fs.existsSync(PERSIST_SQLITE_PATH) && !fs.existsSync(LOCAL_SQLITE_PATH)) {
+      if (fs.existsSync(PERSIST_SQLITE_PATH)) {
         try {
-          fs.copyFileSync(PERSIST_SQLITE_PATH, LOCAL_SQLITE_PATH);
-          hadPersistedIndexOnBoot = true;
-        } catch (_) {}
+          const st = fs.statSync(PERSIST_SQLITE_PATH);
+          if (st.size >= 100) {
+            try { fs.unlinkSync(LOCAL_SQLITE_PATH + '-wal'); } catch (_) {}
+            try { fs.unlinkSync(LOCAL_SQLITE_PATH + '-shm'); } catch (_) {}
+            const buf = fs.readFileSync(PERSIST_SQLITE_PATH);
+            fs.writeFileSync(LOCAL_SQLITE_PATH, buf);
+            lastPersistMtimeMs = st.mtimeMs;
+            lastPersistSize = st.size;
+            hadPersistedIndexOnBoot = true;
+          }
+        } catch (copyErr) {
+          console.warn('[history] Warning copying persisted SQLite to /tmp:', (copyErr && copyErr.message) || copyErr);
+        }
       }
       sqliteDb = new DatabaseSync(LOCAL_SQLITE_PATH);
       sqliteDb.exec(`
@@ -114,17 +226,49 @@ function initSqlite() {
           saved_presets_json TEXT,
           updated_at INTEGER
         );
+        CREATE TABLE IF NOT EXISTS user_saved_prompts (
+          user_key TEXT NOT NULL,
+          id TEXT NOT NULL,
+          user TEXT NOT NULL,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          attachments_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_key, id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_prompts_user_updated
+          ON user_saved_prompts(user_key, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS user_saved_presets (
+          user_key TEXT NOT NULL,
+          id TEXT NOT NULL,
+          user TEXT NOT NULL,
+          title TEXT NOT NULL,
+          slots_json TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (user_key, id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_presets_user_updated
+          ON user_saved_presets(user_key, updated_at DESC);
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
+
       // Bind per-user vault attachment metadata table (`user_vault_files`) to this SQLite DB
-      vault.bindSqlite(sqliteDb, schedulePersistSnapshot);
-      let needsVacuum = false;
+      // using synchronous snapshot flush so new attachment records immediately persist to /data.
+      vault.bindSqlite(sqliteDb, flushSnapshotSync);
+
+      let needsPersistFlush = false;
       // Purge any legacy multi-MB remembered prompt/attachments columns in existing SQLite DBs
       try {
         const res = sqliteDb.prepare(`UPDATE user_prefs SET prompt = '', attachments_json = '[]', remembered = 0 WHERE prompt != '' OR (attachments_json IS NOT NULL AND attachments_json != '[]')`).run();
-        if (res && res.changes > 0) needsVacuum = true;
+        if (res && res.changes > 0) {
+          try { sqliteDb.exec('VACUUM;'); } catch (_) {}
+          needsPersistFlush = true;
+        }
       } catch (_) {}
+
       stmts = {
         upsert: sqliteDb.prepare(`
           INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json)
@@ -150,24 +294,86 @@ function initSqlite() {
             updated_at = excluded.updated_at
         `),
         allPrefs: sqliteDb.prepare(`SELECT user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at FROM user_prefs`),
+        upsertPrompt: sqliteDb.prepare(`
+          INSERT INTO user_saved_prompts (user_key, id, user, title, prompt, attachments_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_key, id) DO UPDATE SET
+            user = excluded.user,
+            title = excluded.title,
+            prompt = excluded.prompt,
+            attachments_json = excluded.attachments_json,
+            updated_at = excluded.updated_at
+        `),
+        delPrompt: sqliteDb.prepare(`DELETE FROM user_saved_prompts WHERE user_key = ? AND id = ?`),
+        listPromptsByUser: sqliteDb.prepare(`SELECT * FROM user_saved_prompts WHERE user_key = ? ORDER BY updated_at DESC`),
+        allPrompts: sqliteDb.prepare(`SELECT * FROM user_saved_prompts ORDER BY updated_at DESC`),
+        upsertPreset: sqliteDb.prepare(`
+          INSERT INTO user_saved_presets (user_key, id, user, title, slots_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_key, id) DO UPDATE SET
+            user = excluded.user,
+            title = excluded.title,
+            slots_json = excluded.slots_json,
+            updated_at = excluded.updated_at
+        `),
+        delPreset: sqliteDb.prepare(`DELETE FROM user_saved_presets WHERE user_key = ? AND id = ?`),
+        listPresetsByUser: sqliteDb.prepare(`SELECT * FROM user_saved_presets WHERE user_key = ? ORDER BY updated_at DESC`),
+        allPresets: sqliteDb.prepare(`SELECT * FROM user_saved_presets ORDER BY updated_at DESC`),
       };
+
       const rows = stmts.all.all();
       for (const r of rows) {
         metaById.set(r.id, rowToMeta(r));
       }
       if (rows.length > 0) hadPersistedIndexOnBoot = true;
+
       try {
         const prefRows = stmts.allPrefs.all();
+        const allPromptRows = stmts.allPrompts.all();
+        const allPresetRows = stmts.allPresets.all();
+
+        const promptsByUserKey = new Map();
+        const userByKey = new Map();
+        for (const r of allPromptRows) {
+          if (!r || !r.user_key) continue;
+          if (r.user) userByKey.set(r.user_key, norm(r.user));
+          const list = promptsByUserKey.get(r.user_key) || [];
+          const item = promptRowToItem(r);
+          if (item) list.push(item);
+          promptsByUserKey.set(r.user_key, list);
+        }
+
+        const presetsByUserKey = new Map();
+        for (const r of allPresetRows) {
+          if (!r || !r.user_key) continue;
+          if (r.user) userByKey.set(r.user_key, norm(r.user));
+          const list = presetsByUserKey.get(r.user_key) || [];
+          const item = presetRowToItem(r);
+          if (item) list.push(item);
+          presetsByUserKey.set(r.user_key, list);
+        }
+
+        const handledKeys = new Set();
         for (const pr of prefRows) {
           const rowUser = norm(pr.user);
           if (!rowUser || userKey(rowUser) !== pr.user_key) continue;
+          handledKeys.add(pr.user_key);
           let slots = null;
           let rawSavedPrompts = [];
-          let savedPresets = [];
+          let rawSavedPresets = [];
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
           try { rawSavedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
-          try { savedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
-          const { list: savedPrompts, hadBlobs } = extractAndStripSavedPrompts(pr.user_key, rawSavedPrompts);
+          try { rawSavedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
+
+          // Merge dedicated table rows (`user_saved_prompts`) with any legacy `user_prefs.saved_prompts_json` rows
+          const tablePrompts = promptsByUserKey.get(pr.user_key) || [];
+          const mergedRawPrompts = [...tablePrompts, ...(Array.isArray(rawSavedPrompts) ? rawSavedPrompts : [])];
+          const { list: savedPrompts, hadBlobs } = extractAndStripSavedPrompts(pr.user_key, mergedRawPrompts);
+
+          const tablePresets = presetsByUserKey.get(pr.user_key) || [];
+          const mergedRawPresets = [...tablePresets, ...(Array.isArray(rawSavedPresets) ? rawSavedPresets : [])];
+          const savedPresets = sanitizeSavedPresetsList(mergedRawPresets);
+
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           const prefEntry = {
             user: rowUser,
@@ -175,12 +381,20 @@ function initSqlite() {
             slots,
             models,
             savedPrompts,
-            savedPresets: Array.isArray(savedPresets) ? savedPresets : [],
+            savedPresets,
             updatedAt: Number(pr.updated_at) || 0,
           };
           prefsByUserKey.set(pr.user_key, prefEntry);
+
+          if (tablePrompts.length !== savedPrompts.length || hadBlobs) {
+            syncSavedPromptsTableForUser(pr.user_key, rowUser, savedPrompts);
+            needsPersistFlush = true;
+          }
+          if (tablePresets.length !== savedPresets.length) {
+            syncSavedPresetsTableForUser(pr.user_key, rowUser, savedPresets);
+            needsPersistFlush = true;
+          }
           if (hadBlobs) {
-            needsVacuum = true;
             try {
               stmts.upsertPref.run(
                 pr.user_key,
@@ -188,18 +402,33 @@ function initSqlite() {
                 prefEntry.taskId,
                 JSON.stringify(slots || []),
                 JSON.stringify(savedPrompts),
-                JSON.stringify(prefEntry.savedPresets),
+                JSON.stringify(savedPresets),
                 prefEntry.updatedAt || Date.now()
               );
             } catch (_) {}
           }
-          // Remove any legacy prefs.json file now that SQLite `user_prefs` is authoritative
-          const pfile = path.join(BASE_DIR, pr.user_key, 'prefs.json');
-          fsp.unlink(pfile).catch(() => {});
         }
-        if (needsVacuum) {
-          try { sqliteDb.exec('VACUUM;'); } catch (_) {}
-          schedulePersistSnapshot();
+
+        // Also hydrate any user keys present in `user_saved_prompts` / `user_saved_presets` even if missing in `user_prefs`
+        for (const [uKey, uName] of userByKey.entries()) {
+          if (handledKeys.has(uKey) || !uName || userKey(uName) !== uKey) continue;
+          const savedPrompts = extractAndStripSavedPrompts(uKey, promptsByUserKey.get(uKey) || []).list;
+          const savedPresets = sanitizeSavedPresetsList(presetsByUserKey.get(uKey) || []);
+          const prefEntry = {
+            user: uName,
+            taskId: 'custom',
+            slots: null,
+            models: null,
+            savedPrompts,
+            savedPresets,
+            updatedAt: Date.now(),
+          };
+          prefsByUserKey.set(uKey, prefEntry);
+          needsPersistFlush = true;
+        }
+
+        if (needsPersistFlush) {
+          flushSnapshotSync();
         }
       } catch (_) {}
     }
@@ -222,9 +451,9 @@ function initSqlite() {
             importedLegacyIdx++;
           }
         }
-        if (importedLegacyIdx > 0) schedulePersistSnapshot();
+        if (importedLegacyIdx > 0) flushSnapshotSync();
       }
-      if (sqliteDb) {
+      if (sqliteDb && fs.existsSync(PERSIST_SQLITE_PATH)) {
         fsp.unlink(PERSIST_INDEX_JSON).catch(() => {});
       }
     }
@@ -289,42 +518,192 @@ function upsertMetaInternal(meta, persistDisk = true) {
       );
     } catch (_) {}
   }
-  if (persistDisk) schedulePersistSnapshot();
+  if (persistDisk) flushSnapshotSync();
+}
+
+// Synchronously checkpoint WAL and flush `/tmp` SQLite DB to `/data/history/history.sqlite`.
+// Uses Buffer write + atomic rename with direct writeFileSync fallback (GCS FUSE safe).
+// Executed BEFORE HTTP responses return on every mutation so Cloud Run CPU throttling or
+// rolling container redeployments can never lose a single saved prompt, preset, or preference.
+function flushSnapshotSync() {
+  try {
+    fs.mkdirSync(BASE_DIR, { recursive: true });
+    const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
+      try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
+      const buf = fs.readFileSync(LOCAL_SQLITE_PATH);
+      if (!buf || buf.length < 100) return false;
+      const tmpSqlite = PERSIST_SQLITE_PATH + suffix;
+      try {
+        fs.writeFileSync(tmpSqlite, buf);
+        fs.renameSync(tmpSqlite, PERSIST_SQLITE_PATH);
+      } catch (_) {
+        // GCS FUSE fallback when atomic rename over an existing object is rejected
+        fs.writeFileSync(PERSIST_SQLITE_PATH, buf);
+        try { fs.unlinkSync(tmpSqlite); } catch (_) {}
+      }
+      try {
+        const st = fs.statSync(PERSIST_SQLITE_PATH);
+        lastPersistMtimeMs = st.mtimeMs;
+        lastPersistSize = st.size;
+      } catch (_) {}
+      return true;
+    } else {
+      const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
+      const payload = JSON.stringify(allMeta);
+      const tmpIdx = PERSIST_INDEX_JSON + suffix;
+      try {
+        fs.writeFileSync(tmpIdx, payload);
+        fs.renameSync(tmpIdx, PERSIST_INDEX_JSON);
+      } catch (_) {
+        fs.writeFileSync(PERSIST_INDEX_JSON, payload);
+        try { fs.unlinkSync(tmpIdx); } catch (_) {}
+      }
+      return true;
+    }
+  } catch (e) {
+    console.warn('[history] flushSnapshotSync error:', (e && e.message) || e);
+    return false;
+  }
+}
+
+// If another container instance (e.g. during a Cloud Run rolling deployment overlap)
+// wrote a newer `/data/history/history.sqlite` to the shared `/data` volume after our
+// container booted, merge its rows into our local SQLite DB before reading/writing.
+function syncFromPersistSqliteIfNewer(force = false) {
+  if (!DatabaseSync || !sqliteDb || !stmts) return;
+  const now = Date.now();
+  if (!force && now - lastPersistCheckAt < 500) return;
+  lastPersistCheckAt = now;
+  try {
+    if (!fs.existsSync(PERSIST_SQLITE_PATH)) return;
+    const st = fs.statSync(PERSIST_SQLITE_PATH);
+    if (st.size < 100) return;
+    if (lastPersistMtimeMs > 0 && st.mtimeMs <= lastPersistMtimeMs + 5 && st.size === lastPersistSize) {
+      return;
+    }
+    const tmpMerge = path.join(os.tmpdir(), `llm-compare-merge-${process.pid}-${now}-${crypto.randomBytes(3).toString('hex')}.sqlite`);
+    try {
+      const buf = fs.readFileSync(PERSIST_SQLITE_PATH);
+      fs.writeFileSync(tmpMerge, buf);
+      const extDb = new DatabaseSync(tmpMerge);
+      try {
+        // 1. Merge runs
+        try {
+          const extRuns = extDb.prepare(`SELECT * FROM runs`).all();
+          for (const r of extRuns) {
+            if (r && r.id && !metaById.has(r.id)) {
+              upsertMetaInternal(rowToMeta(r), false);
+            }
+          }
+        } catch (_) {}
+
+        // 2. Merge user_saved_prompts & user_saved_presets
+        const extPromptsByUser = new Map();
+        const extPresetsByUser = new Map();
+        const extUserByKey = new Map();
+        try {
+          const pRows = extDb.prepare(`SELECT * FROM user_saved_prompts ORDER BY updated_at DESC`).all();
+          for (const r of pRows) {
+            if (!r || !r.user_key || !r.id) continue;
+            if (r.user) extUserByKey.set(r.user_key, norm(r.user));
+            const list = extPromptsByUser.get(r.user_key) || [];
+            const item = promptRowToItem(r);
+            if (item) list.push(item);
+            extPromptsByUser.set(r.user_key, list);
+          }
+        } catch (_) {}
+
+        try {
+          const mpRows = extDb.prepare(`SELECT * FROM user_saved_presets ORDER BY updated_at DESC`).all();
+          for (const r of mpRows) {
+            if (!r || !r.user_key || !r.id) continue;
+            if (r.user) extUserByKey.set(r.user_key, norm(r.user));
+            const list = extPresetsByUser.get(r.user_key) || [];
+            const item = presetRowToItem(r);
+            if (item) list.push(item);
+            extPresetsByUser.set(r.user_key, list);
+          }
+        } catch (_) {}
+
+        // 3. Merge user_prefs
+        try {
+          const prefRows = extDb.prepare(`SELECT * FROM user_prefs`).all();
+          for (const pr of prefRows) {
+            const rowUser = norm(pr.user);
+            if (!rowUser || userKey(rowUser) !== pr.user_key) continue;
+            extUserByKey.set(pr.user_key, rowUser);
+            const cur = prefsByUserKey.get(pr.user_key);
+            const prUpdated = Number(pr.updated_at) || 0;
+            if (!cur || prUpdated >= (cur.updatedAt || 0)) {
+              let slots = null;
+              let rawSavedPrompts = [];
+              let rawSavedPresets = [];
+              try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
+              try { rawSavedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
+              try { rawSavedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
+              const mergedPrompts = extractAndStripSavedPrompts(pr.user_key, [
+                ...(extPromptsByUser.get(pr.user_key) || []),
+                ...(Array.isArray(rawSavedPrompts) ? rawSavedPrompts : []),
+                ...((cur && cur.savedPrompts) || []),
+              ]).list;
+              const mergedPresets = sanitizeSavedPresetsList([
+                ...(extPresetsByUser.get(pr.user_key) || []),
+                ...(Array.isArray(rawSavedPresets) ? rawSavedPresets : []),
+                ...((cur && cur.savedPresets) || []),
+              ]);
+              const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
+              const nextEntry = {
+                user: rowUser,
+                taskId: pr.task_id || (cur && cur.taskId) || 'custom',
+                slots: slots || (cur && cur.slots) || null,
+                models: models || (cur && cur.models) || null,
+                savedPrompts: mergedPrompts,
+                savedPresets: mergedPresets,
+                updatedAt: Math.max(prUpdated, (cur && cur.updatedAt) || 0),
+              };
+              prefsByUserKey.set(pr.user_key, nextEntry);
+              syncSavedPromptsTableForUser(pr.user_key, rowUser, mergedPrompts);
+              syncSavedPresetsTableForUser(pr.user_key, rowUser, mergedPresets);
+              stmts.upsertPref.run(
+                pr.user_key,
+                rowUser,
+                nextEntry.taskId,
+                JSON.stringify(nextEntry.slots || []),
+                JSON.stringify(mergedPrompts),
+                JSON.stringify(mergedPresets),
+                nextEntry.updatedAt
+              );
+            }
+          }
+        } catch (_) {}
+
+        // 4. Merge user_vault_files
+        if (typeof vault.mergeFromExternalDb === 'function') {
+          vault.mergeFromExternalDb(extDb);
+        }
+      } finally {
+        try { extDb.close(); } catch (_) {}
+      }
+    } finally {
+      try { fs.unlinkSync(tmpMerge); } catch (_) {}
+      try { fs.unlinkSync(tmpMerge + '-wal'); } catch (_) {}
+      try { fs.unlinkSync(tmpMerge + '-shm'); } catch (_) {}
+    }
+    lastPersistMtimeMs = st.mtimeMs;
+    lastPersistSize = st.size;
+  } catch (_) {}
 }
 
 let persistTimer = null;
 let snapshotChain = Promise.resolve();
 function schedulePersistSnapshot() {
-  if (persistTimer) return;
-  persistTimer = setTimeout(async () => {
-    persistTimer = null;
-    await flushSnapshotAsync();
-  }, 250);
-  if (persistTimer.unref) persistTimer.unref();
+  flushSnapshotSync();
 }
 
 function flushSnapshotAsync() {
   snapshotChain = snapshotChain.then(async () => {
-    try {
-      await fsp.mkdir(BASE_DIR, { recursive: true });
-      const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-      // When SQLite is active in /tmp, checkpoint WAL and atomically snapshot history.sqlite to /data
-      // (no redundant index.json or prefs.json writes on GCS FUSE).
-      if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
-        try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
-        const tmpSqlite = PERSIST_SQLITE_PATH + suffix;
-        await fsp.copyFile(LOCAL_SQLITE_PATH, tmpSqlite);
-        await fsp.rename(tmpSqlite, PERSIST_SQLITE_PATH);
-      } else {
-        // Fallback only for runtimes without built-in node:sqlite
-        const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
-        const tmpIdx = PERSIST_INDEX_JSON + suffix;
-        await fsp.writeFile(tmpIdx, JSON.stringify(allMeta));
-        await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
-      }
-    } catch (e) {
-      // Non-fatal background snapshot
-    }
+    flushSnapshotSync();
   });
   return snapshotChain;
 }
@@ -362,7 +741,7 @@ function scheduleBackgroundBackfill() {
       }
       if (imported > 0) {
         console.log(`[history] Backfilled ${imported} existing runs into SQLite index.`);
-        await flushSnapshotAsync();
+        flushSnapshotSync();
       }
     } catch (_) {}
   }, delayMs);
@@ -381,19 +760,23 @@ function ensureOwnerLoadedSync(key) {
         const raw = fs.readFileSync(pfile, 'utf8');
         const p = JSON.parse(raw);
         if (p && typeof p === 'object') {
+          const uName = norm(p.user || '');
           const { list: strippedPrompts } = extractAndStripSavedPrompts(key, p.savedPrompts);
+          const cleanPresets = sanitizeSavedPresetsList(p.savedPresets);
           const cleanPref = {
-            user: norm(p.user || ''),
+            user: uName,
             taskId: p.taskId || 'custom',
             slots: Array.isArray(p.slots) ? p.slots : null,
             models: Array.isArray(p.models) ? p.models : null,
             savedPrompts: strippedPrompts,
-            savedPresets: sanitizeSavedPresetsList(p.savedPresets),
+            savedPresets: cleanPresets,
             updatedAt: Number(p.updatedAt) || Date.now(),
           };
           prefsByUserKey.set(key, cleanPref);
           if (stmts && stmts.upsertPref) {
             try {
+              syncSavedPromptsTableForUser(key, uName, strippedPrompts);
+              syncSavedPresetsTableForUser(key, uName, cleanPresets);
               stmts.upsertPref.run(
                 key,
                 cleanPref.user,
@@ -403,8 +786,10 @@ function ensureOwnerLoadedSync(key) {
                 JSON.stringify(cleanPref.savedPresets || []),
                 cleanPref.updatedAt
               );
-              schedulePersistSnapshot();
-              fsp.unlink(pfile).catch(() => {});
+              const flushed = flushSnapshotSync();
+              if (flushed && fs.existsSync(PERSIST_SQLITE_PATH)) {
+                fsp.unlink(pfile).catch(() => {});
+              }
             } catch (_) {}
           }
         }
@@ -435,7 +820,7 @@ function ensureOwnerLoadedSync(key) {
         }
       } catch (_) {}
     }
-    if (added > 0) schedulePersistSnapshot();
+    if (added > 0) flushSnapshotSync();
   } catch (_) {}
 }
 
@@ -773,6 +1158,7 @@ function sanitizeSavedPresetsList(list) {
 function getUserPreferences(username) {
   const u = norm(username);
   if (!u) return { taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [] };
+  syncFromPersistSqliteIfNewer(false);
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
   let p = prefsByUserKey.get(key);
@@ -782,12 +1168,16 @@ function getUserPreferences(username) {
     p = null;
   }
   if (!p) {
+    const dbPrompts = loadUserSavedPromptsFromDb(key);
+    const dbPresets = loadUserSavedPresetsFromDb(key);
     p = derivePrefsFromHistory(u, key);
     if (p) {
+      p.savedPrompts = dbPrompts;
+      p.savedPresets = dbPresets;
       prefsByUserKey.set(key, p);
     } else {
       // Memoize default empty prefs in memory so repeat calls in the same request / session never hit disk
-      p = { user: u, taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [], updatedAt: 0 };
+      p = { user: u, taskId: 'custom', slots: null, models: null, savedPrompts: dbPrompts, savedPresets: dbPresets, updatedAt: 0 };
       prefsByUserKey.set(key, p);
     }
   }
@@ -812,23 +1202,30 @@ const prefWriteChains = new Map();
 function saveUserPreferences(username, newPrefs) {
   const u = norm(username);
   if (!u) return null;
+  syncFromPersistSqliteIfNewer(true);
   const key = userKey(u);
   const current = getUserPreferences(u) || {};
+  const hasExplicitPrompts = Boolean(newPrefs && Array.isArray(newPrefs.savedPrompts));
+  const hasExplicitPresets = Boolean(newPrefs && Array.isArray(newPrefs.savedPresets));
 
-  const savedPrompts = Array.isArray(newPrefs.savedPrompts)
+  const savedPrompts = hasExplicitPrompts
     ? sanitizeSavedPromptsList(newPrefs.savedPrompts, key)
-    : (Array.isArray(current.savedPrompts) ? current.savedPrompts : []);
+    : (Array.isArray(current.savedPrompts) && current.savedPrompts.length
+        ? current.savedPrompts
+        : loadUserSavedPromptsFromDb(key));
 
-  const savedPresets = Array.isArray(newPrefs.savedPresets)
+  const savedPresets = hasExplicitPresets
     ? sanitizeSavedPresetsList(newPrefs.savedPresets)
-    : (Array.isArray(current.savedPresets) ? current.savedPresets : []);
+    : (Array.isArray(current.savedPresets) && current.savedPresets.length
+        ? current.savedPresets
+        : loadUserSavedPresetsFromDb(key));
 
-  const taskId = typeof newPrefs.taskId === 'string'
+  const taskId = (newPrefs && typeof newPrefs.taskId === 'string')
     ? newPrefs.taskId.slice(0, 100)
     : (current.taskId || 'custom');
 
   let slots = null;
-  if (Array.isArray(newPrefs.slots)) {
+  if (newPrefs && Array.isArray(newPrefs.slots)) {
     slots = newPrefs.slots
       .slice(0, 6)
       .filter((s) => s && (s.catalogId || s.id))
@@ -837,7 +1234,7 @@ function saveUserPreferences(username, newPrefs) {
         catalogId: s.catalogId || s.id,
         effort: s.effort || null,
       }));
-  } else if (Array.isArray(newPrefs.models)) {
+  } else if (newPrefs && Array.isArray(newPrefs.models)) {
     slots = newPrefs.models
       .slice(0, 6)
       .filter((m) => m && (m.catalogId || m.id))
@@ -867,6 +1264,12 @@ function saveUserPreferences(username, newPrefs) {
 
   if (stmts && stmts.upsertPref) {
     try {
+      if (hasExplicitPrompts) {
+        syncSavedPromptsTableForUser(key, u, savedPrompts);
+      }
+      if (hasExplicitPresets) {
+        syncSavedPresetsTableForUser(key, u, savedPresets);
+      }
       stmts.upsertPref.run(
         key,
         u,
@@ -876,7 +1279,7 @@ function saveUserPreferences(username, newPrefs) {
         JSON.stringify(savedPresets || []),
         updatedAt
       );
-      schedulePersistSnapshot();
+      flushSnapshotSync();
     } catch (_) {}
     return prefObj;
   }
@@ -937,10 +1340,11 @@ function getSavedPrompt(username, promptId) {
 
 // Save or update a named prompt in the user's saved prompts library.
 // Raw attachment binaries are stored AS-IS in `/data/vault/<userKey>/<sha256>.bin`,
-// while `savedPrompts` only stores the compact ~180-byte vault pointer.
+// while `user_saved_prompts` in SQLite stores the prompt text and compact ~180-byte vault pointers.
 function saveUserPrompt(username, item) {
   const u = norm(username);
   if (!u) throw new Error('User is required.');
+  syncFromPersistSqliteIfNewer(true);
   const uKey = userKey(u);
   const cleanFull = sanitizeSavedPromptItem(item, true, uKey);
   if (!cleanFull) throw new Error('Please enter a prompt or attach a file before saving.');
@@ -970,6 +1374,20 @@ function saveUserPrompt(username, item) {
     updatedAt: now,
   };
   const updatedList = [metaEntry, ...existing].slice(0, MAX_SAVED_PROMPTS);
+  if (stmts && stmts.upsertPrompt) {
+    try {
+      stmts.upsertPrompt.run(
+        uKey,
+        metaEntry.id,
+        u,
+        metaEntry.title,
+        metaEntry.prompt,
+        JSON.stringify(metaEntry.attachments || []),
+        metaEntry.createdAt,
+        metaEntry.updatedAt
+      );
+    } catch (_) {}
+  }
   saveUserPreferences(u, { savedPrompts: updatedList });
   return { ok: true, saved: metaEntry, prompt: metaEntry, savedPrompts: updatedList };
 }
@@ -978,11 +1396,16 @@ function saveUserPrompt(username, item) {
 function deleteUserPrompt(username, promptId) {
   const u = norm(username);
   if (!u) return { ok: false, removed: false, savedPrompts: [] };
+  syncFromPersistSqliteIfNewer(true);
+  const uKey = userKey(u);
   const sid = String(promptId || '').trim();
   const existing = listSavedPrompts(u);
   const filtered = existing.filter((x) => x && x.id !== sid);
   const removed = filtered.length !== existing.length;
   if (removed) {
+    if (stmts && stmts.delPrompt) {
+      try { stmts.delPrompt.run(uKey, sid); } catch (_) {}
+    }
     saveUserPreferences(u, { savedPrompts: filtered });
   }
   return { ok: true, removed, savedPrompts: filtered };
@@ -994,10 +1417,12 @@ function listSavedPresets(username) {
   return Array.isArray(p && p.savedPresets) ? p.savedPresets.slice() : [];
 }
 
-// Save or update a named model preset in the user's saved presets library.
+// Save or update a named model preset in the user's saved presets library (`user_saved_presets` SQLite table).
 function saveUserPreset(username, item) {
   const u = norm(username);
   if (!u) throw new Error('User is required.');
+  syncFromPersistSqliteIfNewer(true);
+  const uKey = userKey(u);
   const clean = sanitizeSavedPresetItem(item);
   if (!clean) throw new Error('Select at least one model before saving a preset.');
   const existing = listSavedPresets(u).slice();
@@ -1025,6 +1450,19 @@ function saveUserPreset(username, item) {
     };
   }
   const updatedList = [savedEntry, ...existing].slice(0, MAX_SAVED_PRESETS);
+  if (stmts && stmts.upsertPreset) {
+    try {
+      stmts.upsertPreset.run(
+        uKey,
+        savedEntry.id,
+        u,
+        savedEntry.title,
+        JSON.stringify(savedEntry.slots || []),
+        savedEntry.createdAt,
+        savedEntry.updatedAt
+      );
+    } catch (_) {}
+  }
   saveUserPreferences(u, { savedPresets: updatedList });
   return { ok: true, saved: savedEntry, preset: savedEntry, savedPresets: updatedList };
 }
@@ -1033,11 +1471,16 @@ function saveUserPreset(username, item) {
 function deleteUserPreset(username, presetId) {
   const u = norm(username);
   if (!u) return { ok: false, removed: false, savedPresets: [] };
+  syncFromPersistSqliteIfNewer(true);
+  const uKey = userKey(u);
   const sid = String(presetId || '').trim();
   const existing = listSavedPresets(u);
   const filtered = existing.filter((x) => x && x.id !== sid);
   const removed = filtered.length !== existing.length;
   if (removed) {
+    if (stmts && stmts.delPreset) {
+      try { stmts.delPreset.run(uKey, sid); } catch (_) {}
+    }
     saveUserPreferences(u, { savedPresets: filtered });
   }
   return { ok: true, removed, savedPresets: filtered };
@@ -1233,7 +1676,10 @@ function deleteRun(id, { username, isAdmin }) {
 }
 
 // Instant (<0.2ms) Admin at-a-glance usage summary computed directly from the SQLite/memory index.
+// Includes per-user and global counts of saved custom prompts (`savedPrompts`) and saved model presets (`savedPresets`)
+// while keeping the actual prompt text and file contents strictly private to each user.
 function usageSummary() {
+  syncFromPersistSqliteIfNewer(false);
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
   let totalRuns = 0, runsToday = 0;
@@ -1241,15 +1687,66 @@ function usageSummary() {
     totalRuns++;
     const today = rec.at >= startOfDay;
     if (today) runsToday++;
-    const u = byUser.get(rec.user) || { user: rec.user, userName: rec.userName || rec.user, runs: 0, runsToday: 0, lastAt: 0, costUsd: 0 };
+    const uKeyName = norm(rec.user);
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: rec.userName || rec.user || uKeyName,
+      runs: 0,
+      runsToday: 0,
+      lastAt: 0,
+      costUsd: 0,
+      savedPrompts: 0,
+      savedPresets: 0,
+    };
     u.runs++;
     if (today) u.runsToday++;
-    if (rec.at > u.lastAt) { u.lastAt = rec.at; u.userName = rec.userName || rec.user; }
+    if (rec.at > u.lastAt) { u.lastAt = rec.at; u.userName = rec.userName || rec.user || uKeyName; }
     (rec.summary || []).forEach((s) => { if (typeof s.costUsd === 'number') u.costUsd += s.costUsd; });
-    byUser.set(rec.user, u);
+    byUser.set(uKeyName, u);
   }
-  const users = Array.from(byUser.values()).sort((a, b) => b.lastAt - a.lastAt);
-  return { generatedAt: Date.now(), dayStartUtc: startOfDay, totals: { users: users.length, totalRuns, runsToday }, users };
+
+  let totalSavedPrompts = 0;
+  let totalSavedPresets = 0;
+  for (const p of prefsByUserKey.values()) {
+    const uKeyName = norm(p && p.user);
+    if (!uKeyName) continue;
+    const spCount = Array.isArray(p.savedPrompts) ? p.savedPrompts.length : 0;
+    const mpCount = Array.isArray(p.savedPresets) ? p.savedPresets.length : 0;
+    const existing = byUser.get(uKeyName);
+    if (!existing && spCount === 0 && mpCount === 0) continue;
+    const u = existing || {
+      user: uKeyName,
+      userName: uKeyName,
+      runs: 0,
+      runsToday: 0,
+      lastAt: 0,
+      costUsd: 0,
+      savedPrompts: 0,
+      savedPresets: 0,
+    };
+    u.savedPrompts = spCount;
+    u.savedPresets = mpCount;
+    if ((p.updatedAt || 0) > u.lastAt) {
+      u.lastAt = Number(p.updatedAt) || u.lastAt;
+    }
+    totalSavedPrompts += spCount;
+    totalSavedPresets += mpCount;
+    byUser.set(uKeyName, u);
+  }
+
+  const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+  return {
+    generatedAt: Date.now(),
+    dayStartUtc: startOfDay,
+    totals: {
+      users: users.length,
+      totalRuns,
+      runsToday,
+      totalSavedPrompts,
+      totalSavedPresets,
+    },
+    users,
+  };
 }
 
 // Attach a completed Blind LLM-as-Judge evaluation to a saved history run so
@@ -1332,7 +1829,11 @@ module.exports = {
   listSavedPresets,
   saveUserPreset,
   deleteUserPreset,
+  flushSnapshotSync,
   flushSnapshotAsync,
+  syncFromPersistSqliteIfNewer,
+  PERSIST_SQLITE_PATH,
+  LOCAL_SQLITE_PATH,
   vault,
   BASE_DIR,
 };

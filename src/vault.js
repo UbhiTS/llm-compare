@@ -248,6 +248,25 @@ function bindSqlite(db, schedulePersistFn) {
   }
 }
 
+function mergeFromExternalDb(extDb) {
+  if (!extDb) return 0;
+  let merged = 0;
+  try {
+    const rows = extDb.prepare(`SELECT * FROM user_vault_files`).all();
+    for (const r of rows) {
+      const rec = rowToRecord(r);
+      if (!rec || !rec.userKey || !rec.sha256) continue;
+      const cacheKey = `${rec.userKey}:${rec.sha256}`;
+      const existing = metaCache.get(cacheKey);
+      if (!existing || (rec.updatedAt || 0) > (existing.updatedAt || 0)) {
+        upsertSqliteRecord(rec.userKey, rec, false);
+        merged++;
+      }
+    }
+  } catch (_) {}
+  return merged;
+}
+
 function migrateLegacyVaultSidecarsAsync() {
   const baseDir = getVaultBaseDir();
   const t = setTimeout(async () => {
@@ -753,6 +772,7 @@ module.exports = {
   getVaultBaseDir,
   getUserVaultDir,
   bindSqlite,
+  mergeFromExternalDb,
   toVaultPointer,
   storeAttachmentInVaultSync,
   storeAttachmentInVaultAsync,
