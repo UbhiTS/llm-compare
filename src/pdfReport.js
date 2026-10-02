@@ -1624,12 +1624,14 @@ function renderMetricsTableAndJudge(doc, r) {
           { key: 'accuracy', label: 'Accuracy' },
           { key: 'structure', label: 'Structure' },
           { key: 'actionability', label: 'Actionability' },
+          { key: 'cost', label: 'Cost' },
+          { key: 'speed', label: 'Speed' },
         ];
 
-    const critW = 46;
-    const modelW = 118;
-    const overallW = 48;
-    const noteW = CONTENT_W - modelW - overallW - criteria.length * critW;
+    const critW = criteria.length > 4 ? 38 : 46;
+    const modelW = criteria.length > 4 ? 110 : 118;
+    const overallW = 42;
+    const noteW = Math.max(110, CONTENT_W - modelW - overallW - criteria.length * critW);
 
     const rowItems = jRanked.map((res) => {
       const noteLines = wrapText(res.note || '—', noteW - 12, 7.2);
@@ -1672,8 +1674,15 @@ function renderMetricsTableAndJudge(doc, r) {
     jx += modelW;
     doc.text('Overall', jx + overallW / 2, jCurY + 4, { font: 'F2', size: 7.2, color: COLORS.textDark, align: 'center' });
     jx += overallW;
+    const shortCritLabel = (lbl) => {
+      if (critW <= 40) {
+        if (/^completeness$/i.test(lbl)) return 'Complete';
+        if (/^actionability$/i.test(lbl)) return 'Actionable';
+      }
+      return lbl;
+    };
     criteria.forEach((c) => {
-      doc.text(c.label, jx + critW / 2, jCurY + 4, { font: 'F2', size: 7, color: COLORS.textDark, align: 'center', maxWidth: critW - 4 });
+      doc.text(shortCritLabel(c.label), jx + critW / 2, jCurY + 4, { font: 'F2', size: 6.8, color: COLORS.textDark, align: 'center', maxWidth: critW - 2 });
       jx += critW;
     });
     doc.text("Judge's Note", jx + 6, jCurY + 4, { font: 'F2', size: 7.2, color: COLORS.textDark });

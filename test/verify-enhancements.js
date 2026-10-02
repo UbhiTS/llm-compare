@@ -89,7 +89,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   console.log('✓ Claude & OpenAI thinking options and profiles verified');
 
   // 7. Verify Judge multi-fence JSON extraction, prompt-injection defanging, and Claude safety-refusal retry
-  const { judgeOutputs, parseJson, defangDelimiters, neutralizeExploitLiteralsForJudge } = require('../src/judge');
+  const { judgeOutputs, CRITERIA, parseJson, defangDelimiters, neutralizeExploitLiteralsForJudge } = require('../src/judge');
+  assert.strictEqual(CRITERIA.length, 6, 'CRITERIA should have 6 evaluation axes (completeness, accuracy, structure, actionability, cost, speed)');
+  assert(CRITERIA.some((c) => c.key === 'cost'), 'CRITERIA must include cost');
+  assert(CRITERIA.some((c) => c.key === 'speed'), 'CRITERIA must include speed');
   const multiFenceSample = [
     'Response A had a minor issue in its helper:',
     '```javascript',
@@ -97,7 +100,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     '```',
     'Here is the final evaluation:',
     '```json',
-    '{"scores":[{"id":"A","completeness":9,"accuracy":8,"structure":9,"actionability":9,"note":"Thorough audit."},{"id":"B","completeness":7,"accuracy":7,"structure":8,"actionability":7,"note":"Solid."}],"winner":"A","why":"A found all 5 flaws."}',
+    '{"scores":[{"id":"A","completeness":9,"accuracy":8,"structure":9,"actionability":9,"cost":9,"speed":10,"note":"Thorough audit."},{"id":"B","completeness":7,"accuracy":7,"structure":8,"actionability":7,"cost":6,"speed":7,"note":"Solid."}],"winner":"A","why":"A found all 5 flaws faster and cheaper."}',
     '```',
   ].join('\n');
   const parsedMulti = parseJson(multiFenceSample);
@@ -142,11 +145,11 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     return {
       text: JSON.stringify({
         scores: [
-          { id: 'A', completeness: 9, accuracy: 9, structure: 9, actionability: 9, note: 'Strong security analysis.' },
-          { id: 'B', completeness: 8, accuracy: 8, structure: 8, actionability: 8, note: 'Good coverage.' },
+          { id: 'A', completeness: 9, accuracy: 9, structure: 9, actionability: 9, cost: 10, speed: 9, note: 'Strong security analysis.' },
+          { id: 'B', completeness: 8, accuracy: 8, structure: 8, actionability: 8, cost: 7, speed: 7, note: 'Good coverage.' },
         ],
         winner: 'A',
-        why: 'Response A provided complete remediation diffs.',
+        why: 'Response A provided complete remediation diffs with lower cost and faster speed.',
       }),
       reasoning: '',
       stopReason: 'end_turn',
@@ -159,8 +162,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     const verdict = await judgeOutputs({
       task: { id: 'sec-chained-vuln-audit', prompt: 'Audit this service for SSRF to 169.254.169.254.' },
       entries: [
-        { slot: 'A', label: 'Model A', text: exploitSample },
-        { slot: 'B', label: 'Model B', text: 'Analysis of nsenter and /bin/sh escape.' },
+        { slot: 'A', label: 'Model A', text: exploitSample, costUsd: 0.0025, wallMs: 1800, tokensPerSec: 320, completionTokens: 580 },
+        { slot: 'B', label: 'Model B', text: 'Analysis of nsenter and /bin/sh escape.', costUsd: 0.0150, wallMs: 4200, tokensPerSec: 140, completionTokens: 590 },
       ],
       judge: { label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', model: 'claude-opus-5-5', context: 1000000 },
     });
@@ -168,12 +171,15 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     assert.strictEqual(capturedEffort, 'medium', 'Anthropic judge should default to medium effort when none is specified');
     assert(secondCallPrompt.includes('[Code/Config Artifact: bash, 7 lines'), 'Retry prompt should neutralize multi-line exploit code blocks');
     assert(!secondCallPrompt.includes('169.254.169.254'), 'Retry prompt should neutralize IMDS IP literals');
+    assert(secondCallPrompt.includes('[Measured Telemetry — Wall time:'), 'Judge prompt should include measured runtime telemetry (wall time, throughput, cost)');
+    assert.strictEqual(verdict.criteria.length, 6, 'Verdict should return all 6 criteria including cost and speed');
     assert.strictEqual(verdict.results.length, 2, 'Retry verdict should return scores for both entries');
+    assert(verdict.results.every((r) => r.scores.cost != null && r.scores.speed != null), 'Both entries must have cost and speed scores');
     assert.strictEqual(verdict.usage.promptTokens, 900, 'Usage should sum tokens across initial refusal and retry');
   } finally {
     ADAPTERS.agentplatform = origAgentPlatform;
   }
-  console.log('✓ Judge multi-fence JSON parser & automatic Claude safety-refusal retry verified');
+  console.log('✓ Judge 6-axis rubric (including Cost & Speed), multi-fence JSON parser & Claude safety-refusal retry verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

@@ -2864,7 +2864,18 @@ let _lastRunId = null;
 
 function judgeableEntries() {
   return (ARENA_MODELS || MODELS)
-    .map((m) => ({ slot: m.slot, label: m.label, text: (LAST_RESULTS[m.slot] || {}).code || '' }))
+    .map((m) => {
+      const r = LAST_RESULTS[m.slot] || {};
+      return {
+        slot: m.slot,
+        label: m.label,
+        text: r.code || '',
+        costUsd: typeof r.costUsd === 'number' && isFinite(r.costUsd) ? r.costUsd : null,
+        wallMs: typeof r.wallMs === 'number' && isFinite(r.wallMs) ? r.wallMs : null,
+        tokensPerSec: typeof r.tokensPerSec === 'number' && isFinite(r.tokensPerSec) ? r.tokensPerSec : null,
+        completionTokens: typeof r.completionTokens === 'number' && isFinite(r.completionTokens) ? r.completionTokens : null,
+      };
+    })
     .filter((e) => e.text.trim());
 }
 
@@ -2958,6 +2969,8 @@ function renderJudge(r) {
         { key: 'accuracy', label: 'Accuracy' },
         { key: 'structure', label: 'Structure' },
         { key: 'actionability', label: 'Actionability' },
+        { key: 'cost', label: 'Cost' },
+        { key: 'speed', label: 'Speed' },
       ];
   const ranked = r.results.slice().sort((a, b) => (b.overall || 0) - (a.overall || 0));
   const best = ranked.length ? ranked[0].overall : 0;

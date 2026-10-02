@@ -777,7 +777,15 @@ app.post('/api/judge', async (req, res) => {
   const clean = (Array.isArray(entries) ? entries : [])
     .filter((e) => e && typeof e.text === 'string' && e.text.trim())
     .slice(0, 6)
-    .map((e) => ({ slot: String(e.slot || '').slice(0, 4), label: String(e.label || '').slice(0, 80), text: e.text.slice(0, 1000000) }));
+    .map((e) => ({
+      slot: String(e.slot || '').slice(0, 4),
+      label: String(e.label || '').slice(0, 80),
+      text: e.text.slice(0, 1000000),
+      costUsd: e.costUsd != null && isFinite(Number(e.costUsd)) ? Math.max(0, Number(e.costUsd)) : null,
+      wallMs: e.wallMs != null && isFinite(Number(e.wallMs)) ? Math.max(0, Number(e.wallMs)) : null,
+      tokensPerSec: e.tokensPerSec != null && isFinite(Number(e.tokensPerSec)) ? Math.max(0, Number(e.tokensPerSec)) : null,
+      completionTokens: e.completionTokens != null && isFinite(Number(e.completionTokens)) ? Math.max(0, Math.round(Number(e.completionTokens))) : null,
+    }));
   if (clean.length < 2) return res.status(400).json({ error: 'Need at least two model outputs to compare.' });
 
   const rawKeys = (req.body && req.body.keys) || {};
