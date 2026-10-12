@@ -152,6 +152,9 @@ async function waitUp() {
   check('GET /api/config', r.status === 200 && r.json && cfgKeys.every((k) => k in r.json) && r.json.catalog.length > 5 && r.json.tasks.length > 5, { status: r.status, shape: shape(r.json) });
   const cfg = r.json || {};
 
+  r = await req('GET', '/api/image-arena/config');
+  check('GET /api/image-arena/config (Nano Banana 2 vs 2.1)', r.status === 200 && r.json && r.json.ok && Array.isArray(r.json.catalog) && r.json.catalog.length === 4 && Array.isArray(r.json.packs) && r.json.packs.length === 4, { status: r.status, shape: shape(r.json) });
+
   r = await req('GET', '/api/me/preferences');
   check('GET /api/me/preferences', r.status === 200 && r.json && r.json.ok && 'preferences' in r.json, { status: r.status });
 

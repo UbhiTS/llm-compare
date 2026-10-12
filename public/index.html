@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.8"></script>
+  <script src="theme-init.js?v=1.0.9"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.8" />
+  <link rel="stylesheet" href="styles.css?v=1.0.9" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.8" defer></script>
+  <script src="app.js?v=1.0.9" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -34,6 +34,17 @@
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
     </div>
+    <nav class="arena-mode-switch" id="arenaModeSwitch" aria-label="Arena Mode">
+      <button type="button" class="arena-mode-btn active" data-arena-mode="text" id="modeBtnText">
+        <span class="am-icon">⚡</span>
+        <span>Text, Code &amp; Agent Arena</span>
+      </button>
+      <button type="button" class="arena-mode-btn" data-arena-mode="image" id="modeBtnImage">
+        <span class="am-icon">🎨</span>
+        <span>Image &amp; GenMedia Arena</span>
+        <span class="am-badge">Nano Banana 2 vs 2.1</span>
+      </button>
+    </nav>
     <div class="topbar-right">
       <div class="theme-switch" id="themeSwitch" title="Theme">
         <button type="button" data-theme="light" title="Light theme">☀</button>
@@ -214,6 +225,186 @@
     </details>
   </section>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.8</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <!-- ==================== IMAGE & GENMEDIA ARENA (NANO BANANA 2 vs 2.1) ==================== -->
+  <section id="imageArenaSection" class="image-arena-wrap hidden" aria-label="Image and GenMedia Arena">
+    <div class="controls glass image-controls-panel">
+      <!-- STEP 1: INDUSTRY PACK, SCENARIO & MULTIMODAL REFERENCE STUDIO -->
+      <div class="step-block">
+        <div class="step-header">
+          <div class="step-header-left">
+            <span class="step-badge">1</span>
+            <span class="step-title">Industry Scenario &amp; Multimodal Prompt</span>
+            <span id="imgScenarioBadge" class="task-meta is-retail">Print &amp; Consumer Photo</span>
+          </div>
+          <div class="step-header-right">
+            <span class="img-endpoint-pill" title="Verified live Vertex AI endpoint routing">☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images</span>
+          </div>
+        </div>
+
+        <div class="composer-card" id="imgDropzone">
+          <div class="composer-select-row">
+            <select id="imgPackSelect" aria-label="Select industry pack"></select>
+            <span class="composer-select-sep" aria-hidden="true">▸</span>
+            <select id="imgScenarioSelect" aria-label="Select image benchmark scenario"></select>
+          </div>
+          <div class="composer-body">
+            <div id="imgWhyBanner" class="img-why-banner"></div>
+            <textarea id="imgPromptInput" class="custom-prompt" rows="3" placeholder="Describe the image to generate or the conversational edit to apply to the reference image(s)…"></textarea>
+
+            <div class="custom-attachments-wrap">
+              <input type="file" id="imgRefFileInput" class="hidden" multiple accept="image/png,image/jpeg,image/webp,image/gif" />
+              <div class="composer-attach-bar">
+                <button type="button" id="imgAddRefBtn" class="bar-btn" title="Upload reference images for conversational editing, Smart Erase, or multi-image consistency">🖼️ + Add Reference Image(s)</button>
+                <button type="button" id="imgReloadSampleRefsBtn" class="bar-btn hidden" title="Restore the scenario's built-in sample reference image(s)">↺ Restore Built-In Sample Image(s)</button>
+                <span class="ca-drop-hint">Drag &amp; drop or paste up to <strong>13 reference images</strong> (Smart Erase object removal, character consistency, style locking)</span>
+                <span id="imgRefCountBadge" class="ca-count-badge hidden"></span>
+                <button type="button" id="imgClearRefsBtn" class="bar-btn subtle hidden">Clear images</button>
+              </div>
+              <div id="imgRefList" class="ca-list hidden"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- STEP 2: RESOLUTION, ASPECT RATIO & MODEL SLOTS -->
+      <div class="step-block">
+        <div class="step-header">
+          <div class="step-header-left">
+            <span class="step-badge">2</span>
+            <span class="step-title">Resolution, Aspect Ratio &amp; Model Lineup</span>
+            <span class="step-sub-pill" id="imgSlotCountBadge">2 of 4 active</span>
+          </div>
+          <div class="step-header-right">
+            <div class="mc-presets" role="group" aria-label="Image model presets">
+              <span class="mc-preset-label">Lineup:</span>
+              <button type="button" class="bar-btn img-preset-btn" data-img-preset="nb2-vs-21" title="Gemini Nano Banana 2 (3.1 Flash Image) vs Gemini Nano Banana 2.1 (GA Oct 6, 2026)">🍌 Nano Banana 2 vs 2.1</button>
+              <button type="button" class="bar-btn img-preset-btn" data-img-preset="all-three" title="Compare Nano Banana 2 vs Nano Banana 2.1 vs Nano Banana Pro">🏆 2 vs 2.1 vs Pro</button>
+              <button type="button" class="bar-btn img-preset-btn" data-img-preset="legacy-evolution" title="Compare Legacy 2.5 Flash Image (1K cap) vs Nano Banana 2 vs Nano Banana 2.1 (4K)">📈 1K Legacy → 4K 2.1</button>
+            </div>
+            <button type="button" id="imgAddSlotBtn" class="bar-btn bar-btn-accent" title="Add another image model column (up to 4)">+ Add model (2/4)</button>
+          </div>
+        </div>
+
+        <div class="img-config-bar">
+          <div class="img-cfg-group">
+            <label class="img-cfg-label">Output Resolution (`imageSize`)</label>
+            <div id="imgSizePills" class="img-seg-group" role="group" aria-label="Output resolution"></div>
+          </div>
+          <div class="img-cfg-group">
+            <label class="img-cfg-label">Aspect Ratio (`aspectRatio`)</label>
+            <div id="imgAspectPills" class="img-seg-group" role="group" aria-label="Aspect ratio"></div>
+          </div>
+        </div>
+
+        <div id="imgSlotGrid" class="slot-configurator-grid img-slot-grid"></div>
+      </div>
+
+      <!-- STEP 3: VISUAL INSPECTION TOOLS & GENERATE -->
+      <div class="step-block step-run">
+        <div class="execution-bar" role="toolbar" aria-label="Image Arena inspection tools and run">
+          <div class="exec-bar-left">
+            <span class="step-badge">3</span>
+            <span class="step-title">Inspect &amp; Generate</span>
+            <div class="coding-toggles-wrap">
+              <button id="imgSyncLoupeBtn" class="bar-btn toggle is-on" type="button" aria-pressed="true" title="Synchronized 3.5x Pixel Loupe: hover over any generated image to inspect the exact same (x%, y%) region across all models simultaneously">
+                <span class="ar-led"></span>🔍 Sync 4K Pixel Loupe (3.5×)
+              </button>
+              <button id="imgSplitCurtainBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Toggle interactive Before/After Split Curtain slider between Slot A and Slot B (or Input Reference vs Edited Output)">
+                <span class="ar-led"></span>⇔ Split Curtain Compare
+              </button>
+            </div>
+            <span id="imgStatusTimer" class="quota-badge">Ready · Live Vertex AI</span>
+          </div>
+          <div class="exec-bar-right">
+            <button id="imgRunBtn" class="ctl-btn primary run-btn-main" type="button" title="Generate &amp; compare images in parallel across active Vertex AI models">
+              Generate &amp; Compare Images ▸
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INTERACTIVE SPLIT-CURTAIN OVERLAY VIEW (OPTIONAL TOGGLE) -->
+    <section id="imgCurtainSection" class="glass img-curtain-section hidden">
+      <div class="img-curtain-head">
+        <div>
+          <h3 id="imgCurtainTitle">⇔ Interactive Split-Curtain Comparison</h3>
+          <p class="sc-sub" id="imgCurtainSub">Drag the divider horizontally to compare typography sharpness, Smart Erase reconstruction, and 4K detail pixel-for-pixel.</p>
+        </div>
+        <div class="img-curtain-controls">
+          <label for="imgCurtainLeftSelect">Left Layer:</label>
+          <select id="imgCurtainLeftSelect"></select>
+          <label for="imgCurtainRightSelect">Right Layer:</label>
+          <select id="imgCurtainRightSelect"></select>
+        </div>
+      </div>
+      <div id="imgCurtainStage" class="img-curtain-stage">
+        <img id="imgCurtainRightImg" class="img-curtain-img" alt="Right comparison layer" />
+        <div id="imgCurtainLeftClip" class="img-curtain-left-clip" style="width:50%">
+          <img id="imgCurtainLeftImg" class="img-curtain-img" alt="Left comparison layer" />
+        </div>
+        <div id="imgCurtainDivider" class="img-curtain-divider" style="left:50%">
+          <div class="img-curtain-handle">⇔</div>
+        </div>
+        <span id="imgCurtainLeftTag" class="img-curtain-tag left">Slot A</span>
+        <span id="imgCurtainRightTag" class="img-curtain-tag right">Slot B</span>
+      </div>
+    </section>
+
+    <!-- SIDE-BY-SIDE IMAGE ARENA CARDS -->
+    <section id="imgArenaGrid" class="arena img-arena-grid"></section>
+
+    <!-- UNIT ECONOMICS, SLA & OFF-PEAK PAYGO VOLUME MODELER -->
+    <section id="imgEconomicsSection" class="scorecard glass img-economics-section">
+      <div class="sc-head">
+        <div>
+          <h2>Purchasing Tiers, SLA Routing &amp; Peak Holiday Volume Modeler</h2>
+          <p class="sc-sub">Grounded in live Vertex AI token telemetry and official Agent Platform Nano Banana pricing (<a href="https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing#nano-banana" target="_blank" rel="noopener">cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing</a>).</p>
+        </div>
+      </div>
+
+      <div class="img-econ-controls-grid">
+        <div class="img-econ-slider-card">
+          <div class="ies-top">
+            <label for="imgVolumeSlider">Projected Monthly / Peak Image Volume</label>
+            <strong id="imgVolumeLabel" class="ies-val">1,000,000 images</strong>
+          </div>
+          <input type="range" id="imgVolumeSlider" min="50000" max="10000000" step="50000" value="1000000" />
+          <div class="ies-ticks"><span>50K</span><span>1M</span><span>5M</span><span>10M images</span></div>
+        </div>
+
+        <div class="img-econ-slider-card">
+          <div class="ies-top">
+            <label for="imgOffPeakSlider">Async Batch / Overnight Share (50% Off-Peak PayGo on 2.1)</label>
+            <strong id="imgOffPeakLabel" class="ies-val">60% Off-Peak · 40% Real-Time</strong>
+          </div>
+          <input type="range" id="imgOffPeakSlider" min="0" max="100" step="5" value="60" />
+          <div class="ies-ticks"><span>0% (All Sync)</span><span>50% Split</span><span>100% Overnight Batch</span></div>
+        </div>
+      </div>
+
+      <div id="imgEconKpiGrid" class="img-econ-kpi-grid"></div>
+
+      <div class="table-wrap" style="margin-top:14px">
+        <table id="imgEconTable" class="img-econ-table">
+          <thead>
+            <tr>
+              <th>Model &amp; Release</th>
+              <th>GA SLA &amp; Endpoint</th>
+              <th>Output Resolution</th>
+              <th>Image Tokens</th>
+              <th>Standard PayGo / Image</th>
+              <th>Off-Peak PayGo (50% Off)</th>
+              <th>Projected Volume Cost</th>
+              <th>Recommended Production Role</th>
+            </tr>
+          </thead>
+          <tbody id="imgEconTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.9</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

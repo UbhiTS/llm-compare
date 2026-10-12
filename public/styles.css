@@ -2308,4 +2308,496 @@ a.ud-item[hidden] { display: none; }
   border-color: var(--accent);
 }
 
+/* ===========================================================================
+   v1.0.9 — Top-Level Arena Mode Switcher & Image / GenMedia Arena (Nano Banana 2 vs 2.1)
+   =========================================================================== */
+.arena-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  padding: 3px;
+  gap: 4px;
+}
+
+.arena-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.arena-mode-btn:hover {
+  color: var(--text);
+}
+
+.arena-mode-btn.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-hi));
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.am-badge {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  background: linear-gradient(135deg, rgba(47, 217, 166, 0.2), rgba(94, 139, 255, 0.22));
+  border: 1px solid rgba(47, 217, 166, 0.45);
+  color: var(--good);
+}
+
+.image-arena-wrap {
+  max-width: var(--maxw);
+  margin: 0 auto;
+}
+
+.img-endpoint-pill {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  background: var(--well);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.img-endpoint-pill code {
+  color: var(--good);
+}
+
+.img-why-banner {
+  font-size: 12.5px;
+  color: var(--muted);
+  padding: 8px 12px;
+  margin-top: 8px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--well));
+}
+
+.img-config-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 10px 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--well) 75%, transparent);
+}
+
+.img-cfg-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.img-cfg-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.img-seg-group {
+  display: inline-flex;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+}
+
+.img-seg-btn {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.img-seg-btn:last-child {
+  border-right: none;
+}
+
+.img-seg-btn:hover {
+  color: var(--text);
+}
+
+.img-seg-btn.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 22%, var(--surface));
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.img-slot-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-hi);
+  border-top: 3px solid var(--slot-accent, var(--accent));
+  background: var(--well);
+}
+
+.img-slot-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.img-slot-select {
+  width: 100%;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 10px;
+}
+
+.img-slot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10.5px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.img-mini-pill {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.img-mini-pill.is-sla-995 {
+  color: var(--good);
+  border-color: rgba(52, 224, 161, 0.4);
+}
+
+.img-mini-pill.is-sla-95 {
+  color: var(--warn);
+  border-color: rgba(255, 203, 94, 0.4);
+}
+
+.img-mini-pill.is-save {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+/* ---------- Image Arena Comparison Cards & Synchronized 4K Loupe ---------- */
+.img-arena-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+  max-width: var(--maxw);
+  margin: 16px auto 0;
+}
+
+.img-result-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border-top: 3px solid var(--accent);
+}
+
+.img-stage-wrap {
+  position: relative;
+  width: 100%;
+  min-height: 280px;
+  background: var(--well-2);
+  border: 1px solid var(--border-hi);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  cursor: crosshair;
+}
+
+.img-stage-wrap img.img-main-output {
+  width: 100%;
+  height: auto;
+  max-height: 540px;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.img-loupe-lens {
+  position: absolute;
+  width: 168px;
+  height: 168px;
+  border: 2px solid var(--accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+  background-repeat: no-repeat;
+  z-index: 15;
+}
+
+.img-loupe-tag {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  right: 4px;
+  background: rgba(6, 9, 15, 0.86);
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  padding: 2px 5px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.img-card-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.img-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.img-res-pill {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  color: var(--text);
+}
+
+.img-res-pill.is-4k {
+  border-color: var(--good);
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 12%, var(--well));
+}
+
+.img-thought-toggle {
+  font-size: 11.5px;
+  padding: 4px 10px;
+}
+
+.img-arch-callout {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--well);
+  line-height: 1.45;
+}
+
+/* ---------- Interactive Split-Curtain Before/After Overlay ---------- */
+.img-curtain-section {
+  max-width: var(--maxw);
+  margin: 16px auto 0;
+  padding: 18px 22px;
+}
+
+.img-curtain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.img-curtain-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.img-curtain-stage {
+  position: relative;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  aspect-ratio: 16 / 9;
+  max-height: 580px;
+  background: var(--well-2);
+  border: 1px solid var(--border-hi);
+  overflow: hidden;
+  user-select: none;
+  cursor: ew-resize;
+}
+
+.img-curtain-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.img-curtain-left-clip {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  overflow: hidden;
+  border-right: 2px solid var(--accent);
+}
+
+.img-curtain-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.img-curtain-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 38px;
+  height: 38px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+}
+
+.img-curtain-tag {
+  position: absolute;
+  top: 12px;
+  padding: 5px 10px;
+  background: rgba(6, 9, 15, 0.84);
+  border: 1px solid var(--border-hi);
+  color: #fff;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.img-curtain-tag.left { left: 12px; }
+.img-curtain-tag.right { right: 12px; }
+
+/* ---------- Unit Economics & Off-Peak PayGo Volume Modeler ---------- */
+.img-economics-section {
+  max-width: var(--maxw);
+  margin: 18px auto 0;
+}
+
+.img-econ-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.img-econ-slider-card {
+  padding: 12px 16px;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ies-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.ies-val {
+  font-family: "JetBrains Mono", monospace;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.img-econ-slider-card input[type="range"] {
+  width: 100%;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ies-ticks {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+  color: var(--faint);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.img-econ-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.img-econ-kpi {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  background: var(--well);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.img-econ-kpi.highlight {
+  border-color: rgba(52, 224, 161, 0.5);
+  background: color-mix(in srgb, var(--good) 9%, var(--well));
+}
+
+.iek-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.iek-value {
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.img-econ-kpi.highlight .iek-value {
+  color: var(--good);
+}
+
+.iek-sub {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+
 

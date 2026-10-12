@@ -5085,3 +5085,961 @@ function fmtCost(n) {
   if (n < 1) return '$' + n.toFixed(4);
   return '$' + n.toFixed(2);
 }
+
+// ===========================================================================
+// v1.0.9 — IMAGE & GENMEDIA ARENA (Vertex AI Nano Banana 2 vs 2.1)
+// ===========================================================================
+let ACTIVE_ARENA_MODE = 'text'; // 'text' | 'image'
+let IMG_CONFIG = null;
+let IMG_SLOTS = [
+  { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
+  { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
+];
+let IMG_SELECTED_SIZE = '2K';
+let IMG_SELECTED_ASPECT = '16:9';
+let IMG_REF_ATTACHMENTS = []; // [{ name, mimeType, label, data (base64) }]
+let IMG_CURRENT_SCENARIO_REFS = [];
+let IMG_LAST_RESULTS = [];
+let IMG_SYNC_LOUPE_ON = true;
+let IMG_SPLIT_CURTAIN_ON = false;
+let IMG_RUNNING = false;
+let IMG_TIMER_ID = null;
+
+function switchArenaMode(mode, { updateUrl = true } = {}) {
+  const target = mode === 'image' ? 'image' : 'text';
+  ACTIVE_ARENA_MODE = target;
+
+  const textBtn = $('#modeBtnText');
+  const imgBtn = $('#modeBtnImage');
+  if (textBtn) textBtn.classList.toggle('active', target === 'text');
+  if (imgBtn) imgBtn.classList.toggle('active', target === 'image');
+
+  const textControls = document.querySelector('section.controls:not(.image-controls-panel)');
+  const textArena = $('#arena');
+  const textScorecard = $('#scorecard');
+  const imgSection = $('#imageArenaSection');
+
+  if (target === 'image') {
+    if (textControls) textControls.classList.add('hidden');
+    if (textArena) textArena.classList.add('hidden');
+    if (textScorecard) textScorecard.classList.add('hidden');
+    if (imgSection) imgSection.classList.remove('hidden');
+    ensureImageArenaLoaded();
+  } else {
+    if (imgSection) imgSection.classList.add('hidden');
+    if (textControls) textControls.classList.remove('hidden');
+    if (textArena) textArena.classList.remove('hidden');
+    if (textScorecard && Object.keys(LAST_RESULTS || {}).length > 0) {
+      textScorecard.classList.remove('hidden');
+    }
+  }
+
+  if (updateUrl && window.history && typeof window.history.replaceState === 'function') {
+    try {
+      const url = new URL(window.location.href);
+      if (target === 'image') url.searchParams.set('tab', 'image');
+      else url.searchParams.delete('tab');
+      window.history.replaceState({}, '', url.toString());
+    } catch (_) { /* ignore */ }
+  }
+}
+
+async function ensureImageArenaLoaded() {
+  if (IMG_CONFIG) return IMG_CONFIG;
+  try {
+    const resp = await fetch('/api/image-arena/config', { credentials: 'same-origin' });
+    if (resp.status === 401) return null;
+    const data = await resp.json();
+    if (!data || !data.ok) return null;
+    IMG_CONFIG = data;
+    if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
+      IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
+    }
+    renderImageSizeAndAspectPills();
+    renderImageSlotsConfigurator();
+    populateImagePacksAndScenarios();
+    renderImageArenaPlaceholderCards();
+    renderImageEconomicsModeler();
+    return IMG_CONFIG;
+  } catch (e) {
+    console.warn('[imageArena] failed to load config:', e);
+    return null;
+  }
+}
+
+function getImgCatalogItem(id) {
+  const cat = (IMG_CONFIG && IMG_CONFIG.catalog) || [];
+  return cat.find((m) => m.id === id || m.model === id) || cat[0] || null;
+}
+
+function renderImageSizeAndAspectPills() {
+  const sizeWrap = $('#imgSizePills');
+  const aspectWrap = $('#imgAspectPills');
+  if (!IMG_CONFIG) return;
+
+  if (sizeWrap) {
+    sizeWrap.innerHTML = '';
+    (IMG_CONFIG.resolutions || []).forEach((r) => {
+      const b = el('button', 'img-seg-btn' + (r.id === IMG_SELECTED_SIZE ? ' active' : ''));
+      b.type = 'button';
+      b.textContent = r.label;
+      b.title = r.description || r.label;
+      b.addEventListener('click', () => {
+        IMG_SELECTED_SIZE = r.id;
+        renderImageSizeAndAspectPills();
+        renderImageSlotsConfigurator();
+        renderImageEconomicsModeler();
+      });
+      sizeWrap.appendChild(b);
+    });
+  }
+
+  if (aspectWrap) {
+    aspectWrap.innerHTML = '';
+    (IMG_CONFIG.aspectRatios || []).forEach((a) => {
+      const b = el('button', 'img-seg-btn' + (a.id === IMG_SELECTED_ASPECT ? ' active' : ''));
+      b.type = 'button';
+      b.textContent = a.label;
+      b.addEventListener('click', () => {
+        IMG_SELECTED_ASPECT = a.id;
+        renderImageSizeAndAspectPills();
+      });
+      aspectWrap.appendChild(b);
+    });
+  }
+}
+
+function renderImageSlotsConfigurator() {
+  const grid = $('#imgSlotGrid');
+  const badge = $('#imgSlotCountBadge');
+  const addBtn = $('#imgAddSlotBtn');
+  if (!grid || !IMG_CONFIG) return;
+
+  if (badge) badge.textContent = `${IMG_SLOTS.length} of 4 active`;
+  if (addBtn) {
+    addBtn.textContent = `+ Add model (${IMG_SLOTS.length}/4)`;
+    addBtn.disabled = IMG_SLOTS.length >= 4;
+  }
+
+  grid.innerHTML = '';
+  const catalog = IMG_CONFIG.catalog || [];
+
+  IMG_SLOTS.forEach((slotObj, idx) => {
+    const entry = getImgCatalogItem(slotObj.catalogId) || catalog[0];
+    const color = slotColor(slotObj.slot);
+    const card = el('div', 'img-slot-card');
+    card.style.setProperty('--slot-accent', color);
+
+    const top = el('div', 'img-slot-top');
+    const left = el('div', 'mc-slot-id');
+    left.innerHTML = `<span class="mc-dot" style="background:${color}"></span><strong>Slot ${esc(slotObj.slot)}</strong>`;
+    top.appendChild(left);
+
+    if (IMG_SLOTS.length > 1) {
+      const rm = el('button', 'ca-remove', '✕');
+      rm.type = 'button';
+      rm.title = `Remove Slot ${slotObj.slot}`;
+      rm.addEventListener('click', () => {
+        IMG_SLOTS.splice(idx, 1);
+        IMG_SLOTS.forEach((s, i) => { s.slot = String.fromCharCode(65 + i); });
+        renderImageSlotsConfigurator();
+        renderImageArenaPlaceholderCards();
+        renderImageEconomicsModeler();
+      });
+      top.appendChild(rm);
+    }
+    card.appendChild(top);
+
+    const sel = el('select', 'img-slot-select');
+    catalog.forEach((c) => {
+      const opt = el('option');
+      opt.value = c.id;
+      opt.textContent = `${c.label}`;
+      if (c.id === entry.id) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener('change', () => {
+      slotObj.catalogId = sel.value;
+      renderImageSlotsConfigurator();
+      renderImageArenaPlaceholderCards();
+      renderImageEconomicsModeler();
+    });
+    card.appendChild(sel);
+
+    const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
+    const offPeakPrice = entry.pricing && entry.pricing.offPeakDiscount > 0
+      ? refPrice * (1 - entry.pricing.offPeakDiscount)
+      : null;
+
+    const badges = el('div', 'img-slot-badges');
+    const slaCls = entry.slaPct >= 99.5 ? 'is-sla-995' : 'is-sla-95';
+    badges.innerHTML =
+      `<span class="img-mini-pill ${slaCls}">${esc(entry.slaBadge)}</span>` +
+      `<span class="img-mini-pill">${esc(entry.endpointBadge)}</span>` +
+      `<span class="img-mini-pill">PayGo ~${fmtCost(refPrice)}/img</span>` +
+      (offPeakPrice != null ? `<span class="img-mini-pill is-save">Off-Peak ~${fmtCost(offPeakPrice)}/img (-50%)</span>` : '');
+    card.appendChild(badges);
+
+    grid.appendChild(card);
+  });
+}
+
+function populateImagePacksAndScenarios() {
+  const packSel = $('#imgPackSelect');
+  const scSel = $('#imgScenarioSelect');
+  if (!packSel || !scSel || !IMG_CONFIG) return;
+
+  const packs = IMG_CONFIG.packs || [];
+  packSel.innerHTML = '';
+  packs.forEach((p) => {
+    const o = el('option');
+    o.value = p.id;
+    o.textContent = p.title;
+    packSel.appendChild(o);
+  });
+
+  const updateScenariosForPack = (packId) => {
+    const pack = packs.find((p) => p.id === packId) || packs[0];
+    if (!pack) return;
+    const badge = $('#imgScenarioBadge');
+    if (badge) badge.textContent = pack.badge || 'Image Benchmark';
+    scSel.innerHTML = '';
+    (pack.scenarios || []).forEach((s) => {
+      const o = el('option');
+      o.value = s.id;
+      o.textContent = s.title;
+      scSel.appendChild(o);
+    });
+    if (pack.scenarios && pack.scenarios[0]) {
+      applyImageScenario(pack, pack.scenarios[0]);
+    }
+  };
+
+  packSel.onchange = () => updateScenariosForPack(packSel.value);
+  scSel.onchange = () => {
+    const pack = packs.find((p) => p.id === packSel.value) || packs[0];
+    const sc = (pack && pack.scenarios || []).find((s) => s.id === scSel.value);
+    if (sc) applyImageScenario(pack, sc);
+  };
+
+  updateScenariosForPack(packs[0] && packs[0].id);
+}
+
+function applyImageScenario(pack, sc) {
+  const promptEl = $('#imgPromptInput');
+  const whyEl = $('#imgWhyBanner');
+  const badgeEl = $('#imgScenarioBadge');
+
+  if (badgeEl) badgeEl.textContent = sc.badge || (pack && pack.badge) || 'GenMedia';
+  if (promptEl) promptEl.value = sc.prompt || '';
+  if (whyEl) {
+    if (sc.whyItMatters) {
+      whyEl.innerHTML = `<strong>Why this scenario matters:</strong> ${esc(sc.whyItMatters)}`;
+      whyEl.classList.remove('hidden');
+    } else {
+      whyEl.classList.add('hidden');
+    }
+  }
+
+  if (sc.recommendedSize && ['1K', '2K', '4K'].includes(sc.recommendedSize)) {
+    IMG_SELECTED_SIZE = sc.recommendedSize;
+  }
+  if (sc.recommendedAspectRatio) {
+    IMG_SELECTED_ASPECT = sc.recommendedAspectRatio;
+  }
+  renderImageSizeAndAspectPills();
+  renderImageSlotsConfigurator();
+  renderImageEconomicsModeler();
+
+  IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
+  IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+  renderImageReferenceAttachments();
+}
+
+function renderImageReferenceAttachments() {
+  const listEl = $('#imgRefList');
+  const countBadge = $('#imgRefCountBadge');
+  const clearBtn = $('#imgClearRefsBtn');
+  const reloadBtn = $('#imgReloadSampleRefsBtn');
+  if (!listEl) return;
+
+  const count = IMG_REF_ATTACHMENTS.length;
+  if (countBadge) {
+    countBadge.textContent = `${count} / 13 reference image${count === 1 ? '' : 's'}`;
+    countBadge.classList.toggle('hidden', count === 0);
+    countBadge.classList.toggle('has-files', count > 0);
+  }
+  if (clearBtn) clearBtn.classList.toggle('hidden', count === 0);
+  if (reloadBtn) {
+    reloadBtn.classList.toggle('hidden', IMG_CURRENT_SCENARIO_REFS.length === 0 || count > 0);
+  }
+
+  if (count === 0) {
+    listEl.innerHTML = '';
+    listEl.classList.add('hidden');
+    return;
+  }
+
+  listEl.classList.remove('hidden');
+  listEl.innerHTML = '';
+  IMG_REF_ATTACHMENTS.forEach((att, idx) => {
+    const item = el('div', 'ca-item');
+    const thumb = el('img', 'ca-thumb');
+    const cleanB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
+    thumb.src = `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
+    thumb.alt = att.label || att.name || `Reference ${idx + 1}`;
+    item.appendChild(thumb);
+
+    const info = el('div', 'ca-info');
+    const nm = el('div', 'ca-name', esc(att.label || att.name || `ref-${idx + 1}.png`));
+    const kb = Math.max(1, Math.round((cleanB64.length * 3) / 4 / 1024));
+    const meta = el('div', 'ca-meta', `Ref #${idx + 1} · ${kb} KB · ${att.mimeType || 'image/png'}`);
+    info.appendChild(nm);
+    info.appendChild(meta);
+    item.appendChild(info);
+
+    const rm = el('button', 'ca-remove', '✕');
+    rm.type = 'button';
+    rm.title = 'Remove reference image';
+    rm.addEventListener('click', () => {
+      IMG_REF_ATTACHMENTS.splice(idx, 1);
+      renderImageReferenceAttachments();
+    });
+    item.appendChild(rm);
+    listEl.appendChild(item);
+  });
+}
+
+function addImageReferenceFiles(fileList) {
+  const files = Array.from(fileList || []).filter((f) => f && /^image\//i.test(f.type));
+  for (const file of files) {
+    if (IMG_REF_ATTACHMENTS.length >= 13) break;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = String(reader.result || '');
+      const base64 = res.replace(/^data:[^;]+;base64,/, '');
+      IMG_REF_ATTACHMENTS.push({
+        name: file.name || 'uploaded-image.png',
+        label: file.name || 'Uploaded Reference',
+        mimeType: file.type || 'image/png',
+        data: base64,
+      });
+      renderImageReferenceAttachments();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+function renderImageArenaPlaceholderCards() {
+  const grid = $('#imgArenaGrid');
+  if (!grid || !IMG_CONFIG) return;
+  grid.innerHTML = '';
+
+  IMG_SLOTS.forEach((slotObj) => {
+    const entry = getImgCatalogItem(slotObj.catalogId);
+    if (!entry) return;
+    const color = slotColor(slotObj.slot);
+    const col = el('article', 'col glass img-result-col');
+    col.id = `img-col-${slotObj.slot}`;
+    col.style.setProperty('--accent', color);
+
+    col.innerHTML = `
+      <header class="col-head">
+        <div class="col-title-row">
+          <span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66">${esc(slotObj.slot)}</span>
+          ${ICON_GEMINI}
+          <div>
+            <h3 class="col-title">${esc(entry.label)}</h3>
+            <div class="col-sub">${esc(entry.releaseBadge)} · <code>${esc(entry.model)}</code></div>
+          </div>
+        </div>
+        <div class="col-head-right">
+          <span class="status-pill" id="img-status-${slotObj.slot}">Ready (${esc(IMG_SELECTED_SIZE)})</span>
+        </div>
+      </header>
+      <div class="img-card-toolbar">
+        <div class="img-card-badges" id="img-badges-${slotObj.slot}">
+          <span class="img-res-pill">${esc(entry.slaBadge)}</span>
+          <span class="img-res-pill">${esc(entry.endpointBadge)}</span>
+        </div>
+        <div class="img-card-actions" id="img-actions-${slotObj.slot}"></div>
+      </div>
+      <div class="img-stage-wrap" id="img-stage-${slotObj.slot}" data-slot="${esc(slotObj.slot)}">
+        <div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:13px">
+          Click <strong>Generate &amp; Compare Images ▸</strong> to run <code>${esc(entry.model)}</code> at <strong>${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</strong> on Vertex AI.
+        </div>
+      </div>
+      <div class="tiles">
+        <div class="tile"><span class="t-lbl">Resolution &amp; MP</span><span class="t-val" id="img-tile-res-${slotObj.slot}">—</span></div>
+        <div class="tile"><span class="t-lbl">Wall Time</span><span class="t-val" id="img-tile-time-${slotObj.slot}">—</span></div>
+        <div class="tile"><span class="t-lbl">Image / Think Tok</span><span class="t-val" id="img-tile-tok-${slotObj.slot}">—</span></div>
+        <div class="tile"><span class="t-lbl">Standard PayGo</span><span class="t-val" id="img-tile-cost-${slotObj.slot}">—</span></div>
+        <div class="tile"><span class="t-lbl">Off-Peak PayGo</span><span class="t-val" id="img-tile-offpeak-${slotObj.slot}">—</span></div>
+      </div>
+      <div class="img-arch-callout" id="img-arch-${slotObj.slot}">
+        <strong>Production Guidance:</strong> ${esc(entry.architectureGuidance)}
+      </div>
+    `;
+    grid.appendChild(col);
+  });
+}
+
+// ---------- Synchronized 4K Pixel Loupe (3.5x Optical Zoom Across All Cards) ----------
+function attachSynchronizedLoupeHandlers() {
+  const stages = document.querySelectorAll('.img-stage-wrap[data-has-image="1"]');
+  stages.forEach((stage) => {
+    stage.onmousemove = (e) => {
+      if (!IMG_SYNC_LOUPE_ON) return;
+      const img = stage.querySelector('img.img-main-output');
+      if (!img) return;
+      const rect = img.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      updateAllLoupeLenses(nx, ny, true);
+    };
+    stage.onmouseleave = () => {
+      updateAllLoupeLenses(0.5, 0.5, false);
+    };
+  });
+}
+
+function updateAllLoupeLenses(nx, ny, visible) {
+  const stages = document.querySelectorAll('.img-stage-wrap[data-has-image="1"]');
+  const zoom = 3.5;
+  stages.forEach((stage) => {
+    let lens = stage.querySelector('.img-loupe-lens');
+    const img = stage.querySelector('img.img-main-output');
+    if (!img) return;
+    if (!visible || !IMG_SYNC_LOUPE_ON) {
+      if (lens) lens.classList.add('hidden');
+      return;
+    }
+    if (!lens) {
+      lens = el('div', 'img-loupe-lens');
+      const tag = el('div', 'img-loupe-tag');
+      lens.appendChild(tag);
+      stage.appendChild(lens);
+    }
+    lens.classList.remove('hidden');
+    const stageRect = stage.getBoundingClientRect();
+    const imgRect = img.getBoundingClientRect();
+    const offsetLeft = imgRect.left - stageRect.left;
+    const offsetTop = imgRect.top - stageRect.top;
+
+    const lensSize = 168;
+    const cx = offsetLeft + nx * imgRect.width;
+    const cy = offsetTop + ny * imgRect.height;
+    const leftPx = Math.max(4, Math.min(stageRect.width - lensSize - 4, cx - lensSize / 2));
+    const topPx = Math.max(4, Math.min(stageRect.height - lensSize - 4, cy - lensSize / 2));
+
+    lens.style.left = `${leftPx}px`;
+    lens.style.top = `${topPx}px`;
+    lens.style.backgroundImage = `url("${img.src}")`;
+    lens.style.backgroundSize = `${imgRect.width * zoom}px ${imgRect.height * zoom}px`;
+    const bgX = -(nx * imgRect.width * zoom - lensSize / 2);
+    const bgY = -(ny * imgRect.height * zoom - lensSize / 2);
+    lens.style.backgroundPosition = `${bgX}px ${bgY}px`;
+
+    const tag = lens.querySelector('.img-loupe-tag');
+    if (tag) {
+      const dimsLabel = stage.dataset.dimsLabel || '';
+      tag.textContent = `3.5× Sync (${Math.round(nx * 100)}%, ${Math.round(ny * 100)}%) ${dimsLabel}`;
+    }
+  });
+}
+
+// ---------- Interactive Split-Curtain Comparison ----------
+function updateSplitCurtainView() {
+  const sec = $('#imgCurtainSection');
+  if (!sec) return;
+  const okResults = (IMG_LAST_RESULTS || []).filter((r) => r && r.ok && r.imageDataUrl);
+  if (!IMG_SPLIT_CURTAIN_ON || okResults.length === 0) {
+    sec.classList.add('hidden');
+    return;
+  }
+  sec.classList.remove('hidden');
+
+  const leftSel = $('#imgCurtainLeftSelect');
+  const rightSel = $('#imgCurtainRightSelect');
+  if (!leftSel || !rightSel) return;
+
+  const layers = [];
+  if (IMG_REF_ATTACHMENTS.length > 0) {
+    const ref0 = IMG_REF_ATTACHMENTS[0];
+    const cleanB64 = String(ref0.data || '').replace(/^data:[^;]+;base64,/, '');
+    layers.push({
+      id: 'ref-0',
+      label: `Input Reference: ${ref0.label || ref0.name || 'Original Photo'}`,
+      tag: 'Before · Input Reference Photo',
+      url: `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`,
+    });
+  }
+  okResults.forEach((r) => {
+    layers.push({
+      id: `slot-${r.slot}`,
+      label: `Slot ${r.slot}: ${r.shortLabel || r.label} (${r.width || '?'}×${r.height || '?'})`,
+      tag: `Slot ${r.slot} · ${r.shortLabel || r.label} (${r.width || '?'}×${r.height || '?'})`,
+      url: r.imageDataUrl,
+    });
+  });
+
+  const prevLeft = leftSel.value;
+  const prevRight = rightSel.value;
+  leftSel.innerHTML = '';
+  rightSel.innerHTML = '';
+  layers.forEach((l) => {
+    const o1 = el('option'); o1.value = l.id; o1.textContent = l.label; leftSel.appendChild(o1);
+    const o2 = el('option'); o2.value = l.id; o2.textContent = l.label; rightSel.appendChild(o2);
+  });
+
+  if (layers.some((l) => l.id === prevLeft)) leftSel.value = prevLeft;
+  else leftSel.value = layers[0].id;
+
+  if (layers.some((l) => l.id === prevRight) && prevRight !== leftSel.value) rightSel.value = prevRight;
+  else rightSel.value = (layers[1] || layers[0]).id;
+
+  const applyLayers = () => {
+    const L = layers.find((l) => l.id === leftSel.value) || layers[0];
+    const R = layers.find((l) => l.id === rightSel.value) || layers[layers.length - 1];
+    const leftImg = $('#imgCurtainLeftImg');
+    const rightImg = $('#imgCurtainRightImg');
+    const leftTag = $('#imgCurtainLeftTag');
+    const rightTag = $('#imgCurtainRightTag');
+    if (leftImg && L) leftImg.src = L.url;
+    if (rightImg && R) rightImg.src = R.url;
+    if (leftTag && L) leftTag.textContent = L.tag;
+    if (rightTag && R) rightTag.textContent = R.tag;
+  };
+  leftSel.onchange = applyLayers;
+  rightSel.onchange = applyLayers;
+  applyLayers();
+}
+
+function initCurtainDrag() {
+  const stage = $('#imgCurtainStage');
+  const clip = $('#imgCurtainLeftClip');
+  const div = $('#imgCurtainDivider');
+  if (!stage || !clip || !div) return;
+  let dragging = false;
+  const move = (clientX) => {
+    const rect = stage.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const pct = Math.max(2, Math.min(98, ((clientX - rect.left) / rect.width) * 100));
+    clip.style.width = `${pct}%`;
+    div.style.left = `${pct}%`;
+  };
+  stage.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+    move(e.clientX);
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    move(e.clientX);
+  });
+  stage.addEventListener('pointerup', () => { dragging = false; });
+  stage.addEventListener('pointercancel', () => { dragging = false; });
+}
+
+// ---------- Run Parallel Image Generation ----------
+async function runImageArenaComparisonClick() {
+  if (IMG_RUNNING) return;
+  const promptEl = $('#imgPromptInput');
+  const prompt = (promptEl && promptEl.value.trim()) || '';
+  if (!prompt) {
+    window.alert('Please enter an image generation or editing prompt.');
+    return;
+  }
+
+  IMG_RUNNING = true;
+  const runBtn = $('#imgRunBtn');
+  const timerBadge = $('#imgStatusTimer');
+  if (runBtn) {
+    runBtn.disabled = true;
+    runBtn.textContent = '⏳ Generating on Vertex AI…';
+  }
+
+  renderImageArenaPlaceholderCards();
+  const t0 = Date.now();
+  IMG_SLOTS.forEach((s) => {
+    const st = $(`#img-status-${s.slot}`);
+    if (st) {
+      st.textContent = `Generating ${IMG_SELECTED_SIZE}… 0.0s`;
+      st.className = 'status-pill running';
+    }
+    const stage = $(`#img-stage-${s.slot}`);
+    if (stage) {
+      stage.innerHTML = `<div style="padding:48px 20px;text-align:center;color:var(--muted)">⚡ Calling Vertex AI <code>/locations/global</code> (${esc(IMG_SELECTED_SIZE)} · ${esc(IMG_SELECTED_ASPECT)})…</div>`;
+    }
+  });
+
+  if (IMG_TIMER_ID) clearInterval(IMG_TIMER_ID);
+  IMG_TIMER_ID = setInterval(() => {
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    if (timerBadge) timerBadge.textContent = `Running · ${elapsed}s`;
+    IMG_SLOTS.forEach((s) => {
+      const st = $(`#img-status-${s.slot}`);
+      if (st && st.classList.contains('running')) {
+        st.textContent = `Generating ${IMG_SELECTED_SIZE}… ${elapsed}s`;
+      }
+    });
+  }, 150);
+
+  try {
+    const resp = await fetch('/api/image-arena/run', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slots: IMG_SLOTS,
+        prompt,
+        aspectRatio: IMG_SELECTED_ASPECT,
+        imageSize: IMG_SELECTED_SIZE,
+        attachments: IMG_REF_ATTACHMENTS,
+      }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const data = await resp.json();
+    if (!resp.ok || !data || !data.ok) {
+      throw new Error((data && data.error) || `Image comparison failed (${resp.status})`);
+    }
+    IMG_LAST_RESULTS = data.results || [];
+    IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
+    attachSynchronizedLoupeHandlers();
+    updateSplitCurtainView();
+    renderImageEconomicsModeler();
+    if (timerBadge) {
+      const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
+      timerBadge.textContent = `Completed ${IMG_LAST_RESULTS.length} models in ${totalSec}s`;
+    }
+  } catch (e) {
+    if (timerBadge) timerBadge.textContent = `Error: ${e.message}`;
+    window.alert(e.message || 'Image comparison failed.');
+  } finally {
+    if (IMG_TIMER_ID) { clearInterval(IMG_TIMER_ID); IMG_TIMER_ID = null; }
+    IMG_RUNNING = false;
+    if (runBtn) {
+      runBtn.disabled = false;
+      runBtn.innerHTML = 'Generate &amp; Compare Images ▸';
+    }
+  }
+}
+
+function applyImageResultToCard(r) {
+  if (!r || !r.slot) return;
+  const st = $(`#img-status-${r.slot}`);
+  const stage = $(`#img-stage-${r.slot}`);
+  const badges = $(`#img-badges-${r.slot}`);
+  const actions = $(`#img-actions-${r.slot}`);
+
+  if (!r.ok) {
+    if (st) { st.textContent = 'Error'; st.className = 'status-pill err'; }
+    if (stage) {
+      stage.innerHTML = `<div style="padding:28px;color:var(--bad);font-size:13px">${esc(r.error || 'Generation failed')}</div>`;
+    }
+    return;
+  }
+
+  const secs = ((r.latencyMs || 0) / 1000).toFixed(1) + 's';
+  if (st) {
+    st.textContent = `Done · ${secs}`;
+    st.className = 'status-pill done';
+  }
+
+  const dimsStr = (r.width && r.height) ? `${r.width}×${r.height}` : r.requestedSize;
+  const mpStr = r.megapixels != null ? `${r.megapixels} MP` : '';
+  const isTrue4K = r.width >= 3800 || r.height >= 3800;
+
+  if (badges) {
+    badges.innerHTML =
+      `<span class="img-res-pill ${isTrue4K ? 'is-4k' : ''}">${esc(dimsStr)}${mpStr ? ' · ' + esc(mpStr) : ''}</span>` +
+      `<span class="img-res-pill">${esc(r.slaBadge || '')}</span>` +
+      (r.savingsVsNanoBanana2Pct > 0
+        ? `<span class="img-res-pill is-4k">~${r.savingsVsNanoBanana2Pct}% Lower Output Cost</span>`
+        : '');
+  }
+
+  if (actions) {
+    actions.innerHTML = '';
+    if (r.hasThoughtImage && r.thoughtImageDataUrl) {
+      const tDims = (r.thoughtDims && r.thoughtDims.width) ? `${r.thoughtDims.width}×${r.thoughtDims.height}` : '1K';
+      const toggleBtn = el('button', 'bar-btn img-thought-toggle', `🧠 Inspect 1K Visual Thinking Draft (${tDims})`);
+      toggleBtn.type = 'button';
+      let showingThought = false;
+      toggleBtn.addEventListener('click', () => {
+        showingThought = !showingThought;
+        const imgEl = stage && stage.querySelector('img.img-main-output');
+        if (imgEl) {
+          imgEl.src = showingThought ? r.thoughtImageDataUrl : r.imageDataUrl;
+        }
+        toggleBtn.textContent = showingThought
+          ? `✨ Back to Final ${dimsStr} Output`
+          : `🧠 Inspect 1K Visual Thinking Draft (${tDims})`;
+        toggleBtn.classList.toggle('is-on', showingThought);
+      });
+      actions.appendChild(toggleBtn);
+    }
+
+    const dlBtn = el('a', 'bar-btn img-thought-toggle', '⬇ Save PNG');
+    dlBtn.href = r.imageDataUrl;
+    dlBtn.download = `${r.model}-${dimsStr}-${Date.now()}.png`;
+    actions.appendChild(dlBtn);
+  }
+
+  if (stage) {
+    stage.innerHTML = '';
+    stage.dataset.hasImage = '1';
+    stage.dataset.dimsLabel = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
+    const img = el('img', 'img-main-output');
+    img.src = r.imageDataUrl;
+    img.alt = `${r.label} generated output (${dimsStr})`;
+    stage.appendChild(img);
+  }
+
+  const resTile = $(`#img-tile-res-${r.slot}`);
+  if (resTile) resTile.textContent = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
+
+  const timeTile = $(`#img-tile-time-${r.slot}`);
+  if (timeTile) timeTile.textContent = secs;
+
+  const tokTile = $(`#img-tile-tok-${r.slot}`);
+  if (tokTile) tokTile.textContent = `${fmtInt(r.imageOutputTokens)} img / ${fmtInt(r.reasoningTokens)} think`;
+
+  const costTile = $(`#img-tile-cost-${r.slot}`);
+  if (costTile) costTile.textContent = `${fmtCost(r.standardPayGoCostUsd)} ($${(r.standardPayGoPer1kUsd || 0).toFixed(2)}/1k)`;
+
+  const offPeakTile = $(`#img-tile-offpeak-${r.slot}`);
+  if (offPeakTile) {
+    offPeakTile.textContent = r.offPeakSupported
+      ? `${fmtCost(r.offPeakPayGoCostUsd)} (-50% Off-Peak)`
+      : 'Standard / PTU';
+  }
+}
+
+// ---------- Interactive Peak Holiday Volume & Off-Peak PayGo Modeler ----------
+function renderImageEconomicsModeler() {
+  if (!IMG_CONFIG) return;
+  const volSlider = $('#imgVolumeSlider');
+  const offPeakSlider = $('#imgOffPeakSlider');
+  const volLabel = $('#imgVolumeLabel');
+  const offPeakLabel = $('#imgOffPeakLabel');
+  const kpiGrid = $('#imgEconKpiGrid');
+  const tbody = $('#imgEconTableBody');
+  if (!volSlider || !offPeakSlider || !kpiGrid || !tbody) return;
+
+  const volume = Number(volSlider.value) || 1_000_000;
+  const offPeakPct = Number(offPeakSlider.value) || 60;
+  const offPeakShare = offPeakPct / 100;
+  const syncShare = 1 - offPeakShare;
+
+  if (volLabel) volLabel.textContent = `${fmtInt(volume)} images (${IMG_SELECTED_SIZE})`;
+  if (offPeakLabel) offPeakLabel.textContent = `${offPeakPct}% Off-Peak Batch · ${100 - offPeakPct}% Real-Time Sync`;
+
+  const nb2 = getImgCatalogItem('gemini-3.1-flash-image');
+  const nb21 = getImgCatalogItem('gemini-nano-banana-2.1');
+  if (!nb2 || !nb21) return;
+
+  // Use measured live costs from the latest run if available for the current size, else catalog reference prices
+  const liveNb2 = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === 'gemini-3.1-flash-image' && r.requestedSize === IMG_SELECTED_SIZE);
+  const liveNb21 = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === 'gemini-nano-banana-2.1' && r.requestedSize === IMG_SELECTED_SIZE);
+
+  const nb2StdPerImg = liveNb2 ? liveNb2.standardPayGoCostUsd : ((nb2.pricing.referenceCostBySize && nb2.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.1008);
+  const nb21StdPerImg = liveNb21 ? liveNb21.standardPayGoCostUsd : ((nb21.pricing.referenceCostBySize && nb21.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.0504);
+  const nb21OffPeakPerImg = nb21StdPerImg * 0.5;
+
+  const baselineAllNb2Cost = volume * nb2StdPerImg;
+  const allNb21StdCost = volume * nb21StdPerImg;
+  const hybridArchCost = (volume * syncShare * nb2StdPerImg) + (volume * offPeakShare * nb21OffPeakPerImg);
+  const pureNb21BlendedCost = (volume * syncShare * nb21StdPerImg) + (volume * offPeakShare * nb21OffPeakPerImg);
+  const maxSavingsUsd = baselineAllNb2Cost - pureNb21BlendedCost;
+  const maxSavingsPct = baselineAllNb2Cost > 0 ? Math.round((maxSavingsUsd / baselineAllNb2Cost) * 100) : 0;
+
+  const fmtUsdBig = (n) => '$' + Math.round(n).toLocaleString('en-US');
+
+  kpiGrid.innerHTML = `
+    <div class="img-econ-kpi">
+      <span class="iek-label">Baseline · 100% Nano Banana 2 (Standard PayGo)</span>
+      <span class="iek-value">${fmtUsdBig(baselineAllNb2Cost)}</span>
+      <span class="iek-sub">${fmtCost(nb2StdPerImg)}/img · 99.5% Long-Term GA SLA</span>
+    </div>
+    <div class="img-econ-kpi">
+      <span class="iek-label">100% Nano Banana 2.1 (Standard PayGo)</span>
+      <span class="iek-value">${fmtUsdBig(allNb21StdCost)}</span>
+      <span class="iek-sub">${fmtCost(nb21StdPerImg)}/img · ~50% lower image token rate</span>
+    </div>
+    <div class="img-econ-kpi highlight">
+      <span class="iek-label">Nano Banana 2.1 + ${offPeakPct}% Off-Peak PayGo</span>
+      <span class="iek-value">${fmtUsdBig(pureNb21BlendedCost)}</span>
+      <span class="iek-sub">Saves <strong>${fmtUsdBig(maxSavingsUsd)} (${maxSavingsPct}%)</strong> vs baseline</span>
+    </div>
+    <div class="img-econ-kpi">
+      <span class="iek-label">Recommended Split Architecture (${100 - offPeakPct}% NB2 + ${offPeakPct}% NB2.1 Off-Peak)</span>
+      <span class="iek-value">${fmtUsdBig(hybridArchCost)}</span>
+      <span class="iek-sub">99.5% SLA on sync checkout + 50% Off-Peak on batch/4K</span>
+    </div>
+  `;
+
+  tbody.innerHTML = '';
+  (IMG_CONFIG.catalog || []).forEach((c) => {
+    const live = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === c.id && r.requestedSize === IMG_SELECTED_SIZE);
+    const stdPerImg = live
+      ? live.standardPayGoCostUsd
+      : ((c.pricing && c.pricing.referenceCostBySize && c.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05);
+    const hasOffPeak = c.pricing && c.pricing.offPeakDiscount > 0;
+    const offPeakPerImg = hasOffPeak ? stdPerImg * (1 - c.pricing.offPeakDiscount) : null;
+    const blendedVolCost = hasOffPeak
+      ? (volume * syncShare * stdPerImg) + (volume * offPeakShare * offPeakPerImg)
+      : (volume * stdPerImg);
+    const tokEst = live
+      ? `${fmtInt(live.imageOutputTokens)} tok (measured)`
+      : (c.id === 'gemini-2.5-flash-image' ? '1,290 tok (1K fixed)' : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': c.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok'));
+    const resCap = c.supportedSizes.includes(IMG_SELECTED_SIZE)
+      ? `${IMG_SELECTED_SIZE} Native`
+      : `1K Capped (1344×768)`;
+
+    const tr = el('tr');
+    tr.innerHTML = `
+      <td><strong>${esc(c.label)}</strong><br/><span style="font-size:11px;color:var(--muted)"><code>${esc(c.model)}</code></span></td>
+      <td>${esc(c.slaBadge)}<br/><span style="font-size:11px;color:var(--muted)">${esc(c.endpointBadge)}</span></td>
+      <td>${esc(resCap)}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${esc(tokEst)}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${fmtCost(stdPerImg)}</td>
+      <td style="font-family:'JetBrains Mono',monospace;color:${hasOffPeak ? 'var(--good)' : 'var(--muted)'}">${hasOffPeak ? fmtCost(offPeakPerImg) + ' (-50%)' : 'N/A (Standard / PTU)'}</td>
+      <td style="font-family:'JetBrains Mono',monospace;font-weight:700">${fmtUsdBig(blendedVolCost)}</td>
+      <td style="font-size:12px;color:var(--muted)">${esc(c.architectureGuidance)}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function initImageArenaBindings() {
+  const modeSwitch = $('#arenaModeSwitch');
+  if (modeSwitch) {
+    modeSwitch.querySelectorAll('.arena-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => switchArenaMode(btn.dataset.arenaMode));
+    });
+  }
+
+  const addSlotBtn = $('#imgAddSlotBtn');
+  if (addSlotBtn) {
+    addSlotBtn.addEventListener('click', () => {
+      if (!IMG_CONFIG || IMG_SLOTS.length >= 4) return;
+      const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
+      const nextCat = (IMG_CONFIG.catalog || []).find((c) => !used.has(c.id)) || IMG_CONFIG.catalog[0];
+      const nextSlot = String.fromCharCode(65 + IMG_SLOTS.length);
+      IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
+      renderImageSlotsConfigurator();
+      renderImageArenaPlaceholderCards();
+    });
+  }
+
+  document.querySelectorAll('.img-preset-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const p = btn.dataset.imgPreset;
+      if (p === 'nb2-vs-21') {
+        IMG_SLOTS = [
+          { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
+          { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
+        ];
+      } else if (p === 'all-three') {
+        IMG_SLOTS = [
+          { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
+          { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
+          { slot: 'C', catalogId: 'gemini-3-pro-image' },
+        ];
+      } else if (p === 'legacy-evolution') {
+        IMG_SLOTS = [
+          { slot: 'A', catalogId: 'gemini-2.5-flash-image' },
+          { slot: 'B', catalogId: 'gemini-3.1-flash-image' },
+          { slot: 'C', catalogId: 'gemini-nano-banana-2.1' },
+        ];
+      }
+      renderImageSlotsConfigurator();
+      renderImageArenaPlaceholderCards();
+      renderImageEconomicsModeler();
+    });
+  });
+
+  const addRefBtn = $('#imgAddRefBtn');
+  const refInput = $('#imgRefFileInput');
+  if (addRefBtn && refInput) {
+    addRefBtn.addEventListener('click', () => refInput.click());
+    refInput.addEventListener('change', () => {
+      addImageReferenceFiles(refInput.files);
+      refInput.value = '';
+    });
+  }
+
+  const clearRefsBtn = $('#imgClearRefsBtn');
+  if (clearRefsBtn) {
+    clearRefsBtn.addEventListener('click', () => {
+      IMG_REF_ATTACHMENTS = [];
+      renderImageReferenceAttachments();
+    });
+  }
+
+  const reloadRefsBtn = $('#imgReloadSampleRefsBtn');
+  if (reloadRefsBtn) {
+    reloadRefsBtn.addEventListener('click', () => {
+      IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+      renderImageReferenceAttachments();
+    });
+  }
+
+  const dropzone = $('#imgDropzone');
+  if (dropzone) {
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('drag-over');
+      if (e.dataTransfer && e.dataTransfer.files) addImageReferenceFiles(e.dataTransfer.files);
+    });
+  }
+
+  const loupeBtn = $('#imgSyncLoupeBtn');
+  if (loupeBtn) {
+    loupeBtn.addEventListener('click', () => {
+      IMG_SYNC_LOUPE_ON = !IMG_SYNC_LOUPE_ON;
+      loupeBtn.classList.toggle('is-on', IMG_SYNC_LOUPE_ON);
+      loupeBtn.setAttribute('aria-pressed', String(IMG_SYNC_LOUPE_ON));
+      if (!IMG_SYNC_LOUPE_ON) updateAllLoupeLenses(0.5, 0.5, false);
+    });
+  }
+
+  const curtainBtn = $('#imgSplitCurtainBtn');
+  if (curtainBtn) {
+    curtainBtn.addEventListener('click', () => {
+      IMG_SPLIT_CURTAIN_ON = !IMG_SPLIT_CURTAIN_ON;
+      curtainBtn.classList.toggle('is-on', IMG_SPLIT_CURTAIN_ON);
+      curtainBtn.setAttribute('aria-pressed', String(IMG_SPLIT_CURTAIN_ON));
+      updateSplitCurtainView();
+    });
+  }
+
+  const runBtn = $('#imgRunBtn');
+  if (runBtn) runBtn.addEventListener('click', runImageArenaComparisonClick);
+
+  const volSlider = $('#imgVolumeSlider');
+  const offPeakSlider = $('#imgOffPeakSlider');
+  if (volSlider) volSlider.addEventListener('input', renderImageEconomicsModeler);
+  if (offPeakSlider) offPeakSlider.addEventListener('input', renderImageEconomicsModeler);
+
+  initCurtainDrag();
+
+  // Check URL deep link (?tab=image or #image-arena)
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'image' || params.get('mode') === 'image' || window.location.hash === '#image-arena') {
+      switchArenaMode('image', { updateUrl: false });
+    }
+  } catch (_) { /* ignore */ }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initImageArenaBindings);
+} else {
+  initImageArenaBindings();
+}
+

@@ -181,6 +181,57 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ Judge 6-axis rubric (including Cost & Speed), multi-fence JSON parser & Claude safety-refusal retry verified');
 
+  // 8. Verify Image & GenMedia Arena (v1.0.9 — Nano Banana 2 vs 2.1, thought-part filtering, Off-Peak PayGo economics, and pure-Node reference PNGs)
+  const {
+    IMAGE_MODEL_CATALOG,
+    SAMPLE_REFERENCE_ASSETS,
+    getImageArenaConfig,
+    extractImageResponseParts,
+    computeImageSlotEconomics,
+  } = require('../src/imageArena');
+  const { imageDimensionsFromBase64 } = require('../src/imageInfo');
+
+  const imgCfg = getImageArenaConfig();
+  assert(imgCfg && imgCfg.ok, 'getImageArenaConfig() should return ok: true');
+  assert.strictEqual(imgCfg.catalog.length, 4, 'Image catalog should expose 4 Nano Banana models');
+  assert(imgCfg.catalog.some((m) => m.id === 'gemini-nano-banana-2.1'), 'Catalog must include gemini-nano-banana-2.1');
+  assert(imgCfg.catalog.some((m) => m.id === 'gemini-3.1-flash-image'), 'Catalog must include gemini-3.1-flash-image');
+
+  const beachDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.smartEraseBeach.data);
+  assert.deepStrictEqual(beachDims, { width: 384, height: 240 }, 'Smart Erase beach sample PNG must decode to 384x240');
+  const foxDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.storybookFox.data);
+  assert.deepStrictEqual(foxDims, { width: 256, height: 256 }, 'Storybook Fox reference PNG must decode to 256x256');
+
+  // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
+  const extracted = extractImageResponseParts([
+    { thought: true, text: 'Drafting composition and kerning...' },
+    { thought: true, inlineData: { mimeType: 'image/png', data: SAMPLE_REFERENCE_ASSETS.storybookFox.data } },
+    { text: 'Final 4K holiday card output.' },
+    { inlineData: { mimeType: 'image/png', data: SAMPLE_REFERENCE_ASSETS.smartEraseBeach.data } },
+  ]);
+  assert(extracted.finalImagePart, 'Must extract final non-thought image part');
+  assert.strictEqual(extracted.finalImagePart.inlineData.data, SAMPLE_REFERENCE_ASSETS.smartEraseBeach.data, 'Final image part must be the non-thought part[1], never the 1K thought draft');
+  assert(extracted.thoughtImagePart, 'Must also preserve thoughtImagePart for UI inspection toggle');
+  assert.strictEqual(extracted.thoughtImagePart.inlineData.data, SAMPLE_REFERENCE_ASSETS.storybookFox.data, 'Thought image part must match part[0]');
+  assert.strictEqual(extracted.text, 'Final 4K holiday card output.');
+  assert.strictEqual(extracted.reasoning, 'Drafting composition and kerning...');
+
+  const nb21Entry = IMAGE_MODEL_CATALOG.find((m) => m.id === 'gemini-nano-banana-2.1');
+  const econ21 = computeImageSlotEconomics(nb21Entry, {
+    promptTokenCount: 250,
+    candidatesTokenCount: 1680,
+    thoughtsTokenCount: 400,
+    totalTokenCount: 2330,
+    candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1680 }],
+  }, '2K');
+  assert.strictEqual(econ21.imageOutputTokens, 1680, 'Should extract 1,680 image output tokens');
+  assert(econ21.offPeakSupported, 'Nano Banana 2.1 must support 50% Off-Peak PayGo discount');
+  assert.strictEqual(econ21.offPeakDiscountPct, 50, 'Off-Peak PayGo discount should be 50%');
+  assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
+  assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
+  console.log('✓ Image & GenMedia Arena (v1.0.9) thought-draft part filter, pure-Node sample PNGs & Off-Peak PayGo economics verified');
+
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
+
 

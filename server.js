@@ -42,6 +42,7 @@ const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = 
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
 const { buildComparisonPdf, pdfFilename } = require('./src/pdfReport');
+const { getImageArenaConfig, runImageArenaComparison } = require('./src/imageArena');
 
 // Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
 // request references cached files that have expired, answer 409 with the list
@@ -727,6 +728,39 @@ app.put('/api/global-keys', requireAdmin, async (req, res) => {
     res.json({ ok: true, keys });
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+// ---------- Image & GenMedia Arena (Nano Banana 2 vs 2.1) ----------
+app.get('/api/image-arena/config', (_req, res) => {
+  res.json(getImageArenaConfig());
+});
+
+app.post('/api/image-arena/run', async (req, res) => {
+  const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys } = req.body || {};
+  const keys = {};
+  if (rawKeys && typeof rawKeys === 'object') {
+    for (const k of ['agentplatform', 'gemini', 'gcpProject']) {
+      if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
+    }
+  }
+  const ac = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) ac.abort();
+  });
+  try {
+    const out = await runImageArenaComparison({
+      slots,
+      prompt,
+      aspectRatio,
+      imageSize,
+      attachments: Array.isArray(attachments) ? attachments : [],
+      keys,
+      signal: ac.signal,
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
 });
 
