@@ -2512,26 +2512,49 @@ a.ud-item[hidden] { display: none; }
   border-top: 3px solid var(--accent);
 }
 
+.img-result-col .metrics {
+  padding: 2px 0 0;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 8px;
+}
+
+.img-result-col .metric {
+  padding: 8px 10px;
+}
+
+.img-result-col .metric .v {
+  font-size: 14px;
+  line-height: 1.25;
+}
+
 .img-stage-wrap {
   position: relative;
   width: 100%;
   min-height: 280px;
   background: var(--well-2);
   border: 1px solid var(--border-hi);
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   overflow: hidden;
   cursor: crosshair;
 }
 
 .img-stage-wrap img.img-main-output {
-  width: 100%;
+  width: auto;
+  max-width: 100%;
   height: auto;
   max-height: 540px;
   object-fit: contain;
   display: block;
+  margin: 0 auto;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.img-scorecard-section {
+  max-width: var(--maxw);
+  margin: 18px auto 0;
 }
 
 .img-loupe-lens {

@@ -5159,6 +5159,7 @@ async function ensureImageArenaLoaded() {
     renderImageSlotsConfigurator();
     populateImagePacksAndScenarios();
     renderImageArenaPlaceholderCards();
+    renderImageMetricComparison();
     renderImageEconomicsModeler();
     return IMG_CONFIG;
   } catch (e) {
@@ -5188,6 +5189,8 @@ function renderImageSizeAndAspectPills() {
         IMG_SELECTED_SIZE = r.id;
         renderImageSizeAndAspectPills();
         renderImageSlotsConfigurator();
+        if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+        renderImageMetricComparison();
         renderImageEconomicsModeler();
       });
       sizeWrap.appendChild(b);
@@ -5203,6 +5206,7 @@ function renderImageSizeAndAspectPills() {
       b.addEventListener('click', () => {
         IMG_SELECTED_ASPECT = a.id;
         renderImageSizeAndAspectPills();
+        if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
       });
       aspectWrap.appendChild(b);
     });
@@ -5244,6 +5248,7 @@ function renderImageSlotsConfigurator() {
         IMG_SLOTS.forEach((s, i) => { s.slot = String.fromCharCode(65 + i); });
         renderImageSlotsConfigurator();
         renderImageArenaPlaceholderCards();
+        renderImageMetricComparison();
         renderImageEconomicsModeler();
       });
       top.appendChild(rm);
@@ -5262,6 +5267,7 @@ function renderImageSlotsConfigurator() {
       slotObj.catalogId = sel.value;
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      renderImageMetricComparison();
       renderImageEconomicsModeler();
     });
     card.appendChild(sel);
@@ -5349,6 +5355,8 @@ function applyImageScenario(pack, sc) {
   }
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
+  if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+  renderImageMetricComparison();
   renderImageEconomicsModeler();
 
   IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
@@ -5443,6 +5451,16 @@ function renderImageArenaPlaceholderCards() {
     col.id = `img-col-${slotObj.slot}`;
     col.style.setProperty('--accent', color);
 
+    const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
+    const hasOffPeak = entry.pricing && entry.pricing.offPeakDiscount > 0;
+    const offPeakPrice = hasOffPeak ? refPrice * (1 - entry.pricing.offPeakDiscount) : null;
+    const estMp = entry.supportedSizes.includes(IMG_SELECTED_SIZE)
+      ? ({ '1K': '1.05 MP', '2K': '4.19 MP', '4K': '16.78 MP' }[IMG_SELECTED_SIZE] || '4.19 MP')
+      : '1.03 MP (1K cap)';
+    const estTok = entry.id === 'gemini-2.5-flash-image'
+      ? '1,290 tok'
+      : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': entry.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok');
+
     col.innerHTML = `
       <header class="col-head">
         <div class="col-title-row">
@@ -5469,12 +5487,12 @@ function renderImageArenaPlaceholderCards() {
           Click <strong>Generate &amp; Compare Images ▸</strong> to run <code>${esc(entry.model)}</code> at <strong>${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</strong> on Vertex AI.
         </div>
       </div>
-      <div class="tiles">
-        <div class="tile"><span class="t-lbl">Resolution &amp; MP</span><span class="t-val" id="img-tile-res-${slotObj.slot}">—</span></div>
-        <div class="tile"><span class="t-lbl">Wall Time</span><span class="t-val" id="img-tile-time-${slotObj.slot}">—</span></div>
-        <div class="tile"><span class="t-lbl">Image / Think Tok</span><span class="t-val" id="img-tile-tok-${slotObj.slot}">—</span></div>
-        <div class="tile"><span class="t-lbl">Standard PayGo</span><span class="t-val" id="img-tile-cost-${slotObj.slot}">—</span></div>
-        <div class="tile"><span class="t-lbl">Off-Peak PayGo</span><span class="t-val" id="img-tile-offpeak-${slotObj.slot}">—</span></div>
+      <div class="metrics">
+        <div class="metric" id="img-mcard-res-${slotObj.slot}"><div class="k">Resolution &amp; MP</div><div class="v" id="img-tile-res-${slotObj.slot}">${esc(IMG_SELECTED_SIZE)} · ~${esc(estMp)}</div></div>
+        <div class="metric" id="img-mcard-time-${slotObj.slot}"><div class="k">Wall Time</div><div class="v" id="img-tile-time-${slotObj.slot}">—</div></div>
+        <div class="metric" id="img-mcard-tok-${slotObj.slot}"><div class="k">Image / Think Tok</div><div class="v" id="img-tile-tok-${slotObj.slot}">~${esc(estTok)}</div></div>
+        <div class="metric" id="img-mcard-cost-${slotObj.slot}"><div class="k">Standard PayGo</div><div class="v" id="img-tile-cost-${slotObj.slot}">~${fmtCost(refPrice)}</div></div>
+        <div class="metric" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">${offPeakPrice != null ? '~' + fmtCost(offPeakPrice) + ' (-50%)' : 'Standard / PTU'}</div></div>
       </div>
       <div class="img-arch-callout" id="img-arch-${slotObj.slot}">
         <strong>Production Guidance:</strong> ${esc(entry.architectureGuidance)}
@@ -5706,8 +5724,10 @@ async function runImageArenaComparisonClick() {
     }
     IMG_LAST_RESULTS = data.results || [];
     IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
+    highlightImageWinnerTiles(IMG_LAST_RESULTS);
     attachSynchronizedLoupeHandlers();
     updateSplitCurtainView();
+    renderImageMetricComparison();
     renderImageEconomicsModeler();
     if (timerBadge) {
       const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
@@ -5815,6 +5835,151 @@ function applyImageResultToCard(r) {
       ? `${fmtCost(r.offPeakPayGoCostUsd)} (-50% Off-Peak)`
       : 'Standard / PTU';
   }
+}
+
+function highlightImageWinnerTiles(results) {
+  const ok = (results || []).filter((r) => r && r.ok);
+  document.querySelectorAll('#imgArenaGrid .metric.win').forEach((elNode) => elNode.classList.remove('win'));
+  if (ok.length < 2) return;
+
+  const markBest = (prefix, vals, dir) => {
+    const valid = vals.filter((x) => x.v != null && Number.isFinite(x.v) && x.v > 0);
+    if (valid.length < 2) return;
+    const min = Math.min(...valid.map((x) => x.v));
+    const max = Math.max(...valid.map((x) => x.v));
+    if (Math.abs(max - min) < 1e-9) return;
+    const target = dir === 'higher' ? max : min;
+    valid.forEach((x) => {
+      if (Math.abs(x.v - target) < 1e-6) {
+        const card = $(`#img-mcard-${prefix}-${x.slot}`);
+        if (card) card.classList.add('win');
+      }
+    });
+  };
+
+  markBest('res', ok.map((r) => ({ slot: r.slot, v: Number(r.megapixels || 0) })), 'higher');
+  markBest('time', ok.map((r) => ({ slot: r.slot, v: Number(r.latencyMs || 0) })), 'lower');
+  markBest('cost', ok.map((r) => ({ slot: r.slot, v: Number(r.standardPayGoCostUsd || 0) })), 'lower');
+  markBest('offpeak', ok.map((r) => ({ slot: r.slot, v: Number(r.offPeakPayGoCostUsd || r.standardPayGoCostUsd || 0) })), 'lower');
+}
+
+// ---------- Image Model Comparison Bars & Scale Scorecard (Matches Text Arena) ----------
+function renderImageMetricComparison() {
+  if (!IMG_CONFIG) return;
+  const legendEl = $('#imgModelLegend');
+  const gridEl = $('#imgMetricGrid');
+  const subEl = $('#imgScorecardSub');
+  const toggleEl = $('#imgMetricViewToggle');
+  if (!gridEl) return;
+
+  const scored = IMG_SLOTS.map((s) => {
+    const entry = getImgCatalogItem(s.catalogId);
+    if (!entry) return null;
+    const live = (IMG_LAST_RESULTS || []).find(
+      (r) => r && r.ok && r.slot === s.slot && r.catalogId === s.catalogId && r.requestedSize === IMG_SELECTED_SIZE
+    );
+    const refStd = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
+    const stdCost = live ? Number(live.standardPayGoCostUsd || refStd) : refStd;
+    const offPeakDiscount = (entry.pricing && entry.pricing.offPeakDiscount) || 0;
+    const offPeakCost = live
+      ? Number(live.offPeakPayGoCostUsd != null ? live.offPeakPayGoCostUsd : stdCost)
+      : (offPeakDiscount > 0 ? stdCost * (1 - offPeakDiscount) : stdCost);
+    const mp = live && live.megapixels != null
+      ? Number(live.megapixels)
+      : (entry.supportedSizes.includes(IMG_SELECTED_SIZE)
+        ? ({ '1K': 1.05, '2K': 4.19, '4K': 16.78 }[IMG_SELECTED_SIZE] || 4.19)
+        : 1.03);
+    const imgTok = live && live.imageOutputTokens != null
+      ? Number(live.imageOutputTokens)
+      : (entry.id === 'gemini-2.5-flash-image'
+        ? 1290
+        : ({ '1K': 1120, '2K': 1680, '4K': entry.id === 'gemini-nano-banana-2.1' ? 3780 : 2520 }[IMG_SELECTED_SIZE] || 1680));
+    const latencySec = live && live.latencyMs > 0 ? live.latencyMs / 1000 : 0;
+
+    return {
+      slot: s.slot,
+      label: entry.label,
+      shortLabel: entry.shortLabel || entry.label,
+      provider: 'google',
+      publisher: 'google',
+      model: entry.model,
+      isLive: Boolean(live),
+      standardPayGoCostUsd: stdCost,
+      offPeakPayGoCostUsd: offPeakCost,
+      latencySec,
+      megapixels: mp,
+      imageOutputTokens: imgTok,
+    };
+  }).filter(Boolean);
+
+  const anyLive = scored.some((r) => r.isLive);
+  if (subEl) {
+    subEl.textContent = anyLive
+      ? `Live measured Vertex AI telemetry at ${IMG_SELECTED_SIZE} (${IMG_SELECTED_ASPECT}) — each panel has its own scale; the green zone marks the better end.`
+      : `Reference ${IMG_SELECTED_SIZE} unit economics & resolution — click Generate & Compare Images ▸ above to populate live wall-time and token telemetry.`;
+  }
+
+  if (legendEl) {
+    legendEl.innerHTML = scored.map((r) => {
+      const c = slotColor(r.slot);
+      return `<span class="ml-chip" style="--c:${c}">${modelIconSvg(r)}<b>${esc(r.label)}</b><span class="ml-think">${esc(r.model)}</span></span>`;
+    }).join('');
+  }
+
+  const view = scored.length < 2 ? 'bars' : metricView();
+  if (toggleEl) {
+    toggleEl.classList.toggle('hidden', scored.length < 2);
+    toggleEl.querySelectorAll('.mv-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+  }
+
+  const metrics = [
+    {
+      label: 'Standard PayGo / img',
+      icon: 'cost',
+      dir: 'lower',
+      hint: '↓ lower is better',
+      get: (r) => Math.max(r.standardPayGoCostUsd || 0, 0),
+      fmt: (v) => fmtCost(v),
+    },
+    {
+      label: 'Off-Peak PayGo / img',
+      icon: 'cost',
+      dir: 'lower',
+      hint: '↓ lower is better (-50% on 2.1)',
+      get: (r) => Math.max(r.offPeakPayGoCostUsd || 0, 0),
+      fmt: (v) => fmtCost(v),
+    },
+    {
+      label: 'Wall time',
+      icon: 'time',
+      dir: 'lower',
+      hint: anyLive ? '↓ lower is better (measured)' : '↓ run generation to measure',
+      get: (r) => Math.max(r.latencySec || 0, 0),
+      fmt: (v) => (v > 0 ? v.toFixed(1) + 's' : '—'),
+    },
+    {
+      label: 'Output resolution',
+      icon: 'correct',
+      dir: 'higher',
+      hint: '↑ higher MP is sharper for print',
+      get: (r) => Math.max(r.megapixels || 0, 0),
+      fmt: (v) => v.toFixed(2) + ' MP',
+    },
+    {
+      label: 'Image output tokens',
+      icon: 'len',
+      dir: 'neutral',
+      hint: `${IMG_SELECTED_SIZE} token footprint · neutral`,
+      get: (r) => Math.max(r.imageOutputTokens || 0, 0),
+      fmt: (v) => fmtInt(Math.round(v)),
+    },
+  ];
+
+  gridEl.innerHTML = metrics.map((m) => {
+    const vals = scored.map((r) => ({ r, v: m.get(r) }));
+    const body = (view === 'scale' && m.dir !== 'neutral') ? mpScale(m, vals) : mpBars(m, vals, scored.length);
+    return `<div class="metric-panel" data-n="${scored.length}">${mpHead(m)}${body}</div>`;
+  }).join('');
 }
 
 // ---------- Interactive Peak Holiday Volume & Off-Peak PayGo Modeler ----------
@@ -5931,6 +6096,8 @@ function initImageArenaBindings() {
       IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      renderImageMetricComparison();
+      renderImageEconomicsModeler();
     });
   }
 
@@ -5957,9 +6124,21 @@ function initImageArenaBindings() {
       }
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      renderImageMetricComparison();
       renderImageEconomicsModeler();
     });
   });
+
+  const imgMvToggle = $('#imgMetricViewToggle');
+  if (imgMvToggle) {
+    imgMvToggle.addEventListener('click', (e) => {
+      const b = e.target.closest('.mv-btn');
+      if (!b) return;
+      setMetricView(b.dataset.view);
+      renderImageMetricComparison();
+      if (LAST_RUN && LAST_RUN.scored) renderMetricGrid(LAST_RUN.scored, LAST_RUN.isCustom);
+    });
+  }
 
   const addRefBtn = $('#imgAddRefBtn');
   const refInput = $('#imgRefFileInput');

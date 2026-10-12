@@ -181,7 +181,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ Judge 6-axis rubric (including Cost & Speed), multi-fence JSON parser & Claude safety-refusal retry verified');
 
-  // 8. Verify Image & GenMedia Arena (v1.0.9 — Nano Banana 2 vs 2.1, thought-part filtering, Off-Peak PayGo economics, and pure-Node reference PNGs)
+  // 8. Verify Image & GenMedia Arena (v1.0.10 — 6 workflow packs incl. upscaling/resampling/cleaning/recoloring, 12 pure-Node reference PNGs, Model comparison bars/scale, thought-part filtering, and Off-Peak PayGo economics)
   const {
     IMAGE_MODEL_CATALOG,
     SAMPLE_REFERENCE_ASSETS,
@@ -196,11 +196,24 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(imgCfg.catalog.length, 4, 'Image catalog should expose 4 Nano Banana models');
   assert(imgCfg.catalog.some((m) => m.id === 'gemini-nano-banana-2.1'), 'Catalog must include gemini-nano-banana-2.1');
   assert(imgCfg.catalog.some((m) => m.id === 'gemini-3.1-flash-image'), 'Catalog must include gemini-3.1-flash-image');
+  assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
+  const packIds = imgCfg.packs.map((p) => p.id);
+  for (const expectedId of ['upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
+    assert(packIds.includes(expectedId), `Image Arena packs must include ${expectedId}`);
+  }
+  assert.strictEqual(Object.keys(SAMPLE_REFERENCE_ASSETS).length, 12, 'SAMPLE_REFERENCE_ASSETS must provide 12 built-in pure-Node reference PNGs');
 
   const beachDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.smartEraseBeach.data);
   assert.deepStrictEqual(beachDims, { width: 384, height: 240 }, 'Smart Erase beach sample PNG must decode to 384x240');
-  const foxDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.storybookFox.data);
-  assert.deepStrictEqual(foxDims, { width: 256, height: 256 }, 'Storybook Fox reference PNG must decode to 256x256');
+  const lowResDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.lowResCabinThumb.data);
+  assert.deepStrictEqual(lowResDims, { width: 160, height: 120 }, 'Low-res cabin thumbnail PNG must decode to 160x120');
+  const patternDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.botanicalPatternNavyGold.data);
+  assert.deepStrictEqual(patternDims, { width: 256, height: 256 }, 'Botanical pattern recoloring PNG must decode to 256x256');
+
+  const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  assert(indexHtml.includes('id="imgScorecard"'), 'index.html must include #imgScorecard Model comparison section');
+  assert(indexHtml.includes('id="imgMetricGrid"'), 'index.html must include #imgMetricGrid for bar/scale charts');
+  assert(indexHtml.includes('id="imgMetricViewToggle"'), 'index.html must include #imgMetricViewToggle for Bars vs Scale');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
@@ -229,7 +242,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(econ21.offPeakDiscountPct, 50, 'Off-Peak PayGo discount should be 50%');
   assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
   assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
-  console.log('✓ Image & GenMedia Arena (v1.0.9) thought-draft part filter, pure-Node sample PNGs & Off-Peak PayGo economics verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.10) 6 workflow packs, 12 reference PNGs, Model comparison bars/scale & Off-Peak PayGo verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

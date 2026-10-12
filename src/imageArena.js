@@ -361,6 +361,174 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
     return [r, g, b];
   });
 
+  // 5. Upscaling Reference: Low-res blocky 160x120 mountain cabin by lake (quantized 4x4 pixel blocks)
+  const lowResCabinBuf = encodeRgbPng(160, 120, (x, y, w, h) => {
+    const qx = Math.floor(x / 4) * 4;
+    const qy = Math.floor(y / 4) * 4;
+    const ny = qy / h;
+    let r = 82, g = 132, b = 198;
+    if (ny < 0.45) {
+      r = 95 + ny * 90; g = 145 + ny * 65; b = 215 - ny * 20;
+    } else if (ny < 0.68) {
+      // Mountain ridge
+      const ridge = 0.42 + Math.sin(qx * 0.06) * 0.10 + Math.cos(qx * 0.11) * 0.06;
+      if (ny >= ridge) {
+        const snow = ny < ridge + 0.07;
+        r = snow ? 235 : 88; g = snow ? 240 : 96; b = snow ? 248 : 112;
+      }
+    } else {
+      // Alpine lake + pine shore
+      r = 38; g = 98; b = 138;
+    }
+    // Blocky wooden cabin on right shore
+    if (qx >= 92 && qx <= 132 && qy >= 62 && qy <= 88) {
+      r = 138; g = 82; b = 44;
+      if (qx >= 106 && qx <= 118 && qy >= 70 && qy <= 80) {
+        r = 248; g = 208; b = 92; // Warm cabin window
+      }
+    }
+    return [r, g, b];
+  });
+
+  // 6. Aspect-Ratio Resampling / Outpainting Reference: 1:1 tight square crop of a coastal lighthouse
+  const lighthouseBuf = encodeRgbPng(240, 240, (x, y, w, h) => {
+    const ny = y / h;
+    let r = 64 + ny * 110, g = 112 + ny * 75, b = 178 - ny * 25;
+    if (ny > 0.66) {
+      // Basalt cliff & ocean base
+      r = x < 155 ? 62 : 28;
+      g = x < 155 ? 64 : 112;
+      b = x < 155 ? 72 : 148;
+    }
+    // Lighthouse tower (centered tight crop)
+    if (y >= 54 && y <= 165 && Math.abs(x - 118) <= 16 + (y - 54) * 0.08) {
+      const band = Math.floor((y - 54) / 22) % 2 === 0;
+      return band ? [242, 240, 236] : [204, 48, 44];
+    }
+    // Lantern beacon at top
+    if (dist(x, y, 118, 46) < 14) return [255, 232, 124];
+    return [r, g, b];
+  });
+
+  // 7. Vintage Photo Restoration Reference: Sepia portrait with white diagonal paper creases & dust specks
+  const vintageBuf = encodeRgbPng(320, 240, (x, y, w, h) => {
+    // Sepia garden backdrop
+    let lum = 135 + Math.sin(x * 0.04) * 18 + Math.cos(y * 0.05) * 16;
+    // Subject silhouette in center
+    if (dist(x, y, 160, 96) < 28) lum = 188;
+    if (y >= 124 && y <= 220 && Math.abs(x - 160) < 48) lum = 86;
+    // Vignette darkening at corners
+    const cd = dist(x, y, w / 2, h / 2) / 190;
+    lum = lum * Math.max(0.45, 1 - cd * 0.45);
+    let r = Math.min(255, lum * 1.18);
+    let g = Math.min(255, lum * 0.98);
+    let b = Math.min(255, lum * 0.74);
+    // Diagonal white paper fold creases across image (to be repaired)
+    const crease1 = Math.abs((x * 0.65 + y) - 195) < 1.9;
+    const crease2 = Math.abs((x * -0.55 + y) - 42) < 1.6;
+    if (crease1 || crease2) return [244, 238, 224];
+    // Random dust specks
+    if (((x * 73 + y * 151) % 997) === 0) return [248, 244, 232];
+    return [r, g, b];
+  });
+
+  // 8. Eyeglass Glare & Indoor Tungsten Cast Reference
+  const glareBuf = encodeRgbPng(280, 240, (x, y, w, h) => {
+    // Warm yellow-orange tungsten indoor wall
+    let r = 212, g = 168, b = 104;
+    const cx = w / 2, cy = h / 2;
+    // Face oval
+    if (dist(x, y * 0.9, cx, cy * 0.9) < 56) {
+      r = 228; g = 176; b = 128;
+    }
+    // Eyeglass frames (left & right)
+    const dL = dist(x, y, cx - 24, cy - 8);
+    const dR = dist(x, y, cx + 24, cy - 8);
+    if ((dL >= 16 && dL <= 19) || (dR >= 16 && dR <= 19) || (Math.abs(y - (cy - 8)) < 2 && Math.abs(x - cx) <= 8)) {
+      return [38, 34, 32];
+    }
+    // Bright white/cyan flash glare obscuring both lenses
+    if (dL < 16 || dR < 16) {
+      return [238, 252, 246];
+    }
+    return [r, g, b];
+  });
+
+  // 9. Cluttered Desk Mug Cleanup Reference
+  const deskMugBuf = encodeRgbPng(320, 240, (x, y, w, h) => {
+    let r = 196, g = 188, b = 176;
+    if (y > 140) { r = 148; g = 132; b = 114; } // Tabletop
+    // Centerpiece terracotta ceramic mug (keep intact)
+    if (x >= 134 && x <= 186 && y >= 108 && y <= 184) {
+      return [198, 92, 64];
+    }
+    // Distraction 1: Bright yellow sticky notes on left
+    if (x >= 34 && x <= 86 && y >= 146 && y <= 192) return [252, 234, 72];
+    // Distraction 2: Green plastic bottle on right
+    if (x >= 242 && x <= 278 && y >= 88 && y <= 186) return [42, 178, 84];
+    // Distraction 3: Tangled black cable across foreground
+    if (Math.abs(y - (196 + Math.sin(x * 0.09) * 12)) < 2.5) return [24, 24, 28];
+    return [r, g, b];
+  });
+
+  // 10. Pattern & Wallpaper Colorway Recoloring Reference (Navy Blue & Mustard Gold repeat tile)
+  const patternBuf = encodeRgbPng(256, 256, (x, y) => {
+    // Navy blue ground
+    let r = 22, g = 42, b = 84;
+    const gx = (x % 64) - 32;
+    const gy = (y % 64) - 32;
+    const d = Math.hypot(gx, gy);
+    const angle = Math.atan2(gy, gx);
+    const petal = 18 + Math.cos(angle * 6) * 8;
+    // Mustard gold floral rosette
+    if (d < petal) {
+      r = 228; g = 178; b = 52;
+      if (d < 7) { r = 244; g = 238, b = 222; }
+    }
+    // Geometric diamond lattice line
+    if (Math.abs(Math.abs(gx) + Math.abs(gy) - 30) < 1.8) {
+      r = 184; g = 204; b = 232;
+    }
+    return [r, g, b];
+  });
+
+  // 11. SKU Colorway Swap Reference (Crimson Red woven throw pillow on neutral linen sofa)
+  const pillowBuf = encodeRgbPng(320, 240, (x, y, w, h) => {
+    // Neutral warm oat linen sofa backdrop
+    let r = 226, g = 218, b = 206;
+    if (y > 165) { r = 208; g = 198; b = 184; }
+    // Crimson red woven pillow in center with knit texture
+    if (x >= 96 && x <= 224 && y >= 58 && y <= 182) {
+      const weave = ((Math.floor(x / 4) + Math.floor(y / 4)) % 2) * 14;
+      r = 186 + weave; g = 28 + weave * 0.4; b = 42 + weave * 0.4;
+    }
+    return [r, g, b];
+  });
+
+  // 12. Seasonal Relighting Reference (Bright Summer Midday Green Trees & Porch)
+  const summerPorchBuf = encodeRgbPng(320, 220, (x, y, w, h) => {
+    const ny = y / h;
+    // Bright blue summer midday sky
+    let r = 92, g = 174, b = 242;
+    if (ny > 0.65) {
+      // Bright green summer lawn
+      r = 74; g = 164; b = 68;
+      // Stone walkway
+      if (Math.abs(x - w / 2) < 28 + (y - h * 0.65) * 0.45) {
+        r = 182; g = 178; b = 172;
+      }
+    }
+    // Lush summer green tree canopies on left & right
+    if (dist(x, y, 68, 92) < 54 || dist(x, y, 252, 88) < 56) {
+      r = 46; g = 138; b = 52;
+    }
+    // White porch facade in center
+    if (x >= 122 && x <= 198 && y >= 78 && y <= 144) {
+      r = 242; g = 238; b = 232;
+    }
+    return [r, g, b];
+  });
+
   return {
     smartEraseBeach: {
       id: 'sample-beach-photobomber',
@@ -390,6 +558,62 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
       label: 'Ref 3 · Glowing Brass Lantern Prop',
       data: lanternBuf.toString('base64'),
     },
+    lowResCabinThumb: {
+      id: 'sample-lowres-cabin-thumb',
+      name: 'lowres-160x120-pixelated-alpine-cabin.png',
+      mimeType: 'image/png',
+      label: 'Low-Res 160×120 Pixelated Cabin Thumbnail',
+      data: lowResCabinBuf.toString('base64'),
+    },
+    squareLighthouseCrop: {
+      id: 'sample-square-lighthouse-crop',
+      name: 'tight-1x1-square-lighthouse-crop.png',
+      mimeType: 'image/png',
+      label: 'Tight 1:1 Square Lighthouse Crop (240×240)',
+      data: lighthouseBuf.toString('base64'),
+    },
+    scratchedVintagePhoto: {
+      id: 'sample-scratched-vintage-photo',
+      name: 'vintage-sepia-creased-heirloom-photo.png',
+      mimeType: 'image/png',
+      label: 'Damaged Vintage Sepia Photo (Creases & Dust)',
+      data: vintageBuf.toString('base64'),
+    },
+    glareGlassesPortrait: {
+      id: 'sample-glare-glasses-portrait',
+      name: 'indoor-portrait-eyeglass-flash-glare.png',
+      mimeType: 'image/png',
+      label: 'Indoor Portrait with Eyeglass Flash Glare & Cast',
+      data: glareBuf.toString('base64'),
+    },
+    clutteredDeskMug: {
+      id: 'sample-cluttered-desk-mug',
+      name: 'ceramic-mug-with-desk-clutter-cables.png',
+      mimeType: 'image/png',
+      label: 'Product Mug Surrounded by Desk Clutter & Cables',
+      data: deskMugBuf.toString('base64'),
+    },
+    botanicalPatternNavyGold: {
+      id: 'sample-botanical-pattern-navy-gold',
+      name: 'repeat-floral-pattern-navy-gold-swatch.png',
+      mimeType: 'image/png',
+      label: 'Repeat Floral & Geometric Pattern (Navy & Gold)',
+      data: patternBuf.toString('base64'),
+    },
+    crimsonThrowPillow: {
+      id: 'sample-crimson-throw-pillow',
+      name: 'crimson-red-knit-pillow-sku.png',
+      mimeType: 'image/png',
+      label: 'Crimson Red Woven Knit Throw Pillow SKU',
+      data: pillowBuf.toString('base64'),
+    },
+    summerPorchScene: {
+      id: 'sample-summer-porch-scene',
+      name: 'summer-midday-green-trees-porch.png',
+      mimeType: 'image/png',
+      label: 'Summer Midday Green Foliage & Porch',
+      data: summerPorchBuf.toString('base64'),
+    },
   };
 })();
 
@@ -398,13 +622,134 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
 // ---------------------------------------------------------------------------
 const IMAGE_USE_CASE_PACKS = [
   {
+    id: 'upscaling-resampling',
+    title: '🔍 Upscaling, Resampling & Print Super-Resolution',
+    badge: 'Upscaling & Resampling',
+    scenarios: [
+      {
+        id: 'lowres-to-4k-upscale',
+        title: '1. Low-Res Thumbnail → 4K (16.9 MP) Print Upscaling & Detail Reconstruction',
+        badge: '160×120 Input → Native 4K (5504×3072)',
+        recommendedSize: '4K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Upscale and reconstruct the attached low-resolution, blocky 160×120 thumbnail into a razor-sharp 4K (5504×3072, 300-DPI print-ready) fine-art landscape photograph. Eliminate all pixelation and compression blockiness while synthesizing realistic weathered cedar timber grain on the lakeside cabin, individual pine needles along the shoreline, crisp snow ridges on the alpine peaks, and mirror-clear water reflections.',
+        whyItMatters: 'Benchmarks generative super-resolution — rescuing legacy low-DPI customer uploads so they pass 300-DPI preflight checks for large-format wall canvases and photo books.',
+        sampleAttachments: ['lowResCabinThumb'],
+      },
+      {
+        id: 'aspect-ratio-resampling',
+        title: '2. Aspect-Ratio Resampling & Generative Outpainting (1:1 Square → 16:9 Panoramic Spread)',
+        badge: '1:1 Input → 16:9 Panoramic Outpaint',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Resample and outpaint the attached tight 1:1 square lighthouse photograph into a seamless 16:9 panoramic two-page photo-book spread. Preserve the red-and-white striped coastal lighthouse in the center while generatively extending the rugged basalt cliff coastline to the left and crashing turquoise ocean waves, sea spray, and dramatic golden-hour clouds to the right with zero visible seam.',
+        whyItMatters: 'Tests aspect-ratio resampling and generative outpainting when fitting square mobile photos into full-bleed 16:9 panoramic photo-book spreads or banners.',
+        sampleAttachments: ['squareLighthouseCrop'],
+      },
+      {
+        id: 'dpi-canvas-resampling',
+        title: '3. 300-DPI Large-Format Canvas & Metal Print Texture Resampling (4K)',
+        badge: 'Native 4K · 5504×3072 (16.9 MP)',
+        recommendedSize: '4K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Generate an ultra-high-resolution 4K (300-DPI print-ready) architectural and botanical photograph of a traditional Kyoto autumn courtyard garden at dawn. Render microscopic surface detail in the wet moss-covered stepping stones, hand-raked gravel ripples, crimson Japanese maple leaves, and warm cedar joinery engineered for a 36×24 inch metallic or canvas wall print.',
+        whyItMatters: 'Compares 1K vs 2K vs 4K native output token fidelity and micro-texture sharpness using the synchronized 3.5× pixel loupe.',
+        sampleAttachments: [],
+      },
+    ],
+  },
+  {
+    id: 'cleaning-restoration',
+    title: '🧹 Image Cleaning, Restoration & Smart Erase',
+    badge: 'Image Cleaning & Repair',
+    scenarios: [
+      {
+        id: 'smart-erase-conversational',
+        title: '1. Smart Erase — Photobomber, Trash Bin & Power-Line Removal (Mask-Free)',
+        badge: '1-Click Built-In Reference Photo',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Edit the attached coastal family portrait: completely remove the bright neon-orange trash bin on the right side of the beach and remove the dark overhead utility power wires across the top sky. Reconstruct natural ocean waves, golden sunset sky, and smooth sandy beach lighting while keeping the two family figures on the left intact.',
+        whyItMatters: 'Shows mask-free conversational photo cleanup (Smart Erase) — removing background clutter, power lines, and photobombers while preserving subject identity and scene lighting.',
+        sampleAttachments: ['smartEraseBeach'],
+      },
+      {
+        id: 'vintage-photo-restoration',
+        title: '2. Vintage Heirloom Restoration — Crease, Scratch, Dust & Sepia Repair',
+        badge: 'Crease & Dust Repair + Colorization',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '4:3',
+        prompt: 'Clean and restore the attached damaged vintage photograph: remove all white diagonal paper fold creases, surface scratches, dust specks, and dark corner staining. Reconstruct the missing facial and garden detail across the creases and restore natural, balanced full-color skin tones, foliage, and daylight.',
+        whyItMatters: 'Validates automated archival photo cleaning and restoration for heritage photo books, memorial tributes, and family anniversary albums.',
+        sampleAttachments: ['scratchedVintagePhoto'],
+      },
+      {
+        id: 'glare-shadow-cleanup',
+        title: '3. Eyeglass Flash Glare, Harsh Shadow & Indoor Color-Cast Cleaning',
+        badge: 'Glare Removal & White-Balance Cleanup',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '4:3',
+        prompt: 'Clean up the attached indoor portrait: completely remove the bright white/green camera flash reflection glare from both eyeglass lenses so the subject’s eyes are naturally visible behind the clear frames, soften harsh flash shadows, and neutralize the yellow tungsten indoor color cast to clean natural daylight.',
+        whyItMatters: 'Tests high-frequency portrait retouching — rescuing school portraits, event photos, and holiday card uploads ruined by eyeglass flash glare and indoor lighting casts.',
+        sampleAttachments: ['glareGlassesPortrait'],
+      },
+      {
+        id: 'cluttered-desk-cleanup',
+        title: '4. Background Clutter Cleaning & Studio Tabletop Isolation',
+        badge: 'Object Isolation & Mess Removal',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Clean the messy desk background around the centerpiece terracotta ceramic mug: remove the bright yellow sticky notes on the left, the green plastic bottle on the right, and the tangled black cable across the foreground. Replace the cluttered counter with a clean, sunlit honed marble tabletop and soft studio bokeh while keeping the terracotta mug intact.',
+        whyItMatters: 'Turns casual smartphone product snapshots into clean, catalog-ready studio imagery without manual clipping paths.',
+        sampleAttachments: ['clutteredDeskMug'],
+      },
+    ],
+  },
+  {
+    id: 'recoloring-restyling',
+    title: '🎨 Recoloring, Textile Colorways & Seasonal Restyling',
+    badge: 'Recoloring & Colorways',
+    scenarios: [
+      {
+        id: 'pattern-colorway-recoloring',
+        title: '1. Surface Pattern & Wallpaper Colorway Recoloring (Navy/Gold → Terracotta & Sage)',
+        badge: 'Textile & Wallpaper Colorway Studio',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '1:1',
+        prompt: 'Recolor the attached repeat botanical floral and geometric wallpaper/textile pattern from its current Navy Blue and Mustard Gold palette into a warm Autumn Terracotta, Sage Green, Dusty Rose, and Warm Cream colorway. Strictly preserve the exact floral rosette geometry, diamond lattice lines, motif scale, and seamless repeat structure.',
+        whyItMatters: 'Directly powers custom fabric, wallpaper, and home-decor marketplaces — generating instant seasonal colorway variants from a single artist surface pattern without altering motif geometry.',
+        sampleAttachments: ['botanicalPatternNavyGold'],
+      },
+      {
+        id: 'sku-colorway-swap',
+        title: '2. Home Goods & Apparel SKU Colorway Swap (Crimson Red → Forest Emerald & Gold)',
+        badge: 'Zero-Reshoot SKU Recoloring',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Recolor the attached crimson-red woven knit throw pillow on the linen sofa into a rich Heathered Forest Emerald Green with subtle Champagne Gold piping along the edges. Preserve every individual cable-knit weave texture, fabric fold shadow, and the neutral oat-linen sofa background.',
+        whyItMatters: 'Eliminates physical studio reshoots when launching new seasonal SKU colorways across pillows, blankets, drinkware, and custom apparel.',
+        sampleAttachments: ['crimsonThrowPillow'],
+      },
+      {
+        id: 'seasonal-relighting',
+        title: '3. Seasonal & Time-of-Day Recoloring (Summer Midday → Autumn Golden Hour)',
+        badge: 'Palette & Lighting Transformation',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Recolor and relight the attached bright summer midday porch scene into a warm October Autumn Golden Hour setting: transform the bright green tree canopies into vibrant amber, copper, and crimson fall foliage, scatter fallen autumn leaves along the stone walkway, and cast warm low-angle sunset rim lighting across the white porch facade.',
+        whyItMatters: 'Demonstrates semantic scene recoloring and relighting to adapt evergreen catalog photography for autumn and holiday campaigns.',
+        sampleAttachments: ['summerPorchScene'],
+      },
+    ],
+  },
+  {
     id: 'print-photobooks',
-    title: '📸 Print, Photo Books & Personalized Stationery',
+    title: '📸 Image Creation — Print, Photo Books & Personalized Stationery',
     badge: 'Print & Consumer Photo',
     scenarios: [
       {
         id: 'holiday-card-typography',
-        title: '1. Holiday Card & Multilingual Typography Modernization ("2026")',
+        title: '1. Holiday Card & Multilingual Typography Creation ("2026")',
         badge: 'Typography & Template Refresh',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
@@ -414,7 +759,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'print-4k-upscale',
-        title: '2. 4K (16.9 MP) Print Super-Resolution & Wall-Art Canvas Detail',
+        title: '2. 4K (16.9 MP) Fine-Art Wall Canvas Creation',
         badge: 'Native 4K · 5504×3072 (16.9 MP)',
         recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
@@ -423,18 +768,8 @@ const IMAGE_USE_CASE_PACKS = [
         sampleAttachments: [],
       },
       {
-        id: 'smart-erase-conversational',
-        title: '3. Smart Erase — Conversational Object & Photobomber Removal (No Mask)',
-        badge: '1-Click Built-In Reference Photo',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '16:9',
-        prompt: 'Edit the attached coastal family portrait: completely remove the bright neon-orange trash bin on the right side of the beach and remove the dark overhead utility power wires across the top sky. Reconstruct natural ocean waves, golden sunset sky, and smooth sandy beach lighting while keeping the two family figures on the left intact.',
-        whyItMatters: 'Shows mask-free conversational photo cleanup (Smart Erase) — removing background clutter, power lines, and photobombers while preserving subject identity and scene lighting.',
-        sampleAttachments: ['smartEraseBeach'],
-      },
-      {
         id: 'multi-image-storybook',
-        title: '4. Multi-Image Character & Style Consistency (Up to 13 Reference Inputs)',
+        title: '3. Multi-Image Character & Style Consistency (3 Built-In Reference Inputs)',
         badge: '3 Built-In Reference Images Loaded',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -442,16 +777,26 @@ const IMAGE_USE_CASE_PACKS = [
         whyItMatters: 'Tests multi-image subject and style locking across up to 13 reference images (64K context window) so multi-page photo books and calendars maintain consistent characters.',
         sampleAttachments: ['storybookFox', 'storybookStyle', 'storybookLantern'],
       },
+      {
+        id: 'wedding-invitation-suite',
+        title: '4. Bespoke Wedding Invitation Suite with Gold-Foil & Letterpress Typography',
+        badge: 'Stationery & Letterpress Creation',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '3:4',
+        prompt: 'Overhead editorial flat-lay photograph of a luxury letterpress wedding invitation suite on handmade deckle-edge cotton paper with wax seal, dried olive branches, and silk ribbon. Render crisp debossed serif typography reading:\n"SOPHIA LAURENT & ETHAN VANCE"\n"SATURDAY, OCTOBER 24, 2026"\n"VILLA CIMBRONE · RAVELLO, ITALY"\n"RECEPTION TO FOLLOW IN THE BELVEDERE GARDENS"',
+        whyItMatters: 'Benchmarks fine stationery layout composition, debossed foil texture realism, and multi-line formal invitation typography.',
+        sampleAttachments: [],
+      },
     ],
   },
   {
     id: 'retail-ecommerce',
-    title: '🛍️ Retail & E-Commerce Product Studio',
-    badge: 'Retail & Catalog',
+    title: '🛍️ Image Creation — Retail, Packaging & Brand Key Art',
+    badge: 'Retail & Brand Studio',
     scenarios: [
       {
         id: 'retail-lifestyle-staging',
-        title: '1. Virtual Lifestyle Staging & Seasonal Catalog Localization',
+        title: '1. Virtual Lifestyle Staging & Promotional Badge Creation',
         badge: 'Catalog Automation',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -461,7 +806,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'retail-packaging-mockup',
-        title: '2. 4K Packaging & Label Micro-Typography Inspection',
+        title: '2. 4K Botanical Serum Packaging & Micro-Typography Proofing',
         badge: '4K Label Proofing',
         recommendedSize: '4K',
         recommendedAspectRatio: '1:1',
@@ -469,16 +814,9 @@ const IMAGE_USE_CASE_PACKS = [
         whyItMatters: 'Validates fine-print packaging legibility and specular glass/liquid reflections at 4K resolution.',
         sampleAttachments: [],
       },
-    ],
-  },
-  {
-    id: 'media-posters',
-    title: '🎬 Media, Brand Typography & Campaign Posters',
-    badge: 'Media & Agency',
-    scenarios: [
       {
         id: 'media-key-art',
-        title: '1. Cinematic Key Art Poster with Multi-Line Title Credits',
+        title: '3. Cinematic Key Art Poster with Multi-Line Title Credits',
         badge: 'Key Art & Credits',
         recommendedSize: '2K',
         recommendedAspectRatio: '3:4',
@@ -500,7 +838,7 @@ const IMAGE_USE_CASE_PACKS = [
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
         prompt: '',
-        whyItMatters: 'Write any custom generation or editing prompt and attach up to 13 reference images.',
+        whyItMatters: 'Write any custom generation, upscaling, resampling, cleaning, or recoloring prompt and attach up to 13 reference images.',
         sampleAttachments: [],
       },
     ],
