@@ -5784,7 +5784,31 @@ function renderImageReferenceAttachments() {
   });
 }
 
-function addImageReferenceFiles(fileList) {
+function closestSupportedAspectRatio(w, h) {
+  const nw = Number(w);
+  const nh = Number(h);
+  if (!(nw > 0 && nh > 0)) return null;
+  const ratio = nw / nh;
+  const candidates = [
+    { id: '1:1', val: 1.0 },
+    { id: '4:3', val: 4 / 3 },
+    { id: '3:4', val: 3 / 4 },
+    { id: '16:9', val: 16 / 9 },
+    { id: '9:16', val: 9 / 16 },
+  ];
+  let best = candidates[0];
+  let bestDiff = Math.abs(ratio - best.val);
+  for (let i = 1; i < candidates.length; i++) {
+    const d = Math.abs(ratio - candidates[i].val);
+    if (d < bestDiff) {
+      bestDiff = d;
+      best = candidates[i];
+    }
+  }
+  return best.id;
+}
+
+function handleImageRefFiles(fileList) {
   const files = Array.from(fileList || []).filter((f) => f && /^image\//i.test(f.type));
   for (const file of files) {
     if (IMG_REF_ATTACHMENTS.length >= 13) break;
@@ -5792,12 +5816,40 @@ function addImageReferenceFiles(fileList) {
     reader.onload = () => {
       const res = String(reader.result || '');
       const base64 = res.replace(/^data:[^;]+;base64,/, '');
-      IMG_REF_ATTACHMENTS.push({
+      const attObj = {
         name: file.name || 'uploaded-image.png',
         label: file.name || 'Uploaded Reference',
         mimeType: file.type || 'image/png',
         data: base64,
-      });
+      };
+      IMG_REF_ATTACHMENTS.push(attObj);
+
+      const probe = new Image();
+      probe.onload = () => {
+        const nw = probe.naturalWidth;
+        const nh = probe.naturalHeight;
+        if (nw > 0 && nh > 0) {
+          attObj.width = nw;
+          attObj.height = nh;
+          const activeScId = ($('#imgScenarioSelect') && $('#imgScenarioSelect').value) || '';
+          if (activeScId !== 'aspect-ratio-resampling') {
+            const matched = closestSupportedAspectRatio(nw, nh);
+            if (matched) {
+              IMG_SELECTED_ASPECT = matched;
+              const aspectSel = $('#imgAspectSelect');
+              if (aspectSel) aspectSel.value = matched;
+              renderImageSizeAndAspectPills();
+              const stageAr = aspectRatioCssValue(IMG_SELECTED_ASPECT, nw, nh);
+              document.querySelectorAll('#imgArenaGrid .img-stage-wrap').forEach((st) => {
+                st.style.setProperty('--stage-ar', stageAr);
+              });
+              if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+            }
+          }
+        }
+      };
+      probe.src = res;
+
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
       updateSplitCurtainView();
@@ -5805,6 +5857,8 @@ function addImageReferenceFiles(fileList) {
     reader.readAsDataURL(file);
   }
 }
+
+const addImageReferenceFiles = handleImageRefFiles;
 
 function renderImageArenaPlaceholderCards() {
   const grid = $('#imgArenaGrid');

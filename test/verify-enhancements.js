@@ -345,8 +345,13 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.26', 'package.json must be at version 1.0.26');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.26</span>'), 'index.html must display v1.0.26 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.27', 'package.json must be at version 1.0.27');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.27</span>'), 'index.html must display v1.0.27 in footer');
+  const lowResSc = upscalePack && upscalePack.scenarios.find((s) => s.id === 'lowres-to-4k-upscale');
+  assert(lowResSc && lowResSc.recommendedAspectRatio === '4:3', 'lowres-to-4k-upscale must use 4:3 to match 160x120 input thumbnail');
+  const recolorPack = imgCfg.packs.find((p) => p.id === 'recoloring-restyling');
+  assert(recolorPack && recolorPack.scenarios.some((s) => s.id === 'winter-wonderland-bg-swap' && s.attachments && s.attachments.length === 1), 'Recoloring pack must include winter-wonderland-bg-swap scenario');
+  assert(appJs.includes('function closestSupportedAspectRatio(') && appJs.includes('function handleImageRefFiles('), 'app.js must auto-match aspect ratio on custom image upload via closestSupportedAspectRatio and handleImageRefFiles');
   assert(!indexHtml.includes('GA Oct 6') && !indexHtml.includes('GA SLA'), 'index.html must not contain GA Oct 6 or GA SLA language');
   assert(indexHtml.includes('<th>SLA &amp; Endpoint</th>'), 'index.html must display SLA & Endpoint header without GA');
   assert.strictEqual(nb21Entry.label, 'Gemini Nano Banana 2.1', 'Nano Banana 2.1 label must not include (GA Oct 6, 2026)');
