@@ -2636,33 +2636,6 @@ a.ud-item[hidden] { display: none; }
   margin: 18px auto 0;
 }
 
-.img-loupe-lens {
-  position: absolute;
-  width: 168px;
-  height: 168px;
-  border: 2px solid var(--accent);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-  background-repeat: no-repeat;
-  z-index: 15;
-}
-
-.img-loupe-tag {
-  position: absolute;
-  bottom: 4px;
-  left: 4px;
-  right: 4px;
-  background: rgba(6, 9, 15, 0.86);
-  color: #fff;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  padding: 2px 5px;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .img-card-badges {
   height: 28px;
   min-height: 28px;
@@ -2795,14 +2768,16 @@ a.ud-item[hidden] { display: none; }
 }
 
 .img-lightbox-dialog {
-  width: min(1060px, 95vw);
-  max-height: 92vh;
+  width: min(96vw, 1840px);
+  height: min(92vh, 1080px);
+  max-height: 94vh;
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px 20px;
   border: 1px solid var(--border-hi);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.75);
+  box-sizing: border-box;
 }
 
 .img-lightbox-head {
@@ -2842,8 +2817,9 @@ a.ud-item[hidden] { display: none; }
 }
 
 .img-lightbox-stage {
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
-  height: min(640px, 74vh);
   background: var(--well-2);
   border: 1px solid var(--border-hi);
   display: flex;
@@ -2854,12 +2830,30 @@ a.ud-item[hidden] { display: none; }
   box-sizing: border-box;
 }
 
+.img-lightbox-stage.is-actual-size {
+  overflow: auto;
+  align-items: flex-start;
+  justify-content: flex-start;
+}
+
 .img-lightbox-img {
-  width: min(680px, 84vw);
-  height: min(560px, 70vh);
+  width: auto;
+  height: auto;
+  max-width: 92vw;
+  max-height: calc(92vh - 96px);
   object-fit: contain;
   display: block;
   user-select: none;
+  cursor: zoom-in;
+  margin: auto;
+}
+
+.img-lightbox-img.is-actual-size {
+  max-width: none !important;
+  max-height: none !important;
+  object-fit: unset;
+  cursor: zoom-out;
+  margin: auto;
 }
 
 .img-lightbox-img.is-pixelated {

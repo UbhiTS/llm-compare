@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.19"></script>
+  <script src="theme-init.js?v=1.0.20"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.19" />
+  <link rel="stylesheet" href="styles.css?v=1.0.20" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.19" defer></script>
+  <script src="app.js?v=1.0.20" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -310,9 +310,6 @@
             <span class="step-badge">3</span>
             <span class="step-title">Inspect &amp; Generate</span>
             <div class="coding-toggles-wrap">
-              <button id="imgSyncLoupeBtn" class="bar-btn toggle is-on" type="button" aria-pressed="true" title="Synchronized 3.5x Pixel Loupe: hover over any generated image to inspect the exact same (x%, y%) region across all models simultaneously">
-                <span class="ar-led"></span>🔍 Sync 4K Pixel Loupe (3.5×)
-              </button>
               <button id="imgSplitCurtainBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Toggle interactive Before/After Split Curtain slider between Slot A and Slot B (or Input Reference vs Edited Output)">
                 <span class="ar-led"></span>⇔ Split Curtain Compare
               </button>
@@ -479,17 +476,19 @@
         <div class="img-lightbox-actions">
           <button type="button" id="imgLightboxPrevBtn" class="bar-btn" title="Previous image (←)">◀ Prev</button>
           <button type="button" id="imgLightboxNextBtn" class="bar-btn" title="Next image (→)">Next ▶</button>
+          <button type="button" id="imgLightboxActualSizeBtn" class="bar-btn" title="Toggle between Fit to Screen and 1:1 Full Size native pixels (or click image)">🔎 1:1 Full Size</button>
           <button type="button" id="imgLightboxPixelModeBtn" class="bar-btn" title="Toggle between crisp pixel-block rendering (ideal for inspecting low-res upscaling thumbnails) and smooth interpolation">🔳 Crisp Pixels</button>
+          <button type="button" id="imgLightboxOpenTabBtn" class="bar-btn" title="Open full-size image in a new browser tab">↗ Open in New Tab</button>
           <a id="imgLightboxDownloadBtn" class="bar-btn" href="#" download="image.png" title="Download full PNG">⬇ Download PNG</a>
           <button type="button" id="imgLightboxCloseBtn" class="bar-btn bar-btn-accent" title="Close preview (Esc)">✕ Close</button>
         </div>
       </div>
-      <div class="img-lightbox-stage">
+      <div id="imgLightboxStage" class="img-lightbox-stage">
         <img id="imgLightboxImg" class="img-lightbox-img" alt="Enlarged preview" />
       </div>
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.19</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.20</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

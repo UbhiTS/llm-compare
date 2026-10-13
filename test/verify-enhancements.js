@@ -244,6 +244,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(indexHtml.includes('id="imgMetricGrid"'), 'index.html must include #imgMetricGrid for bar/scale charts');
   assert(indexHtml.includes('id="imgMetricViewToggle"'), 'index.html must include #imgMetricViewToggle for Bars vs Scale');
   assert(indexHtml.includes('id="imgLightboxModal"'), 'index.html must include #imgLightboxModal for click-to-enlarge input/output inspection');
+  assert(indexHtml.includes('id="imgLightboxActualSizeBtn"'), 'index.html must include #imgLightboxActualSizeBtn for 1:1 Full Size native pixel toggle');
+  assert(indexHtml.includes('id="imgLightboxOpenTabBtn"'), 'index.html must include #imgLightboxOpenTabBtn for opening full-size output in a new tab');
+  assert(!indexHtml.includes('imgSyncLoupeBtn'), 'index.html must not include the retired #imgSyncLoupeBtn loupe toggle');
   assert(indexHtml.includes('id="imgOffPeakSliderCard"'), 'index.html must include #imgOffPeakSliderCard for dynamic Off-Peak gating');
   assert(indexHtml.includes('id="imgEconOffPeakTh"'), 'index.html must include #imgEconOffPeakTh for dynamic Off-Peak column gating');
   assert(!indexHtml.includes('imgCompatWarning'), 'index.html must not include the retired model compatibility warning banner');
@@ -257,6 +260,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
   assert(stylesCss.includes('grid-template-rows: subgrid;'), 'styles.css must align .img-result-col cards using CSS subgrid');
   assert(stylesCss.includes('.img-lightbox-backdrop'), 'styles.css must include .img-lightbox-backdrop modal styling');
+  assert(stylesCss.includes('.img-lightbox-stage.is-actual-size'), 'styles.css must include .img-lightbox-stage.is-actual-size for 1:1 native pixel scrolling');
+  assert(!stylesCss.includes('.img-loupe-lens'), 'styles.css must not include the retired .img-loupe-lens styles');
   assert(!stylesCss.includes('.img-compat-warning'), 'styles.css must not keep the retired compatibility warning styles');
   assert(!stylesCss.includes('.img-history-strip'), 'styles.css must not keep the Recent Image Runs strip styles');
   assert(stylesCss.includes('.video-coming-soon-card'), 'styles.css must include .video-coming-soon-card styling');
@@ -266,6 +271,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(appJs.includes('function hasOffPeakModelSelected()'), 'app.js must define hasOffPeakModelSelected() for dynamic Off-Peak gating');
   assert(appJs.includes('function hasLiveImageResults()'), 'app.js must define hasLiveImageResults() to gate #imgScorecard and #imgEconomicsSection on live or restored runs');
   assert(appJs.includes('function openImageLightbox('), 'app.js must define openImageLightbox() for reference and generated output inspection');
+  assert(appJs.includes('function applyLightboxSizing()'), 'app.js must define applyLightboxSizing() for Fit to Screen vs 1:1 Full Size native pixels');
+  assert(appJs.includes('stage.onclick = () => openGeneratedOutputLightboxAt(r.slot);'), 'app.js must open full-size output on single click of stage');
+  assert(!appJs.includes('updateAllLoupeLenses'), 'app.js must not keep the retired updateAllLoupeLenses() loupe handler');
   assert(!appJs.includes('getImgModelCompatibility'), 'app.js must not keep the retired model compatibility gating');
   assert(!appJs.includes('renderImageHistoryStrip'), 'app.js must not render the Recent Image Runs strip');
   assert(appJs.includes('function updateImageHistoryButton('), 'app.js must keep the History button run count');

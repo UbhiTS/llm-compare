@@ -5192,7 +5192,6 @@ let IMG_SELECTED_ASPECT = '16:9';
 let IMG_REF_ATTACHMENTS = []; // [{ name, mimeType, label, data (base64) }]
 let IMG_CURRENT_SCENARIO_REFS = [];
 let IMG_LAST_RESULTS = [];
-let IMG_SYNC_LOUPE_ON = true;
 let IMG_SPLIT_CURTAIN_ON = false;
 let IMG_CURTAIN_POS = 50;      // divider position, % of stage width
 let IMG_CURTAIN_PICKS = null;  // { left, right } layer ids the user chose explicitly
@@ -5312,6 +5311,7 @@ function hasLiveImageResults() {
 let IMG_LIGHTBOX_ITEMS = [];
 let IMG_LIGHTBOX_IDX = 0;
 let IMG_LIGHTBOX_PIXELATED = false;
+let IMG_LIGHTBOX_ACTUAL_SIZE = false;
 
 function openImageLightbox(items, startIndex = 0) {
   if (!Array.isArray(items) || !items.length) return;
@@ -5321,6 +5321,7 @@ function openImageLightbox(items, startIndex = 0) {
   IMG_LIGHTBOX_IDX = Math.max(0, Math.min(items.length - 1, Number(startIndex) || 0));
   const first = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
   IMG_LIGHTBOX_PIXELATED = Boolean(first && first.defaultPixelated);
+  IMG_LIGHTBOX_ACTUAL_SIZE = false;
   modal.classList.remove('hidden');
   renderImageLightboxCurrent();
 }
@@ -5334,6 +5335,61 @@ function stepImageLightbox(delta) {
   if (!IMG_LIGHTBOX_ITEMS.length) return;
   IMG_LIGHTBOX_IDX = (IMG_LIGHTBOX_IDX + delta + IMG_LIGHTBOX_ITEMS.length) % IMG_LIGHTBOX_ITEMS.length;
   renderImageLightboxCurrent();
+}
+
+function applyLightboxSizing() {
+  const stageEl = $('#imgLightboxStage') || document.querySelector('.img-lightbox-stage');
+  const imgEl = $('#imgLightboxImg');
+  const actualBtn = $('#imgLightboxActualSizeBtn');
+  const nw = (imgEl && imgEl.naturalWidth) || 0;
+  const nh = (imgEl && imgEl.naturalHeight) || 0;
+
+  if (actualBtn) {
+    const dimsSuffix = (nw && nh) ? ` (${nw}×${nh})` : '';
+    actualBtn.textContent = IMG_LIGHTBOX_ACTUAL_SIZE
+      ? '🗖 Fit to Screen'
+      : `🔎 1:1 Full Size${dimsSuffix}`;
+    actualBtn.classList.toggle('is-on', IMG_LIGHTBOX_ACTUAL_SIZE);
+  }
+
+  if (stageEl) {
+    stageEl.classList.toggle('is-actual-size', IMG_LIGHTBOX_ACTUAL_SIZE);
+  }
+
+  if (imgEl) {
+    imgEl.classList.toggle('is-actual-size', IMG_LIGHTBOX_ACTUAL_SIZE);
+    if (IMG_LIGHTBOX_ACTUAL_SIZE && nw > 0 && nh > 0) {
+      imgEl.style.cssText = `width:${nw}px;height:${nh}px;max-width:none !important;max-height:none !important;object-fit:unset;cursor:zoom-out;margin:auto;display:block`;
+      imgEl.title = 'Click to fit image to screen';
+    } else if (nw > 0 && nw <= 800) {
+      imgEl.style.cssText = 'width:min(680px, 84vw);height:min(560px, 72vh);object-fit:contain;cursor:zoom-in;margin:auto;display:block';
+      imgEl.title = 'Click to view 1:1 native pixel size';
+    } else {
+      imgEl.style.cssText = 'width:auto;height:auto;max-width:92vw;max-height:calc(92vh - 96px);object-fit:contain;cursor:zoom-in;margin:auto;display:block';
+      imgEl.title = 'Click to view 1:1 Full Size native pixels';
+    }
+  }
+}
+
+function openCurrentLightboxImageInNewTab() {
+  const item = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
+  if (!item || !item.url) return;
+  try {
+    const m = /^data:([^;]+);base64,(.+)$/.exec(item.url);
+    if (m) {
+      const mime = m[1] || 'image/png';
+      const bstr = window.atob(m[2]);
+      const u8 = new Uint8Array(bstr.length);
+      for (let i = 0; i < bstr.length; i++) u8[i] = bstr.charCodeAt(i);
+      const blob = new Blob([u8], { type: mime });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank', 'noopener');
+      return;
+    }
+    window.open(item.url, '_blank', 'noopener');
+  } catch (_) {
+    window.open(item.url, '_blank', 'noopener');
+  }
 }
 
 function renderImageLightboxCurrent() {
@@ -5374,9 +5430,11 @@ function renderImageLightboxCurrent() {
           ? baseMeta
           : (baseMeta ? `${dimPrefix} · ${baseMeta}` : dimPrefix);
       }
+      applyLightboxSizing();
     };
     imgEl.src = item.url || '';
     imgEl.alt = item.title || 'Enlarged preview';
+    applyLightboxSizing();
   }
 }
 
@@ -5769,7 +5827,7 @@ function renderImageArenaPlaceholderCards() {
           <span class="img-mode-chip">${esc(modeLabel)}</span>
         </div>
         <div class="img-card-actions-right">
-          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to enlarge">🔍 Enlarge</button>
+          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to view full size">🔍 Full Size</button>
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to download PNG">⬇ Save PNG</button>
         </div>
       </div>
@@ -5790,71 +5848,6 @@ function renderImageArenaPlaceholderCards() {
       </div>
     `;
     grid.appendChild(col);
-  });
-}
-
-// ---------- Synchronized 4K Pixel Loupe (3.5x Optical Zoom Across All Cards) ----------
-function attachSynchronizedLoupeHandlers() {
-  const stages = document.querySelectorAll('.img-stage-wrap[data-has-image="1"]');
-  stages.forEach((stage) => {
-    stage.onmousemove = (e) => {
-      if (!IMG_SYNC_LOUPE_ON) return;
-      const img = stage.querySelector('img.img-main-output');
-      if (!img) return;
-      const rect = img.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
-      const nx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const ny = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      updateAllLoupeLenses(nx, ny, true);
-    };
-    stage.onmouseleave = () => {
-      updateAllLoupeLenses(0.5, 0.5, false);
-    };
-  });
-}
-
-function updateAllLoupeLenses(nx, ny, visible) {
-  const stages = document.querySelectorAll('.img-stage-wrap[data-has-image="1"]');
-  const zoom = 3.5;
-  stages.forEach((stage) => {
-    let lens = stage.querySelector('.img-loupe-lens');
-    const img = stage.querySelector('img.img-main-output');
-    if (!img) return;
-    if (!visible || !IMG_SYNC_LOUPE_ON) {
-      if (lens) lens.classList.add('hidden');
-      return;
-    }
-    if (!lens) {
-      lens = el('div', 'img-loupe-lens');
-      const tag = el('div', 'img-loupe-tag');
-      lens.appendChild(tag);
-      stage.appendChild(lens);
-    }
-    lens.classList.remove('hidden');
-    const stageRect = stage.getBoundingClientRect();
-    const imgRect = img.getBoundingClientRect();
-    const offsetLeft = imgRect.left - stageRect.left;
-    const offsetTop = imgRect.top - stageRect.top;
-
-    const lensSize = 168;
-    const cx = offsetLeft + nx * imgRect.width;
-    const cy = offsetTop + ny * imgRect.height;
-    const leftPx = Math.max(4, Math.min(stageRect.width - lensSize - 4, cx - lensSize / 2));
-    const topPx = Math.max(4, Math.min(stageRect.height - lensSize - 4, cy - lensSize / 2));
-
-    lens.style.left = `${leftPx}px`;
-    lens.style.top = `${topPx}px`;
-    lens.style.backgroundImage = `url("${img.src}")`;
-    lens.style.backgroundSize = `${imgRect.width * zoom}px ${imgRect.height * zoom}px`;
-    const bgX = -(nx * imgRect.width * zoom - lensSize / 2);
-    const bgY = -(ny * imgRect.height * zoom - lensSize / 2);
-    lens.style.backgroundPosition = `${bgX}px ${bgY}px`;
-
-    const tag = lens.querySelector('.img-loupe-tag');
-    if (tag) {
-      const dimsLabel = stage.dataset.dimsLabel || '';
-      tag.textContent = `3.5× Sync (${Math.round(nx * 100)}%, ${Math.round(ny * 100)}%) ${dimsLabel}`;
-    }
   });
 }
 
@@ -6257,7 +6250,6 @@ async function restoreImageArenaRun(runId) {
     .map((r) => (slotMap ? { ...r, slot: slotMap[r.slot] } : r));
   IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
   highlightImageWinnerTiles(IMG_LAST_RESULTS);
-  attachSynchronizedLoupeHandlers();
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
@@ -6366,7 +6358,6 @@ async function runImageArenaComparisonClick() {
         IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
         applyImageResultToCard(slotResult);
         highlightImageWinnerTiles(IMG_LAST_RESULTS);
-        attachSynchronizedLoupeHandlers();
         updateSplitCurtainView();
         renderImageMetricComparison();
         renderImageEconomicsModeler();
@@ -6492,9 +6483,9 @@ function applyImageResultToCard(r) {
       leftWrap.appendChild(chip);
     }
 
-    const enlargeBtn = el('button', 'bar-btn img-thought-toggle', '🔍 Enlarge');
+    const enlargeBtn = el('button', 'bar-btn img-thought-toggle', '🔍 Full Size');
     enlargeBtn.type = 'button';
-    enlargeBtn.title = 'Open full-screen lightbox comparison';
+    enlargeBtn.title = `Click to view full-size output (${dimsStr})`;
     enlargeBtn.addEventListener('click', () => openGeneratedOutputLightboxAt(r.slot));
     rightWrap.appendChild(enlargeBtn);
 
@@ -6511,7 +6502,9 @@ function applyImageResultToCard(r) {
     stage.innerHTML = '';
     stage.dataset.hasImage = '1';
     stage.dataset.dimsLabel = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
-    stage.ondblclick = () => openGeneratedOutputLightboxAt(r.slot);
+    stage.onclick = () => openGeneratedOutputLightboxAt(r.slot);
+    stage.style.cursor = 'zoom-in';
+    stage.title = `Click to view full-size output (${dimsStr})`;
     const img = el('img', 'img-main-output');
     img.style.cssText = 'max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block;margin:auto';
     img.src = r.imageDataUrl;
@@ -6844,6 +6837,9 @@ function initImageArenaBindings() {
   const lbPrev = $('#imgLightboxPrevBtn');
   const lbNext = $('#imgLightboxNextBtn');
   const lbPixel = $('#imgLightboxPixelModeBtn');
+  const lbActual = $('#imgLightboxActualSizeBtn');
+  const lbOpenTab = $('#imgLightboxOpenTabBtn');
+  const lbImg = $('#imgLightboxImg');
   if (lbClose) lbClose.addEventListener('click', closeImageLightbox);
   if (lbPrev) lbPrev.addEventListener('click', () => stepImageLightbox(-1));
   if (lbNext) lbNext.addEventListener('click', () => stepImageLightbox(1));
@@ -6851,6 +6847,21 @@ function initImageArenaBindings() {
     lbPixel.addEventListener('click', () => {
       IMG_LIGHTBOX_PIXELATED = !IMG_LIGHTBOX_PIXELATED;
       renderImageLightboxCurrent();
+    });
+  }
+  if (lbActual) {
+    lbActual.addEventListener('click', () => {
+      IMG_LIGHTBOX_ACTUAL_SIZE = !IMG_LIGHTBOX_ACTUAL_SIZE;
+      applyLightboxSizing();
+    });
+  }
+  if (lbOpenTab) {
+    lbOpenTab.addEventListener('click', openCurrentLightboxImageInNewTab);
+  }
+  if (lbImg) {
+    lbImg.addEventListener('click', () => {
+      IMG_LIGHTBOX_ACTUAL_SIZE = !IMG_LIGHTBOX_ACTUAL_SIZE;
+      applyLightboxSizing();
     });
   }
   if (lbModal) {
@@ -6957,16 +6968,6 @@ function initImageArenaBindings() {
       e.preventDefault();
       dropzone.classList.remove('drag-over');
       if (e.dataTransfer && e.dataTransfer.files) addImageReferenceFiles(e.dataTransfer.files);
-    });
-  }
-
-  const loupeBtn = $('#imgSyncLoupeBtn');
-  if (loupeBtn) {
-    loupeBtn.addEventListener('click', () => {
-      IMG_SYNC_LOUPE_ON = !IMG_SYNC_LOUPE_ON;
-      loupeBtn.classList.toggle('is-on', IMG_SYNC_LOUPE_ON);
-      loupeBtn.setAttribute('aria-pressed', String(IMG_SYNC_LOUPE_ON));
-      if (!IMG_SYNC_LOUPE_ON) updateAllLoupeLenses(0.5, 0.5, false);
     });
   }
 
