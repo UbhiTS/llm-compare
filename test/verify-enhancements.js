@@ -239,7 +239,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   );
 
   const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
-  assert(indexHtml.includes('id="imgScorecard"'), 'index.html must include #imgScorecard Model comparison section');
+  assert(indexHtml.includes('id="imgScorecard" class="scorecard glass img-scorecard-section hidden"'), 'index.html must start #imgScorecard hidden until a live run or restore');
+  assert(indexHtml.includes('id="imgEconomicsSection" class="scorecard glass img-economics-section hidden"'), 'index.html must start #imgEconomicsSection hidden until a live run or restore');
   assert(indexHtml.includes('id="imgMetricGrid"'), 'index.html must include #imgMetricGrid for bar/scale charts');
   assert(indexHtml.includes('id="imgMetricViewToggle"'), 'index.html must include #imgMetricViewToggle for Bars vs Scale');
   assert(indexHtml.includes('id="imgLightboxModal"'), 'index.html must include #imgLightboxModal for click-to-enlarge input/output inspection');
@@ -263,6 +264,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert(appJs.includes('function hasOffPeakModelSelected()'), 'app.js must define hasOffPeakModelSelected() for dynamic Off-Peak gating');
+  assert(appJs.includes('function hasLiveImageResults()'), 'app.js must define hasLiveImageResults() to gate #imgScorecard and #imgEconomicsSection on live or restored runs');
   assert(appJs.includes('function openImageLightbox('), 'app.js must define openImageLightbox() for reference and generated output inspection');
   assert(!appJs.includes('getImgModelCompatibility'), 'app.js must not keep the retired model compatibility gating');
   assert(!appJs.includes('renderImageHistoryStrip'), 'app.js must not render the Recent Image Runs strip');

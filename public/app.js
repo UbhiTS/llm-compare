@@ -5304,6 +5304,10 @@ function hasOffPeakModelSelected() {
   });
 }
 
+function hasLiveImageResults() {
+  return Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);
+}
+
 // ---------- Full-Screen Image Lightbox Modal (Input References & Generated Outputs) ----------
 let IMG_LIGHTBOX_ITEMS = [];
 let IMG_LIGHTBOX_IDX = 0;
@@ -5499,8 +5503,10 @@ function renderImageSlotsConfigurator() {
       rm.addEventListener('click', () => {
         IMG_SLOTS.splice(idx, 1);
         IMG_SLOTS.forEach((s, i) => { s.slot = String.fromCharCode(65 + i); });
+        IMG_LAST_RESULTS = [];
         renderImageSlotsConfigurator();
         renderImageArenaPlaceholderCards();
+        updateSplitCurtainView();
         renderImageMetricComparison();
         renderImageEconomicsModeler();
       });
@@ -5518,8 +5524,10 @@ function renderImageSlotsConfigurator() {
     });
     sel.addEventListener('change', () => {
       slotObj.catalogId = sel.value;
+      IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      updateSplitCurtainView();
       renderImageMetricComparison();
       renderImageEconomicsModeler();
     });
@@ -5609,10 +5617,12 @@ function applyImageScenario(pack, sc) {
 
   IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
   IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+  IMG_LAST_RESULTS = [];
   renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
-  if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+  renderImageArenaPlaceholderCards();
+  updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
 }
@@ -5727,17 +5737,12 @@ function renderImageArenaPlaceholderCards() {
     col.id = `img-col-${slotObj.slot}`;
     col.style.setProperty('--accent', color);
 
-    const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
-    const hasOffPeak = entry.pricing && entry.pricing.offPeakDiscount > 0;
-    const offPeakPrice = hasOffPeak ? refPrice * (1 - entry.pricing.offPeakDiscount) : null;
-    const estMp = { '1K': '1.05 MP', '2K': '4.19 MP', '4K': '16.78 MP' }[IMG_SELECTED_SIZE] || '4.19 MP';
-    const estTok = { '1K': '1,120 tok', '2K': '1,680 tok', '4K': entry.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok';
     const modeLabel = entry.id === 'gemini-nano-banana-2.1'
       ? '🧠 Visual Thinking + Final Render'
       : '⚡ Direct Single-Pass Render';
 
     const offPeakTileHtml = showOffPeak
-      ? `<div class="metric span-3" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">${offPeakPrice != null ? '~' + fmtCost(offPeakPrice) + ' (-50%)' : 'Standard / PTU'}</div></div>`
+      ? `<div class="metric span-3" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">—</div></div>`
       : '';
 
     col.innerHTML = `
@@ -5774,10 +5779,10 @@ function renderImageArenaPlaceholderCards() {
         </div>
       </div>
       <div class="metrics">
-        <div class="metric ${topSpanCls}" id="img-mcard-res-${slotObj.slot}"><div class="k">Resolution &amp; MP</div><div class="v" id="img-tile-res-${slotObj.slot}">${esc(IMG_SELECTED_SIZE)} · ~${esc(estMp)}</div></div>
+        <div class="metric ${topSpanCls}" id="img-mcard-res-${slotObj.slot}"><div class="k">Resolution &amp; MP</div><div class="v" id="img-tile-res-${slotObj.slot}">—</div></div>
         <div class="metric ${topSpanCls}" id="img-mcard-time-${slotObj.slot}"><div class="k">Wall Time</div><div class="v" id="img-tile-time-${slotObj.slot}">—</div></div>
-        <div class="metric ${topSpanCls}" id="img-mcard-tok-${slotObj.slot}"><div class="k">Image / Think Tok</div><div class="v" id="img-tile-tok-${slotObj.slot}">~${esc(estTok)}</div></div>
-        <div class="metric span-3" id="img-mcard-cost-${slotObj.slot}"><div class="k">Standard PayGo</div><div class="v" id="img-tile-cost-${slotObj.slot}">~${fmtCost(refPrice)}</div></div>
+        <div class="metric ${topSpanCls}" id="img-mcard-tok-${slotObj.slot}"><div class="k">Image / Think Tok</div><div class="v" id="img-tile-tok-${slotObj.slot}">—</div></div>
+        <div class="metric span-3" id="img-mcard-cost-${slotObj.slot}"><div class="k">Standard PayGo</div><div class="v" id="img-tile-cost-${slotObj.slot}">—</div></div>
         ${offPeakTileHtml}
       </div>
       <div class="img-arch-callout" id="img-arch-${slotObj.slot}">
@@ -6283,6 +6288,9 @@ async function runImageArenaComparisonClick() {
 
   IMG_LAST_RESULTS = [];
   renderImageArenaPlaceholderCards();
+  updateSplitCurtainView();
+  renderImageMetricComparison();
+  renderImageEconomicsModeler();
   const t0 = Date.now();
   const activeSlotsSnapshot = IMG_SLOTS.map((s) => ({ ...s }));
   const reqSize = IMG_SELECTED_SIZE;
@@ -6561,7 +6569,12 @@ function highlightImageWinnerTiles(results) {
 
 // ---------- Image Model Comparison Bars & Scale Scorecard (Matches Text Arena) ----------
 function renderImageMetricComparison() {
-  if (!IMG_CONFIG) return;
+  const scSec = $('#imgScorecard');
+  if (!IMG_CONFIG || !hasLiveImageResults()) {
+    if (scSec) scSec.classList.add('hidden');
+    return;
+  }
+  if (scSec) scSec.classList.remove('hidden');
   const legendEl = $('#imgModelLegend');
   const gridEl = $('#imgMetricGrid');
   const subEl = $('#imgScorecardSub');
@@ -6574,7 +6587,7 @@ function renderImageMetricComparison() {
     const entry = getImgCatalogItem(s.catalogId);
     if (!entry) return null;
     const live = (IMG_LAST_RESULTS || []).find(
-      (r) => r && r.ok && r.slot === s.slot && r.catalogId === s.catalogId && r.requestedSize === IMG_SELECTED_SIZE
+      (r) => r && r.ok && r.slot === s.slot && r.catalogId === s.catalogId
     );
     const refStd = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
     const stdCost = live ? Number(live.standardPayGoCostUsd || refStd) : refStd;
@@ -6684,7 +6697,12 @@ function renderImageMetricComparison() {
 
 // ---------- Interactive Peak Holiday Volume & Off-Peak PayGo Modeler ----------
 function renderImageEconomicsModeler() {
-  if (!IMG_CONFIG) return;
+  const econSec = $('#imgEconomicsSection');
+  if (!IMG_CONFIG || !hasLiveImageResults()) {
+    if (econSec) econSec.classList.add('hidden');
+    return;
+  }
+  if (econSec) econSec.classList.remove('hidden');
   const volSlider = $('#imgVolumeSlider');
   const offPeakSlider = $('#imgOffPeakSlider');
   const offPeakSliderCard = $('#imgOffPeakSliderCard');
@@ -6859,8 +6877,10 @@ function initImageArenaBindings() {
       if (!nextCat) return;
       const nextSlot = String.fromCharCode(65 + IMG_SLOTS.length);
       IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
+      IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      updateSplitCurtainView();
       renderImageMetricComparison();
       renderImageEconomicsModeler();
     });
@@ -6881,8 +6901,10 @@ function initImageArenaBindings() {
           { slot: 'C', catalogId: 'gemini-3-pro-image' },
         ];
       }
+      IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
+      updateSplitCurtainView();
       renderImageMetricComparison();
       renderImageEconomicsModeler();
     });
