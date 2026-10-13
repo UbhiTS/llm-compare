@@ -243,12 +243,14 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(stylesCss.includes('.img-lightbox-backdrop'), 'styles.css must include .img-lightbox-backdrop modal styling');
   assert(stylesCss.includes('.img-compat-warning'), 'styles.css must include .img-compat-warning styling');
   assert(stylesCss.includes('.video-coming-soon-card'), 'styles.css must include .video-coming-soon-card styling');
+  assert(stylesCss.includes('.ihc-thumb'), 'styles.css must include .ihc-thumb selector so history strip thumbnails never render at full 4K size');
 
   const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert(appJs.includes('function hasOffPeakModelSelected()'), 'app.js must define hasOffPeakModelSelected() for dynamic Off-Peak gating');
   assert(appJs.includes('function openImageLightbox('), 'app.js must define openImageLightbox() for reference and generated output inspection');
   assert(appJs.includes('function getImgModelCompatibility('), 'app.js must define getImgModelCompatibility() for resolution/reference gating');
   assert(appJs.includes('function saveImageArenaRunToHistory('), 'app.js must define saveImageArenaRunToHistory() for IndexedDB Image Run History');
+  assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="34" height="24"'), 'app.js must render history strip thumbnails with explicit 34x24 bounds');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([

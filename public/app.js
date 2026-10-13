@@ -4627,9 +4627,9 @@ function imgHistRowHtml(r) {
   const okResults = (r.results || []).filter((x) => x && x.ok);
   const totalCost = okResults.reduce((s, x) => s + (Number(x.standardPayGoCostUsd) || 0), 0);
   const thumbs = okResults.slice(0, 4).map((x) => {
-    const src = x.imageDataUrl || '';
+    const src = x.thumbDataUrl || x.imageDataUrl || '';
     if (!src) return '';
-    return `<img src="${src}" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;object-fit:cover;border-radius:5px;border:1px solid var(--border)" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : r.imageSize)})"/>`;
+    return `<img src="${src}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:5px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : r.imageSize)})"/>`;
   }).join('');
   const modelBadges = okResults.map((x) => `<span class="img-res-pill" style="font-size:10.5px">${esc(x.shortLabel || x.label || x.model)}</span>`).join(' ');
   return `<div class="hist-row" data-img-hist-id="${esc(r.id)}">
@@ -5750,6 +5750,9 @@ function renderImageReferenceAttachments() {
     });
 
     const thumb = el('img', 'ca-thumb');
+    thumb.width = 34;
+    thumb.height = 34;
+    thumb.style.cssText = 'width:34px;height:34px;max-width:34px;max-height:34px;object-fit:cover;flex-shrink:0;display:block';
     const cleanB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
     thumb.src = `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
     thumb.alt = att.label || att.name || `Reference ${idx + 1}`;
@@ -6090,10 +6093,51 @@ async function listImageArenaRunsFromHistory() {
   });
 }
 
+function createTinyHistoryThumbnailDataUrl(srcDataUrl, targetW = 68, targetH = 48) {
+  return new Promise((resolve) => {
+    if (!srcDataUrl || typeof document === 'undefined') {
+      resolve('');
+      return;
+    }
+    try {
+      const im = new Image();
+      im.onload = () => {
+        try {
+          const cv = document.createElement('canvas');
+          cv.width = targetW;
+          cv.height = targetH;
+          const ctx = cv.getContext('2d');
+          const scale = Math.max(targetW / (im.naturalWidth || targetW), targetH / (im.naturalHeight || targetH));
+          const dw = (im.naturalWidth || targetW) * scale;
+          const dh = (im.naturalHeight || targetH) * scale;
+          const dx = (targetW - dw) / 2;
+          const dy = (targetH - dh) / 2;
+          ctx.drawImage(im, dx, dy, dw, dh);
+          resolve(cv.toDataURL('image/jpeg', 0.78));
+        } catch (_) {
+          resolve('');
+        }
+      };
+      im.onerror = () => resolve('');
+      im.src = srcDataUrl;
+    } catch (_) {
+      resolve('');
+    }
+  });
+}
+
 async function saveImageArenaRunToHistory(runRecord) {
   const db = await openImageHistoryDb();
   if (!db || !runRecord || !runRecord.id) return;
   try {
+    if (Array.isArray(runRecord.results)) {
+      await Promise.all(runRecord.results.map(async (r) => {
+        if (r && r.ok && r.imageDataUrl && !r.thumbDataUrl) {
+          const tiny = await createTinyHistoryThumbnailDataUrl(r.imageDataUrl, 68, 48);
+          if (tiny) r.thumbDataUrl = tiny;
+        }
+      }));
+    }
     const existing = await listImageArenaRunsFromHistory();
     const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
     const store = tx.objectStore(IMG_HIST_STORE);
@@ -6158,22 +6202,23 @@ async function renderImageHistoryStrip() {
   const recent = runs.slice(0, 6);
   const chipsHtml = recent.map((r) => {
     const okResults = (r.results || []).filter((x) => x && x.ok);
-    const firstThumb = (okResults[0] && okResults[0].imageDataUrl) || '';
+    const firstOk = okResults[0] || {};
+    const firstThumb = firstOk.thumbDataUrl || firstOk.imageDataUrl || '';
     const thumbHtml = firstThumb
-      ? `<img src="${firstThumb}" class="ihc-thumb" alt=""/>`
+      ? `<img src="${firstThumb}" class="img-hist-thumb ihc-thumb" width="34" height="24" style="width:34px;height:24px;max-width:34px;max-height:24px;object-fit:cover;border-radius:4px;flex-shrink:0;display:block" alt=""/>`
       : '';
     const shortTitle = (r.scenarioTitle || r.prompt || 'Image Run').slice(0, 34);
     return `<button type="button" class="img-hist-chip" data-img-run-id="${esc(r.id)}" title="Restore ${esc(r.scenarioTitle || r.prompt)} (${esc(r.imageSize)} · ${esc(r.aspectRatio)})">
       ${thumbHtml}
-      <span>${esc(shortTitle)}</span>
-      <span class="ihc-meta">${esc(r.imageSize || '2K')} · ${okResults.length}m</span>
+      <span class="img-hist-title ihc-title">${esc(shortTitle)}</span>
+      <span class="img-hist-sub ihc-meta">${esc(r.imageSize || '2K')} · ${okResults.length}m</span>
     </button>`;
   }).join('');
 
   strip.innerHTML = `
-    <span class="ihs-label">🗂 Recent Image Runs:</span>
-    <div class="ihs-chips">${chipsHtml}</div>
-    <button type="button" class="bar-btn" id="imgHistViewAllBtn" style="margin-left:auto;font-size:11px">View all (${runs.length}) ▸</button>
+    <span class="img-hist-label ihs-label">🗂 Recent Image Runs:</span>
+    <div class="img-hist-thumbs ihs-chips">${chipsHtml}</div>
+    <button type="button" class="bar-btn" id="imgHistViewAllBtn" style="margin-left:auto;font-size:11px;flex-shrink:0">View all (${runs.length}) ▸</button>
   `;
 
   strip.querySelectorAll('.img-hist-chip').forEach((chip) => {
@@ -6479,6 +6524,7 @@ function applyImageResultToCard(r) {
     stage.dataset.dimsLabel = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
     stage.ondblclick = () => openGeneratedOutputLightboxAt(r.slot);
     const img = el('img', 'img-main-output');
+    img.style.cssText = 'max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block;margin:auto';
     img.src = r.imageDataUrl;
     img.alt = `${r.label} generated output (${dimsStr})`;
     stage.appendChild(img);
