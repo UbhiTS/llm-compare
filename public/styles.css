@@ -2885,20 +2885,34 @@ a.ud-item[hidden] { display: none; }
   color: var(--muted);
 }
 
+/* The stage takes the shape of the image being compared (--curtain-ar is set from the
+   output's pixel size in app.js), so there are no letterbox bars. Width is capped so the
+   height never exceeds --curtain-max-h; aspect-ratio + a max-height would otherwise
+   stretch the box out of shape. */
 .img-curtain-stage {
+  --curtain-pos: 50%;
+  --curtain-ar: 16 / 9;
+  --curtain-ar-num: 1.77778;
+  --curtain-max-h: min(620px, 72vh);
   position: relative;
-  width: 100%;
-  max-width: 1120px;
+  width: min(100%, calc(var(--curtain-max-h) * var(--curtain-ar-num)));
+  aspect-ratio: var(--curtain-ar);
   margin: 0 auto;
-  aspect-ratio: 16 / 9;
-  max-height: 580px;
   background: var(--well-2);
   border: 1px solid var(--border-hi);
   overflow: hidden;
   user-select: none;
+  touch-action: none;
   cursor: ew-resize;
 }
 
+.img-curtain-stage:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Both layers fill the identical stage box, so the same region of each image sits on
+   either side of the divider. */
 .img-curtain-img {
   position: absolute;
   inset: 0;
@@ -2906,24 +2920,45 @@ a.ud-item[hidden] { display: none; }
   height: 100%;
   object-fit: contain;
   pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
+/* Each layer is revealed only on its own side of the divider with clip-path, never by
+   resizing a box: a narrower box shrank and re-centred the contain-fit left image, and
+   the right image showed through above and below it. Clipping both layers (instead of
+   painting an opaque backdrop under the left one) also keeps the right layer out of the
+   left layer's letterbox bars when the two images have different shapes. */
 .img-curtain-left-clip {
   position: absolute;
-  inset: 0 auto 0 0;
-  height: 100%;
-  overflow: hidden;
-  border-right: 2px solid var(--accent);
+  inset: 0;
+  z-index: 1;
+  clip-path: inset(0 calc(100% - var(--curtain-pos)) 0 0);
+}
+
+.img-curtain-img.img-curtain-right {
+  clip-path: inset(0 0 0 var(--curtain-pos));
 }
 
 .img-curtain-divider {
   position: absolute;
   top: 0;
   bottom: 0;
+  left: var(--curtain-pos);
+  z-index: 2;
   width: 2px;
   background: var(--accent);
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.img-curtain-note {
+  max-width: 880px;
+  margin: 10px auto 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
 }
 
 .img-curtain-handle {
@@ -2943,6 +2978,7 @@ a.ud-item[hidden] { display: none; }
 
 .img-curtain-tag {
   position: absolute;
+  z-index: 3;
   top: 12px;
   padding: 5px 10px;
   background: rgba(6, 9, 15, 0.84);

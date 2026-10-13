@@ -5188,6 +5188,8 @@ let IMG_CURRENT_SCENARIO_REFS = [];
 let IMG_LAST_RESULTS = [];
 let IMG_SYNC_LOUPE_ON = true;
 let IMG_SPLIT_CURTAIN_ON = false;
+let IMG_CURTAIN_POS = 50;      // divider position, % of stage width
+let IMG_CURTAIN_PICKS = null;  // { left, right } layer ids the user chose explicitly
 let IMG_RUNNING = false;
 let IMG_TIMER_ID = null;
 
@@ -5953,10 +5955,72 @@ function updateAllLoupeLenses(nx, ny, visible) {
 }
 
 // ---------- Interactive Split-Curtain Comparison ----------
+// Both layers fill the same stage box and the left layer is revealed with clip-path
+// (driven by --curtain-pos). The old version resized a wrapper around the left image,
+// so the contain-fit image shrank and re-centred inside the narrower box and the right
+// image showed through above and below it. The stage also takes the output's aspect
+// ratio so neither layer gets letterbox bars.
+function setCurtainPosition(pct) {
+  const n = Number(pct);
+  IMG_CURTAIN_POS = Math.max(0, Math.min(100, Number.isFinite(n) ? n : 50));
+  const stage = $('#imgCurtainStage');
+  if (!stage) return;
+  stage.style.setProperty('--curtain-pos', `${IMG_CURTAIN_POS}%`);
+  stage.setAttribute('aria-valuenow', String(Math.round(IMG_CURTAIN_POS)));
+}
+
+function curtainDimsFromLayer(layer) {
+  const w = Number(layer && layer.width);
+  const h = Number(layer && layer.height);
+  return w > 0 && h > 0 ? { w, h } : null;
+}
+
+function curtainDimsFromImg(img) {
+  return img && img.naturalWidth > 0 && img.naturalHeight > 0 ? { w: img.naturalWidth, h: img.naturalHeight } : null;
+}
+
+// Frame the stage on a generated output when one is showing: the input reference often
+// has a different shape (e.g. a 160x120 thumbnail) than the requested output.
+function syncCurtainStageGeometry(L, R, dims) {
+  const stage = $('#imgCurtainStage');
+  if (!stage) return;
+  const ld = dims.left;
+  const rd = dims.right;
+  const frame = (R && R.kind === 'slot' && rd) ? rd
+    : (L && L.kind === 'slot' && ld) ? ld
+    : (rd || ld);
+  if (frame) {
+    stage.style.setProperty('--curtain-ar', `${frame.w} / ${frame.h}`);
+    stage.style.setProperty('--curtain-ar-num', (frame.w / frame.h).toFixed(5));
+  }
+  const note = $('#imgCurtainNote');
+  if (!note) return;
+  const mismatch = ld && rd && Math.abs((ld.w / ld.h) / (rd.w / rd.h) - 1) > 0.03;
+  if (mismatch) {
+    note.textContent = `The two layers have different shapes (${ld.w}×${ld.h} vs ${rd.w}×${rd.h}), so the narrower one is letterboxed inside the same frame and edges won't line up pixel-for-pixel.`;
+    note.classList.remove('hidden');
+  } else {
+    note.textContent = '';
+    note.classList.add('hidden');
+  }
+}
+
+// Point an <img> at a layer, skipping the reassignment when it already shows that exact
+// data URL (4K PNG data URLs are ~20-30 MB). Returns true when the image is already decoded.
+function assignCurtainLayer(img, layer, onLoad) {
+  img.onload = onLoad;
+  if (img.__curtainUrl === layer.url) return img.complete && img.naturalWidth > 0;
+  img.__curtainUrl = layer.url;
+  img.src = layer.url;
+  return false;
+}
+
 function updateSplitCurtainView() {
   const sec = $('#imgCurtainSection');
   if (!sec) return;
-  const okResults = (IMG_LAST_RESULTS || []).filter((r) => r && r.ok && r.imageDataUrl);
+  const okResults = (IMG_LAST_RESULTS || [])
+    .filter((r) => r && r.ok && r.imageDataUrl)
+    .sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
   if (!IMG_SPLIT_CURTAIN_ON || okResults.length === 0) {
     sec.classList.add('hidden');
     return;
@@ -5973,34 +6037,51 @@ function updateSplitCurtainView() {
     const cleanB64 = String(ref0.data || '').replace(/^data:[^;]+;base64,/, '');
     layers.push({
       id: 'ref-0',
+      kind: 'ref',
       label: `Input Reference: ${ref0.label || ref0.name || 'Original Photo'}`,
       tag: 'Before · Input Reference Photo',
       url: `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`,
     });
   }
   okResults.forEach((r) => {
+    const dimsStr = `${r.width || '?'}×${r.height || '?'}`;
     layers.push({
       id: `slot-${r.slot}`,
-      label: `Slot ${r.slot}: ${r.shortLabel || r.label} (${r.width || '?'}×${r.height || '?'})`,
-      tag: `Slot ${r.slot} · ${r.shortLabel || r.label} (${r.width || '?'}×${r.height || '?'})`,
+      kind: 'slot',
+      width: r.width,
+      height: r.height,
+      label: `Slot ${r.slot}: ${r.shortLabel || r.label} (${dimsStr})`,
+      tag: `Slot ${r.slot} · ${r.shortLabel || r.label} (${dimsStr})`,
       url: r.imageDataUrl,
     });
   });
 
-  const prevLeft = leftSel.value;
-  const prevRight = rightSel.value;
+  // Defaults: Input Reference vs Slot A for edit scenarios, otherwise Slot A vs Slot B.
+  // Recomputed on every call (slots stream in out of order), but a layer the user picked
+  // explicitly sticks for as long as it exists.
+  const has = (id) => layers.some((l) => l.id === id);
+  const slotLayers = layers.filter((l) => l.kind === 'slot');
+  const refLayer = layers.find((l) => l.kind === 'ref');
+  let leftId = refLayer ? refLayer.id : slotLayers[0].id;
+  let rightId = refLayer ? slotLayers[0].id : (slotLayers[1] || slotLayers[0]).id;
+  const pickedLeft = !!(IMG_CURTAIN_PICKS && IMG_CURTAIN_PICKS.left && has(IMG_CURTAIN_PICKS.left));
+  const pickedRight = !!(IMG_CURTAIN_PICKS && IMG_CURTAIN_PICKS.right && has(IMG_CURTAIN_PICKS.right));
+  if (pickedLeft) leftId = IMG_CURTAIN_PICKS.left;
+  if (pickedRight) rightId = IMG_CURTAIN_PICKS.right;
+  // Never show the same layer on both sides unless the user chose that on purpose.
+  if (leftId === rightId && layers.length > 1 && !(pickedLeft && pickedRight)) {
+    if (pickedRight && !pickedLeft) leftId = layers.find((l) => l.id !== rightId).id;
+    else rightId = layers.find((l) => l.id !== leftId).id;
+  }
+
   leftSel.innerHTML = '';
   rightSel.innerHTML = '';
   layers.forEach((l) => {
     const o1 = el('option'); o1.value = l.id; o1.textContent = l.label; leftSel.appendChild(o1);
     const o2 = el('option'); o2.value = l.id; o2.textContent = l.label; rightSel.appendChild(o2);
   });
-
-  if (layers.some((l) => l.id === prevLeft)) leftSel.value = prevLeft;
-  else leftSel.value = layers[0].id;
-
-  if (layers.some((l) => l.id === prevRight) && prevRight !== leftSel.value) rightSel.value = prevRight;
-  else rightSel.value = (layers[1] || layers[0]).id;
+  leftSel.value = leftId;
+  rightSel.value = rightId;
 
   const applyLayers = () => {
     const L = layers.find((l) => l.id === leftSel.value) || layers[0];
@@ -6009,40 +6090,71 @@ function updateSplitCurtainView() {
     const rightImg = $('#imgCurtainRightImg');
     const leftTag = $('#imgCurtainLeftTag');
     const rightTag = $('#imgCurtainRightTag');
-    if (leftImg && L) leftImg.src = L.url;
-    if (rightImg && R) rightImg.src = R.url;
-    if (leftTag && L) leftTag.textContent = L.tag;
-    if (rightTag && R) rightTag.textContent = R.tag;
+    if (!leftImg || !rightImg || !L || !R) return;
+    const dims = { left: curtainDimsFromLayer(L), right: curtainDimsFromLayer(R) };
+    const leftReady = assignCurtainLayer(leftImg, L, () => {
+      dims.left = curtainDimsFromImg(leftImg) || dims.left;
+      syncCurtainStageGeometry(L, R, dims);
+    });
+    const rightReady = assignCurtainLayer(rightImg, R, () => {
+      dims.right = curtainDimsFromImg(rightImg) || dims.right;
+      syncCurtainStageGeometry(L, R, dims);
+    });
+    if (leftReady) dims.left = curtainDimsFromImg(leftImg) || dims.left;
+    if (rightReady) dims.right = curtainDimsFromImg(rightImg) || dims.right;
+    if (leftTag) leftTag.textContent = L.tag;
+    if (rightTag) rightTag.textContent = R.tag;
+    syncCurtainStageGeometry(L, R, dims);
   };
-  leftSel.onchange = applyLayers;
-  rightSel.onchange = applyLayers;
+  leftSel.onchange = () => {
+    IMG_CURTAIN_PICKS = { ...(IMG_CURTAIN_PICKS || {}), left: leftSel.value };
+    applyLayers();
+  };
+  rightSel.onchange = () => {
+    IMG_CURTAIN_PICKS = { ...(IMG_CURTAIN_PICKS || {}), right: rightSel.value };
+    applyLayers();
+  };
   applyLayers();
+  setCurtainPosition(IMG_CURTAIN_POS);
 }
 
 function initCurtainDrag() {
   const stage = $('#imgCurtainStage');
-  const clip = $('#imgCurtainLeftClip');
-  const div = $('#imgCurtainDivider');
-  if (!stage || !clip || !div) return;
+  if (!stage) return;
   let dragging = false;
   const move = (clientX) => {
     const rect = stage.getBoundingClientRect();
     if (rect.width <= 0) return;
-    const pct = Math.max(2, Math.min(98, ((clientX - rect.left) / rect.width) * 100));
-    clip.style.width = `${pct}%`;
-    div.style.left = `${pct}%`;
+    setCurtainPosition(((clientX - rect.left) / rect.width) * 100);
   };
   stage.addEventListener('pointerdown', (e) => {
+    if (e.button != null && e.button !== 0) return;
     dragging = true;
     try { stage.setPointerCapture(e.pointerId); } catch (_) {}
+    try { stage.focus({ preventScroll: true }); } catch (_) {}
     move(e.clientX);
+    e.preventDefault();
   });
   stage.addEventListener('pointermove', (e) => {
     if (!dragging) return;
     move(e.clientX);
   });
-  stage.addEventListener('pointerup', () => { dragging = false; });
-  stage.addEventListener('pointercancel', () => { dragging = false; });
+  const stop = () => { dragging = false; };
+  stage.addEventListener('pointerup', stop);
+  stage.addEventListener('pointercancel', stop);
+  stage.addEventListener('lostpointercapture', stop);
+  stage.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 10 : 2;
+    let next = null;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = IMG_CURTAIN_POS - step;
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = IMG_CURTAIN_POS + step;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = 100;
+    if (next == null) return;
+    e.preventDefault();
+    setCurtainPosition(next);
+  });
+  setCurtainPosition(IMG_CURTAIN_POS);
 }
 
 // ---------- Image & GenMedia Run History (Browser IndexedDB) ----------

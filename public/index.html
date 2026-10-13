@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.13"></script>
+  <script src="theme-init.js?v=1.0.14"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.13" />
+  <link rel="stylesheet" href="styles.css?v=1.0.14" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.13" defer></script>
+  <script src="app.js?v=1.0.14" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -336,7 +336,7 @@
       <div class="img-curtain-head">
         <div>
           <h3 id="imgCurtainTitle">⇔ Interactive Split-Curtain Comparison</h3>
-          <p class="sc-sub" id="imgCurtainSub">Drag the divider horizontally to compare typography sharpness, Smart Erase reconstruction, and 4K detail pixel-for-pixel.</p>
+          <p class="sc-sub" id="imgCurtainSub">Drag the divider (or click it and use ← →) to compare typography sharpness, Smart Erase reconstruction, and 4K detail. Both layers render in the same frame, so each side shows the same region.</p>
         </div>
         <div class="img-curtain-controls">
           <label for="imgCurtainLeftSelect">Left Layer:</label>
@@ -345,17 +345,19 @@
           <select id="imgCurtainRightSelect"></select>
         </div>
       </div>
-      <div id="imgCurtainStage" class="img-curtain-stage">
-        <img id="imgCurtainRightImg" class="img-curtain-img" alt="Right comparison layer" />
-        <div id="imgCurtainLeftClip" class="img-curtain-left-clip" style="width:50%">
-          <img id="imgCurtainLeftImg" class="img-curtain-img" alt="Left comparison layer" />
+      <!-- Both layers fill the same stage box; the left layer is revealed with clip-path driven by --curtain-pos. -->
+      <div id="imgCurtainStage" class="img-curtain-stage" role="slider" tabindex="0" aria-label="Split curtain divider position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+        <img id="imgCurtainRightImg" class="img-curtain-img img-curtain-right" alt="Right comparison layer" draggable="false" />
+        <div id="imgCurtainLeftClip" class="img-curtain-left-clip">
+          <img id="imgCurtainLeftImg" class="img-curtain-img" alt="Left comparison layer" draggable="false" />
         </div>
-        <div id="imgCurtainDivider" class="img-curtain-divider" style="left:50%">
+        <div id="imgCurtainDivider" class="img-curtain-divider" aria-hidden="true">
           <div class="img-curtain-handle">⇔</div>
         </div>
         <span id="imgCurtainLeftTag" class="img-curtain-tag left">Slot A</span>
         <span id="imgCurtainRightTag" class="img-curtain-tag right">Slot B</span>
       </div>
+      <p id="imgCurtainNote" class="img-curtain-note hidden" role="note"></p>
     </section>
 
     <!-- SIDE-BY-SIDE IMAGE ARENA CARDS -->
@@ -491,6 +493,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.13</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.14</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>
