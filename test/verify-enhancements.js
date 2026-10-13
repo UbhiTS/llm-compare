@@ -326,8 +326,14 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.23', 'package.json must be at version 1.0.23');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.23</span>'), 'index.html must display v1.0.23 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.24', 'package.json must be at version 1.0.24');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.24</span>'), 'index.html must display v1.0.24 in footer');
+  assert(!indexHtml.includes('GA Oct 6') && !indexHtml.includes('GA SLA'), 'index.html must not contain GA Oct 6 or GA SLA language');
+  assert(indexHtml.includes('<th>SLA &amp; Endpoint</th>'), 'index.html must display SLA & Endpoint header without GA');
+  assert.strictEqual(nb21Entry.label, 'Gemini Nano Banana 2.1', 'Nano Banana 2.1 label must not include (GA Oct 6, 2026)');
+  for (const m of IMAGE_MODEL_CATALOG) {
+    assert(!/GA Oct 6|GA SLA|GA ·/.test(`${m.label} ${m.releaseBadge} ${m.slaBadge} ${m.architectureGuidance}`), `Model ${m.id} must not contain GA Oct 6, GA SLA, or GA · language`);
+  }
   assert(
     appJs.includes('return !IMG_RUNNING && Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);'),
     'hasLiveImageResults() must require !IMG_RUNNING so scorecards only appear after all slots complete'
@@ -368,7 +374,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   );
   const curtainNoteMatch = stylesCss.match(/\.img-curtain-note\s*\{([^}]+)\}/);
   assert(curtainNoteMatch && curtainNoteMatch[1].includes('text-align: center') && curtainNoteMatch[1].includes('margin: 10px auto 0'), '.img-curtain-note must be center-aligned');
-  console.log('✓ Image & GenMedia Arena (v1.0.23) progressive card rendering + all_done scorecard/economics gating, center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.24) GA language removed, progressive card rendering + all_done scorecard/economics gating, center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

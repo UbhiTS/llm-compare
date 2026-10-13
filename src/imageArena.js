@@ -3,9 +3,9 @@
 //
 // Compares Vertex AI native multimodal image generation & conversational editing
 // models side-by-side:
-//   • Gemini Nano Banana 2.1 (`gemini-nano-banana-2.1` — GA Oct 6, 2026)
-//   • Gemini Nano Banana 2   (`gemini-3.1-flash-image` — GA High-Throughput)
-//   • Gemini Nano Banana Pro (`gemini-3-pro-image`     — GA Complex Reasoning)
+//   • Gemini Nano Banana 2.1 (`gemini-nano-banana-2.1`)
+//   • Gemini Nano Banana 2   (`gemini-3.1-flash-image`)
+//   • Gemini Nano Banana Pro (`gemini-3-pro-image`)
 //
 // Grounded in live Vertex AI endpoint behavior & official pricing:
 //   https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing#nano-banana
@@ -42,8 +42,8 @@ const IMAGE_MODEL_CATALOG = [
     model: 'gemini-3.1-flash-image',
     family: 'Nano Banana 2',
     releaseDate: '2026-02-26',
-    releaseBadge: 'GA · High-Throughput Regional + Global',
-    slaBadge: '99.5% Long-Term GA SLA',
+    releaseBadge: 'High-Throughput Regional + Global',
+    slaBadge: '99.5% Long-Term SLA',
     slaPct: 99.5,
     endpointBadge: 'US/EU Multi-Region + Global',
     maxReferenceImages: 14,
@@ -56,17 +56,17 @@ const IMAGE_MODEL_CATALOG = [
       referenceCostBySize: { '1K': 0.0672, '2K': 0.1008, '4K': 0.1512 },
     },
     purchasingTiers: ['Standard PayGo', 'Provisioned Throughput (PTU)', 'Batch Prediction'],
-    architectureGuidance: 'Primary synchronous checkout & regional (US/EU) workload engine backed by the 99.5% Long-Term GA SLA.',
+    architectureGuidance: 'Primary synchronous checkout & regional (US/EU) workload engine backed by the 99.5% Long-Term SLA.',
   },
   {
     id: 'gemini-nano-banana-2.1',
-    label: 'Gemini Nano Banana 2.1 (GA Oct 6, 2026)',
+    label: 'Gemini Nano Banana 2.1',
     shortLabel: 'Nano Banana 2.1',
     model: 'gemini-nano-banana-2.1',
     family: 'Nano Banana 2.1',
     releaseDate: '2026-10-06',
-    releaseBadge: 'GA Oct 6, 2026 · ~50% Lower Cost + 4K + Visual Thinking',
-    slaBadge: '95.0% Short-Term GA SLA',
+    releaseBadge: '~50% Lower Cost · 4K + Visual Thinking',
+    slaBadge: '95.0% Short-Term SLA',
     slaPct: 95.0,
     endpointBadge: 'Global Endpoint (/locations/global)',
     maxReferenceImages: 13,
@@ -88,8 +88,8 @@ const IMAGE_MODEL_CATALOG = [
     model: 'gemini-3-pro-image',
     family: 'Nano Banana Pro',
     releaseDate: '2025-11-20',
-    releaseBadge: 'GA · Deep Visual Reasoning',
-    slaBadge: '99.5% Long-Term GA SLA',
+    releaseBadge: 'Deep Visual Reasoning',
+    slaBadge: '99.5% Long-Term SLA',
     slaPct: 99.5,
     endpointBadge: 'Global + Regional',
     maxReferenceImages: 14,
@@ -633,7 +633,7 @@ const IMAGE_USE_CASE_PACKS = [
         recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
         prompt: 'Generate an ultra-high-resolution 4K (300-DPI print-ready) architectural and botanical photograph of a traditional Kyoto autumn courtyard garden at dawn. Render microscopic surface detail in the wet moss-covered stepping stones, hand-raked gravel ripples, crimson Japanese maple leaves, and warm cedar joinery engineered for a 36×24 inch metallic or canvas wall print.',
-        whyItMatters: 'Compares 1K vs 2K vs 4K native output token fidelity and micro-texture sharpness using the synchronized 3.5× pixel loupe.',
+        whyItMatters: 'Compares 1K vs 2K vs 4K native output token fidelity and micro-texture sharpness using the full-size 1:1 native pixel viewer.',
         sampleAttachments: [],
       },
     ],
