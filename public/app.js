@@ -5359,14 +5359,14 @@ function applyLightboxSizing() {
   if (imgEl) {
     imgEl.classList.toggle('is-actual-size', IMG_LIGHTBOX_ACTUAL_SIZE);
     if (IMG_LIGHTBOX_ACTUAL_SIZE && nw > 0 && nh > 0) {
-      imgEl.style.cssText = `width:${nw}px;height:${nh}px;max-width:none !important;max-height:none !important;object-fit:unset;cursor:zoom-out;margin:auto;display:block`;
-      imgEl.title = 'Click to fit image to screen';
-    } else if (nw > 0 && nw <= 800) {
-      imgEl.style.cssText = 'width:min(680px, 84vw);height:min(560px, 72vh);object-fit:contain;cursor:zoom-in;margin:auto;display:block';
-      imgEl.title = 'Click to view 1:1 native pixel size';
+      imgEl.style.cssText = `width:${nw}px;height:${nh}px;max-width:none !important;max-height:none !important;object-fit:unset;cursor:zoom-out;margin:auto;display:block;flex-shrink:0`;
+      imgEl.title = 'Click to fit image inside preview box';
+    } else if (nw > 0 && nw <= 512 && nh <= 512) {
+      imgEl.style.cssText = 'width:min(100%, 720px);height:min(100%, 640px);max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;margin:auto;display:block';
+      imgEl.title = 'Click to toggle 1:1 native pixel zoom';
     } else {
-      imgEl.style.cssText = 'width:auto;height:auto;max-width:92vw;max-height:calc(92vh - 96px);object-fit:contain;cursor:zoom-in;margin:auto;display:block';
-      imgEl.title = 'Click to view 1:1 Full Size native pixels';
+      imgEl.style.cssText = 'width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;margin:auto;display:block';
+      imgEl.title = 'Click to toggle 1:1 native pixel zoom';
     }
   }
 }
