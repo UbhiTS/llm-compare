@@ -197,9 +197,14 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(imgCfg && imgCfg.ok, 'getImageArenaConfig() should return ok: true');
   assert.deepStrictEqual(
     imgCfg.catalog.map((m) => m.id).sort(),
-    ['gemini-3-pro-image', 'gemini-3.1-flash-image', 'gemini-nano-banana-2.1'],
-    'Image catalog should expose exactly Nano Banana 2, Nano Banana 2.1 and Nano Banana Pro'
+    ['gemini-3-pro-image', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'],
+    'Image catalog should expose Nano Banana 2 Lite, Nano Banana 2, Nano Banana 2.1 and Nano Banana Pro'
   );
+  const liteEntry = imgCfg.catalog.find((m) => m.id === 'gemini-3.1-flash-lite-image');
+  assert(liteEntry, 'gemini-3.1-flash-lite-image must exist in IMAGE_MODEL_CATALOG');
+  assert.deepStrictEqual(liteEntry.supportedSizes, ['1K'], 'gemini-3.1-flash-lite-image must declare supportedSizes: ["1K"]');
+  assert.strictEqual(liteEntry.pricing.inputPerM, 0.25, 'gemini-3.1-flash-lite-image input price must be $0.25/1M');
+  assert.strictEqual(liteEntry.pricing.imageOutputPerM, 30.00, 'gemini-3.1-flash-lite-image image output price must be $30.00/1M');
   assert(imgCfg.defaultSlots.every((s) => imgCfg.catalog.some((m) => m.id === s.catalogId)), 'Default image slots must only use catalog models');
   assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
   const packIds = imgCfg.packs.map((p) => p.id);
@@ -252,7 +257,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(!indexHtml.includes('imgCompatWarning'), 'index.html must not include the retired model compatibility warning banner');
   assert(indexHtml.includes('id="imgHistoryBtn"'), 'index.html must include #imgHistoryBtn in Image Arena toolbar');
   assert(!indexHtml.includes('imgHistoryStrip'), 'index.html must not include the Recent Image Runs strip (History button and modal only)');
-  assert.strictEqual((indexHtml.match(/data-img-preset="/g) || []).length, 2, 'Image Arena must offer exactly 2 lineup presets (2 vs 2.1, and 2 vs 2.1 vs Pro)');
+  assert.strictEqual((indexHtml.match(/data-img-preset="/g) || []).length, 3, 'Image Arena must offer 3 lineup presets (2 vs 2.1, Lite vs 2 vs 2.1, and All 4)');
   assert(indexHtml.includes('id="modeBtnVideo"'), 'index.html must include #modeBtnVideo 3rd top-level Video Generation tab');
   assert(indexHtml.includes('id="videoArenaSection"'), 'index.html must include #videoArenaSection');
   assert(!indexHtml.includes('<span class="am-badge">Nano Banana 2 vs 2.1</span>'), 'Top Image & GenMedia Arena tab button must not include the Nano Banana 2 vs 2.1 badge');
@@ -326,14 +331,31 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.24', 'package.json must be at version 1.0.24');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.24</span>'), 'index.html must display v1.0.24 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.25', 'package.json must be at version 1.0.25');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.25</span>'), 'index.html must display v1.0.25 in footer');
   assert(!indexHtml.includes('GA Oct 6') && !indexHtml.includes('GA SLA'), 'index.html must not contain GA Oct 6 or GA SLA language');
   assert(indexHtml.includes('<th>SLA &amp; Endpoint</th>'), 'index.html must display SLA & Endpoint header without GA');
   assert.strictEqual(nb21Entry.label, 'Gemini Nano Banana 2.1', 'Nano Banana 2.1 label must not include (GA Oct 6, 2026)');
   for (const m of IMAGE_MODEL_CATALOG) {
     assert(!/GA Oct 6|GA SLA|GA ·/.test(`${m.label} ${m.releaseBadge} ${m.slaBadge} ${m.architectureGuidance}`), `Model ${m.id} must not contain GA Oct 6, GA SLA, or GA · language`);
   }
+  assert(
+    imageArenaJs.includes('let effectiveSize = (Array.isArray(entry.supportedSizes) && imageSize && !entry.supportedSizes.includes(imageSize))'),
+    'runSingleImageSlot() must cap effectiveSize to supportedSizes[0] (1K) for 1K-only models like gemini-3.1-flash-lite-image'
+  );
+  assert(
+    stylesCss.includes('aspect-ratio: var(--stage-ar, 16 / 9);') &&
+    stylesCss.includes('.img-stage-wrap.is-curtain-active img.img-main-output') &&
+    stylesCss.includes('.img-card-curtain-clip'),
+    'styles.css must size .img-stage-wrap to full column width via --stage-ar and define in-card split curtain layers'
+  );
+  assert(
+    appJs.includes('function aspectRatioCssValue(') &&
+    appJs.includes('function syncSplitCurtainButtonState(') &&
+    appJs.includes("document.querySelectorAll('#imgArenaGrid .img-stage-wrap').forEach") &&
+    appJs.includes("'Before · Original'"),
+    'app.js must synchronize --curtain-pos across all #imgArenaGrid .img-stage-wrap stages and compare against Before · Original'
+  );
   assert(
     appJs.includes('return !IMG_RUNNING && Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);'),
     'hasLiveImageResults() must require !IMG_RUNNING so scorecards only appear after all slots complete'
@@ -374,7 +396,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   );
   const curtainNoteMatch = stylesCss.match(/\.img-curtain-note\s*\{([^}]+)\}/);
   assert(curtainNoteMatch && curtainNoteMatch[1].includes('text-align: center') && curtainNoteMatch[1].includes('margin: 10px auto 0'), '.img-curtain-note must be center-aligned');
-  console.log('✓ Image & GenMedia Arena (v1.0.24) GA language removed, progressive card rendering + all_done scorecard/economics gating, center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.25) in-card synchronized Split-Curtain vs Original Reference, full-column-width output stages, 4-model Nano Banana catalog (incl. Nano Banana 2 Lite with automatic 1K cap), progressive card rendering + all_done scorecard/economics gating, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

@@ -46,6 +46,7 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '99.5% Long-Term SLA',
     slaPct: 99.5,
     endpointBadge: 'US/EU Multi-Region + Global',
+    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 14,
     contextWindow: 65536,
     pricing: {
@@ -69,6 +70,7 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '95.0% Short-Term SLA',
     slaPct: 95.0,
     endpointBadge: 'Global Endpoint (/locations/global)',
+    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 13,
     contextWindow: 65536,
     pricing: {
@@ -82,6 +84,30 @@ const IMAGE_MODEL_CATALOG = [
     architectureGuidance: 'High-margin engine for 4K (16.9 MP) print upscaling, multilingual card typography, conversational Smart Erase, and 50% Off-Peak PayGo batch catalog jobs.',
   },
   {
+    id: 'gemini-3.1-flash-lite-image',
+    label: 'Gemini Nano Banana 2 Lite (3.1 Flash-Lite Image)',
+    shortLabel: 'Nano Banana 2 Lite',
+    model: 'gemini-3.1-flash-lite-image',
+    family: 'Nano Banana 2 Lite',
+    releaseDate: '2026-07-21',
+    releaseBadge: 'Ultra-Low Latency · 1K Efficiency Specialist',
+    slaBadge: '99.5% Long-Term SLA',
+    slaPct: 99.5,
+    endpointBadge: 'Global + Regional (1K Max)',
+    supportedSizes: ['1K'],
+    maxReferenceImages: 14,
+    contextWindow: 65536,
+    pricing: {
+      inputPerM: 0.25,
+      imageOutputPerM: 30.00,
+      textOutputPerM: 1.50,
+      offPeakDiscount: 0,
+      referenceCostBySize: { '1K': 0.0336, '2K': 0.0336, '4K': 0.0336 },
+    },
+    purchasingTiers: ['Standard PayGo ($0.0336/img)', 'Provisioned Throughput (PTU)', 'Batch Prediction'],
+    architectureGuidance: 'Sub-2s ultra-low-latency 1K specialist ($0.25/1M input, $30/1M image output) for rapid interactive previews, stickers, and high-volume 1K thumbnails.',
+  },
+  {
     id: 'gemini-3-pro-image',
     label: 'Gemini Nano Banana Pro (3 Pro Image)',
     shortLabel: 'Nano Banana Pro',
@@ -92,6 +118,7 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '99.5% Long-Term SLA',
     slaPct: 99.5,
     endpointBadge: 'Global + Regional',
+    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 14,
     contextWindow: 65536,
     pricing: {
@@ -982,9 +1009,13 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   }
   userParts.push({ text: String(prompt || '').trim() || 'Generate a high-resolution studio image.' });
 
-  const buildPayload = (includeSize = true) => {
+  let effectiveSize = (Array.isArray(entry.supportedSizes) && imageSize && !entry.supportedSizes.includes(imageSize))
+    ? entry.supportedSizes[0]
+    : (imageSize || '2K');
+
+  const buildPayload = (sizeOverride = effectiveSize) => {
     const imageConfig = { aspectRatio: aspectRatio || '16:9' };
-    if (includeSize && imageSize) imageConfig.imageSize = imageSize;
+    if (sizeOverride) imageConfig.imageSize = sizeOverride;
     return JSON.stringify({
       contents: [{ role: 'user', parts: userParts }],
       generationConfig: {
@@ -1001,7 +1032,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${encodeURIComponent(entry.model)}:generateContent`;
 
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
-  const payloadStr = buildPayload(true);
+  const payloadStr = buildPayload(effectiveSize);
   const t0 = Date.now();
 
   let usedUrl = buildGlobalProjectUrl(candidateProjects[0] || DEFAULT_IMAGE_PROJECT_NUMBER);
@@ -1044,6 +1075,20 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     }
   }
 
+  // Safety net: if a model rejects 2K/4K with HTTP 400, retry once at 1K.
+  if (r.status === 400 && effectiveSize !== '1K') {
+    const retry1K = await providerFetch(usedUrl, {
+      method: 'POST',
+      headers,
+      body: buildPayload('1K'),
+      signal,
+    });
+    if (retry1K.ok) {
+      r = retry1K;
+      effectiveSize = '1K';
+    }
+  }
+
   const latencyMs = Date.now() - t0;
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -1077,7 +1122,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     thoughtDims = imageDimensionsFromBase64(tB64) || null;
   }
 
-  const econ = computeImageSlotEconomics(entry, j.usageMetadata, imageSize || '2K');
+  const econ = computeImageSlotEconomics(entry, j.usageMetadata, effectiveSize);
 
   return {
     slot,
@@ -1092,7 +1137,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     slaPct: entry.slaPct,
     endpointBadge: entry.endpointBadge,
     architectureGuidance: entry.architectureGuidance,
-    requestedSize: imageSize || '2K',
+    requestedSize: effectiveSize,
     requestedAspectRatio: aspectRatio || '16:9',
     mimeType: finalMime,
     imageDataUrl: `data:${finalMime};base64,${finalB64}`,

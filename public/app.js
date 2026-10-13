@@ -5685,11 +5685,36 @@ function applyImageScenario(pack, sc) {
   renderImageEconomicsModeler();
 }
 
+function aspectRatioCssValue(aspectStr, w, h) {
+  const nw = Number(w);
+  const nh = Number(h);
+  if (nw > 0 && nh > 0) return `${nw} / ${nh}`;
+  const m = String(aspectStr || '16:9').trim().match(/^(\d+)\s*:\s*(\d+)$/);
+  if (m) return `${m[1]} / ${m[2]}`;
+  return '16 / 9';
+}
+
+function syncSplitCurtainButtonState() {
+  const btn = $('#imgSplitCurtainBtn');
+  if (!btn) return;
+  const hasRef = Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS.length > 0;
+  if (!hasRef && IMG_SPLIT_CURTAIN_ON) {
+    IMG_SPLIT_CURTAIN_ON = false;
+  }
+  btn.disabled = !hasRef;
+  btn.classList.toggle('is-on', Boolean(hasRef && IMG_SPLIT_CURTAIN_ON));
+  btn.setAttribute('aria-pressed', String(Boolean(hasRef && IMG_SPLIT_CURTAIN_ON)));
+  btn.title = hasRef
+    ? 'Toggle synchronized in-card Before/After Split Curtain comparing the Original Reference Image against each model output across all columns'
+    : 'Available when an original reference image is attached (Upscaling, Smart Erase, Restoration, Recoloring, Storybook)';
+}
+
 function renderImageReferenceAttachments() {
   const listEl = $('#imgRefList');
   const countBadge = $('#imgRefCountBadge');
   const clearBtn = $('#imgClearRefsBtn');
   const reloadBtn = $('#imgReloadSampleRefsBtn');
+  syncSplitCurtainButtonState();
   if (!listEl) return;
 
   const count = IMG_REF_ATTACHMENTS.length;
@@ -5752,6 +5777,7 @@ function renderImageReferenceAttachments() {
       IMG_REF_ATTACHMENTS.splice(idx, 1);
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
+      updateSplitCurtainView();
     });
     item.appendChild(rm);
     listEl.appendChild(item);
@@ -5774,6 +5800,7 @@ function addImageReferenceFiles(fileList) {
       });
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
+      updateSplitCurtainView();
     };
     reader.readAsDataURL(file);
   }
@@ -5786,6 +5813,7 @@ function renderImageArenaPlaceholderCards() {
   grid.style.setProperty('--img-slot-count', String(Math.max(1, IMG_SLOTS.length)));
   const showOffPeak = hasOffPeakModelSelected();
   const topSpanCls = showOffPeak ? 'span-2' : 'span-3';
+  const stageAr = aspectRatioCssValue(IMG_SELECTED_ASPECT);
 
   IMG_SLOTS.forEach((slotObj) => {
     const entry = getImgCatalogItem(slotObj.catalogId);
@@ -5831,7 +5859,7 @@ function renderImageArenaPlaceholderCards() {
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to download PNG">⬇ Save PNG</button>
         </div>
       </div>
-      <div class="img-stage-wrap" id="img-stage-${slotObj.slot}" data-slot="${esc(slotObj.slot)}">
+      <div class="img-stage-wrap" id="img-stage-${slotObj.slot}" data-slot="${esc(slotObj.slot)}" style="--stage-ar:${esc(stageAr)};--curtain-pos:${IMG_CURTAIN_POS}%">
         <div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:13px">
           Click <strong>Generate &amp; Compare Images ▸</strong> to run <code>${esc(entry.model)}</code> at <strong>${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</strong> on Vertex AI.
         </div>
@@ -5851,206 +5879,151 @@ function renderImageArenaPlaceholderCards() {
   });
 }
 
-// ---------- Interactive Split-Curtain Comparison ----------
-// Both layers fill the same stage box and the left layer is revealed with clip-path
-// (driven by --curtain-pos). The old version resized a wrapper around the left image,
-// so the contain-fit image shrank and re-centred inside the narrower box and the right
-// image showed through above and below it. The stage also takes the output's aspect
-// ratio so neither layer gets letterbox bars.
+// ---------- Interactive Synchronized In-Card Split-Curtain Comparison ----------
+// Overlays the Original Input Reference Image (Before · Original on the left of the
+// divider) directly inside each model card's output box against that model's generated
+// output (After · <Model> on the right of the divider). Dragging or using arrow keys on
+// ANY card moves the dividers across ALL model columns simultaneously in lockstep.
 function setCurtainPosition(pct) {
   const n = Number(pct);
   IMG_CURTAIN_POS = Math.max(0, Math.min(100, Number.isFinite(n) ? n : 50));
+  const posVal = `${IMG_CURTAIN_POS}%`;
+  const nowVal = String(Math.round(IMG_CURTAIN_POS));
+  document.querySelectorAll('#imgArenaGrid .img-stage-wrap').forEach((st) => {
+    st.style.setProperty('--curtain-pos', posVal);
+    if (st.classList.contains('is-curtain-active')) {
+      st.setAttribute('aria-valuenow', nowVal);
+    }
+  });
   const stage = $('#imgCurtainStage');
-  if (!stage) return;
-  stage.style.setProperty('--curtain-pos', `${IMG_CURTAIN_POS}%`);
-  stage.setAttribute('aria-valuenow', String(Math.round(IMG_CURTAIN_POS)));
-}
-
-function curtainDimsFromLayer(layer) {
-  const w = Number(layer && layer.width);
-  const h = Number(layer && layer.height);
-  return w > 0 && h > 0 ? { w, h } : null;
-}
-
-function curtainDimsFromImg(img) {
-  return img && img.naturalWidth > 0 && img.naturalHeight > 0 ? { w: img.naturalWidth, h: img.naturalHeight } : null;
-}
-
-// Frame the stage on a generated output when one is showing: the input reference often
-// has a different shape (e.g. a 160x120 thumbnail) than the requested output.
-function syncCurtainStageGeometry(L, R, dims) {
-  const stage = $('#imgCurtainStage');
-  if (!stage) return;
-  const ld = dims.left;
-  const rd = dims.right;
-  const frame = (R && R.kind === 'slot' && rd) ? rd
-    : (L && L.kind === 'slot' && ld) ? ld
-    : (rd || ld);
-  if (frame) {
-    stage.style.setProperty('--curtain-ar', `${frame.w} / ${frame.h}`);
-    stage.style.setProperty('--curtain-ar-num', (frame.w / frame.h).toFixed(5));
+  if (stage) {
+    stage.style.setProperty('--curtain-pos', posVal);
+    stage.setAttribute('aria-valuenow', nowVal);
   }
-  const note = $('#imgCurtainNote');
-  if (!note) return;
-  const mismatch = ld && rd && Math.abs((ld.w / ld.h) / (rd.w / rd.h) - 1) > 0.03;
-  if (mismatch) {
-    note.textContent = `The two layers have different shapes (${ld.w}×${ld.h} vs ${rd.w}×${rd.h}), so the narrower one is letterboxed inside the same frame and edges won't line up pixel-for-pixel.`;
-    note.classList.remove('hidden');
-  } else {
-    note.textContent = '';
-    note.classList.add('hidden');
-  }
-}
-
-// Point an <img> at a layer, skipping the reassignment when it already shows that exact
-// data URL (4K PNG data URLs are ~20-30 MB). Returns true when the image is already decoded.
-function assignCurtainLayer(img, layer, onLoad) {
-  img.onload = onLoad;
-  if (img.__curtainUrl === layer.url) return img.complete && img.naturalWidth > 0;
-  img.__curtainUrl = layer.url;
-  img.src = layer.url;
-  return false;
 }
 
 function updateSplitCurtainView() {
+  syncSplitCurtainButtonState();
   const sec = $('#imgCurtainSection');
-  if (!sec) return;
-  const okResults = (IMG_LAST_RESULTS || [])
-    .filter((r) => r && r.ok && r.imageDataUrl)
-    .sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
-  if (!IMG_SPLIT_CURTAIN_ON || okResults.length === 0) {
-    sec.classList.add('hidden');
-    return;
-  }
-  sec.classList.remove('hidden');
+  if (sec) sec.classList.add('hidden');
 
-  const leftSel = $('#imgCurtainLeftSelect');
-  const rightSel = $('#imgCurtainRightSelect');
-  if (!leftSel || !rightSel) return;
+  const canShowCurtain = Boolean(
+    IMG_SPLIT_CURTAIN_ON &&
+    hasLiveImageResults() &&
+    Array.isArray(IMG_REF_ATTACHMENTS) &&
+    IMG_REF_ATTACHMENTS.length > 0
+  );
 
-  const layers = [];
-  if (IMG_REF_ATTACHMENTS.length > 0) {
-    const ref0 = IMG_REF_ATTACHMENTS[0];
-    const cleanB64 = String(ref0.data || '').replace(/^data:[^;]+;base64,/, '');
-    layers.push({
-      id: 'ref-0',
-      kind: 'ref',
-      label: `Input Reference: ${ref0.label || ref0.name || 'Original Photo'}`,
-      tag: 'Before · Input Reference Photo',
-      url: `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`,
-    });
-  }
-  okResults.forEach((r) => {
-    const dimsStr = `${r.width || '?'}×${r.height || '?'}`;
-    layers.push({
-      id: `slot-${r.slot}`,
-      kind: 'slot',
-      width: r.width,
-      height: r.height,
-      label: `Slot ${r.slot}: ${r.shortLabel || r.label} (${dimsStr})`,
-      tag: `Slot ${r.slot} · ${r.shortLabel || r.label} (${dimsStr})`,
-      url: r.imageDataUrl,
-    });
+  const ref0 = canShowCurtain ? IMG_REF_ATTACHMENTS[0] : null;
+  const cleanB64 = ref0 ? String(ref0.data || '').replace(/^data:[^;]+;base64,/, '') : '';
+  const refDataUrl = ref0 ? `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}` : '';
+  const refLabel = (ref0 && (ref0.label || ref0.name)) || 'Original Input';
+
+  document.querySelectorAll('#imgArenaGrid .img-stage-wrap').forEach((stage) => {
+    const slot = stage.dataset.slot || '';
+    stage.querySelectorAll('.img-card-curtain-clip, .img-card-curtain-divider, .img-curtain-tag').forEach((node) => node.remove());
+    const res = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.imageDataUrl && String(r.slot) === String(slot));
+    if (!canShowCurtain || !res) {
+      stage.classList.remove('is-curtain-active');
+      stage.removeAttribute('role');
+      stage.removeAttribute('tabindex');
+      stage.removeAttribute('aria-label');
+      stage.removeAttribute('aria-valuemin');
+      stage.removeAttribute('aria-valuemax');
+      stage.removeAttribute('aria-valuenow');
+      if (stage.dataset.hasImage === '1' && slot) {
+        stage.onclick = () => openGeneratedOutputLightboxAt(slot);
+        stage.style.cursor = 'zoom-in';
+        stage.title = `Click to view full-size output (${stage.dataset.dimsLabel || ''})`;
+      } else {
+        stage.style.cursor = '';
+      }
+      return;
+    }
+
+    stage.classList.add('is-curtain-active');
+    stage.style.setProperty('--curtain-pos', `${IMG_CURTAIN_POS}%`);
+    stage.style.cursor = 'ew-resize';
+    stage.onclick = null;
+    stage.setAttribute('role', 'slider');
+    stage.setAttribute('tabindex', '0');
+    stage.setAttribute('aria-label', `Synchronized split curtain for Slot ${slot} (Before: Original vs After: ${res.shortLabel || res.label})`);
+    stage.setAttribute('aria-valuemin', '0');
+    stage.setAttribute('aria-valuemax', '100');
+    stage.setAttribute('aria-valuenow', String(Math.round(IMG_CURTAIN_POS)));
+    stage.title = 'Drag ⇔ (or use ← → keys) to scrub Before (Original Input) vs After across all models together';
+
+    const clip = el('div', 'img-card-curtain-clip');
+    const leftImg = el('img', 'img-card-curtain-left-img');
+    leftImg.src = refDataUrl;
+    leftImg.alt = `Original Reference: ${refLabel}`;
+    leftImg.draggable = false;
+    clip.appendChild(leftImg);
+
+    const divider = el('div', 'img-card-curtain-divider');
+    divider.setAttribute('aria-hidden', 'true');
+    const handle = el('div', 'img-card-curtain-handle', '⇔');
+    divider.appendChild(handle);
+
+    const leftTag = el('span', 'img-curtain-tag left', 'Before · Original');
+    const rightTag = el('span', 'img-curtain-tag right', `After · ${res.shortLabel || res.label}`);
+
+    stage.appendChild(clip);
+    stage.appendChild(divider);
+    stage.appendChild(leftTag);
+    stage.appendChild(rightTag);
   });
 
-  // Defaults: Input Reference vs Slot A for edit scenarios, otherwise Slot A vs Slot B.
-  // Recomputed on every call (slots stream in out of order), but a layer the user picked
-  // explicitly sticks for as long as it exists.
-  const has = (id) => layers.some((l) => l.id === id);
-  const slotLayers = layers.filter((l) => l.kind === 'slot');
-  const refLayer = layers.find((l) => l.kind === 'ref');
-  let leftId = refLayer ? refLayer.id : slotLayers[0].id;
-  let rightId = refLayer ? slotLayers[0].id : (slotLayers[1] || slotLayers[0]).id;
-  const pickedLeft = !!(IMG_CURTAIN_PICKS && IMG_CURTAIN_PICKS.left && has(IMG_CURTAIN_PICKS.left));
-  const pickedRight = !!(IMG_CURTAIN_PICKS && IMG_CURTAIN_PICKS.right && has(IMG_CURTAIN_PICKS.right));
-  if (pickedLeft) leftId = IMG_CURTAIN_PICKS.left;
-  if (pickedRight) rightId = IMG_CURTAIN_PICKS.right;
-  // Never show the same layer on both sides unless the user chose that on purpose.
-  if (leftId === rightId && layers.length > 1 && !(pickedLeft && pickedRight)) {
-    if (pickedRight && !pickedLeft) leftId = layers.find((l) => l.id !== rightId).id;
-    else rightId = layers.find((l) => l.id !== leftId).id;
-  }
-
-  leftSel.innerHTML = '';
-  rightSel.innerHTML = '';
-  layers.forEach((l) => {
-    const o1 = el('option'); o1.value = l.id; o1.textContent = l.label; leftSel.appendChild(o1);
-    const o2 = el('option'); o2.value = l.id; o2.textContent = l.label; rightSel.appendChild(o2);
-  });
-  leftSel.value = leftId;
-  rightSel.value = rightId;
-
-  const applyLayers = () => {
-    const L = layers.find((l) => l.id === leftSel.value) || layers[0];
-    const R = layers.find((l) => l.id === rightSel.value) || layers[layers.length - 1];
-    const leftImg = $('#imgCurtainLeftImg');
-    const rightImg = $('#imgCurtainRightImg');
-    const leftTag = $('#imgCurtainLeftTag');
-    const rightTag = $('#imgCurtainRightTag');
-    if (!leftImg || !rightImg || !L || !R) return;
-    const dims = { left: curtainDimsFromLayer(L), right: curtainDimsFromLayer(R) };
-    const leftReady = assignCurtainLayer(leftImg, L, () => {
-      dims.left = curtainDimsFromImg(leftImg) || dims.left;
-      syncCurtainStageGeometry(L, R, dims);
-    });
-    const rightReady = assignCurtainLayer(rightImg, R, () => {
-      dims.right = curtainDimsFromImg(rightImg) || dims.right;
-      syncCurtainStageGeometry(L, R, dims);
-    });
-    if (leftReady) dims.left = curtainDimsFromImg(leftImg) || dims.left;
-    if (rightReady) dims.right = curtainDimsFromImg(rightImg) || dims.right;
-    if (leftTag) leftTag.textContent = L.tag;
-    if (rightTag) rightTag.textContent = R.tag;
-    syncCurtainStageGeometry(L, R, dims);
-  };
-  leftSel.onchange = () => {
-    IMG_CURTAIN_PICKS = { ...(IMG_CURTAIN_PICKS || {}), left: leftSel.value };
-    applyLayers();
-  };
-  rightSel.onchange = () => {
-    IMG_CURTAIN_PICKS = { ...(IMG_CURTAIN_PICKS || {}), right: rightSel.value };
-    applyLayers();
-  };
-  applyLayers();
   setCurtainPosition(IMG_CURTAIN_POS);
 }
 
 function initCurtainDrag() {
-  const stage = $('#imgCurtainStage');
-  if (!stage) return;
-  let dragging = false;
-  const move = (clientX) => {
-    const rect = stage.getBoundingClientRect();
-    if (rect.width <= 0) return;
-    setCurtainPosition(((clientX - rect.left) / rect.width) * 100);
-  };
-  stage.addEventListener('pointerdown', (e) => {
-    if (e.button != null && e.button !== 0) return;
-    dragging = true;
-    try { stage.setPointerCapture(e.pointerId); } catch (_) {}
-    try { stage.focus({ preventScroll: true }); } catch (_) {}
-    move(e.clientX);
-    e.preventDefault();
-  });
-  stage.addEventListener('pointermove', (e) => {
-    if (!dragging) return;
-    move(e.clientX);
-  });
-  const stop = () => { dragging = false; };
-  stage.addEventListener('pointerup', stop);
-  stage.addEventListener('pointercancel', stop);
-  stage.addEventListener('lostpointercapture', stop);
-  stage.addEventListener('keydown', (e) => {
-    const step = e.shiftKey ? 10 : 2;
-    let next = null;
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = IMG_CURTAIN_POS - step;
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = IMG_CURTAIN_POS + step;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = 100;
-    if (next == null) return;
-    e.preventDefault();
-    setCurtainPosition(next);
-  });
+  const grid = $('#imgArenaGrid');
+  if (grid && !grid.__curtainBound) {
+    grid.__curtainBound = true;
+    let activeStage = null;
+    const moveOnStage = (st, clientX) => {
+      if (!st) return;
+      const rect = st.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      setCurtainPosition(((clientX - rect.left) / rect.width) * 100);
+    };
+    grid.addEventListener('pointerdown', (e) => {
+      if (e.button != null && e.button !== 0) return;
+      const st = e.target && e.target.closest ? e.target.closest('.img-stage-wrap.is-curtain-active') : null;
+      if (!st) return;
+      activeStage = st;
+      try { st.setPointerCapture(e.pointerId); } catch (_) {}
+      try { st.focus({ preventScroll: true }); } catch (_) {}
+      moveOnStage(st, e.clientX);
+      e.preventDefault();
+    });
+    grid.addEventListener('pointermove', (e) => {
+      if (!activeStage) return;
+      moveOnStage(activeStage, e.clientX);
+    });
+    const stopDrag = () => { activeStage = null; };
+    grid.addEventListener('pointerup', stopDrag);
+    grid.addEventListener('pointercancel', stopDrag);
+    grid.addEventListener('lostpointercapture', stopDrag);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pointerup', stopDrag);
+      window.addEventListener('pointercancel', stopDrag);
+    }
+    grid.addEventListener('keydown', (e) => {
+      const st = e.target && e.target.closest ? e.target.closest('.img-stage-wrap.is-curtain-active') : null;
+      if (!st) return;
+      const step = e.shiftKey ? 10 : 2;
+      let next = null;
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next = IMG_CURTAIN_POS - step;
+      else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next = IMG_CURTAIN_POS + step;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = 100;
+      if (next == null) return;
+      e.preventDefault();
+      setCurtainPosition(next);
+    });
+  }
   setCurtainPosition(IMG_CURTAIN_POS);
 }
 
@@ -6504,11 +6477,13 @@ function applyImageResultToCard(r) {
     stage.innerHTML = '';
     stage.dataset.hasImage = '1';
     stage.dataset.dimsLabel = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
+    stage.style.setProperty('--stage-ar', aspectRatioCssValue(IMG_SELECTED_ASPECT, r.width, r.height));
+    stage.style.setProperty('--curtain-pos', `${IMG_CURTAIN_POS}%`);
     stage.onclick = () => openGeneratedOutputLightboxAt(r.slot);
     stage.style.cursor = 'zoom-in';
     stage.title = `Click to view full-size output (${dimsStr})`;
     const img = el('img', 'img-main-output');
-    img.style.cssText = 'max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;display:block;margin:auto';
+    img.style.cssText = 'width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;display:block;margin:0';
     img.src = r.imageDataUrl;
     img.alt = `${r.label} generated output (${dimsStr})`;
     stage.appendChild(img);
@@ -6904,11 +6879,24 @@ function initImageArenaBindings() {
           { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
           { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
         ];
+      } else if (p === 'lite-2-21') {
+        IMG_SLOTS = [
+          { slot: 'A', catalogId: 'gemini-3.1-flash-lite-image' },
+          { slot: 'B', catalogId: 'gemini-3.1-flash-image' },
+          { slot: 'C', catalogId: 'gemini-nano-banana-2.1' },
+        ];
       } else if (p === 'all-three') {
         IMG_SLOTS = [
           { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
           { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
           { slot: 'C', catalogId: 'gemini-3-pro-image' },
+        ];
+      } else if (p === 'all-four') {
+        IMG_SLOTS = [
+          { slot: 'A', catalogId: 'gemini-3.1-flash-lite-image' },
+          { slot: 'B', catalogId: 'gemini-3.1-flash-image' },
+          { slot: 'C', catalogId: 'gemini-nano-banana-2.1' },
+          { slot: 'D', catalogId: 'gemini-3-pro-image' },
         ];
       }
       IMG_LAST_RESULTS = [];
@@ -6947,6 +6935,7 @@ function initImageArenaBindings() {
       IMG_REF_ATTACHMENTS = [];
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
+      updateSplitCurtainView();
     });
   }
 
@@ -6956,6 +6945,7 @@ function initImageArenaBindings() {
       IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
+      updateSplitCurtainView();
     });
   }
 
@@ -6973,6 +6963,7 @@ function initImageArenaBindings() {
   const curtainBtn = $('#imgSplitCurtainBtn');
   if (curtainBtn) {
     curtainBtn.addEventListener('click', () => {
+      if (curtainBtn.disabled) return;
       IMG_SPLIT_CURTAIN_ON = !IMG_SPLIT_CURTAIN_ON;
       curtainBtn.classList.toggle('is-on', IMG_SPLIT_CURTAIN_ON);
       curtainBtn.setAttribute('aria-pressed', String(IMG_SPLIT_CURTAIN_ON));

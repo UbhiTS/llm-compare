@@ -2605,10 +2605,11 @@ a.ud-item[hidden] { display: none; }
 .img-stage-wrap {
   position: relative;
   width: 100%;
-  height: 360px;
-  min-height: 360px;
-  max-height: 360px;
-  padding: 8px;
+  aspect-ratio: var(--stage-ar, 16 / 9);
+  height: auto;
+  min-height: 200px;
+  max-height: none;
+  padding: 0;
   box-sizing: border-box;
   background: var(--well-2);
   border: 1px solid var(--border-hi);
@@ -2616,19 +2617,78 @@ a.ud-item[hidden] { display: none; }
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  cursor: crosshair;
+  cursor: zoom-in;
+  --curtain-pos: 50%;
 }
 
 .img-stage-wrap img.img-main-output {
-  width: auto;
+  width: 100%;
   max-width: 100%;
-  height: auto;
+  height: 100%;
   max-height: 100%;
   object-fit: contain;
   display: block;
-  margin: auto;
+  margin: 0;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+.img-stage-wrap.is-curtain-active {
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.img-stage-wrap.is-curtain-active img.img-main-output {
+  clip-path: inset(0 0 0 var(--curtain-pos, 50%));
+}
+
+.img-card-curtain-clip {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  clip-path: inset(0 calc(100% - var(--curtain-pos, 50%)) 0 0);
+}
+
+.img-card-curtain-left-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.img-card-curtain-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--curtain-pos, 50%);
+  z-index: 3;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(73, 137, 245, 0.9);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.img-card-curtain-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
 
 .img-scorecard-section {
