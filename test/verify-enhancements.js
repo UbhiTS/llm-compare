@@ -325,7 +325,28 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     deployYml.includes('AGENT_PLATFORM_PROJECT_NUMBER=419460847694'),
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
-  console.log('✓ Image & GenMedia Arena (v1.0.19) 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  assert.strictEqual(pkgJson.version, '1.0.22', 'package.json must be at version 1.0.22');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.22</span>'), 'index.html must display v1.0.22 in footer');
+  const curtainHeadMatch = stylesCss.match(/\.img-curtain-head\s*\{([^}]+)\}/);
+  assert(curtainHeadMatch, 'styles.css must define .img-curtain-head');
+  assert(
+    curtainHeadMatch[1].includes('flex-direction: column') &&
+    curtainHeadMatch[1].includes('align-items: center') &&
+    curtainHeadMatch[1].includes('justify-content: center') &&
+    curtainHeadMatch[1].includes('text-align: center'),
+    '.img-curtain-head must be center-aligned (flex-direction: column, align-items: center, justify-content: center, text-align: center)'
+  );
+  const curtainControlsMatch = stylesCss.match(/\.img-curtain-controls\s*\{([^}]+)\}/);
+  assert(curtainControlsMatch, 'styles.css must define .img-curtain-controls');
+  assert(
+    curtainControlsMatch[1].includes('align-items: center') &&
+    curtainControlsMatch[1].includes('justify-content: center'),
+    '.img-curtain-controls must be center-aligned (align-items: center, justify-content: center)'
+  );
+  const curtainNoteMatch = stylesCss.match(/\.img-curtain-note\s*\{([^}]+)\}/);
+  assert(curtainNoteMatch && curtainNoteMatch[1].includes('text-align: center') && curtainNoteMatch[1].includes('margin: 10px auto 0'), '.img-curtain-note must be center-aligned');
+  console.log('✓ Image & GenMedia Arena (v1.0.22) center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
