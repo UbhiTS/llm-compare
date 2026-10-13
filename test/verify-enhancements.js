@@ -299,7 +299,23 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(econ21.offPeakDiscountPct, 50, 'Off-Peak PayGo discount should be 50%');
   assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
   assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
-  console.log('✓ Image & GenMedia Arena (v1.0.15) 3-model Nano Banana catalog, unknown-model rejection, reference limits, real Nano Banana 2.1 reference photos, History modal & Video Generation tab verified');
+  const imageArenaJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'imageArena.js'), 'utf8');
+  assert(
+    imageArenaJs.includes("const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';"),
+    'imageArena.js must default DEFAULT_IMAGE_PROJECT_NUMBER to 419460847694 when AGENT_PLATFORM_PROJECT_NUMBER is unset (never letting GCP_PROJECT_ID override 419460847694)'
+  );
+  const idx419 = imageArenaJs.indexOf("process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',\n    '419460847694'");
+  const idxGcpProject = imageArenaJs.indexOf("process.env.GCP_PROJECT_ID || ''");
+  assert(
+    idx419 !== -1 && idxGcpProject !== -1 && idx419 < idxGcpProject,
+    'imageArena.js candidateProjects must prioritize 419460847694 before process.env.GCP_PROJECT_ID'
+  );
+  const deployYml = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'deploy.yml'), 'utf8');
+  assert(
+    deployYml.includes('AGENT_PLATFORM_PROJECT_NUMBER=419460847694'),
+    'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
+  );
+  console.log('✓ Image & GenMedia Arena (v1.0.19) 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

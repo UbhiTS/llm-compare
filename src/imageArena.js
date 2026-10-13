@@ -18,7 +18,7 @@ const globalKeys = require('./globalKeys');
 const { scrubError } = require('./secrets');
 const { imageDimensionsFromBase64 } = require('./imageInfo');
 
-const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || process.env.GCP_PROJECT_ID || '419460847694';
+const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';
 
 const IMAGE_RESOLUTIONS = [
   { id: '1K', label: '1K · Standard (~1.0 MP)', shortLabel: '1K', description: 'Fast web preview & social cards (1376×768 at 16:9 · 1024×1024 at 1:1)' },
@@ -963,9 +963,12 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env) or Settings.');
   }
 
-  const projNum = (keys && keys.gcpProject)
-    || process.env.AGENT_PLATFORM_PROJECT_NUMBER
-    || DEFAULT_IMAGE_PROJECT_NUMBER;
+  const candidateProjects = Array.from(new Set([
+    (keys && keys.gcpProject) || '',
+    process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',
+    '419460847694',
+    process.env.GCP_PROJECT_ID || '',
+  ].filter(Boolean)));
 
   const userParts = [];
   const safeAtts = Array.isArray(attachments) ? attachments : [];
@@ -991,41 +994,38 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     });
   };
 
-  const globalProjectUrl =
-    `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(projNum)}` +
+  const buildGlobalProjectUrl = (proj) =>
+    `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(proj)}` +
     `/locations/global/publishers/google/models/${encodeURIComponent(entry.model)}:generateContent`;
-  const altProjectId = process.env.GCP_PROJECT_ID && process.env.GCP_PROJECT_ID !== projNum
-    ? process.env.GCP_PROJECT_ID
-    : null;
-  const altGlobalProjectUrl = altProjectId
-    ? `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(altProjectId)}/locations/global/publishers/google/models/${encodeURIComponent(entry.model)}:generateContent`
-    : null;
   const shortPublisherUrl =
     `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${encodeURIComponent(entry.model)}:generateContent`;
 
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
+  const payloadStr = buildPayload(true);
   const t0 = Date.now();
 
-  let usedUrl = globalProjectUrl;
+  let usedUrl = buildGlobalProjectUrl(candidateProjects[0] || DEFAULT_IMAGE_PROJECT_NUMBER);
   let r = await providerFetch(usedUrl, {
     method: 'POST',
     headers,
-    body: buildPayload(true),
+    body: payloadStr,
     signal,
   });
 
-  // If the key belongs to GCP_PROJECT_ID (e.g., llm-compare-ubhits on Cloud Run) instead of 419460847694,
-  // try the GCP_PROJECT_ID /locations/global endpoint next.
-  if ((r.status === 403 || r.status === 404) && altGlobalProjectUrl) {
-    const fbAlt = await providerFetch(altGlobalProjectUrl, {
+  // If the key belongs to another candidate project (e.g., GCP_PROJECT_ID when a custom key is mounted),
+  // try remaining candidate /locations/global project endpoints next.
+  for (let i = 1; i < candidateProjects.length && (r.status === 403 || r.status === 404); i++) {
+    const altUrl = buildGlobalProjectUrl(candidateProjects[i]);
+    const fbAlt = await providerFetch(altUrl, {
       method: 'POST',
       headers,
-      body: buildPayload(true),
+      body: payloadStr,
       signal,
     });
     if (fbAlt.ok || fbAlt.status === 400) {
       r = fbAlt;
-      usedUrl = altGlobalProjectUrl;
+      usedUrl = altUrl;
+      break;
     }
   }
 
@@ -1035,7 +1035,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     const fb = await providerFetch(shortPublisherUrl, {
       method: 'POST',
       headers,
-      body: buildPayload(true),
+      body: payloadStr,
       signal,
     });
     if (fb.ok || fb.status === 400) {
