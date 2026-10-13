@@ -181,22 +181,26 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ Judge 6-axis rubric (including Cost & Speed), multi-fence JSON parser & Claude safety-refusal retry verified');
 
-  // 8. Verify Image & GenMedia Arena (v1.0.12 — 6 workflow packs, 12 real Nano Banana 2.1 reference photos, model compatibility gating, per-slot 4K streaming, Image Run History, and Video Generation tab)
+  // 8. Verify Image & GenMedia Arena (Nano Banana 2 / 2.1 / Pro catalog, 6 workflow packs, 12 real Nano Banana 2.1 reference photos, per-slot 4K streaming, History modal, and Video Generation tab)
   const {
     IMAGE_MODEL_CATALOG,
     SAMPLE_REFERENCE_ASSETS,
     getImageArenaConfig,
-    evaluateImageModelCompatibility,
     extractImageResponseParts,
     computeImageSlotEconomics,
+    runSingleImageSlot,
+    runImageArenaComparison,
   } = require('../src/imageArena');
   const { imageDimensionsFromBase64 } = require('../src/imageInfo');
 
   const imgCfg = getImageArenaConfig();
   assert(imgCfg && imgCfg.ok, 'getImageArenaConfig() should return ok: true');
-  assert.strictEqual(imgCfg.catalog.length, 4, 'Image catalog should expose 4 Nano Banana models');
-  assert(imgCfg.catalog.some((m) => m.id === 'gemini-nano-banana-2.1'), 'Catalog must include gemini-nano-banana-2.1');
-  assert(imgCfg.catalog.some((m) => m.id === 'gemini-3.1-flash-image'), 'Catalog must include gemini-3.1-flash-image');
+  assert.deepStrictEqual(
+    imgCfg.catalog.map((m) => m.id).sort(),
+    ['gemini-3-pro-image', 'gemini-3.1-flash-image', 'gemini-nano-banana-2.1'],
+    'Image catalog should expose exactly Nano Banana 2, Nano Banana 2.1 and Nano Banana Pro'
+  );
+  assert(imgCfg.defaultSlots.every((s) => imgCfg.catalog.some((m) => m.id === s.catalogId)), 'Default image slots must only use catalog models');
   assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
   const packIds = imgCfg.packs.map((p) => p.id);
   for (const expectedId of ['upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
@@ -215,14 +219,24 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const patternDims = imageDimensionsFromBase64(SAMPLE_REFERENCE_ASSETS.botanicalPatternNavyGold.data);
   assert.deepStrictEqual(patternDims, { width: 512, height: 512 }, 'Botanical pattern recoloring photo must decode to 512x512');
 
-  // Verify model compatibility gate (Nano Banana 1 is 1K-only and max 3 references)
-  const compat25At4K = evaluateImageModelCompatibility('gemini-2.5-flash-image', { imageSize: '4K', referenceCount: 1 });
-  assert.strictEqual(compat25At4K.supported, false, 'gemini-2.5-flash-image must be flagged unsupported at 4K');
-  assert(compat25At4K.reason.includes('only supports 1K resolution'), 'compat25At4K.reason should explain 1K resolution cap');
-  const compat25At1K = evaluateImageModelCompatibility('gemini-2.5-flash-image', { imageSize: '1K', referenceCount: 3 });
-  assert.strictEqual(compat25At1K.supported, true, 'gemini-2.5-flash-image must be supported at 1K with <= 3 references');
-  const compat21At4K = evaluateImageModelCompatibility('gemini-nano-banana-2.1', { imageSize: '4K', referenceCount: 5 });
-  assert.strictEqual(compat21At4K.supported, true, 'gemini-nano-banana-2.1 must be supported at 4K with up to 13 references');
+  // Model IDs that aren't in the catalog fail on their own slot instead of silently running another model.
+  await assert.rejects(
+    runSingleImageSlot({ slot: 'A', catalogId: 'not-a-real-image-model', prompt: 'x', imageSize: '1K', attachments: [] }),
+    /Unknown image model/,
+    'runSingleImageSlot must reject model IDs that are not in the catalog'
+  );
+  const unknownRun = await runImageArenaComparison({ slots: [{ slot: 'A', catalogId: 'not-a-real-image-model' }], prompt: 'x', imageSize: '1K' });
+  assert.strictEqual(unknownRun.results.length, 1, 'An unknown-model run should still return one result per slot');
+  assert.strictEqual(unknownRun.results[0].ok, false, 'An unknown-model slot must come back as a failed result');
+  assert.strictEqual(unknownRun.results[0].catalogId, 'not-a-real-image-model', 'The failed result must keep the requested model ID, not a substitute model');
+  assert(/Unknown image model/.test(unknownRun.results[0].error), 'The failed result must explain that the model is unknown');
+  // Per-model reference-image limits still apply (Nano Banana 2.1 accepts 13).
+  const tooManyRefs = Array.from({ length: 14 }, () => ({ mimeType: 'image/jpeg', data: SAMPLE_REFERENCE_ASSETS.storybookFox.data }));
+  await assert.rejects(
+    runSingleImageSlot({ slot: 'A', catalogId: 'gemini-nano-banana-2.1', prompt: 'x', imageSize: '1K', attachments: tooManyRefs }),
+    /at most 13 reference images/,
+    'runSingleImageSlot must reject more reference images than the model accepts'
+  );
 
   const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
   assert(indexHtml.includes('id="imgScorecard"'), 'index.html must include #imgScorecard Model comparison section');
@@ -231,9 +245,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(indexHtml.includes('id="imgLightboxModal"'), 'index.html must include #imgLightboxModal for click-to-enlarge input/output inspection');
   assert(indexHtml.includes('id="imgOffPeakSliderCard"'), 'index.html must include #imgOffPeakSliderCard for dynamic Off-Peak gating');
   assert(indexHtml.includes('id="imgEconOffPeakTh"'), 'index.html must include #imgEconOffPeakTh for dynamic Off-Peak column gating');
-  assert(indexHtml.includes('id="imgCompatWarning"'), 'index.html must include #imgCompatWarning for model compatibility warning');
+  assert(!indexHtml.includes('imgCompatWarning'), 'index.html must not include the retired model compatibility warning banner');
   assert(indexHtml.includes('id="imgHistoryBtn"'), 'index.html must include #imgHistoryBtn in Image Arena toolbar');
-  assert(indexHtml.includes('id="imgHistoryStrip"'), 'index.html must include #imgHistoryStrip for 1-click recent image run restore');
+  assert(!indexHtml.includes('imgHistoryStrip'), 'index.html must not include the Recent Image Runs strip (History button and modal only)');
+  assert.strictEqual((indexHtml.match(/data-img-preset="/g) || []).length, 2, 'Image Arena must offer exactly 2 lineup presets (2 vs 2.1, and 2 vs 2.1 vs Pro)');
   assert(indexHtml.includes('id="modeBtnVideo"'), 'index.html must include #modeBtnVideo 3rd top-level Video Generation tab');
   assert(indexHtml.includes('id="videoArenaSection"'), 'index.html must include #videoArenaSection');
   assert(!indexHtml.includes('<span class="am-badge">Nano Banana 2 vs 2.1</span>'), 'Top Image & GenMedia Arena tab button must not include the Nano Banana 2 vs 2.1 badge');
@@ -241,16 +256,19 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
   assert(stylesCss.includes('grid-template-rows: subgrid;'), 'styles.css must align .img-result-col cards using CSS subgrid');
   assert(stylesCss.includes('.img-lightbox-backdrop'), 'styles.css must include .img-lightbox-backdrop modal styling');
-  assert(stylesCss.includes('.img-compat-warning'), 'styles.css must include .img-compat-warning styling');
+  assert(!stylesCss.includes('.img-compat-warning'), 'styles.css must not keep the retired compatibility warning styles');
+  assert(!stylesCss.includes('.img-history-strip'), 'styles.css must not keep the Recent Image Runs strip styles');
   assert(stylesCss.includes('.video-coming-soon-card'), 'styles.css must include .video-coming-soon-card styling');
-  assert(stylesCss.includes('.ihc-thumb'), 'styles.css must include .ihc-thumb selector so history strip thumbnails never render at full 4K size');
+  assert(stylesCss.includes('.ihc-thumb'), 'styles.css must include .ihc-thumb so History modal thumbnails never render at full 4K size');
 
   const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
   assert(appJs.includes('function hasOffPeakModelSelected()'), 'app.js must define hasOffPeakModelSelected() for dynamic Off-Peak gating');
   assert(appJs.includes('function openImageLightbox('), 'app.js must define openImageLightbox() for reference and generated output inspection');
-  assert(appJs.includes('function getImgModelCompatibility('), 'app.js must define getImgModelCompatibility() for resolution/reference gating');
+  assert(!appJs.includes('getImgModelCompatibility'), 'app.js must not keep the retired model compatibility gating');
+  assert(!appJs.includes('renderImageHistoryStrip'), 'app.js must not render the Recent Image Runs strip');
+  assert(appJs.includes('function updateImageHistoryButton('), 'app.js must keep the History button run count');
   assert(appJs.includes('function saveImageArenaRunToHistory('), 'app.js must define saveImageArenaRunToHistory() for IndexedDB Image Run History');
-  assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="34" height="24"'), 'app.js must render history strip thumbnails with explicit 34x24 bounds');
+  assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="42" height="32"'), 'app.js must render History modal thumbnails with explicit 42x32 bounds');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
@@ -279,7 +297,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(econ21.offPeakDiscountPct, 50, 'Off-Peak PayGo discount should be 50%');
   assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
   assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
-  console.log('✓ Image & GenMedia Arena (v1.0.12) real Nano Banana 2.1 reference photos, model compatibility gating, per-slot 4K streaming, Image Run History & Video Generation tab verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.15) 3-model Nano Banana catalog, unknown-model rejection, reference limits, real Nano Banana 2.1 reference photos, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

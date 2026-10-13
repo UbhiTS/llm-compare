@@ -6,7 +6,6 @@
 //   • Gemini Nano Banana 2.1 (`gemini-nano-banana-2.1` — GA Oct 6, 2026)
 //   • Gemini Nano Banana 2   (`gemini-3.1-flash-image` — GA High-Throughput)
 //   • Gemini Nano Banana Pro (`gemini-3-pro-image`     — GA Complex Reasoning)
-//   • Gemini Nano Banana 1   (`gemini-2.5-flash-image` — Legacy 1K Baseline)
 //
 // Grounded in live Vertex AI endpoint behavior & official pricing:
 //   https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing#nano-banana
@@ -47,7 +46,6 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '99.5% Long-Term GA SLA',
     slaPct: 99.5,
     endpointBadge: 'US/EU Multi-Region + Global',
-    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 14,
     contextWindow: 65536,
     pricing: {
@@ -71,7 +69,6 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '95.0% Short-Term GA SLA',
     slaPct: 95.0,
     endpointBadge: 'Global Endpoint (/locations/global)',
-    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 13,
     contextWindow: 65536,
     pricing: {
@@ -95,7 +92,6 @@ const IMAGE_MODEL_CATALOG = [
     slaBadge: '99.5% Long-Term GA SLA',
     slaPct: 99.5,
     endpointBadge: 'Global + Regional',
-    supportedSizes: ['1K', '2K', '4K'],
     maxReferenceImages: 14,
     contextWindow: 65536,
     pricing: {
@@ -107,30 +103,6 @@ const IMAGE_MODEL_CATALOG = [
     },
     purchasingTiers: ['Standard PayGo', 'Provisioned Throughput (PTU)'],
     architectureGuidance: 'Flagship creative studio tier for dense multi-character composition and maximum reasoning depth.',
-  },
-  {
-    id: 'gemini-2.5-flash-image',
-    label: 'Gemini Nano Banana 1 (2.5 Flash Image Legacy)',
-    shortLabel: 'Nano Banana 1 (Legacy)',
-    model: 'gemini-2.5-flash-image',
-    family: 'Nano Banana 1',
-    releaseDate: '2025-08-26',
-    releaseBadge: 'Legacy · Fixed 1K Resolution Ceiling',
-    slaBadge: '99.5% GA SLA (Legacy)',
-    slaPct: 99.5,
-    endpointBadge: 'Regional + Global',
-    supportedSizes: ['1K'],
-    maxReferenceImages: 3,
-    contextWindow: 32768,
-    pricing: {
-      inputPerM: 0.30,
-      imageOutputPerM: 30.00,
-      textOutputPerM: 2.50,
-      offPeakDiscount: 0,
-      referenceCostBySize: { '1K': 0.0387, '2K': 0.0387, '4K': 0.0387 },
-    },
-    purchasingTiers: ['Standard PayGo'],
-    architectureGuidance: 'Legacy generation baseline — capped at 1K (1344×768) even when 2K/4K is requested, and limited to 3 reference images.',
   },
 ];
 
@@ -972,53 +944,14 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   };
 }
 
-function evaluateImageModelCompatibility(entryOrId, { imageSize = '2K', referenceCount = 0 } = {}) {
-  const entry = (entryOrId && typeof entryOrId === 'object') ? entryOrId : getImageCatalogEntry(entryOrId);
-  if (!entry) {
-    return {
-      supported: false,
-      code: 'UNKNOWN_MODEL',
-      shortReason: 'Unknown model',
-      reason: `Unknown image model "${entryOrId}".`,
-    };
-  }
-  const reqSize = String(imageSize || '2K').toUpperCase();
-  const supportedSizes = Array.isArray(entry.supportedSizes) ? entry.supportedSizes : ['1K', '2K', '4K'];
-  if (!supportedSizes.includes(reqSize)) {
-    return {
-      supported: false,
-      code: 'UNSUPPORTED_RESOLUTION',
-      shortReason: `Unsupported at ${reqSize} (${supportedSizes.join('/')} max)`,
-      reason: `${entry.label} only supports ${supportedSizes.join('/')} resolution (capped at 1344×768) and cannot execute ${reqSize} upscaling or high-resolution generation. Switch Output Resolution to ${supportedSizes[0]} or use Nano Banana 2 / 2.1 / Pro.`,
-    };
-  }
-  const maxRefs = Number(entry.maxReferenceImages) || 13;
-  const refCnt = Number(referenceCount) || 0;
-  if (refCnt > maxRefs) {
-    return {
-      supported: false,
-      code: 'TOO_MANY_REFERENCES',
-      shortReason: `Max ${maxRefs} reference images`,
-      reason: `${entry.label} supports at most ${maxRefs} reference images (${refCnt} attached). Reduce reference images to ${maxRefs} or use Nano Banana 2 / 2.1 / Pro (up to 13–14 reference images).`,
-    };
-  }
-  return {
-    supported: true,
-    code: null,
-    shortReason: null,
-    reason: null,
-  };
-}
-
 async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
-  const entry = getImageCatalogEntry(catalogId) || IMAGE_MODEL_CATALOG[0];
+  const entry = getImageCatalogEntry(catalogId);
+  if (!entry) {
+    throw new Error(`Unknown image model "${catalogId}".`);
+  }
   const refCount = Array.isArray(attachments) ? attachments.length : 0;
-  const compat = evaluateImageModelCompatibility(entry, {
-    imageSize: imageSize || '2K',
-    referenceCount: refCount,
-  });
-  if (!compat.supported) {
-    throw new Error(compat.reason);
+  if (refCount > entry.maxReferenceImages) {
+    throw new Error(`${entry.label} accepts at most ${entry.maxReferenceImages} reference images (${refCount} attached).`);
   }
 
   const key = (keys && (keys.agentplatform || keys.gemini))
@@ -1035,7 +968,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     || DEFAULT_IMAGE_PROJECT_NUMBER;
 
   const userParts = [];
-  const safeAtts = Array.isArray(attachments) ? attachments.slice(0, entry.maxReferenceImages || 13) : [];
+  const safeAtts = Array.isArray(attachments) ? attachments : [];
   for (const att of safeAtts) {
     if (!att || typeof att.data !== 'string' || !att.data) continue;
     const rawB64 = att.data.replace(/^data:[^;]+;base64,/, '');
@@ -1185,10 +1118,13 @@ async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', im
     ? slots.slice(0, 4)
     : DEFAULT_IMAGE_SLOTS;
 
+  // A slot with no model falls back to catalog order. An ID that isn't in the catalog
+  // (e.g. a retired model sent by a stale page) fails on its own slot instead of silently
+  // running a different model.
   const normalizedSlots = requestedSlots.map((s, idx) => {
     const slotId = String((s && s.slot) || String.fromCharCode(65 + idx)).slice(0, 4);
-    const entry = getImageCatalogEntry(s && s.catalogId) || IMAGE_MODEL_CATALOG[idx % IMAGE_MODEL_CATALOG.length];
-    return { slot: slotId, catalogId: entry.id };
+    const requested = s && s.catalogId ? String(s.catalogId).slice(0, 100) : '';
+    return { slot: slotId, catalogId: requested || IMAGE_MODEL_CATALOG[idx % IMAGE_MODEL_CATALOG.length].id };
   });
 
   const results = await Promise.all(
@@ -1205,16 +1141,16 @@ async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', im
           signal,
         });
       } catch (e) {
-        const entry = getImageCatalogEntry(s.catalogId) || IMAGE_MODEL_CATALOG[0];
+        const entry = getImageCatalogEntry(s.catalogId);
         return {
           slot: s.slot,
           ok: false,
-          catalogId: entry.id,
-          label: entry.label,
-          shortLabel: entry.shortLabel,
-          model: entry.model,
-          slaBadge: entry.slaBadge,
-          endpointBadge: entry.endpointBadge,
+          catalogId: entry ? entry.id : s.catalogId,
+          label: entry ? entry.label : s.catalogId,
+          shortLabel: entry ? entry.shortLabel : s.catalogId,
+          model: entry ? entry.model : s.catalogId,
+          slaBadge: entry ? entry.slaBadge : '',
+          endpointBadge: entry ? entry.endpointBadge : '',
           error: scrubError(String((e && e.message) || e)),
         };
       }
@@ -1249,7 +1185,6 @@ module.exports = {
   IMAGE_ASPECT_RATIOS,
   SAMPLE_REFERENCE_ASSETS,
   getImageArenaConfig,
-  evaluateImageModelCompatibility,
   extractImageResponseParts,
   computeImageSlotEconomics,
   runSingleImageSlot,

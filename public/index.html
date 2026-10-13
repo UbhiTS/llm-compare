@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.14"></script>
+  <script src="theme-init.js?v=1.0.15"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.14" />
+  <link rel="stylesheet" href="styles.css?v=1.0.15" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.14" defer></script>
+  <script src="app.js?v=1.0.15" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -284,9 +284,8 @@
               <span class="mc-preset-label">Lineup:</span>
               <button type="button" class="bar-btn img-preset-btn" data-img-preset="nb2-vs-21" title="Gemini Nano Banana 2 (3.1 Flash Image) vs Gemini Nano Banana 2.1 (GA Oct 6, 2026)">🍌 Nano Banana 2 vs 2.1</button>
               <button type="button" class="bar-btn img-preset-btn" data-img-preset="all-three" title="Compare Nano Banana 2 vs Nano Banana 2.1 vs Nano Banana Pro">🏆 2 vs 2.1 vs Pro</button>
-              <button type="button" class="bar-btn img-preset-btn" data-img-preset="legacy-evolution" title="Compare Legacy 2.5 Flash Image (1K cap) vs Nano Banana 2 vs Nano Banana 2.1 (4K)">📈 1K Legacy → 4K 2.1</button>
             </div>
-            <button type="button" id="imgAddSlotBtn" class="bar-btn bar-btn-accent" title="Add another image model column (up to 4)">+ Add model (2/4)</button>
+            <button type="button" id="imgAddSlotBtn" class="bar-btn bar-btn-accent" title="Add another image model column (up to 3)">+ Add model (2/3)</button>
           </div>
         </div>
 
@@ -301,7 +300,6 @@
           </div>
         </div>
 
-        <div id="imgCompatWarning" class="img-compat-warning hidden" role="status" aria-live="polite"></div>
         <div id="imgSlotGrid" class="slot-configurator-grid img-slot-grid"></div>
       </div>
 
@@ -327,7 +325,6 @@
             </button>
           </div>
         </div>
-        <div id="imgHistoryStrip" class="img-history-strip hidden" aria-label="Recent Image Arena runs"></div>
       </div>
     </div>
 
@@ -493,6 +490,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.14</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.15</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

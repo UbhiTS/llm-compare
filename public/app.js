@@ -4587,11 +4587,12 @@ async function openHistoryModal(opts = {}) {
       fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
       isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
       typeof listImageArenaRunsFromHistory === 'function' ? listImageArenaRunsFromHistory().catch(() => []) : Promise.resolve([]),
+      ensureImageArenaLoaded().catch(() => null), // image catalog, to hide runs from retired models
     ]);
     if (histResp.status === 401) { window.location.replace('/login'); return; }
     const data = await histResp.json();
     if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
-    _histState = { body, runs: data.runs || [], imgRuns: imgRuns || [], usage, isAdmin };
+    _histState = { body, runs: data.runs || [], imgRuns: (imgRuns || []).filter(isVisibleImageRun), usage, isAdmin };
     historyPage = 0; usersPage = 0; historyUserFilter = null;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
@@ -4624,7 +4625,7 @@ function renderRunsSortToolbar(totalCount) {
 }
 
 function imgHistRowHtml(r) {
-  const okResults = (r.results || []).filter((x) => x && x.ok);
+  const okResults = currentModelImageResults(r).filter((x) => x.ok);
   const totalCost = okResults.reduce((s, x) => s + (Number(x.standardPayGoCostUsd) || 0), 0);
   const thumbs = okResults.slice(0, 4).map((x) => {
     const src = x.thumbDataUrl || x.imageDataUrl || '';
@@ -4686,8 +4687,8 @@ function paintHistoryModal() {
     }));
     body.querySelectorAll('.hist-img-del').forEach((b) => b.addEventListener('click', async () => {
       await deleteImageArenaRunFromHistory(b.dataset.id);
-      _histState.imgRuns = await listImageArenaRunsFromHistory();
-      renderImageHistoryStrip();
+      _histState.imgRuns = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
+      updateImageHistoryButton();
       paintHistoryModal();
     }));
     const clearAllBtn = body.querySelector('#histClearAllImgRunsBtn');
@@ -4695,7 +4696,7 @@ function paintHistoryModal() {
       clearAllBtn.addEventListener('click', async () => {
         await clearAllImageArenaHistory();
         _histState.imgRuns = [];
-        renderImageHistoryStrip();
+        updateImageHistoryButton();
         paintHistoryModal();
       });
     }
@@ -5193,8 +5194,6 @@ let IMG_CURTAIN_PICKS = null;  // { left, right } layer ids the user chose expli
 let IMG_RUNNING = false;
 let IMG_TIMER_ID = null;
 
-let IMG_LAST_REASSIGNED_NOTICE = '';
-
 function switchArenaMode(mode, { updateUrl = true } = {}) {
   const target = (mode === 'image' || mode === 'video') ? mode : 'text';
   ACTIVE_ARENA_MODE = target;
@@ -5219,7 +5218,7 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
     if (vidSection) vidSection.classList.add('hidden');
     if (imgSection) imgSection.classList.remove('hidden');
     ensureImageArenaLoaded();
-    if (typeof renderImageHistoryStrip === 'function') renderImageHistoryStrip();
+    updateImageHistoryButton();
   } else if (target === 'video') {
     if (textControls) textControls.classList.add('hidden');
     if (textArena) textArena.classList.add('hidden');
@@ -5257,14 +5256,13 @@ async function ensureImageArenaLoaded() {
     if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
       IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
     }
-    enforceImageSlotCompatibility();
     renderImageSizeAndAspectPills();
     renderImageSlotsConfigurator();
     populateImagePacksAndScenarios();
     renderImageArenaPlaceholderCards();
     renderImageMetricComparison();
     renderImageEconomicsModeler();
-    if (typeof renderImageHistoryStrip === 'function') renderImageHistoryStrip();
+    updateImageHistoryButton();
     return IMG_CONFIG;
   } catch (e) {
     console.warn('[imageArena] failed to load config:', e);
@@ -5277,109 +5275,21 @@ function getImgCatalogItem(id) {
   return cat.find((m) => m.id === id || m.model === id) || cat[0] || null;
 }
 
-function getImgModelCompatibility(entry, size = IMG_SELECTED_SIZE, refCount = IMG_REF_ATTACHMENTS.length) {
-  if (!entry) return { supported: false, reason: 'missing', message: 'Unknown image model.' };
-  const supportedSizes = Array.isArray(entry.supportedSizes) ? entry.supportedSizes : ['1K'];
-  const maxRefs = Number(entry.maxReferenceImages) || 13;
-  if (!supportedSizes.includes(size)) {
-    return {
-      supported: false,
-      reason: 'resolution',
-      shortReason: `1K Max (${size} unsupported)`,
-      message: `${entry.label} (${entry.model}) is hardware-capped at ${supportedSizes.join('/')} resolution (max 1344×768) and does not support ${size} output.`,
-    };
-  }
-  if (refCount > maxRefs) {
-    return {
-      supported: false,
-      reason: 'references',
-      shortReason: `Max ${maxRefs} refs (${refCount} attached)`,
-      message: `${entry.label} (${entry.model}) supports at most ${maxRefs} reference images, but ${refCount} are attached.`,
-    };
-  }
-  return { supported: true, reason: null, shortReason: '', message: '' };
+// Image history can hold runs from models that have since left the catalog (retired
+// models). Their outputs are skipped in the History modal and on restore.
+function isCurrentImageModel(catalogId) {
+  const cat = IMG_CONFIG && IMG_CONFIG.catalog;
+  return !Array.isArray(cat) || cat.some((m) => m.id === catalogId);
 }
 
-function enforceImageSlotCompatibility() {
-  if (!IMG_CONFIG) return;
-  const catalog = IMG_CONFIG.catalog || [];
-  const reassigned = [];
-  IMG_SLOTS.forEach((slotObj) => {
-    const entry = getImgCatalogItem(slotObj.catalogId);
-    const compat = getImgModelCompatibility(entry);
-    if (!compat.supported) {
-      const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
-      const fallback = catalog.find((c) => getImgModelCompatibility(c).supported && !used.has(c.id))
-        || catalog.find((c) => getImgModelCompatibility(c).supported)
-        || entry;
-      if (fallback && fallback.id !== slotObj.catalogId) {
-        reassigned.push(`Slot ${slotObj.slot} switched from ${entry.shortLabel || entry.label} to ${fallback.shortLabel || fallback.label}`);
-        slotObj.catalogId = fallback.id;
-      }
-    }
-  });
-  if (reassigned.length) {
-    IMG_LAST_REASSIGNED_NOTICE = reassigned.join(' · ');
-  }
+function currentModelImageResults(run) {
+  return ((run && run.results) || []).filter((x) => x && isCurrentImageModel(x.catalogId));
 }
 
-function renderImageCompatWarning() {
-  const banner = $('#imgCompatWarning');
-  if (!banner || !IMG_CONFIG) return;
-  const catalog = IMG_CONFIG.catalog || [];
-  const refCount = IMG_REF_ATTACHMENTS.length;
-  const unsupportedModels = catalog
-    .map((c) => ({ entry: c, compat: getImgModelCompatibility(c, IMG_SELECTED_SIZE, refCount) }))
-    .filter((x) => !x.compat.supported);
-
-  if (!unsupportedModels.length) {
-    IMG_LAST_REASSIGNED_NOTICE = '';
-    banner.innerHTML = '';
-    banner.classList.add('hidden');
-    return;
-  }
-
-  const reasonsHtml = unsupportedModels.map((x) => esc(x.compat.message)).join(' ');
-  const reassignNote = IMG_LAST_REASSIGNED_NOTICE
-    ? ` <span style="opacity:0.9">(${esc(IMG_LAST_REASSIGNED_NOTICE)} so all active slots can generate ${esc(IMG_SELECTED_SIZE)}.)</span>`
-    : '';
-  const needs1K = unsupportedModels.some((x) => x.compat.reason === 'resolution');
-  const needsFewerRefs = unsupportedModels.some((x) => x.compat.reason === 'references');
-
-  banner.classList.remove('hidden');
-  banner.innerHTML = `
-    <span class="icw-icon">⚠️</span>
-    <div class="icw-body">
-      <strong>Model Compatibility Gate (${esc(IMG_SELECTED_SIZE)}${refCount ? ` · ${refCount} ref image${refCount === 1 ? '' : 's'}` : ''}):</strong>
-      ${reasonsHtml}${reassignNote} Disabled in model selector dropdowns for this setting.
-    </div>
-    <div class="icw-actions">
-      ${needs1K ? '<button type="button" class="icw-btn" id="imgCompatSwitch1kBtn">Switch to 1K Resolution (Enable Nano Banana 1)</button>' : ''}
-      ${needsFewerRefs ? '<button type="button" class="icw-btn" id="imgCompatTrimRefsBtn">Keep First 3 Reference Images</button>' : ''}
-    </div>
-  `;
-
-  const switch1kBtn = $('#imgCompatSwitch1kBtn');
-  if (switch1kBtn) {
-    switch1kBtn.addEventListener('click', () => {
-      IMG_SELECTED_SIZE = '1K';
-      IMG_LAST_REASSIGNED_NOTICE = '';
-      renderImageSizeAndAspectPills();
-      renderImageSlotsConfigurator();
-      if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
-      renderImageMetricComparison();
-      renderImageEconomicsModeler();
-    });
-  }
-  const trimRefsBtn = $('#imgCompatTrimRefsBtn');
-  if (trimRefsBtn) {
-    trimRefsBtn.addEventListener('click', () => {
-      IMG_REF_ATTACHMENTS = IMG_REF_ATTACHMENTS.slice(0, 3);
-      IMG_LAST_REASSIGNED_NOTICE = '';
-      renderImageReferenceAttachments();
-      renderImageSlotsConfigurator();
-    });
-  }
+// Hide runs whose every result came from a retired model; runs with no results still show.
+function isVisibleImageRun(run) {
+  const all = (run && run.results) || [];
+  return all.length === 0 || currentModelImageResults(run).length > 0;
 }
 
 function hasOffPeakModelSelected() {
@@ -5520,7 +5430,6 @@ function renderImageSizeAndAspectPills() {
       b.title = r.description || r.label;
       b.addEventListener('click', () => {
         IMG_SELECTED_SIZE = r.id;
-        enforceImageSlotCompatibility();
         renderImageSizeAndAspectPills();
         renderImageSlotsConfigurator();
         if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
@@ -5553,11 +5462,8 @@ function renderImageSlotsConfigurator() {
   const addBtn = $('#imgAddSlotBtn');
   if (!grid || !IMG_CONFIG) return;
 
-  enforceImageSlotCompatibility();
-  renderImageCompatWarning();
-
-  const compatibleCatalog = (IMG_CONFIG.catalog || []).filter((c) => getImgModelCompatibility(c).supported);
-  const maxActiveSlots = Math.min(4, Math.max(1, compatibleCatalog.length));
+  const catalog = IMG_CONFIG.catalog || [];
+  const maxActiveSlots = Math.min(4, Math.max(1, catalog.length));
 
   if (badge) badge.textContent = `${IMG_SLOTS.length} of ${maxActiveSlots} active`;
   if (addBtn) {
@@ -5566,13 +5472,11 @@ function renderImageSlotsConfigurator() {
   }
 
   grid.innerHTML = '';
-  const catalog = IMG_CONFIG.catalog || [];
 
   IMG_SLOTS.forEach((slotObj, idx) => {
     const entry = getImgCatalogItem(slotObj.catalogId) || catalog[0];
-    const entryCompat = getImgModelCompatibility(entry);
     const color = slotColor(slotObj.slot);
-    const card = el('div', 'img-slot-card' + (!entryCompat.supported ? ' is-unsupported' : ''));
+    const card = el('div', 'img-slot-card');
     card.style.setProperty('--slot-accent', color);
 
     const top = el('div', 'img-slot-top');
@@ -5598,19 +5502,14 @@ function renderImageSlotsConfigurator() {
 
     const sel = el('select', 'img-slot-select');
     catalog.forEach((c) => {
-      const compat = getImgModelCompatibility(c);
       const opt = el('option');
       opt.value = c.id;
-      opt.textContent = compat.supported
-        ? `${c.label}`
-        : `${c.label} — ⚠️ ${compat.shortReason}`;
-      if (!compat.supported) opt.disabled = true;
+      opt.textContent = c.label;
       if (c.id === entry.id) opt.selected = true;
       sel.appendChild(opt);
     });
     sel.addEventListener('change', () => {
       slotObj.catalogId = sel.value;
-      IMG_LAST_REASSIGNED_NOTICE = '';
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
       renderImageMetricComparison();
@@ -5702,7 +5601,6 @@ function applyImageScenario(pack, sc) {
 
   IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
   IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
-  enforceImageSlotCompatibility();
   renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
@@ -5732,7 +5630,6 @@ function renderImageReferenceAttachments() {
   if (count === 0) {
     listEl.innerHTML = '';
     listEl.classList.add('hidden');
-    renderImageCompatWarning();
     return;
   }
 
@@ -5783,7 +5680,6 @@ function renderImageReferenceAttachments() {
     item.appendChild(rm);
     listEl.appendChild(item);
   });
-  renderImageCompatWarning();
 }
 
 function addImageReferenceFiles(fileList) {
@@ -5800,7 +5696,6 @@ function addImageReferenceFiles(fileList) {
         mimeType: file.type || 'image/png',
         data: base64,
       });
-      enforceImageSlotCompatibility();
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
     };
@@ -5827,12 +5722,8 @@ function renderImageArenaPlaceholderCards() {
     const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
     const hasOffPeak = entry.pricing && entry.pricing.offPeakDiscount > 0;
     const offPeakPrice = hasOffPeak ? refPrice * (1 - entry.pricing.offPeakDiscount) : null;
-    const estMp = entry.supportedSizes.includes(IMG_SELECTED_SIZE)
-      ? ({ '1K': '1.05 MP', '2K': '4.19 MP', '4K': '16.78 MP' }[IMG_SELECTED_SIZE] || '4.19 MP')
-      : '1.03 MP (1K cap)';
-    const estTok = entry.id === 'gemini-2.5-flash-image'
-      ? '1,290 tok'
-      : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': entry.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok');
+    const estMp = { '1K': '1.05 MP', '2K': '4.19 MP', '4K': '16.78 MP' }[IMG_SELECTED_SIZE] || '4.19 MP';
+    const estTok = { '1K': '1,120 tok', '2K': '1,680 tok', '4K': entry.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok';
     const modeLabel = entry.id === 'gemini-nano-banana-2.1'
       ? '🧠 Visual Thinking + Final Render'
       : '⚡ Direct Single-Pass Render';
@@ -6297,49 +6188,12 @@ async function clearAllImageArenaHistory() {
   });
 }
 
-async function renderImageHistoryStrip() {
-  const strip = $('#imgHistoryStrip');
+// The 🗂 History button shows how many image runs are saved in this browser.
+async function updateImageHistoryButton() {
   const histBtn = $('#imgHistoryBtn');
-  const runs = await listImageArenaRunsFromHistory();
-  if (histBtn) {
-    histBtn.textContent = runs.length > 0 ? `🗂 History (${runs.length})` : '🗂 History';
-  }
-  if (!strip) return;
-  if (!runs.length) {
-    strip.innerHTML = '';
-    strip.classList.add('hidden');
-    return;
-  }
-  strip.classList.remove('hidden');
-  const recent = runs.slice(0, 6);
-  const chipsHtml = recent.map((r) => {
-    const okResults = (r.results || []).filter((x) => x && x.ok);
-    const firstOk = okResults[0] || {};
-    const firstThumb = firstOk.thumbDataUrl || firstOk.imageDataUrl || '';
-    const thumbHtml = firstThumb
-      ? `<img src="${firstThumb}" class="img-hist-thumb ihc-thumb" width="34" height="24" style="width:34px;height:24px;max-width:34px;max-height:24px;object-fit:cover;border-radius:4px;flex-shrink:0;display:block" alt=""/>`
-      : '';
-    const shortTitle = (r.scenarioTitle || r.prompt || 'Image Run').slice(0, 34);
-    return `<button type="button" class="img-hist-chip" data-img-run-id="${esc(r.id)}" title="Restore ${esc(r.scenarioTitle || r.prompt)} (${esc(r.imageSize)} · ${esc(r.aspectRatio)})">
-      ${thumbHtml}
-      <span class="img-hist-title ihc-title">${esc(shortTitle)}</span>
-      <span class="img-hist-sub ihc-meta">${esc(r.imageSize || '2K')} · ${okResults.length}m</span>
-    </button>`;
-  }).join('');
-
-  strip.innerHTML = `
-    <span class="img-hist-label ihs-label">🗂 Recent Image Runs:</span>
-    <div class="img-hist-thumbs ihs-chips">${chipsHtml}</div>
-    <button type="button" class="bar-btn" id="imgHistViewAllBtn" style="margin-left:auto;font-size:11px;flex-shrink:0">View all (${runs.length}) ▸</button>
-  `;
-
-  strip.querySelectorAll('.img-hist-chip').forEach((chip) => {
-    chip.addEventListener('click', () => restoreImageArenaRun(chip.dataset.imgRunId));
-  });
-  const viewAllBtn = strip.querySelector('#imgHistViewAllBtn');
-  if (viewAllBtn) {
-    viewAllBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));
-  }
+  if (!histBtn) return;
+  const runs = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
+  histBtn.textContent = runs.length > 0 ? `🗂 History (${runs.length})` : '🗂 History';
 }
 
 async function restoreImageArenaRun(runId) {
@@ -6362,8 +6216,16 @@ async function restoreImageArenaRun(runId) {
   if (rec.aspectRatio) {
     IMG_SELECTED_ASPECT = rec.aspectRatio;
   }
-  if (Array.isArray(rec.slots) && rec.slots.length) {
-    IMG_SLOTS = rec.slots.map((s) => ({ ...s }));
+  // Skip slots from retired models and re-letter the rest so results still map to cards.
+  let slotMap = null; // saved slot letter -> restored slot letter
+  const keptSlots = (Array.isArray(rec.slots) ? rec.slots : []).filter((s) => s && isCurrentImageModel(s.catalogId));
+  if (keptSlots.length) {
+    slotMap = {};
+    IMG_SLOTS = keptSlots.map((s, i) => {
+      const slot = String.fromCharCode(65 + i);
+      slotMap[s.slot] = slot;
+      return { ...s, slot };
+    });
   }
   const promptEl = $('#imgPromptInput');
   if (promptEl && rec.prompt) promptEl.value = rec.prompt;
@@ -6377,7 +6239,9 @@ async function restoreImageArenaRun(runId) {
   renderImageSlotsConfigurator();
   renderImageArenaPlaceholderCards();
 
-  IMG_LAST_RESULTS = Array.isArray(rec.results) ? rec.results : [];
+  IMG_LAST_RESULTS = currentModelImageResults(rec)
+    .filter((r) => !slotMap || slotMap[r.slot])
+    .map((r) => (slotMap ? { ...r, slot: slotMap[r.slot] } : r));
   IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
   highlightImageWinnerTiles(IMG_LAST_RESULTS);
   attachSynchronizedLoupeHandlers();
@@ -6400,9 +6264,6 @@ async function runImageArenaComparisonClick() {
     window.alert('Please enter an image generation or editing prompt.');
     return;
   }
-
-  enforceImageSlotCompatibility();
-  renderImageSlotsConfigurator();
 
   IMG_RUNNING = true;
   const runBtn = $('#imgRunBtn');
@@ -6538,7 +6399,7 @@ async function runImageArenaComparisonClick() {
         attachments: reqRefs,
         results: IMG_LAST_RESULTS,
       });
-      await renderImageHistoryStrip();
+      await updateImageHistoryButton();
     }
   } catch (e) {
     if (timerBadge) timerBadge.textContent = `Error: ${e.message}`;
@@ -6715,14 +6576,10 @@ function renderImageMetricComparison() {
       : (offPeakDiscount > 0 ? stdCost * (1 - offPeakDiscount) : stdCost);
     const mp = live && live.megapixels != null
       ? Number(live.megapixels)
-      : (entry.supportedSizes.includes(IMG_SELECTED_SIZE)
-        ? ({ '1K': 1.05, '2K': 4.19, '4K': 16.78 }[IMG_SELECTED_SIZE] || 4.19)
-        : 1.03);
+      : ({ '1K': 1.05, '2K': 4.19, '4K': 16.78 }[IMG_SELECTED_SIZE] || 4.19);
     const imgTok = live && live.imageOutputTokens != null
       ? Number(live.imageOutputTokens)
-      : (entry.id === 'gemini-2.5-flash-image'
-        ? 1290
-        : ({ '1K': 1120, '2K': 1680, '4K': entry.id === 'gemini-nano-banana-2.1' ? 3780 : 2520 }[IMG_SELECTED_SIZE] || 1680));
+      : ({ '1K': 1120, '2K': 1680, '4K': entry.id === 'gemini-nano-banana-2.1' ? 3780 : 2520 }[IMG_SELECTED_SIZE] || 1680);
     const latencySec = live && live.latencyMs > 0 ? live.latencyMs / 1000 : 0;
 
     return {
@@ -6867,10 +6724,8 @@ function renderImageEconomicsModeler() {
       : (volume * stdPerImg);
     const tokEst = live
       ? `${fmtInt(live.imageOutputTokens)} tok (measured)`
-      : (c.id === 'gemini-2.5-flash-image' ? '1,290 tok (1K fixed)' : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': c.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok'));
-    const resCap = c.supportedSizes.includes(IMG_SELECTED_SIZE)
-      ? `${IMG_SELECTED_SIZE} Native`
-      : '1K Capped (1344×768)';
+      : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': c.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok');
+    const resCap = `${IMG_SELECTED_SIZE} Native`;
     return {
       slot: s.slot,
       catalog: c,
@@ -6988,11 +6843,11 @@ function initImageArenaBindings() {
   if (addSlotBtn) {
     addSlotBtn.addEventListener('click', () => {
       if (!IMG_CONFIG) return;
-      const compatibleCatalog = (IMG_CONFIG.catalog || []).filter((c) => getImgModelCompatibility(c).supported);
-      const maxActive = Math.min(4, Math.max(1, compatibleCatalog.length));
+      const catalog = IMG_CONFIG.catalog || [];
+      const maxActive = Math.min(4, Math.max(1, catalog.length));
       if (IMG_SLOTS.length >= maxActive) return;
       const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
-      const nextCat = compatibleCatalog.find((c) => !used.has(c.id)) || compatibleCatalog[0];
+      const nextCat = catalog.find((c) => !used.has(c.id)) || catalog[0];
       if (!nextCat) return;
       const nextSlot = String.fromCharCode(65 + IMG_SLOTS.length);
       IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
@@ -7006,7 +6861,6 @@ function initImageArenaBindings() {
   document.querySelectorAll('.img-preset-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const p = btn.dataset.imgPreset;
-      IMG_LAST_REASSIGNED_NOTICE = '';
       if (p === 'nb2-vs-21') {
         IMG_SLOTS = [
           { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
@@ -7017,19 +6871,6 @@ function initImageArenaBindings() {
           { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
           { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
           { slot: 'C', catalogId: 'gemini-3-pro-image' },
-        ];
-      } else if (p === 'legacy-evolution') {
-        // Nano Banana 1 (gemini-2.5-flash-image) is 1K-only (and max 3 refs), so switch resolution to 1K automatically
-        IMG_SELECTED_SIZE = '1K';
-        if (IMG_REF_ATTACHMENTS.length > 3) {
-          IMG_REF_ATTACHMENTS = IMG_REF_ATTACHMENTS.slice(0, 3);
-          renderImageReferenceAttachments();
-        }
-        renderImageSizeAndAspectPills();
-        IMG_SLOTS = [
-          { slot: 'A', catalogId: 'gemini-2.5-flash-image' },
-          { slot: 'B', catalogId: 'gemini-3.1-flash-image' },
-          { slot: 'C', catalogId: 'gemini-nano-banana-2.1' },
         ];
       }
       renderImageSlotsConfigurator();
@@ -7073,7 +6914,6 @@ function initImageArenaBindings() {
   if (reloadRefsBtn) {
     reloadRefsBtn.addEventListener('click', () => {
       IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
-      enforceImageSlotCompatibility();
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
     });
@@ -7119,7 +6959,7 @@ function initImageArenaBindings() {
   if (offPeakSlider) offPeakSlider.addEventListener('input', renderImageEconomicsModeler);
 
   initCurtainDrag();
-  renderImageHistoryStrip();
+  updateImageHistoryButton();
 
   // Check URL deep link (?tab=image, ?tab=video, #image-arena, #video-arena)
   try {
