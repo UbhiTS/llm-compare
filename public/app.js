@@ -823,6 +823,9 @@ function ensureAuthModal() {
   let m = $('#authModal');
   if (m) return m;
   m = el('div', 'md-modal hidden'); m.id = 'authModal';
+  m.setAttribute('role', 'dialog');
+  m.setAttribute('aria-modal', 'true');
+  m.setAttribute('aria-labelledby', 'authModalTitle');
   m.innerHTML =
     '<div class="md-modal-panel auth-panel">' +
       '<div class="md-modal-head"><span class="md-modal-title" id="authModalTitle"></span>' +
@@ -3361,7 +3364,7 @@ async function runWebGame(slot, code, btn, out, viz) {
       viz.classList.remove('hidden');
       viz.innerHTML =
         '<div class="game-wrap"><iframe class="game-frame" src="' + r.url + '" title="' + esc(modelLabel(slot)) +
-        '" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
+        '" sandbox="allow-scripts allow-same-origin" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
         '<div class="game-bar"><span>Running in your browser via WebAssembly' + (r.cached ? ' · cached build' : '') +
         '</span><div class="game-bar-actions">' +
         '<button type="button" class="game-code-toggle" data-slot="' + esc(slot) + '" title="Toggle Python source code view">&lt;/&gt; Show code</button>' +
@@ -5114,6 +5117,8 @@ function ensureModal() {
   if (modal) return modal;
   modal = el('div', 'md-modal hidden');
   modal.id = 'mdModal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
   modal.innerHTML =
     '<div class="md-modal-panel">' +
       '<div class="md-modal-head"><span class="md-modal-title"></span>' +

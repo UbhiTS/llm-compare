@@ -12,6 +12,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// Isolate test database so it never unlinks or mutates the live local daemon database
+const testDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ullm-saved-prompts-test-'));
+process.env.APP_DATA_DIR = testDataDir;
+
 const {
   listSavedPrompts,
   saveUserPrompt,
@@ -441,6 +445,10 @@ async function runTests() {
   reloadedHistory.deleteUserPrompt(redeployUser, pSave1.saved.id);
   reloadedHistory.deleteUserPrompt(redeployUser, pSave2.saved.id);
   reloadedHistory.deleteUserPreset(redeployUser, mSave1.saved.id);
+
+  try {
+    fs.rmSync(testDataDir, { recursive: true, force: true });
+  } catch (_) {}
 
   console.log('✓ All Saved Prompts, Saved Model Presets, Per-User Binary Vault + SQLite Records, Container Redeploy Persistence, Admin Usage Counts & Sorting, Multi-User Privacy, Gaming WASM, Dropdown Sizing & Versioning checks passed.');
 }

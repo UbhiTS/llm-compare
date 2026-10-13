@@ -18,7 +18,7 @@ const globalKeys = require('./globalKeys');
 const { scrubError } = require('./secrets');
 const { imageDimensionsFromBase64 } = require('./imageInfo');
 
-const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';
+const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || process.env.GCP_PROJECT_ID || '419460847694';
 
 const IMAGE_RESOLUTIONS = [
   { id: '1K', label: '1K · Standard (~1.0 MP)', shortLabel: '1K', description: 'Fast web preview & social cards (1376×768 at 16:9 · 1024×1024 at 1:1)' },

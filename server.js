@@ -129,6 +129,26 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// Operational observability: Structured HTTP access log for /api/* and error responses
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    if (req.path.startsWith('/api/') || (res.statusCode >= 400 && req.path !== '/healthz')) {
+      const dur = Date.now() - start;
+      const user = (req.user && req.user.username) || 'anon';
+      const sev = res.statusCode >= 500 ? 'ERROR' : res.statusCode >= 400 ? 'WARNING' : 'INFO';
+      log.event(sev, `[http] ${req.method} ${req.path} ${res.statusCode} ${dur}ms - user:${user}`, {
+        method: req.method,
+        path: req.path,
+        status: res.statusCode,
+        durMs: dur,
+        user,
+      });
+    }
+  });
+  next();
+});
+
 // Large enough for multiple base64 image/PDF/document attachments plus 1M-token judge runs.
 // SECURITY: the 50 MB parser is mounted only AFTER the auth gate (see below), so an
 // unauthenticated client can't make the server buffer + JSON.parse 50 MB bodies. The
@@ -406,8 +426,10 @@ const staticMemCache = new Map();
 function getCachedStaticAsset(fileRel) {
   const fp = path.join(PUBLIC_DIR, fileRel);
   try {
-    const st = fs.statSync(fp);
     const prev = staticMemCache.get(fileRel);
+    // In production, serve directly from memory without event-loop blocking statSync I/O
+    if (process.env.NODE_ENV === 'production' && prev) return prev;
+    const st = fs.statSync(fp);
     if (prev && prev.mtimeMs === st.mtimeMs) return prev;
     const raw = fs.readFileSync(fp);
     const gz = zlib.gzipSync(raw, { level: 6 });
@@ -452,9 +474,13 @@ app.use((req, res, next) => {
   if (!entry) return next();
   const hasVersionQuery = Boolean(req.query && req.query.v && (req.path === '/app.js' || req.path === '/styles.css' || req.path === '/theme-init.js'));
   res.setHeader('Content-Type', hit.type);
-  res.setHeader('Cache-Control', hasVersionQuery
-    ? 'private, max-age=3600'
-    : 'no-store, no-cache, must-revalidate');
+  if (hasVersionQuery) {
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  } else if (req.path === '/' || req.path === '/index.html') {
+    res.setHeader('Cache-Control', 'no-cache');
+  } else {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  }
   res.setHeader('Vary', 'Accept-Encoding');
   const ae = String(req.headers['accept-encoding'] || '');
   if (/\bgzip\b/i.test(ae)) {
@@ -467,7 +493,13 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(PUBLIC_DIR, {
-  setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate'); },
+  setHeaders: (res, filePath) => {
+    if (/\.(ico|png|jpg|jpeg|svg|woff2?|ttf|eot)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+    } else {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
 }));
 
 // Precompute static catalog metadata once at startup instead of on every /api/config request
@@ -839,7 +871,7 @@ app.post('/api/judge', async (req, res) => {
 
   const rawKeys = (req.body && req.body.keys) || {};
   const keys = {};
-  for (const k of ['agentplatform', 'gemini', 'openai', 'anthropic', 'claudeBearerToken', 'gcpProject']) {
+  for (const k of ['agentplatform', 'gemini', 'openai', 'anthropic', 'claudeBearerToken', 'gcpProject', 'moonshot']) {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
 
@@ -991,7 +1023,7 @@ app.post('/api/run', async (req, res) => {
   // Sanitize any user-provided ("bring your own") API credentials (strings only).
   const rawKeys = (req.body && req.body.keys) || {};
   const keys = {};
-  for (const k of ['agentplatform', 'gemini', 'openai', 'anthropic', 'claudeBearerToken', 'gcpProject']) {
+  for (const k of ['agentplatform', 'gemini', 'openai', 'anthropic', 'claudeBearerToken', 'gcpProject', 'moonshot']) {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
   let task;
@@ -1233,3 +1265,15 @@ function shutdown(signal) {
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason) => {
+  log.event('ERROR', '[process] unhandledRejection', {
+    reason: reason && (reason.stack || reason.message || String(reason)),
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  log.event('ERROR', '[process] uncaughtException', {
+    error: err && (err.stack || err.message || String(err)),
+  });
+});
