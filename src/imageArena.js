@@ -205,7 +205,7 @@ function dist(x1, y1, x2, y2) {
 const SAMPLE_REFERENCE_ASSETS = (() => {
   try {
     const realRefs = require('./assets/ref-images.json');
-    if (realRefs && typeof realRefs === 'object' && Object.keys(realRefs).length >= 12) {
+    if (realRefs && typeof realRefs === 'object' && Object.keys(realRefs).length >= 14) {
       return realRefs;
     }
   } catch (_) {
@@ -536,6 +536,23 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
     return [r, g, b];
   });
 
+  // 13. Low-Res 180×180 Compressed Portrait Fallback
+  const lowResPortraitBuf = encodeRgbPng(180, 180, (x, y, w, h) => {
+    const bx = Math.floor(x / 4) * 4;
+    const by = Math.floor(y / 4) * 4;
+    const d = dist(bx, by, w / 2, h * 0.44);
+    if (d < 42) return [218, 168, 138];
+    if (by > h * 0.65 && Math.abs(bx - w / 2) < 58) return [236, 228, 212];
+    return [168, 134, 82];
+  });
+
+  // 14. 2025 Holiday Card Template Fallback (640×480)
+  const holidayCard2025Buf = encodeRgbPng(640, 480, (x, y, w, h) => {
+    if (x < 36 || x > w - 36 || y < 28 || y > h - 28) return [214, 206, 194];
+    if (x < 56 || x > w - 56 || y < 48 || y > h - 48) return [42, 92, 58];
+    return [248, 244, 236];
+  });
+
   return {
     smartEraseBeach: {
       id: 'sample-beach-photobomber',
@@ -621,6 +638,20 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
       label: 'Summer Midday Green Foliage & Porch',
       data: summerPorchBuf.toString('base64'),
     },
+    lowResPortraitThumb: {
+      id: 'sample-lowres-portrait-thumb',
+      name: 'lowres-180x180-compressed-portrait.jpg',
+      mimeType: 'image/png',
+      label: 'Low-Res 180×180 Compressed Portrait (Skin Tone & Weave)',
+      data: lowResPortraitBuf.toString('base64'),
+    },
+    holidayCard2025Template: {
+      id: 'sample-holiday-card-2025-template',
+      name: 'holiday-card-2025-template.jpg',
+      mimeType: 'image/png',
+      label: '2025 Holiday Card Template ("The Miller Family · 2025")',
+      data: holidayCard2025Buf.toString('base64'),
+    },
   };
 })();
 
@@ -662,6 +693,16 @@ const IMAGE_USE_CASE_PACKS = [
         prompt: 'Generate an ultra-high-resolution 4K (300-DPI print-ready) architectural and botanical photograph of a traditional Kyoto autumn courtyard garden at dawn. Render microscopic surface detail in the wet moss-covered stepping stones, hand-raked gravel ripples, crimson Japanese maple leaves, and warm cedar joinery engineered for a 36×24 inch metallic or canvas wall print.',
         whyItMatters: 'Compares 1K vs 2K vs 4K native output token fidelity and micro-texture sharpness using the full-size 1:1 native pixel viewer.',
         sampleAttachments: [],
+      },
+      {
+        id: 'portrait-color-science-4k-upscale',
+        title: '4. Low-Res Portrait → 4K Skin-Tone, Iris & Fabric Super-Resolution',
+        badge: '180×180 Input → Native 4K Portrait',
+        recommendedSize: '4K',
+        recommendedAspectRatio: '1:1',
+        prompt: 'Upscale and restore the attached low-resolution compressed portrait into a 4K (300-DPI print-ready) studio portrait. Eliminate JPEG blockiness and mosquito noise while preserving natural, color-accurate skin tones and subsurface warmth, reconstructing individual eyelashes, iris catchlights, fine hair strands, and crisp cable-knit sweater weave without plastic over-smoothing.',
+        whyItMatters: 'Validates color-scientist-grade skin tone fidelity, natural pore/hair micro-detail, and zero plastic smoothing when upscaling compressed customer portraits to 4K print DPI.',
+        sampleAttachments: ['lowResPortraitThumb'],
       },
     ],
   },
@@ -756,13 +797,13 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'holiday-card-typography',
-        title: '1. Holiday Card & Multilingual Typography Creation ("2026")',
-        badge: 'Typography & Template Refresh',
+        title: '1. Holiday Card Template Year Modernization ("2025" → "2026") & Multilingual Typography',
+        badge: '2025 Template Input → 2026 Refresh',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
-        prompt: 'Design a luxury press-printed holiday greeting card flat-lay on textured warm cotton cardstock with delicate gold-foil botanical pine and eucalyptus borders. Render crisp, zero-typo serif and calligraphy typography centered on the card reading:\n"Warmest Wishes"\n"The Miller Family · 2026"\n"Joyeux Noël · Feliz Navidad · Frohe Weihnachten"\nInclude soft natural morning window shadows and print-ready kerning.',
-        whyItMatters: 'Tests automated template year-reference modernization ("2025" → "2026") and multilingual glyph accuracy across Latin diacritics without manual designer re-typesetting.',
-        sampleAttachments: [],
+        prompt: 'Modernize the attached "2025" holiday greeting card template for the 2026 season: update the year reference from "2025" to "2026" while preserving the textured warm cotton cardstock and gold-foil botanical pine border. Render crisp, zero-typo serif and calligraphy typography centered on the card reading:\n"Warmest Wishes"\n"The Miller Family · 2026"\n"Joyeux Noël · Feliz Navidad · Frohe Weihnachten"\nMaintain print-ready kerning and natural studio shadows.',
+        whyItMatters: 'Eliminates multi-day manual designer bottlenecks for updating year references ("2025" → "2026") across holiday card catalogs while enabling Split Curtain comparison against the original 2025 template.',
+        sampleAttachments: ['holidayCard2025Template'],
       },
       {
         id: 'print-4k-upscale',
@@ -794,6 +835,16 @@ const IMAGE_USE_CASE_PACKS = [
         whyItMatters: 'Benchmarks fine stationery layout composition, debossed foil texture realism, and multi-line formal invitation typography.',
         sampleAttachments: [],
       },
+      {
+        id: 'persistent-custom-stickers',
+        title: '5. Persistent Custom Stickers & Die-Cut Scrapbook Embellishments (From Character Reference)',
+        badge: 'Character-Locked Sticker Sheet',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '1:1',
+        prompt: 'Using the attached explorer fox character reference image, generate a cohesive sheet of 6 die-cut vinyl photo-book stickers and scrapbook embellishments on a clean light-gray studio backing. Keep the exact same red fox character and blue-and-gold scarf across all 6 stickers in playful poses (waving, holding a camera, sipping hot cocoa, wearing a winter beanie, framing a photo border, and a "2026 Family Memories" badge), each with a crisp white kiss-cut sticker border.',
+        whyItMatters: 'Unlocks persistent custom stickers, scrapbook embellishments, and character-locked decorative packs across photo book spreads from a single reference image.',
+        sampleAttachments: ['storybookFox'],
+      },
     ],
   },
   {
@@ -804,12 +855,12 @@ const IMAGE_USE_CASE_PACKS = [
       {
         id: 'retail-lifestyle-staging',
         title: '1. Virtual Lifestyle Staging & Promotional Badge Creation',
-        badge: 'Catalog Automation',
+        badge: 'Product Input → Lifestyle Staging',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
-        prompt: 'Commercial studio lifestyle photograph of an espresso machine on a sunlit Scandinavian oak kitchen counter surrounded by fresh croissants, linen napkins, and ceramic cups. In the upper-right corner, render a clean minimalist promotional badge reading "AUTUMN ROAST EVENT · SAVE 25% · CODE: ESPRESSO26".',
+        prompt: 'Stage the attached terracotta ceramic mug into a warm, sunlit Scandinavian oak kitchen counter lifestyle scene surrounded by fresh croissants, linen napkins, and an espresso machine. In the upper-right corner, render a clean minimalist promotional badge reading "AUTUMN ROAST EVENT · SAVE 25% · CODE: ESPRESSO26".',
         whyItMatters: 'Replaces expensive physical studio reshoots with instant seasonal lifestyle staging and localized promotional badge typography.',
-        sampleAttachments: [],
+        sampleAttachments: ['clutteredDeskMug'],
       },
       {
         id: 'retail-packaging-mockup',
@@ -830,6 +881,16 @@ const IMAGE_USE_CASE_PACKS = [
         prompt: 'Cinematic sci-fi theatrical movie poster showing a lone astronaut standing on a crystalline ridge overlooking a ringed gas giant in deep teal and amber anamorphic lighting. Render bold metallic title typography at the top reading "HORIZON OF TITAN" and a crisp subtitle at the bottom reading "EXPERIENCE IT IN IMAX · NOVEMBER 2026".',
         whyItMatters: 'Benchmarks dramatic lighting composition paired with multi-line display typography.',
         sampleAttachments: [],
+      },
+      {
+        id: 'personalized-plaque-lifestyle',
+        title: '4. Personalized Desktop Plaque & Home-Decor Lifestyle Staging (Multi-Cohort Campaign)',
+        badge: 'Home Decor & Gift Staging',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Stage the attached woven throw pillow product into a warm, modern Gen-Z apartment living room lifestyle scene alongside a 5×7 wooden desktop photo plaque and warm fairy lights on an oak bookshelf. In the upper-right corner, render a clean promotional campaign badge reading "PERSONALIZED HOME & GIFT EVENT · 50% OFF".',
+        whyItMatters: 'Accelerates marketing campaign velocity — placing customized home-decor and photo gift SKUs into targeted lifestyle scenes with promotional badge copy in seconds.',
+        sampleAttachments: ['crimsonThrowPillow'],
       },
     ],
   },
