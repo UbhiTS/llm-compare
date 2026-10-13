@@ -5173,6 +5173,130 @@ function getImgCatalogItem(id) {
   return cat.find((m) => m.id === id || m.model === id) || cat[0] || null;
 }
 
+function hasOffPeakModelSelected() {
+  return IMG_SLOTS.some((s) => {
+    const c = getImgCatalogItem(s.catalogId);
+    return !!(c && c.pricing && c.pricing.offPeakDiscount > 0);
+  });
+}
+
+// ---------- Full-Screen Image Lightbox Modal (Input References & Generated Outputs) ----------
+let IMG_LIGHTBOX_ITEMS = [];
+let IMG_LIGHTBOX_IDX = 0;
+let IMG_LIGHTBOX_PIXELATED = false;
+
+function openImageLightbox(items, startIndex = 0) {
+  if (!Array.isArray(items) || !items.length) return;
+  const modal = $('#imgLightboxModal');
+  if (!modal) return;
+  IMG_LIGHTBOX_ITEMS = items;
+  IMG_LIGHTBOX_IDX = Math.max(0, Math.min(items.length - 1, Number(startIndex) || 0));
+  const first = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
+  IMG_LIGHTBOX_PIXELATED = Boolean(first && first.defaultPixelated);
+  modal.classList.remove('hidden');
+  renderImageLightboxCurrent();
+}
+
+function closeImageLightbox() {
+  const modal = $('#imgLightboxModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function stepImageLightbox(delta) {
+  if (!IMG_LIGHTBOX_ITEMS.length) return;
+  IMG_LIGHTBOX_IDX = (IMG_LIGHTBOX_IDX + delta + IMG_LIGHTBOX_ITEMS.length) % IMG_LIGHTBOX_ITEMS.length;
+  renderImageLightboxCurrent();
+}
+
+function renderImageLightboxCurrent() {
+  const item = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
+  if (!item) return;
+  const badgeEl = $('#imgLightboxBadge');
+  const titleEl = $('#imgLightboxTitle');
+  const metaEl = $('#imgLightboxMeta');
+  const imgEl = $('#imgLightboxImg');
+  const dlBtn = $('#imgLightboxDownloadBtn');
+  const prevBtn = $('#imgLightboxPrevBtn');
+  const nextBtn = $('#imgLightboxNextBtn');
+  const pxBtn = $('#imgLightboxPixelModeBtn');
+
+  if (badgeEl) badgeEl.textContent = item.badge || `Image ${IMG_LIGHTBOX_IDX + 1} of ${IMG_LIGHTBOX_ITEMS.length}`;
+  if (titleEl) titleEl.textContent = item.title || 'Image Preview';
+  if (metaEl) metaEl.textContent = item.meta || '';
+  if (prevBtn) prevBtn.classList.toggle('hidden', IMG_LIGHTBOX_ITEMS.length < 2);
+  if (nextBtn) nextBtn.classList.toggle('hidden', IMG_LIGHTBOX_ITEMS.length < 2);
+
+  if (pxBtn) {
+    pxBtn.textContent = IMG_LIGHTBOX_PIXELATED ? '✨ Smooth View' : '🔳 Crisp Pixels';
+    pxBtn.classList.toggle('is-on', IMG_LIGHTBOX_PIXELATED);
+  }
+
+  if (dlBtn) {
+    dlBtn.href = item.url || '#';
+    dlBtn.download = item.downloadName || 'image-preview.png';
+  }
+
+  if (imgEl) {
+    imgEl.classList.toggle('is-pixelated', IMG_LIGHTBOX_PIXELATED);
+    imgEl.onload = () => {
+      if (imgEl.naturalWidth && imgEl.naturalHeight && metaEl) {
+        const dimPrefix = `${imgEl.naturalWidth}×${imgEl.naturalHeight} px`;
+        const baseMeta = item.meta || '';
+        metaEl.textContent = baseMeta.includes(dimPrefix)
+          ? baseMeta
+          : (baseMeta ? `${dimPrefix} · ${baseMeta}` : dimPrefix);
+      }
+    };
+    imgEl.src = item.url || '';
+    imgEl.alt = item.title || 'Enlarged preview';
+  }
+}
+
+function openReferenceLightboxAt(idx) {
+  if (!IMG_REF_ATTACHMENTS.length) return;
+  const items = IMG_REF_ATTACHMENTS.map((att, i) => {
+    const cleanB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
+    const kb = Math.max(1, Math.round((cleanB64.length * 3) / 4 / 1024));
+    const url = `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
+    const isLowResSample = /lowres|160x120|thumb/i.test(`${att.id || ''} ${att.name || ''} ${att.label || ''}`);
+    return {
+      badge: `Input Ref #${i + 1} of ${IMG_REF_ATTACHMENTS.length}`,
+      title: att.label || att.name || `Reference Image #${i + 1}`,
+      meta: `${kb} KB · ${att.mimeType || 'image/png'}`,
+      url,
+      downloadName: att.name || `reference-${i + 1}.png`,
+      defaultPixelated: isLowResSample,
+    };
+  });
+  openImageLightbox(items, idx);
+}
+
+function openGeneratedOutputLightboxAt(slotId) {
+  const ok = (IMG_LAST_RESULTS || []).filter((r) => r && r.ok && r.imageDataUrl);
+  if (!ok.length) return;
+  const items = ok.map((r) => {
+    const dimsStr = (r.width && r.height) ? `${r.width}×${r.height}` : r.requestedSize;
+    const mpStr = r.megapixels != null ? `${r.megapixels} MP` : '';
+    const stage = $(`#img-stage-${r.slot}`);
+    const displayedImg = stage && stage.querySelector('img.img-main-output');
+    const currentUrl = (displayedImg && displayedImg.src) || r.imageDataUrl;
+    const isShowingThought = r.thoughtImageDataUrl && currentUrl === r.thoughtImageDataUrl;
+    return {
+      slot: r.slot,
+      badge: `Slot ${r.slot} · ${r.shortLabel || r.label}`,
+      title: isShowingThought
+        ? `${r.label} — 1K Visual Thinking Draft`
+        : `${r.label} — Final ${dimsStr} Output`,
+      meta: `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''} · ${((r.latencyMs || 0) / 1000).toFixed(1)}s · PayGo ${fmtCost(r.standardPayGoCostUsd)}`,
+      url: currentUrl,
+      downloadName: `${r.model}-${dimsStr}-${Date.now()}.png`,
+      defaultPixelated: false,
+    };
+  });
+  const startIdx = Math.max(0, items.findIndex((it) => it.slot === slotId));
+  openImageLightbox(items, startIdx);
+}
+
 function renderImageSizeAndAspectPills() {
   const sizeWrap = $('#imgSizePills');
   const aspectWrap = $('#imgAspectPills');
@@ -5391,7 +5515,18 @@ function renderImageReferenceAttachments() {
   listEl.classList.remove('hidden');
   listEl.innerHTML = '';
   IMG_REF_ATTACHMENTS.forEach((att, idx) => {
-    const item = el('div', 'ca-item');
+    const item = el('div', 'ca-item is-clickable');
+    item.title = 'Click to view large input reference image';
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
+    item.addEventListener('click', () => openReferenceLightboxAt(idx));
+    item.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openReferenceLightboxAt(idx);
+      }
+    });
+
     const thumb = el('img', 'ca-thumb');
     const cleanB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
     thumb.src = `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
@@ -5406,10 +5541,14 @@ function renderImageReferenceAttachments() {
     info.appendChild(meta);
     item.appendChild(info);
 
+    const zoomHint = el('span', 'ca-zoom-hint', '🔍 Enlarge');
+    item.appendChild(zoomHint);
+
     const rm = el('button', 'ca-remove', '✕');
     rm.type = 'button';
     rm.title = 'Remove reference image';
-    rm.addEventListener('click', () => {
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
       IMG_REF_ATTACHMENTS.splice(idx, 1);
       renderImageReferenceAttachments();
     });
@@ -5442,6 +5581,9 @@ function renderImageArenaPlaceholderCards() {
   const grid = $('#imgArenaGrid');
   if (!grid || !IMG_CONFIG) return;
   grid.innerHTML = '';
+  grid.style.setProperty('--img-slot-count', String(Math.max(1, IMG_SLOTS.length)));
+  const showOffPeak = hasOffPeakModelSelected();
+  const topSpanCls = showOffPeak ? 'span-2' : 'span-3';
 
   IMG_SLOTS.forEach((slotObj) => {
     const entry = getImgCatalogItem(slotObj.catalogId);
@@ -5460,6 +5602,13 @@ function renderImageArenaPlaceholderCards() {
     const estTok = entry.id === 'gemini-2.5-flash-image'
       ? '1,290 tok'
       : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': entry.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok');
+    const modeLabel = entry.id === 'gemini-nano-banana-2.1'
+      ? '🧠 Visual Thinking + Final Render'
+      : '⚡ Direct Single-Pass Render';
+
+    const offPeakTileHtml = showOffPeak
+      ? `<div class="metric span-3" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">${offPeakPrice != null ? '~' + fmtCost(offPeakPrice) + ' (-50%)' : 'Standard / PTU'}</div></div>`
+      : '';
 
     col.innerHTML = `
       <header class="col-head">
@@ -5467,20 +5616,27 @@ function renderImageArenaPlaceholderCards() {
           <span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66">${esc(slotObj.slot)}</span>
           ${ICON_GEMINI}
           <div>
-            <h3 class="col-title">${esc(entry.label)}</h3>
-            <div class="col-sub">${esc(entry.releaseBadge)} · <code>${esc(entry.model)}</code></div>
+            <h3 class="col-title" title="${esc(entry.label)}">${esc(entry.label)}</h3>
+            <div class="col-sub" title="${esc(entry.releaseBadge)} · ${esc(entry.model)}">${esc(entry.releaseBadge)} · <code>${esc(entry.model)}</code></div>
           </div>
         </div>
         <div class="col-head-right">
           <span class="status-pill" id="img-status-${slotObj.slot}">Ready (${esc(IMG_SELECTED_SIZE)})</span>
         </div>
       </header>
-      <div class="img-card-toolbar">
-        <div class="img-card-badges" id="img-badges-${slotObj.slot}">
-          <span class="img-res-pill">${esc(entry.slaBadge)}</span>
-          <span class="img-res-pill">${esc(entry.endpointBadge)}</span>
+      <div class="img-card-badges" id="img-badges-${slotObj.slot}">
+        <span class="img-res-pill">${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</span>
+        <span class="img-res-pill">${esc(entry.slaBadge)}</span>
+        <span class="img-res-pill">${esc(entry.endpointBadge)}</span>
+      </div>
+      <div class="img-card-actions" id="img-actions-${slotObj.slot}">
+        <div class="img-card-actions-left">
+          <span class="img-mode-chip">${esc(modeLabel)}</span>
         </div>
-        <div class="img-card-actions" id="img-actions-${slotObj.slot}"></div>
+        <div class="img-card-actions-right">
+          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to enlarge">🔍 Enlarge</button>
+          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to download PNG">⬇ Save PNG</button>
+        </div>
       </div>
       <div class="img-stage-wrap" id="img-stage-${slotObj.slot}" data-slot="${esc(slotObj.slot)}">
         <div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:13px">
@@ -5488,11 +5644,11 @@ function renderImageArenaPlaceholderCards() {
         </div>
       </div>
       <div class="metrics">
-        <div class="metric" id="img-mcard-res-${slotObj.slot}"><div class="k">Resolution &amp; MP</div><div class="v" id="img-tile-res-${slotObj.slot}">${esc(IMG_SELECTED_SIZE)} · ~${esc(estMp)}</div></div>
-        <div class="metric" id="img-mcard-time-${slotObj.slot}"><div class="k">Wall Time</div><div class="v" id="img-tile-time-${slotObj.slot}">—</div></div>
-        <div class="metric" id="img-mcard-tok-${slotObj.slot}"><div class="k">Image / Think Tok</div><div class="v" id="img-tile-tok-${slotObj.slot}">~${esc(estTok)}</div></div>
-        <div class="metric" id="img-mcard-cost-${slotObj.slot}"><div class="k">Standard PayGo</div><div class="v" id="img-tile-cost-${slotObj.slot}">~${fmtCost(refPrice)}</div></div>
-        <div class="metric" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">${offPeakPrice != null ? '~' + fmtCost(offPeakPrice) + ' (-50%)' : 'Standard / PTU'}</div></div>
+        <div class="metric ${topSpanCls}" id="img-mcard-res-${slotObj.slot}"><div class="k">Resolution &amp; MP</div><div class="v" id="img-tile-res-${slotObj.slot}">${esc(IMG_SELECTED_SIZE)} · ~${esc(estMp)}</div></div>
+        <div class="metric ${topSpanCls}" id="img-mcard-time-${slotObj.slot}"><div class="k">Wall Time</div><div class="v" id="img-tile-time-${slotObj.slot}">—</div></div>
+        <div class="metric ${topSpanCls}" id="img-mcard-tok-${slotObj.slot}"><div class="k">Image / Think Tok</div><div class="v" id="img-tile-tok-${slotObj.slot}">~${esc(estTok)}</div></div>
+        <div class="metric span-3" id="img-mcard-cost-${slotObj.slot}"><div class="k">Standard PayGo</div><div class="v" id="img-tile-cost-${slotObj.slot}">~${fmtCost(refPrice)}</div></div>
+        ${offPeakTileHtml}
       </div>
       <div class="img-arch-callout" id="img-arch-${slotObj.slot}">
         <strong>Production Guidance:</strong> ${esc(entry.architectureGuidance)}
@@ -5776,16 +5932,20 @@ function applyImageResultToCard(r) {
       `<span class="img-res-pill ${isTrue4K ? 'is-4k' : ''}">${esc(dimsStr)}${mpStr ? ' · ' + esc(mpStr) : ''}</span>` +
       `<span class="img-res-pill">${esc(r.slaBadge || '')}</span>` +
       (r.savingsVsNanoBanana2Pct > 0
-        ? `<span class="img-res-pill is-4k">~${r.savingsVsNanoBanana2Pct}% Lower Output Cost</span>`
+        ? `<span class="img-res-pill is-4k">~${r.savingsVsNanoBanana2Pct}% Lower Cost</span>`
         : '');
   }
 
   if (actions) {
     actions.innerHTML = '';
+    const leftWrap = el('div', 'img-card-actions-left');
+    const rightWrap = el('div', 'img-card-actions-right');
+
     if (r.hasThoughtImage && r.thoughtImageDataUrl) {
       const tDims = (r.thoughtDims && r.thoughtDims.width) ? `${r.thoughtDims.width}×${r.thoughtDims.height}` : '1K';
-      const toggleBtn = el('button', 'bar-btn img-thought-toggle', `🧠 Inspect 1K Visual Thinking Draft (${tDims})`);
+      const toggleBtn = el('button', 'bar-btn img-thought-toggle', `🧠 1K Thinking Draft (${tDims})`);
       toggleBtn.type = 'button';
+      toggleBtn.title = 'Toggle between the 1K visual thinking draft (part[0]) and the final high-resolution output (part[1])';
       let showingThought = false;
       toggleBtn.addEventListener('click', () => {
         showingThought = !showingThought;
@@ -5794,23 +5954,36 @@ function applyImageResultToCard(r) {
           imgEl.src = showingThought ? r.thoughtImageDataUrl : r.imageDataUrl;
         }
         toggleBtn.textContent = showingThought
-          ? `✨ Back to Final ${dimsStr} Output`
-          : `🧠 Inspect 1K Visual Thinking Draft (${tDims})`;
+          ? `✨ Final ${dimsStr} Output`
+          : `🧠 1K Thinking Draft (${tDims})`;
         toggleBtn.classList.toggle('is-on', showingThought);
       });
-      actions.appendChild(toggleBtn);
+      leftWrap.appendChild(toggleBtn);
+    } else {
+      const chip = el('span', 'img-mode-chip', '⚡ Direct Single-Pass Render');
+      leftWrap.appendChild(chip);
     }
+
+    const enlargeBtn = el('button', 'bar-btn img-thought-toggle', '🔍 Enlarge');
+    enlargeBtn.type = 'button';
+    enlargeBtn.title = 'Open full-screen lightbox comparison';
+    enlargeBtn.addEventListener('click', () => openGeneratedOutputLightboxAt(r.slot));
+    rightWrap.appendChild(enlargeBtn);
 
     const dlBtn = el('a', 'bar-btn img-thought-toggle', '⬇ Save PNG');
     dlBtn.href = r.imageDataUrl;
     dlBtn.download = `${r.model}-${dimsStr}-${Date.now()}.png`;
-    actions.appendChild(dlBtn);
+    rightWrap.appendChild(dlBtn);
+
+    actions.appendChild(leftWrap);
+    actions.appendChild(rightWrap);
   }
 
   if (stage) {
     stage.innerHTML = '';
     stage.dataset.hasImage = '1';
     stage.dataset.dimsLabel = `${dimsStr}${mpStr ? ' (' + mpStr + ')' : ''}`;
+    stage.ondblclick = () => openGeneratedOutputLightboxAt(r.slot);
     const img = el('img', 'img-main-output');
     img.src = r.imageDataUrl;
     img.alt = `${r.label} generated output (${dimsStr})`;
@@ -5860,7 +6033,9 @@ function highlightImageWinnerTiles(results) {
   markBest('res', ok.map((r) => ({ slot: r.slot, v: Number(r.megapixels || 0) })), 'higher');
   markBest('time', ok.map((r) => ({ slot: r.slot, v: Number(r.latencyMs || 0) })), 'lower');
   markBest('cost', ok.map((r) => ({ slot: r.slot, v: Number(r.standardPayGoCostUsd || 0) })), 'lower');
-  markBest('offpeak', ok.map((r) => ({ slot: r.slot, v: Number(r.offPeakPayGoCostUsd || r.standardPayGoCostUsd || 0) })), 'lower');
+  if (hasOffPeakModelSelected()) {
+    markBest('offpeak', ok.map((r) => ({ slot: r.slot, v: Number(r.offPeakPayGoCostUsd || r.standardPayGoCostUsd || 0) })), 'lower');
+  }
 }
 
 // ---------- Image Model Comparison Bars & Scale Scorecard (Matches Text Arena) ----------
@@ -5871,6 +6046,8 @@ function renderImageMetricComparison() {
   const subEl = $('#imgScorecardSub');
   const toggleEl = $('#imgMetricViewToggle');
   if (!gridEl) return;
+
+  const showOffPeak = hasOffPeakModelSelected();
 
   const scored = IMG_SLOTS.map((s) => {
     const entry = getImgCatalogItem(s.catalogId);
@@ -5941,14 +6118,20 @@ function renderImageMetricComparison() {
       get: (r) => Math.max(r.standardPayGoCostUsd || 0, 0),
       fmt: (v) => fmtCost(v),
     },
-    {
+  ];
+
+  if (showOffPeak) {
+    metrics.push({
       label: 'Off-Peak PayGo / img',
       icon: 'cost',
       dir: 'lower',
       hint: '↓ lower is better (-50% on 2.1)',
       get: (r) => Math.max(r.offPeakPayGoCostUsd || 0, 0),
       fmt: (v) => fmtCost(v),
-    },
+    });
+  }
+
+  metrics.push(
     {
       label: 'Wall time',
       icon: 'time',
@@ -5972,8 +6155,8 @@ function renderImageMetricComparison() {
       hint: `${IMG_SELECTED_SIZE} token footprint · neutral`,
       get: (r) => Math.max(r.imageOutputTokens || 0, 0),
       fmt: (v) => fmtInt(Math.round(v)),
-    },
-  ];
+    }
+  );
 
   gridEl.innerHTML = metrics.map((m) => {
     const vals = scored.map((r) => ({ r, v: m.get(r) }));
@@ -5987,73 +6170,47 @@ function renderImageEconomicsModeler() {
   if (!IMG_CONFIG) return;
   const volSlider = $('#imgVolumeSlider');
   const offPeakSlider = $('#imgOffPeakSlider');
+  const offPeakSliderCard = $('#imgOffPeakSliderCard');
+  const offPeakTh = $('#imgEconOffPeakTh');
+  const econTitle = $('#imgEconTitle');
   const volLabel = $('#imgVolumeLabel');
   const offPeakLabel = $('#imgOffPeakLabel');
   const kpiGrid = $('#imgEconKpiGrid');
   const tbody = $('#imgEconTableBody');
   if (!volSlider || !offPeakSlider || !kpiGrid || !tbody) return;
 
+  const showOffPeak = hasOffPeakModelSelected();
+  if (offPeakSliderCard) offPeakSliderCard.classList.toggle('hidden', !showOffPeak);
+  if (offPeakTh) offPeakTh.classList.toggle('hidden', !showOffPeak);
+  if (econTitle) {
+    econTitle.textContent = showOffPeak
+      ? 'Purchasing Tiers, SLA Routing & Peak Holiday Volume Modeler'
+      : 'Purchasing Tiers, SLA Routing & Peak Volume Modeler (Selected Models)';
+  }
+
   const volume = Number(volSlider.value) || 1_000_000;
-  const offPeakPct = Number(offPeakSlider.value) || 60;
+  const offPeakPct = showOffPeak ? (Number(offPeakSlider.value) || 60) : 0;
   const offPeakShare = offPeakPct / 100;
   const syncShare = 1 - offPeakShare;
 
   if (volLabel) volLabel.textContent = `${fmtInt(volume)} images (${IMG_SELECTED_SIZE})`;
   if (offPeakLabel) offPeakLabel.textContent = `${offPeakPct}% Off-Peak Batch · ${100 - offPeakPct}% Real-Time Sync`;
 
-  const nb2 = getImgCatalogItem('gemini-3.1-flash-image');
-  const nb21 = getImgCatalogItem('gemini-nano-banana-2.1');
-  if (!nb2 || !nb21) return;
-
-  // Use measured live costs from the latest run if available for the current size, else catalog reference prices
-  const liveNb2 = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === 'gemini-3.1-flash-image' && r.requestedSize === IMG_SELECTED_SIZE);
-  const liveNb21 = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === 'gemini-nano-banana-2.1' && r.requestedSize === IMG_SELECTED_SIZE);
-
-  const nb2StdPerImg = liveNb2 ? liveNb2.standardPayGoCostUsd : ((nb2.pricing.referenceCostBySize && nb2.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.1008);
-  const nb21StdPerImg = liveNb21 ? liveNb21.standardPayGoCostUsd : ((nb21.pricing.referenceCostBySize && nb21.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.0504);
-  const nb21OffPeakPerImg = nb21StdPerImg * 0.5;
-
-  const baselineAllNb2Cost = volume * nb2StdPerImg;
-  const allNb21StdCost = volume * nb21StdPerImg;
-  const hybridArchCost = (volume * syncShare * nb2StdPerImg) + (volume * offPeakShare * nb21OffPeakPerImg);
-  const pureNb21BlendedCost = (volume * syncShare * nb21StdPerImg) + (volume * offPeakShare * nb21OffPeakPerImg);
-  const maxSavingsUsd = baselineAllNb2Cost - pureNb21BlendedCost;
-  const maxSavingsPct = baselineAllNb2Cost > 0 ? Math.round((maxSavingsUsd / baselineAllNb2Cost) * 100) : 0;
-
   const fmtUsdBig = (n) => '$' + Math.round(n).toLocaleString('en-US');
 
-  kpiGrid.innerHTML = `
-    <div class="img-econ-kpi">
-      <span class="iek-label">Baseline · 100% Nano Banana 2 (Standard PayGo)</span>
-      <span class="iek-value">${fmtUsdBig(baselineAllNb2Cost)}</span>
-      <span class="iek-sub">${fmtCost(nb2StdPerImg)}/img · 99.5% Long-Term GA SLA</span>
-    </div>
-    <div class="img-econ-kpi">
-      <span class="iek-label">100% Nano Banana 2.1 (Standard PayGo)</span>
-      <span class="iek-value">${fmtUsdBig(allNb21StdCost)}</span>
-      <span class="iek-sub">${fmtCost(nb21StdPerImg)}/img · ~50% lower image token rate</span>
-    </div>
-    <div class="img-econ-kpi highlight">
-      <span class="iek-label">Nano Banana 2.1 + ${offPeakPct}% Off-Peak PayGo</span>
-      <span class="iek-value">${fmtUsdBig(pureNb21BlendedCost)}</span>
-      <span class="iek-sub">Saves <strong>${fmtUsdBig(maxSavingsUsd)} (${maxSavingsPct}%)</strong> vs baseline</span>
-    </div>
-    <div class="img-econ-kpi">
-      <span class="iek-label">Recommended Split Architecture (${100 - offPeakPct}% NB2 + ${offPeakPct}% NB2.1 Off-Peak)</span>
-      <span class="iek-value">${fmtUsdBig(hybridArchCost)}</span>
-      <span class="iek-sub">99.5% SLA on sync checkout + 50% Off-Peak on batch/4K</span>
-    </div>
-  `;
-
-  tbody.innerHTML = '';
-  (IMG_CONFIG.catalog || []).forEach((c) => {
-    const live = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && r.catalogId === c.id && r.requestedSize === IMG_SELECTED_SIZE);
+  // Strictly model ONLY the active selected slots in IMG_SLOTS
+  const activeRows = IMG_SLOTS.map((s) => {
+    const c = getImgCatalogItem(s.catalogId);
+    if (!c) return null;
+    const live = (IMG_LAST_RESULTS || []).find(
+      (r) => r && r.ok && r.slot === s.slot && r.catalogId === c.id && r.requestedSize === IMG_SELECTED_SIZE
+    );
     const stdPerImg = live
-      ? live.standardPayGoCostUsd
+      ? Number(live.standardPayGoCostUsd)
       : ((c.pricing && c.pricing.referenceCostBySize && c.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05);
-    const hasOffPeak = c.pricing && c.pricing.offPeakDiscount > 0;
+    const hasOffPeak = !!(c.pricing && c.pricing.offPeakDiscount > 0);
     const offPeakPerImg = hasOffPeak ? stdPerImg * (1 - c.pricing.offPeakDiscount) : null;
-    const blendedVolCost = hasOffPeak
+    const blendedVolCost = (showOffPeak && hasOffPeak)
       ? (volume * syncShare * stdPerImg) + (volume * offPeakShare * offPeakPerImg)
       : (volume * stdPerImg);
     const tokEst = live
@@ -6061,17 +6218,70 @@ function renderImageEconomicsModeler() {
       : (c.id === 'gemini-2.5-flash-image' ? '1,290 tok (1K fixed)' : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': c.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok'));
     const resCap = c.supportedSizes.includes(IMG_SELECTED_SIZE)
       ? `${IMG_SELECTED_SIZE} Native`
-      : `1K Capped (1344×768)`;
+      : '1K Capped (1344×768)';
+    return {
+      slot: s.slot,
+      catalog: c,
+      stdPerImg,
+      hasOffPeak,
+      offPeakPerImg,
+      blendedVolCost,
+      tokEst,
+      resCap,
+    };
+  }).filter(Boolean);
 
+  if (!activeRows.length) return;
+
+  const costs = activeRows.map((r) => r.blendedVolCost);
+  const minCost = Math.min(...costs);
+  const maxCost = Math.max(...costs);
+  const savingsUsd = Math.max(0, maxCost - minCost);
+  const savingsPct = maxCost > 0 ? Math.round((savingsUsd / maxCost) * 100) : 0;
+  const bestRow = activeRows.find((r) => Math.abs(r.blendedVolCost - minCost) < 1e-6) || activeRows[0];
+
+  const slotKpisHtml = activeRows.map((r) => {
+    const isLowest = activeRows.length > 1 && savingsUsd > 1 && Math.abs(r.blendedVolCost - minCost) < 1e-6;
+    const rateNote = (showOffPeak && r.hasOffPeak)
+      ? `${fmtCost(r.stdPerImg)} std / ${fmtCost(r.offPeakPerImg)} off-peak (${offPeakPct}% batch)`
+      : `${fmtCost(r.stdPerImg)}/img · ${r.catalog.slaBadge}`;
+    return `
+      <div class="img-econ-kpi ${isLowest ? 'highlight' : ''}">
+        <span class="iek-label">Slot ${esc(r.slot)} · ${esc(r.catalog.label)}</span>
+        <span class="iek-value">${fmtUsdBig(r.blendedVolCost)}</span>
+        <span class="iek-sub">${esc(rateNote)}</span>
+      </div>
+    `;
+  }).join('');
+
+  const deltaKpiHtml = activeRows.length > 1
+    ? `
+      <div class="img-econ-kpi ${savingsUsd > 0 ? 'highlight' : ''}">
+        <span class="iek-label">Projected Volume Savings (${fmtInt(volume)} imgs)</span>
+        <span class="iek-value">${savingsUsd > 0 ? fmtUsdBig(savingsUsd) + ` (-${savingsPct}%)` : '$0 (Equal Rate)'}</span>
+        <span class="iek-sub">${savingsUsd > 0 ? `Slot ${esc(bestRow.slot)} (${esc(bestRow.catalog.shortLabel || bestRow.catalog.label)}) vs highest-cost slot` : 'Selected models share identical per-image cost'}</span>
+      </div>
+    `
+    : '';
+
+  kpiGrid.innerHTML = slotKpisHtml + deltaKpiHtml;
+
+  tbody.innerHTML = '';
+  activeRows.forEach((r) => {
+    const c = r.catalog;
+    const color = slotColor(r.slot);
+    const offPeakTdHtml = showOffPeak
+      ? `<td style="font-family:'JetBrains Mono',monospace;color:${r.hasOffPeak ? 'var(--good)' : 'var(--muted)'}">${r.hasOffPeak ? fmtCost(r.offPeakPerImg) + ' (-50%)' : 'N/A (Standard / PTU)'}</td>`
+      : '';
     const tr = el('tr');
     tr.innerHTML = `
-      <td><strong>${esc(c.label)}</strong><br/><span style="font-size:11px;color:var(--muted)"><code>${esc(c.model)}</code></span></td>
+      <td><span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66;margin-right:6px">${esc(r.slot)}</span><strong>${esc(c.label)}</strong><br/><span style="font-size:11px;color:var(--muted)"><code>${esc(c.model)}</code></span></td>
       <td>${esc(c.slaBadge)}<br/><span style="font-size:11px;color:var(--muted)">${esc(c.endpointBadge)}</span></td>
-      <td>${esc(resCap)}</td>
-      <td style="font-family:'JetBrains Mono',monospace">${esc(tokEst)}</td>
-      <td style="font-family:'JetBrains Mono',monospace">${fmtCost(stdPerImg)}</td>
-      <td style="font-family:'JetBrains Mono',monospace;color:${hasOffPeak ? 'var(--good)' : 'var(--muted)'}">${hasOffPeak ? fmtCost(offPeakPerImg) + ' (-50%)' : 'N/A (Standard / PTU)'}</td>
-      <td style="font-family:'JetBrains Mono',monospace;font-weight:700">${fmtUsdBig(blendedVolCost)}</td>
+      <td>${esc(r.resCap)}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${esc(r.tokEst)}</td>
+      <td style="font-family:'JetBrains Mono',monospace">${fmtCost(r.stdPerImg)}</td>
+      ${offPeakTdHtml}
+      <td style="font-family:'JetBrains Mono',monospace;font-weight:700">${fmtUsdBig(r.blendedVolCost)}</td>
       <td style="font-size:12px;color:var(--muted)">${esc(c.architectureGuidance)}</td>
     `;
     tbody.appendChild(tr);
@@ -6085,6 +6295,32 @@ function initImageArenaBindings() {
       btn.addEventListener('click', () => switchArenaMode(btn.dataset.arenaMode));
     });
   }
+
+  const lbModal = $('#imgLightboxModal');
+  const lbClose = $('#imgLightboxCloseBtn');
+  const lbPrev = $('#imgLightboxPrevBtn');
+  const lbNext = $('#imgLightboxNextBtn');
+  const lbPixel = $('#imgLightboxPixelModeBtn');
+  if (lbClose) lbClose.addEventListener('click', closeImageLightbox);
+  if (lbPrev) lbPrev.addEventListener('click', () => stepImageLightbox(-1));
+  if (lbNext) lbNext.addEventListener('click', () => stepImageLightbox(1));
+  if (lbPixel) {
+    lbPixel.addEventListener('click', () => {
+      IMG_LIGHTBOX_PIXELATED = !IMG_LIGHTBOX_PIXELATED;
+      renderImageLightboxCurrent();
+    });
+  }
+  if (lbModal) {
+    lbModal.addEventListener('click', (e) => {
+      if (e.target === lbModal) closeImageLightbox();
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (!lbModal || lbModal.classList.contains('hidden')) return;
+    if (e.key === 'Escape') closeImageLightbox();
+    else if (e.key === 'ArrowLeft') stepImageLightbox(-1);
+    else if (e.key === 'ArrowRight') stepImageLightbox(1);
+  });
 
   const addSlotBtn = $('#imgAddSlotBtn');
   if (addSlotBtn) {

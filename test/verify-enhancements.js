@@ -214,6 +214,17 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(indexHtml.includes('id="imgScorecard"'), 'index.html must include #imgScorecard Model comparison section');
   assert(indexHtml.includes('id="imgMetricGrid"'), 'index.html must include #imgMetricGrid for bar/scale charts');
   assert(indexHtml.includes('id="imgMetricViewToggle"'), 'index.html must include #imgMetricViewToggle for Bars vs Scale');
+  assert(indexHtml.includes('id="imgLightboxModal"'), 'index.html must include #imgLightboxModal for click-to-enlarge input/output inspection');
+  assert(indexHtml.includes('id="imgOffPeakSliderCard"'), 'index.html must include #imgOffPeakSliderCard for dynamic Off-Peak gating');
+  assert(indexHtml.includes('id="imgEconOffPeakTh"'), 'index.html must include #imgEconOffPeakTh for dynamic Off-Peak column gating');
+
+  const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+  assert(stylesCss.includes('grid-template-rows: subgrid;'), 'styles.css must align .img-result-col cards using CSS subgrid');
+  assert(stylesCss.includes('.img-lightbox-backdrop'), 'styles.css must include .img-lightbox-backdrop modal styling');
+
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert(appJs.includes('function hasOffPeakModelSelected()'), 'app.js must define hasOffPeakModelSelected() for dynamic Off-Peak gating');
+  assert(appJs.includes('function openImageLightbox('), 'app.js must define openImageLightbox() for reference and generated output inspection');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
@@ -242,7 +253,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(econ21.offPeakDiscountPct, 50, 'Off-Peak PayGo discount should be 50%');
   assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
   assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
-  console.log('✓ Image & GenMedia Arena (v1.0.10) 6 workflow packs, 12 reference PNGs, Model comparison bars/scale & Off-Peak PayGo verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.11) 6-row CSS subgrid alignment, Lightbox modal, dynamic Off-Peak gating & 6 workflow packs verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
