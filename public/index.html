@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.11"></script>
+  <script src="theme-init.js?v=1.0.12"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.11" />
+  <link rel="stylesheet" href="styles.css?v=1.0.12" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.11" defer></script>
+  <script src="app.js?v=1.0.12" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -42,7 +42,11 @@
       <button type="button" class="arena-mode-btn" data-arena-mode="image" id="modeBtnImage">
         <span class="am-icon">🎨</span>
         <span>Image &amp; GenMedia Arena</span>
-        <span class="am-badge">Nano Banana 2 vs 2.1</span>
+      </button>
+      <button type="button" class="arena-mode-btn" data-arena-mode="video" id="modeBtnVideo">
+        <span class="am-icon">🎬</span>
+        <span>Video Generation</span>
+        <span class="am-badge">Coming soon...</span>
       </button>
     </nav>
     <div class="topbar-right">
@@ -238,6 +242,7 @@
           </div>
           <div class="step-header-right">
             <span class="img-endpoint-pill" title="Verified live Vertex AI endpoint routing">☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images</span>
+            <button id="imgHistoryBtn" class="bar-btn" type="button" title="View &amp; restore past Image &amp; GenMedia Arena runs">🗂 History</button>
           </div>
         </div>
 
@@ -296,6 +301,7 @@
           </div>
         </div>
 
+        <div id="imgCompatWarning" class="img-compat-warning hidden" role="status" aria-live="polite"></div>
         <div id="imgSlotGrid" class="slot-configurator-grid img-slot-grid"></div>
       </div>
 
@@ -321,6 +327,7 @@
             </button>
           </div>
         </div>
+        <div id="imgHistoryStrip" class="img-history-strip hidden" aria-label="Recent Image Arena runs"></div>
       </div>
     </div>
 
@@ -423,6 +430,44 @@
     </section>
   </section>
 
+  <!-- ==================== VIDEO GENERATION ARENA (COMING SOON...) ==================== -->
+  <section id="videoArenaSection" class="video-arena-wrap hidden" aria-label="Video Generation Arena">
+    <div class="controls glass video-coming-soon-card">
+      <div class="vcs-badge-row">
+        <span class="img-res-pill is-4k">🚧 Coming soon... · Multi-Model Video &amp; Motion Benchmark</span>
+        <span class="img-endpoint-pill">☁️ Vertex AI <code>veo-3.1-generate-001</code> &amp; <code>veo-3.1-fast-generate-001</code></span>
+      </div>
+      <h2 class="vcs-title">🎬 Video Generation &amp; Image-to-Video Arena</h2>
+      <p class="vcs-sub">
+        Side-by-side latency, frame-rate, temporal subject consistency, synchronized audio, and unit-economics benchmarking across <strong>Veo 3.1</strong>, <strong>Veo 3.1 Fast</strong>, and multimodal video pipelines is currently on deck and will be unlocked based on upcoming customer benchmark inquiries.
+      </p>
+
+      <div class="vcs-grid">
+        <div class="vcs-feature-card">
+          <div class="vcs-f-head">🖼️ → 🎬 Image-to-Video Living Memories &amp; Product Motion</div>
+          <p class="vcs-f-body">Animate static portraits, photo-book spreads, and e-commerce studio packshots into 4–8s 1080p/4K cinematic clips with natural motion physics.</p>
+        </div>
+        <div class="vcs-feature-card">
+          <div class="vcs-f-head">🎭 Multi-Reference Character &amp; Scene Continuity</div>
+          <p class="vcs-f-body">Lock subject identity, wardrobe, and lighting across multi-shot storyboards using reference asset conditioning.</p>
+        </div>
+        <div class="vcs-feature-card">
+          <div class="vcs-f-head">🔀 First-to-Last Frame Interpolation &amp; Camera Directives</div>
+          <p class="vcs-f-body">Deterministic start/end keyframe transitions with smooth dolly, pan, crane, and orbital camera trajectories.</p>
+        </div>
+        <div class="vcs-feature-card">
+          <div class="vcs-f-head">🔊 Native Synchronized Foley, Ambience &amp; Dialogue</div>
+          <p class="vcs-f-body">Frame-accurate sound effects, ambient room tone, and lip-synced audio generation measured alongside per-second video cost.</p>
+        </div>
+      </div>
+
+      <div class="vcs-actions">
+        <button type="button" class="ctl-btn primary" id="videoGoImageBtn">← Explore 🎨 Image &amp; GenMedia Arena</button>
+        <button type="button" class="bar-btn" id="videoGoTextBtn">← Explore ⚡ Text, Code &amp; Agent Arena</button>
+      </div>
+    </div>
+  </section>
+
   <!-- FULL-SCREEN IMAGE LIGHTBOX MODAL (INPUT REFERENCE & GENERATED OUTPUT INSPECTION) -->
   <div id="imgLightboxModal" class="img-lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Enlarged image preview">
     <div class="img-lightbox-dialog glass">
@@ -446,6 +491,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.11</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.12</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

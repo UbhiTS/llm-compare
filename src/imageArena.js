@@ -204,6 +204,14 @@ function dist(x1, y1, x2, y2) {
 }
 
 const SAMPLE_REFERENCE_ASSETS = (() => {
+  try {
+    const realRefs = require('./assets/ref-images.json');
+    if (realRefs && typeof realRefs === 'object' && Object.keys(realRefs).length >= 12) {
+      return realRefs;
+    }
+  } catch (_) {
+    // Fallback to procedural PNGs only if ref-images.json is missing
+  }
   // 1. Smart Erase Reference: Golden-hour beach scene with family silhouettes on left
   //    AND a bright neon-orange construction bin + dark utility wire photobomber on right.
   const beachBuf = encodeRgbPng(384, 240, (x, y, w, h) => {
@@ -964,8 +972,55 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   };
 }
 
+function evaluateImageModelCompatibility(entryOrId, { imageSize = '2K', referenceCount = 0 } = {}) {
+  const entry = (entryOrId && typeof entryOrId === 'object') ? entryOrId : getImageCatalogEntry(entryOrId);
+  if (!entry) {
+    return {
+      supported: false,
+      code: 'UNKNOWN_MODEL',
+      shortReason: 'Unknown model',
+      reason: `Unknown image model "${entryOrId}".`,
+    };
+  }
+  const reqSize = String(imageSize || '2K').toUpperCase();
+  const supportedSizes = Array.isArray(entry.supportedSizes) ? entry.supportedSizes : ['1K', '2K', '4K'];
+  if (!supportedSizes.includes(reqSize)) {
+    return {
+      supported: false,
+      code: 'UNSUPPORTED_RESOLUTION',
+      shortReason: `Unsupported at ${reqSize} (${supportedSizes.join('/')} max)`,
+      reason: `${entry.label} only supports ${supportedSizes.join('/')} resolution (capped at 1344×768) and cannot execute ${reqSize} upscaling or high-resolution generation. Switch Output Resolution to ${supportedSizes[0]} or use Nano Banana 2 / 2.1 / Pro.`,
+    };
+  }
+  const maxRefs = Number(entry.maxReferenceImages) || 13;
+  const refCnt = Number(referenceCount) || 0;
+  if (refCnt > maxRefs) {
+    return {
+      supported: false,
+      code: 'TOO_MANY_REFERENCES',
+      shortReason: `Max ${maxRefs} reference images`,
+      reason: `${entry.label} supports at most ${maxRefs} reference images (${refCnt} attached). Reduce reference images to ${maxRefs} or use Nano Banana 2 / 2.1 / Pro (up to 13–14 reference images).`,
+    };
+  }
+  return {
+    supported: true,
+    code: null,
+    shortReason: null,
+    reason: null,
+  };
+}
+
 async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
   const entry = getImageCatalogEntry(catalogId) || IMAGE_MODEL_CATALOG[0];
+  const refCount = Array.isArray(attachments) ? attachments.length : 0;
+  const compat = evaluateImageModelCompatibility(entry, {
+    imageSize: imageSize || '2K',
+    referenceCount: refCount,
+  });
+  if (!compat.supported) {
+    throw new Error(compat.reason);
+  }
+
   const key = (keys && (keys.agentplatform || keys.gemini))
     || globalKeys.get('AGENT_PLATFORM_API_KEY')
     || globalKeys.get('GEMINI_API_KEY')
@@ -1054,17 +1109,6 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
       r = fb;
       usedUrl = shortPublisherUrl;
     }
-  }
-
-  // If a legacy model rejects `imageSize` with HTTP 400, retry once with `{ aspectRatio }` only.
-  if (r.status === 400) {
-    const fbSize = await providerFetch(usedUrl, {
-      method: 'POST',
-      headers,
-      body: buildPayload(false),
-      signal,
-    });
-    if (fbSize.ok) r = fbSize;
   }
 
   const latencyMs = Date.now() - t0;
@@ -1205,6 +1249,7 @@ module.exports = {
   IMAGE_ASPECT_RATIOS,
   SAMPLE_REFERENCE_ASSETS,
   getImageArenaConfig,
+  evaluateImageModelCompatibility,
   extractImageResponseParts,
   computeImageSlotEconomics,
   runSingleImageSlot,

@@ -3053,5 +3053,234 @@ a.ud-item[hidden] { display: none; }
   color: var(--muted);
 }
 
+/* ---------- v1.0.12 Model Compatibility Warning Banner & Auto-Disabled Slots ---------- */
+.img-compat-warning {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border: 1px solid rgba(245, 165, 36, 0.55);
+  border-left: 3px solid #f5a524;
+  background: color-mix(in srgb, #f5a524 10%, var(--well));
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 
+.img-compat-warning.hidden {
+  display: none !important;
+}
 
+.img-compat-warning strong {
+  color: #f5a524;
+}
+
+.img-slot-card.is-unsupported {
+  border-color: rgba(245, 165, 36, 0.55);
+  background: color-mix(in srgb, #f5a524 6%, var(--well));
+}
+
+.img-mini-pill.is-warn {
+  border-color: rgba(245, 165, 36, 0.65);
+  color: #f5a524;
+  background: color-mix(in srgb, #f5a524 14%, var(--well));
+}
+
+/* ---------- v1.0.12 Image & GenMedia Arena History Strip & Modal Tabs ---------- */
+.img-history-strip {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  background: var(--well);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  overflow-x: auto;
+}
+
+.img-history-strip.hidden {
+  display: none !important;
+}
+
+.img-hist-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.img-hist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-hi);
+  background: var(--well-2);
+  color: var(--text);
+  font-size: 11.5px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.img-hist-chip:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--well-2));
+}
+
+.img-hist-thumbs {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.img-hist-thumb {
+  width: 34px;
+  height: 24px;
+  object-fit: cover;
+  border: 1px solid var(--border-hi);
+  background: #05080f;
+}
+
+.img-hist-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+}
+
+.img-hist-title {
+  font-weight: 600;
+  font-size: 11.5px;
+  color: var(--text);
+  max-width: 210px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.img-hist-sub {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.img-hist-del {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.img-hist-del:hover {
+  color: var(--bad);
+}
+
+.hist-arena-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.hist-arena-tab {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.hist-arena-tab.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 15%, var(--well));
+}
+
+/* ---------- v1.0.12 Video Generation Arena (Coming Soon...) ---------- */
+.video-arena-wrap {
+  max-width: var(--maxw);
+  margin: 0 auto 28px;
+}
+
+.video-coming-soon-card {
+  padding: 28px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.vcs-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.vcs-title {
+  margin: 0;
+  font-family: "Space Grotesk", Inter, sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.vcs-sub {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 880px;
+}
+
+.vcs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.vcs-feature-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vcs-f-head {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.vcs-f-body {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.vcs-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}

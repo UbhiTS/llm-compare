@@ -4570,20 +4570,28 @@ function sortUsageUsers(list) {
   return arr;
 }
 
-async function openHistoryModal() {
+let historyArenaTab = 'text';
+
+async function openHistoryModal(opts = {}) {
   const isAdmin = ME && ME.role === 'admin';
   historyScope = isAdmin ? 'all' : 'me';
+  if (opts && (opts.arenaTab === 'image' || opts.arenaTab === 'text')) {
+    historyArenaTab = opts.arenaTab;
+  } else {
+    historyArenaTab = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === 'image') ? 'image' : 'text';
+  }
   const body = openAuthModal('Run history', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
-    const [histResp, usage] = await Promise.all([
+    const [histResp, usage, imgRuns] = await Promise.all([
       fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
       isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+      typeof listImageArenaRunsFromHistory === 'function' ? listImageArenaRunsFromHistory().catch(() => []) : Promise.resolve([]),
     ]);
     if (histResp.status === 401) { window.location.replace('/login'); return; }
     const data = await histResp.json();
     if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
-    _histState = { body, runs: data.runs || [], usage, isAdmin };
+    _histState = { body, runs: data.runs || [], imgRuns: imgRuns || [], usage, isAdmin };
     historyPage = 0; usersPage = 0; historyUserFilter = null;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
@@ -4615,11 +4623,85 @@ function renderRunsSortToolbar(totalCount) {
   </div>`;
 }
 
+function imgHistRowHtml(r) {
+  const okResults = (r.results || []).filter((x) => x && x.ok);
+  const totalCost = okResults.reduce((s, x) => s + (Number(x.standardPayGoCostUsd) || 0), 0);
+  const thumbs = okResults.slice(0, 4).map((x) => {
+    const src = x.imageDataUrl || '';
+    if (!src) return '';
+    return `<img src="${src}" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;object-fit:cover;border-radius:5px;border:1px solid var(--border)" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : r.imageSize)})"/>`;
+  }).join('');
+  const modelBadges = okResults.map((x) => `<span class="img-res-pill" style="font-size:10.5px">${esc(x.shortLabel || x.label || x.model)}</span>`).join(' ');
+  return `<div class="hist-row" data-img-hist-id="${esc(r.id)}">
+    <div class="hist-main" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
+      <div style="display:flex;gap:4px;flex-shrink:0">${thumbs}</div>
+      <div style="min-width:0;flex:1">
+        <div class="hist-title" style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.scenarioTitle || r.prompt || 'Image Arena Comparison')}</div>
+        <div class="hist-sub" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:3px">
+          <span>${fmtWhen(r.at)}</span>
+          <span>·</span>
+          <span class="img-res-pill" style="font-size:10.5px">${esc(r.imageSize || '2K')} (${esc(r.aspectRatio || '1:1')})</span>
+          ${modelBadges}
+          <span>·</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px">PayGo ${fmtCost(totalCost)}</span>
+        </div>
+      </div>
+    </div>
+    <div class="hist-actions">
+      <button type="button" class="btn btn-ghost hist-img-restore" data-id="${esc(r.id)}">Restore</button>
+      <button type="button" class="btn btn-ghost hist-img-del" data-id="${esc(r.id)}" title="Delete this image run">✕</button>
+    </div>
+  </div>`;
+}
+
 // Render the current page of the already-fetched (light) history list. Called on
 // open, page nav, and after a delete — no refetch, so paging is instant.
 function paintHistoryModal() {
-  const { body, runs, usage, isAdmin } = _histState;
+  const { body, runs, imgRuns = [], usage, isAdmin } = _histState;
   if (!body) return;
+
+  const arenaTabsHtml = `<div class="hist-arena-tabs">
+    <button type="button" class="hist-arena-tab${historyArenaTab === 'text' ? ' active' : ''}" data-hist-tab="text">⚡ Text, Code &amp; Agent Runs (${fmtInt((runs || []).length)})</button>
+    <button type="button" class="hist-arena-tab${historyArenaTab === 'image' ? ' active' : ''}" data-hist-tab="image">🎨 Image &amp; GenMedia Runs (${fmtInt((imgRuns || []).length)})</button>
+  </div>`;
+
+  if (historyArenaTab === 'image') {
+    const imgRows = imgRuns.length
+      ? imgRuns.map((r) => imgHistRowHtml(r)).join('')
+      : '<p class="auth-loading">No Image &amp; GenMedia runs saved in this browser yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>';
+    const clearBar = imgRuns.length
+      ? `<div class="hist-toolbar" style="justify-content:space-between">
+          <span class="hist-toolbar-label">Saved in browser IndexedDB (${fmtInt(imgRuns.length)} run${imgRuns.length === 1 ? '' : 's'}, full-res PNGs preserved):</span>
+          <button type="button" class="btn btn-ghost" id="histClearAllImgRunsBtn" style="font-size:11.5px">🗑 Clear all image runs</button>
+        </div>`
+      : '';
+    body.innerHTML = arenaTabsHtml + clearBar + `<div class="hist-list">${imgRows}</div>`;
+    body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
+      historyArenaTab = btn.dataset.histTab || 'text';
+      paintHistoryModal();
+    }));
+    body.querySelectorAll('.hist-img-restore').forEach((b) => b.addEventListener('click', async () => {
+      await restoreImageArenaRun(b.dataset.id);
+      closeAuthModal();
+    }));
+    body.querySelectorAll('.hist-img-del').forEach((b) => b.addEventListener('click', async () => {
+      await deleteImageArenaRunFromHistory(b.dataset.id);
+      _histState.imgRuns = await listImageArenaRunsFromHistory();
+      renderImageHistoryStrip();
+      paintHistoryModal();
+    }));
+    const clearAllBtn = body.querySelector('#histClearAllImgRunsBtn');
+    if (clearAllBtn) {
+      clearAllBtn.addEventListener('click', async () => {
+        await clearAllImageArenaHistory();
+        _histState.imgRuns = [];
+        renderImageHistoryStrip();
+        paintHistoryModal();
+      });
+    }
+    return;
+  }
+
   const usagePanel = (isAdmin && usage) ? renderUsagePanel(usage) : '';
   // Filtering is driven by clicking a user in the usage table above, so there's
   // no My-runs/All-users toggle any more — admins see everyone by default.
@@ -4642,7 +4724,11 @@ function paintHistoryModal() {
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
-  body.innerHTML = usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
+  body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
+  body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
+    historyArenaTab = btn.dataset.histTab || 'text';
+    paintHistoryModal();
+  }));
   // click a column header in the admin usage table → sort users by that column
   body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
     const key = th.dataset.sort;
@@ -5105,28 +5191,42 @@ let IMG_SPLIT_CURTAIN_ON = false;
 let IMG_RUNNING = false;
 let IMG_TIMER_ID = null;
 
+let IMG_LAST_REASSIGNED_NOTICE = '';
+
 function switchArenaMode(mode, { updateUrl = true } = {}) {
-  const target = mode === 'image' ? 'image' : 'text';
+  const target = (mode === 'image' || mode === 'video') ? mode : 'text';
   ACTIVE_ARENA_MODE = target;
 
   const textBtn = $('#modeBtnText');
   const imgBtn = $('#modeBtnImage');
+  const vidBtn = $('#modeBtnVideo');
   if (textBtn) textBtn.classList.toggle('active', target === 'text');
   if (imgBtn) imgBtn.classList.toggle('active', target === 'image');
+  if (vidBtn) vidBtn.classList.toggle('active', target === 'video');
 
   const textControls = document.querySelector('section.controls:not(.image-controls-panel)');
   const textArena = $('#arena');
   const textScorecard = $('#scorecard');
   const imgSection = $('#imageArenaSection');
+  const vidSection = $('#videoArenaSection');
 
   if (target === 'image') {
     if (textControls) textControls.classList.add('hidden');
     if (textArena) textArena.classList.add('hidden');
     if (textScorecard) textScorecard.classList.add('hidden');
+    if (vidSection) vidSection.classList.add('hidden');
     if (imgSection) imgSection.classList.remove('hidden');
     ensureImageArenaLoaded();
+    if (typeof renderImageHistoryStrip === 'function') renderImageHistoryStrip();
+  } else if (target === 'video') {
+    if (textControls) textControls.classList.add('hidden');
+    if (textArena) textArena.classList.add('hidden');
+    if (textScorecard) textScorecard.classList.add('hidden');
+    if (imgSection) imgSection.classList.add('hidden');
+    if (vidSection) vidSection.classList.remove('hidden');
   } else {
     if (imgSection) imgSection.classList.add('hidden');
+    if (vidSection) vidSection.classList.add('hidden');
     if (textControls) textControls.classList.remove('hidden');
     if (textArena) textArena.classList.remove('hidden');
     if (textScorecard && Object.keys(LAST_RESULTS || {}).length > 0) {
@@ -5137,7 +5237,7 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
   if (updateUrl && window.history && typeof window.history.replaceState === 'function') {
     try {
       const url = new URL(window.location.href);
-      if (target === 'image') url.searchParams.set('tab', 'image');
+      if (target === 'image' || target === 'video') url.searchParams.set('tab', target);
       else url.searchParams.delete('tab');
       window.history.replaceState({}, '', url.toString());
     } catch (_) { /* ignore */ }
@@ -5155,12 +5255,14 @@ async function ensureImageArenaLoaded() {
     if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
       IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
     }
+    enforceImageSlotCompatibility();
     renderImageSizeAndAspectPills();
     renderImageSlotsConfigurator();
     populateImagePacksAndScenarios();
     renderImageArenaPlaceholderCards();
     renderImageMetricComparison();
     renderImageEconomicsModeler();
+    if (typeof renderImageHistoryStrip === 'function') renderImageHistoryStrip();
     return IMG_CONFIG;
   } catch (e) {
     console.warn('[imageArena] failed to load config:', e);
@@ -5171,6 +5273,111 @@ async function ensureImageArenaLoaded() {
 function getImgCatalogItem(id) {
   const cat = (IMG_CONFIG && IMG_CONFIG.catalog) || [];
   return cat.find((m) => m.id === id || m.model === id) || cat[0] || null;
+}
+
+function getImgModelCompatibility(entry, size = IMG_SELECTED_SIZE, refCount = IMG_REF_ATTACHMENTS.length) {
+  if (!entry) return { supported: false, reason: 'missing', message: 'Unknown image model.' };
+  const supportedSizes = Array.isArray(entry.supportedSizes) ? entry.supportedSizes : ['1K'];
+  const maxRefs = Number(entry.maxReferenceImages) || 13;
+  if (!supportedSizes.includes(size)) {
+    return {
+      supported: false,
+      reason: 'resolution',
+      shortReason: `1K Max (${size} unsupported)`,
+      message: `${entry.label} (${entry.model}) is hardware-capped at ${supportedSizes.join('/')} resolution (max 1344×768) and does not support ${size} output.`,
+    };
+  }
+  if (refCount > maxRefs) {
+    return {
+      supported: false,
+      reason: 'references',
+      shortReason: `Max ${maxRefs} refs (${refCount} attached)`,
+      message: `${entry.label} (${entry.model}) supports at most ${maxRefs} reference images, but ${refCount} are attached.`,
+    };
+  }
+  return { supported: true, reason: null, shortReason: '', message: '' };
+}
+
+function enforceImageSlotCompatibility() {
+  if (!IMG_CONFIG) return;
+  const catalog = IMG_CONFIG.catalog || [];
+  const reassigned = [];
+  IMG_SLOTS.forEach((slotObj) => {
+    const entry = getImgCatalogItem(slotObj.catalogId);
+    const compat = getImgModelCompatibility(entry);
+    if (!compat.supported) {
+      const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
+      const fallback = catalog.find((c) => getImgModelCompatibility(c).supported && !used.has(c.id))
+        || catalog.find((c) => getImgModelCompatibility(c).supported)
+        || entry;
+      if (fallback && fallback.id !== slotObj.catalogId) {
+        reassigned.push(`Slot ${slotObj.slot} switched from ${entry.shortLabel || entry.label} to ${fallback.shortLabel || fallback.label}`);
+        slotObj.catalogId = fallback.id;
+      }
+    }
+  });
+  if (reassigned.length) {
+    IMG_LAST_REASSIGNED_NOTICE = reassigned.join(' · ');
+  }
+}
+
+function renderImageCompatWarning() {
+  const banner = $('#imgCompatWarning');
+  if (!banner || !IMG_CONFIG) return;
+  const catalog = IMG_CONFIG.catalog || [];
+  const refCount = IMG_REF_ATTACHMENTS.length;
+  const unsupportedModels = catalog
+    .map((c) => ({ entry: c, compat: getImgModelCompatibility(c, IMG_SELECTED_SIZE, refCount) }))
+    .filter((x) => !x.compat.supported);
+
+  if (!unsupportedModels.length) {
+    IMG_LAST_REASSIGNED_NOTICE = '';
+    banner.innerHTML = '';
+    banner.classList.add('hidden');
+    return;
+  }
+
+  const reasonsHtml = unsupportedModels.map((x) => esc(x.compat.message)).join(' ');
+  const reassignNote = IMG_LAST_REASSIGNED_NOTICE
+    ? ` <span style="opacity:0.9">(${esc(IMG_LAST_REASSIGNED_NOTICE)} so all active slots can generate ${esc(IMG_SELECTED_SIZE)}.)</span>`
+    : '';
+  const needs1K = unsupportedModels.some((x) => x.compat.reason === 'resolution');
+  const needsFewerRefs = unsupportedModels.some((x) => x.compat.reason === 'references');
+
+  banner.classList.remove('hidden');
+  banner.innerHTML = `
+    <span class="icw-icon">⚠️</span>
+    <div class="icw-body">
+      <strong>Model Compatibility Gate (${esc(IMG_SELECTED_SIZE)}${refCount ? ` · ${refCount} ref image${refCount === 1 ? '' : 's'}` : ''}):</strong>
+      ${reasonsHtml}${reassignNote} Disabled in model selector dropdowns for this setting.
+    </div>
+    <div class="icw-actions">
+      ${needs1K ? '<button type="button" class="icw-btn" id="imgCompatSwitch1kBtn">Switch to 1K Resolution (Enable Nano Banana 1)</button>' : ''}
+      ${needsFewerRefs ? '<button type="button" class="icw-btn" id="imgCompatTrimRefsBtn">Keep First 3 Reference Images</button>' : ''}
+    </div>
+  `;
+
+  const switch1kBtn = $('#imgCompatSwitch1kBtn');
+  if (switch1kBtn) {
+    switch1kBtn.addEventListener('click', () => {
+      IMG_SELECTED_SIZE = '1K';
+      IMG_LAST_REASSIGNED_NOTICE = '';
+      renderImageSizeAndAspectPills();
+      renderImageSlotsConfigurator();
+      if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+      renderImageMetricComparison();
+      renderImageEconomicsModeler();
+    });
+  }
+  const trimRefsBtn = $('#imgCompatTrimRefsBtn');
+  if (trimRefsBtn) {
+    trimRefsBtn.addEventListener('click', () => {
+      IMG_REF_ATTACHMENTS = IMG_REF_ATTACHMENTS.slice(0, 3);
+      IMG_LAST_REASSIGNED_NOTICE = '';
+      renderImageReferenceAttachments();
+      renderImageSlotsConfigurator();
+    });
+  }
 }
 
 function hasOffPeakModelSelected() {
@@ -5311,6 +5518,7 @@ function renderImageSizeAndAspectPills() {
       b.title = r.description || r.label;
       b.addEventListener('click', () => {
         IMG_SELECTED_SIZE = r.id;
+        enforceImageSlotCompatibility();
         renderImageSizeAndAspectPills();
         renderImageSlotsConfigurator();
         if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
@@ -5343,10 +5551,16 @@ function renderImageSlotsConfigurator() {
   const addBtn = $('#imgAddSlotBtn');
   if (!grid || !IMG_CONFIG) return;
 
-  if (badge) badge.textContent = `${IMG_SLOTS.length} of 4 active`;
+  enforceImageSlotCompatibility();
+  renderImageCompatWarning();
+
+  const compatibleCatalog = (IMG_CONFIG.catalog || []).filter((c) => getImgModelCompatibility(c).supported);
+  const maxActiveSlots = Math.min(4, Math.max(1, compatibleCatalog.length));
+
+  if (badge) badge.textContent = `${IMG_SLOTS.length} of ${maxActiveSlots} active`;
   if (addBtn) {
-    addBtn.textContent = `+ Add model (${IMG_SLOTS.length}/4)`;
-    addBtn.disabled = IMG_SLOTS.length >= 4;
+    addBtn.textContent = `+ Add model (${IMG_SLOTS.length}/${maxActiveSlots})`;
+    addBtn.disabled = IMG_SLOTS.length >= maxActiveSlots;
   }
 
   grid.innerHTML = '';
@@ -5354,8 +5568,9 @@ function renderImageSlotsConfigurator() {
 
   IMG_SLOTS.forEach((slotObj, idx) => {
     const entry = getImgCatalogItem(slotObj.catalogId) || catalog[0];
+    const entryCompat = getImgModelCompatibility(entry);
     const color = slotColor(slotObj.slot);
-    const card = el('div', 'img-slot-card');
+    const card = el('div', 'img-slot-card' + (!entryCompat.supported ? ' is-unsupported' : ''));
     card.style.setProperty('--slot-accent', color);
 
     const top = el('div', 'img-slot-top');
@@ -5381,14 +5596,19 @@ function renderImageSlotsConfigurator() {
 
     const sel = el('select', 'img-slot-select');
     catalog.forEach((c) => {
+      const compat = getImgModelCompatibility(c);
       const opt = el('option');
       opt.value = c.id;
-      opt.textContent = `${c.label}`;
+      opt.textContent = compat.supported
+        ? `${c.label}`
+        : `${c.label} — ⚠️ ${compat.shortReason}`;
+      if (!compat.supported) opt.disabled = true;
       if (c.id === entry.id) opt.selected = true;
       sel.appendChild(opt);
     });
     sel.addEventListener('change', () => {
       slotObj.catalogId = sel.value;
+      IMG_LAST_REASSIGNED_NOTICE = '';
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
       renderImageMetricComparison();
@@ -5477,15 +5697,16 @@ function applyImageScenario(pack, sc) {
   if (sc.recommendedAspectRatio) {
     IMG_SELECTED_ASPECT = sc.recommendedAspectRatio;
   }
+
+  IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
+  IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+  enforceImageSlotCompatibility();
+  renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
   if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
-
-  IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
-  IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
-  renderImageReferenceAttachments();
 }
 
 function renderImageReferenceAttachments() {
@@ -5509,6 +5730,7 @@ function renderImageReferenceAttachments() {
   if (count === 0) {
     listEl.innerHTML = '';
     listEl.classList.add('hidden');
+    renderImageCompatWarning();
     return;
   }
 
@@ -5551,10 +5773,12 @@ function renderImageReferenceAttachments() {
       e.stopPropagation();
       IMG_REF_ATTACHMENTS.splice(idx, 1);
       renderImageReferenceAttachments();
+      renderImageSlotsConfigurator();
     });
     item.appendChild(rm);
     listEl.appendChild(item);
   });
+  renderImageCompatWarning();
 }
 
 function addImageReferenceFiles(fileList) {
@@ -5571,7 +5795,9 @@ function addImageReferenceFiles(fileList) {
         mimeType: file.type || 'image/png',
         data: base64,
       });
+      enforceImageSlotCompatibility();
       renderImageReferenceAttachments();
+      renderImageSlotsConfigurator();
     };
     reader.readAsDataURL(file);
   }
@@ -5816,7 +6042,199 @@ function initCurtainDrag() {
   stage.addEventListener('pointercancel', () => { dragging = false; });
 }
 
-// ---------- Run Parallel Image Generation ----------
+// ---------- Image & GenMedia Run History (Browser IndexedDB) ----------
+const IMG_HIST_DB_NAME = 'llm_compare_image_history_v1';
+const IMG_HIST_STORE = 'runs';
+const IMG_HIST_MAX_RUNS = 25;
+
+function openImageHistoryDb() {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || !window.indexedDB) {
+      resolve(null);
+      return;
+    }
+    try {
+      const req = window.indexedDB.open(IMG_HIST_DB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(IMG_HIST_STORE)) {
+          const store = db.createObjectStore(IMG_HIST_STORE, { keyPath: 'id' });
+          store.createIndex('at', 'at', { unique: false });
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+async function listImageArenaRunsFromHistory() {
+  const db = await openImageHistoryDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IMG_HIST_STORE, 'readonly');
+      const store = tx.objectStore(IMG_HIST_STORE);
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const rows = Array.isArray(req.result) ? req.result : [];
+        rows.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+        resolve(rows);
+      };
+      req.onerror = () => resolve([]);
+    } catch (_) {
+      resolve([]);
+    }
+  });
+}
+
+async function saveImageArenaRunToHistory(runRecord) {
+  const db = await openImageHistoryDb();
+  if (!db || !runRecord || !runRecord.id) return;
+  try {
+    const existing = await listImageArenaRunsFromHistory();
+    const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
+    const store = tx.objectStore(IMG_HIST_STORE);
+    store.put(runRecord);
+    if (existing.length >= IMG_HIST_MAX_RUNS) {
+      const toPrune = existing.slice(IMG_HIST_MAX_RUNS - 1);
+      toPrune.forEach((old) => {
+        if (old && old.id && old.id !== runRecord.id) {
+          try { store.delete(old.id); } catch (_) {}
+        }
+      });
+    }
+  } catch (e) {
+    console.warn('[imageArena] failed to save run to IndexedDB:', e);
+  }
+}
+
+async function deleteImageArenaRunFromHistory(id) {
+  const db = await openImageHistoryDb();
+  if (!db || !id) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
+      tx.objectStore(IMG_HIST_STORE).delete(id);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function clearAllImageArenaHistory() {
+  const db = await openImageHistoryDb();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
+      tx.objectStore(IMG_HIST_STORE).clear();
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (_) {
+      resolve(false);
+    }
+  });
+}
+
+async function renderImageHistoryStrip() {
+  const strip = $('#imgHistoryStrip');
+  const histBtn = $('#imgHistoryBtn');
+  const runs = await listImageArenaRunsFromHistory();
+  if (histBtn) {
+    histBtn.textContent = runs.length > 0 ? `🗂 History (${runs.length})` : '🗂 History';
+  }
+  if (!strip) return;
+  if (!runs.length) {
+    strip.innerHTML = '';
+    strip.classList.add('hidden');
+    return;
+  }
+  strip.classList.remove('hidden');
+  const recent = runs.slice(0, 6);
+  const chipsHtml = recent.map((r) => {
+    const okResults = (r.results || []).filter((x) => x && x.ok);
+    const firstThumb = (okResults[0] && okResults[0].imageDataUrl) || '';
+    const thumbHtml = firstThumb
+      ? `<img src="${firstThumb}" class="ihc-thumb" alt=""/>`
+      : '';
+    const shortTitle = (r.scenarioTitle || r.prompt || 'Image Run').slice(0, 34);
+    return `<button type="button" class="img-hist-chip" data-img-run-id="${esc(r.id)}" title="Restore ${esc(r.scenarioTitle || r.prompt)} (${esc(r.imageSize)} · ${esc(r.aspectRatio)})">
+      ${thumbHtml}
+      <span>${esc(shortTitle)}</span>
+      <span class="ihc-meta">${esc(r.imageSize || '2K')} · ${okResults.length}m</span>
+    </button>`;
+  }).join('');
+
+  strip.innerHTML = `
+    <span class="ihs-label">🗂 Recent Image Runs:</span>
+    <div class="ihs-chips">${chipsHtml}</div>
+    <button type="button" class="bar-btn" id="imgHistViewAllBtn" style="margin-left:auto;font-size:11px">View all (${runs.length}) ▸</button>
+  `;
+
+  strip.querySelectorAll('.img-hist-chip').forEach((chip) => {
+    chip.addEventListener('click', () => restoreImageArenaRun(chip.dataset.imgRunId));
+  });
+  const viewAllBtn = strip.querySelector('#imgHistViewAllBtn');
+  if (viewAllBtn) {
+    viewAllBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));
+  }
+}
+
+async function restoreImageArenaRun(runId) {
+  const runs = await listImageArenaRunsFromHistory();
+  const rec = runs.find((r) => r && r.id === runId);
+  if (!rec) return;
+
+  if (ACTIVE_ARENA_MODE !== 'image') {
+    switchArenaMode('image');
+  }
+  await ensureImageArenaLoaded();
+
+  if (rec.packId) {
+    const packSel = $('#imgPackSelect');
+    if (packSel) packSel.value = rec.packId;
+  }
+  if (rec.imageSize && ['1K', '2K', '4K'].includes(rec.imageSize)) {
+    IMG_SELECTED_SIZE = rec.imageSize;
+  }
+  if (rec.aspectRatio) {
+    IMG_SELECTED_ASPECT = rec.aspectRatio;
+  }
+  if (Array.isArray(rec.slots) && rec.slots.length) {
+    IMG_SLOTS = rec.slots.map((s) => ({ ...s }));
+  }
+  const promptEl = $('#imgPromptInput');
+  if (promptEl && rec.prompt) promptEl.value = rec.prompt;
+
+  if (Array.isArray(rec.attachments)) {
+    IMG_REF_ATTACHMENTS = rec.attachments.map((a) => ({ ...a }));
+  }
+
+  renderImageReferenceAttachments();
+  renderImageSizeAndAspectPills();
+  renderImageSlotsConfigurator();
+  renderImageArenaPlaceholderCards();
+
+  IMG_LAST_RESULTS = Array.isArray(rec.results) ? rec.results : [];
+  IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
+  highlightImageWinnerTiles(IMG_LAST_RESULTS);
+  attachSynchronizedLoupeHandlers();
+  updateSplitCurtainView();
+  renderImageMetricComparison();
+  renderImageEconomicsModeler();
+
+  const timerBadge = $('#imgStatusTimer');
+  if (timerBadge) {
+    timerBadge.textContent = `Restored ${IMG_LAST_RESULTS.length} models (${rec.imageSize || IMG_SELECTED_SIZE})`;
+  }
+}
+
+// ---------- Run Parallel Per-Slot Progressive Image Generation ----------
 async function runImageArenaComparisonClick() {
   if (IMG_RUNNING) return;
   const promptEl = $('#imgPromptInput');
@@ -5826,6 +6244,9 @@ async function runImageArenaComparisonClick() {
     return;
   }
 
+  enforceImageSlotCompatibility();
+  renderImageSlotsConfigurator();
+
   IMG_RUNNING = true;
   const runBtn = $('#imgRunBtn');
   const timerBadge = $('#imgStatusTimer');
@@ -5834,60 +6255,133 @@ async function runImageArenaComparisonClick() {
     runBtn.textContent = '⏳ Generating on Vertex AI…';
   }
 
+  IMG_LAST_RESULTS = [];
   renderImageArenaPlaceholderCards();
   const t0 = Date.now();
-  IMG_SLOTS.forEach((s) => {
+  const activeSlotsSnapshot = IMG_SLOTS.map((s) => ({ ...s }));
+  const reqSize = IMG_SELECTED_SIZE;
+  const reqAspect = IMG_SELECTED_ASPECT;
+  const reqRefs = IMG_REF_ATTACHMENTS.map((a) => ({ ...a }));
+
+  activeSlotsSnapshot.forEach((s) => {
     const st = $(`#img-status-${s.slot}`);
     if (st) {
-      st.textContent = `Generating ${IMG_SELECTED_SIZE}… 0.0s`;
+      st.textContent = `Generating ${reqSize}… 0.0s`;
       st.className = 'status-pill running';
     }
     const stage = $(`#img-stage-${s.slot}`);
     if (stage) {
-      stage.innerHTML = `<div style="padding:48px 20px;text-align:center;color:var(--muted)">⚡ Calling Vertex AI <code>/locations/global</code> (${esc(IMG_SELECTED_SIZE)} · ${esc(IMG_SELECTED_ASPECT)})…</div>`;
+      stage.innerHTML = `<div style="padding:48px 20px;text-align:center;color:var(--muted)">⚡ Calling Vertex AI <code>/locations/global</code> (${esc(reqSize)} · ${esc(reqAspect)})…</div>`;
     }
   });
 
   if (IMG_TIMER_ID) clearInterval(IMG_TIMER_ID);
   IMG_TIMER_ID = setInterval(() => {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    if (timerBadge) timerBadge.textContent = `Running · ${elapsed}s`;
-    IMG_SLOTS.forEach((s) => {
+    const doneCount = IMG_LAST_RESULTS.length;
+    if (timerBadge) {
+      timerBadge.textContent = `Running (${doneCount}/${activeSlotsSnapshot.length} done) · ${elapsed}s`;
+    }
+    activeSlotsSnapshot.forEach((s) => {
       const st = $(`#img-status-${s.slot}`);
       if (st && st.classList.contains('running')) {
-        st.textContent = `Generating ${IMG_SELECTED_SIZE}… ${elapsed}s`;
+        st.textContent = `Generating ${reqSize}… ${elapsed}s`;
       }
     });
   }, 150);
 
   try {
-    const resp = await fetch('/api/image-arena/run', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        slots: IMG_SLOTS,
-        prompt,
-        aspectRatio: IMG_SELECTED_ASPECT,
-        imageSize: IMG_SELECTED_SIZE,
-        attachments: IMG_REF_ATTACHMENTS,
-      }),
+    // Dispatch 1 independent parallel HTTP request per slot so multi-slot 4K PNGs
+    // never exceed Cloud Run's 32 MiB single-response limit and each card renders
+    // progressively the instant its model finishes.
+    const slotPromises = activeSlotsSnapshot.map(async (slotObj) => {
+      try {
+        const resp = await fetch('/api/image-arena/run', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            slots: [slotObj],
+            prompt,
+            aspectRatio: reqAspect,
+            imageSize: reqSize,
+            attachments: reqRefs,
+          }),
+        });
+        if (resp.status === 401) {
+          window.location.replace('/login');
+          return null;
+        }
+        const rawText = await resp.text();
+        let data = null;
+        try {
+          data = rawText ? JSON.parse(rawText) : null;
+        } catch (parseErr) {
+          throw new Error(`Invalid response payload for Slot ${slotObj.slot} (${Math.round((rawText || '').length / 1024)} KB): ${parseErr.message}`);
+        }
+        if (!resp.ok || !data || !data.ok) {
+          throw new Error((data && data.error) || `Slot ${slotObj.slot} failed (${resp.status})`);
+        }
+        const slotResult = (data.results && data.results[0]) || {
+          slot: slotObj.slot,
+          catalogId: slotObj.catalogId,
+          ok: false,
+          error: 'Empty result from Vertex AI.',
+        };
+        IMG_LAST_RESULTS.push(slotResult);
+        IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+        applyImageResultToCard(slotResult);
+        highlightImageWinnerTiles(IMG_LAST_RESULTS);
+        attachSynchronizedLoupeHandlers();
+        updateSplitCurtainView();
+        renderImageMetricComparison();
+        renderImageEconomicsModeler();
+        return slotResult;
+      } catch (slotErr) {
+        const entry = getImgCatalogItem(slotObj.catalogId) || {};
+        const fallbackErr = {
+          slot: slotObj.slot,
+          catalogId: slotObj.catalogId,
+          model: entry.model || slotObj.catalogId,
+          label: entry.label || slotObj.catalogId,
+          ok: false,
+          error: slotErr.message || String(slotErr),
+        };
+        IMG_LAST_RESULTS.push(fallbackErr);
+        IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+        applyImageResultToCard(fallbackErr);
+        return fallbackErr;
+      }
     });
-    if (resp.status === 401) { window.location.replace('/login'); return; }
-    const data = await resp.json();
-    if (!resp.ok || !data || !data.ok) {
-      throw new Error((data && data.error) || `Image comparison failed (${resp.status})`);
-    }
-    IMG_LAST_RESULTS = data.results || [];
-    IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
-    highlightImageWinnerTiles(IMG_LAST_RESULTS);
-    attachSynchronizedLoupeHandlers();
-    updateSplitCurtainView();
-    renderImageMetricComparison();
-    renderImageEconomicsModeler();
+
+    await Promise.allSettled(slotPromises);
+
+    const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
+    const okCount = IMG_LAST_RESULTS.filter((r) => r && r.ok).length;
     if (timerBadge) {
-      const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
-      timerBadge.textContent = `Completed ${IMG_LAST_RESULTS.length} models in ${totalSec}s`;
+      timerBadge.textContent = `Completed ${okCount}/${activeSlotsSnapshot.length} models in ${totalSec}s`;
+    }
+
+    if (okCount > 0) {
+      const packSel = $('#imgPackSelect');
+      const scSel = $('#imgScenarioSelect');
+      const scTitle = scSel && scSel.options[scSel.selectedIndex]
+        ? scSel.options[scSel.selectedIndex].textContent
+        : prompt.slice(0, 60);
+      await saveImageArenaRunToHistory({
+        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        at: Date.now(),
+        packId: packSel ? packSel.value : '',
+        scenarioId: scSel ? scSel.value : '',
+        scenarioTitle: scTitle,
+        prompt,
+        imageSize: reqSize,
+        aspectRatio: reqAspect,
+        slots: activeSlotsSnapshot,
+        attachments: reqRefs,
+        results: IMG_LAST_RESULTS,
+      });
+      await renderImageHistoryStrip();
     }
   } catch (e) {
     if (timerBadge) timerBadge.textContent = `Error: ${e.message}`;
@@ -6296,6 +6790,16 @@ function initImageArenaBindings() {
     });
   }
 
+  const vidGoImageBtn = $('#videoGoImageBtn');
+  if (vidGoImageBtn) vidGoImageBtn.addEventListener('click', () => switchArenaMode('image'));
+  const vidGoTextBtn = $('#videoGoTextBtn');
+  if (vidGoTextBtn) vidGoTextBtn.addEventListener('click', () => switchArenaMode('text'));
+
+  const imgHistBtn = $('#imgHistoryBtn');
+  if (imgHistBtn) {
+    imgHistBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));
+  }
+
   const lbModal = $('#imgLightboxModal');
   const lbClose = $('#imgLightboxCloseBtn');
   const lbPrev = $('#imgLightboxPrevBtn');
@@ -6325,9 +6829,13 @@ function initImageArenaBindings() {
   const addSlotBtn = $('#imgAddSlotBtn');
   if (addSlotBtn) {
     addSlotBtn.addEventListener('click', () => {
-      if (!IMG_CONFIG || IMG_SLOTS.length >= 4) return;
+      if (!IMG_CONFIG) return;
+      const compatibleCatalog = (IMG_CONFIG.catalog || []).filter((c) => getImgModelCompatibility(c).supported);
+      const maxActive = Math.min(4, Math.max(1, compatibleCatalog.length));
+      if (IMG_SLOTS.length >= maxActive) return;
       const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
-      const nextCat = (IMG_CONFIG.catalog || []).find((c) => !used.has(c.id)) || IMG_CONFIG.catalog[0];
+      const nextCat = compatibleCatalog.find((c) => !used.has(c.id)) || compatibleCatalog[0];
+      if (!nextCat) return;
       const nextSlot = String.fromCharCode(65 + IMG_SLOTS.length);
       IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
       renderImageSlotsConfigurator();
@@ -6340,6 +6848,7 @@ function initImageArenaBindings() {
   document.querySelectorAll('.img-preset-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       const p = btn.dataset.imgPreset;
+      IMG_LAST_REASSIGNED_NOTICE = '';
       if (p === 'nb2-vs-21') {
         IMG_SLOTS = [
           { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
@@ -6352,6 +6861,13 @@ function initImageArenaBindings() {
           { slot: 'C', catalogId: 'gemini-3-pro-image' },
         ];
       } else if (p === 'legacy-evolution') {
+        // Nano Banana 1 (gemini-2.5-flash-image) is 1K-only (and max 3 refs), so switch resolution to 1K automatically
+        IMG_SELECTED_SIZE = '1K';
+        if (IMG_REF_ATTACHMENTS.length > 3) {
+          IMG_REF_ATTACHMENTS = IMG_REF_ATTACHMENTS.slice(0, 3);
+          renderImageReferenceAttachments();
+        }
+        renderImageSizeAndAspectPills();
         IMG_SLOTS = [
           { slot: 'A', catalogId: 'gemini-2.5-flash-image' },
           { slot: 'B', catalogId: 'gemini-3.1-flash-image' },
@@ -6391,6 +6907,7 @@ function initImageArenaBindings() {
     clearRefsBtn.addEventListener('click', () => {
       IMG_REF_ATTACHMENTS = [];
       renderImageReferenceAttachments();
+      renderImageSlotsConfigurator();
     });
   }
 
@@ -6398,7 +6915,9 @@ function initImageArenaBindings() {
   if (reloadRefsBtn) {
     reloadRefsBtn.addEventListener('click', () => {
       IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+      enforceImageSlotCompatibility();
       renderImageReferenceAttachments();
+      renderImageSlotsConfigurator();
     });
   }
 
@@ -6442,12 +6961,16 @@ function initImageArenaBindings() {
   if (offPeakSlider) offPeakSlider.addEventListener('input', renderImageEconomicsModeler);
 
   initCurtainDrag();
+  renderImageHistoryStrip();
 
-  // Check URL deep link (?tab=image or #image-arena)
+  // Check URL deep link (?tab=image, ?tab=video, #image-arena, #video-arena)
   try {
     const params = new URLSearchParams(window.location.search);
-    if (params.get('tab') === 'image' || params.get('mode') === 'image' || window.location.hash === '#image-arena') {
+    const tabParam = params.get('tab') || params.get('mode');
+    if (tabParam === 'image' || window.location.hash === '#image-arena') {
       switchArenaMode('image', { updateUrl: false });
+    } else if (tabParam === 'video' || window.location.hash === '#video-arena') {
+      switchArenaMode('video', { updateUrl: false });
     }
   } catch (_) { /* ignore */ }
 }

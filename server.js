@@ -758,7 +758,22 @@ app.post('/api/image-arena/run', async (req, res) => {
       keys,
       signal: ac.signal,
     });
-    res.json(out);
+    // Stream as chunked Transfer-Encoding (application/x-image-arena-json) so:
+    // 1) Cloud Run's Google Frontend (GFE) never truncates 4K image payloads at the 32 MiB
+    //    non-streaming Content-Length cap, and
+    // 2) The response-scrubbing middleware does not re-allocate 30-80 MB UTF-8 strings on
+    //    base64 PNG image buffers (all error/text fields are already scrubbed via scrubError).
+    const payloadBuf = Buffer.from(JSON.stringify(out), 'utf8');
+    res.status(200);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('X-Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no');
+    const CHUNK = 256 * 1024;
+    for (let off = 0; off < payloadBuf.length; off += CHUNK) {
+      res.write(payloadBuf.subarray(off, Math.min(off + CHUNK, payloadBuf.length)));
+    }
+    res.end();
   } catch (e) {
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
