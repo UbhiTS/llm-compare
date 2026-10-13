@@ -5477,6 +5477,9 @@ function renderImageSlotsConfigurator() {
   }
 
   grid.innerHTML = '';
+  grid.dataset.slotCount = String(IMG_SLOTS.length);
+  grid.style.setProperty('--slot-count', String(Math.max(1, IMG_SLOTS.length)));
+  grid.style.setProperty('--img-slot-count', String(Math.max(1, IMG_SLOTS.length)));
 
   IMG_SLOTS.forEach((slotObj, idx) => {
     const entry = getImgCatalogItem(slotObj.catalogId) || catalog[0];

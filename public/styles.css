@@ -2441,6 +2441,12 @@ a.ud-item[hidden] { display: none; }
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
+.img-slot-grid {
+  grid-template-columns: repeat(var(--img-slot-count, var(--slot-count, 2)), minmax(0, 1fr)) !important;
+  gap: 16px;
+  margin-top: 10px;
+}
+
 .img-slot-card {
   display: flex;
   flex-direction: column;
