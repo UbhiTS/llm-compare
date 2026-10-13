@@ -326,8 +326,30 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.22', 'package.json must be at version 1.0.22');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.22</span>'), 'index.html must display v1.0.22 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.23', 'package.json must be at version 1.0.23');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.23</span>'), 'index.html must display v1.0.23 in footer');
+  assert(
+    appJs.includes('return !IMG_RUNNING && Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);'),
+    'hasLiveImageResults() must require !IMG_RUNNING so scorecards only appear after all slots complete'
+  );
+  const runClickBodyMatch = appJs.match(/async function runImageArenaComparisonClick\(\)\s*\{([\s\S]*?)function applyImageResultToCard/);
+  assert(runClickBodyMatch, 'app.js must define runImageArenaComparisonClick()');
+  const idxAllSettled = runClickBodyMatch[1].indexOf('await Promise.allSettled(slotPromises);');
+  const idxRenderMetric = runClickBodyMatch[1].lastIndexOf('renderImageMetricComparison();');
+  assert(
+    idxAllSettled !== -1 && idxRenderMetric > idxAllSettled,
+    'runImageArenaComparisonClick() must call renderImageMetricComparison() only after Promise.allSettled(slotPromises)'
+  );
+  const metricFnMatch = appJs.match(/function renderImageMetricComparison\(\)\s*\{([\s\S]*?)function renderImageEconomicsModeler/);
+  assert(
+    metricFnMatch && metricFnMatch[1].includes('if (!live) return null;') && !metricFnMatch[1].includes('refStd'),
+    'renderImageMetricComparison() must only plot completed live results (if (!live) return null) without static fallback estimates'
+  );
+  const econFnMatch = appJs.match(/function renderImageEconomicsModeler\(\)\s*\{([\s\S]*?)function initImageArenaBindings/);
+  assert(
+    econFnMatch && econFnMatch[1].includes('if (!live) return null;'),
+    'renderImageEconomicsModeler() must only model completed live results (if (!live) return null)'
+  );
   const curtainHeadMatch = stylesCss.match(/\.img-curtain-head\s*\{([^}]+)\}/);
   assert(curtainHeadMatch, 'styles.css must define .img-curtain-head');
   assert(
@@ -346,7 +368,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   );
   const curtainNoteMatch = stylesCss.match(/\.img-curtain-note\s*\{([^}]+)\}/);
   assert(curtainNoteMatch && curtainNoteMatch[1].includes('text-align: center') && curtainNoteMatch[1].includes('margin: 10px auto 0'), '.img-curtain-note must be center-aligned');
-  console.log('✓ Image & GenMedia Arena (v1.0.22) center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
+  console.log('✓ Image & GenMedia Arena (v1.0.23) progressive card rendering + all_done scorecard/economics gating, center-aligned Split-Curtain header/controls, 3-model Nano Banana catalog, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

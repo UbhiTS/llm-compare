@@ -5304,7 +5304,7 @@ function hasOffPeakModelSelected() {
 }
 
 function hasLiveImageResults() {
-  return Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);
+  return !IMG_RUNNING && Array.isArray(IMG_LAST_RESULTS) && IMG_LAST_RESULTS.some((r) => r && r.ok);
 }
 
 // ---------- Full-Screen Image Lightbox Modal (Input References & Generated Outputs) ----------
@@ -6357,10 +6357,6 @@ async function runImageArenaComparisonClick() {
         IMG_LAST_RESULTS.push(slotResult);
         IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
         applyImageResultToCard(slotResult);
-        highlightImageWinnerTiles(IMG_LAST_RESULTS);
-        updateSplitCurtainView();
-        renderImageMetricComparison();
-        renderImageEconomicsModeler();
         return slotResult;
       } catch (slotErr) {
         const entry = getImgCatalogItem(slotObj.catalogId) || {};
@@ -6380,6 +6376,12 @@ async function runImageArenaComparisonClick() {
     });
 
     await Promise.allSettled(slotPromises);
+
+    IMG_RUNNING = false;
+    highlightImageWinnerTiles(IMG_LAST_RESULTS);
+    updateSplitCurtainView();
+    renderImageMetricComparison();
+    renderImageEconomicsModeler();
 
     const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
     const okCount = IMG_LAST_RESULTS.filter((r) => r && r.ok).length;
@@ -6567,7 +6569,6 @@ function renderImageMetricComparison() {
     if (scSec) scSec.classList.add('hidden');
     return;
   }
-  if (scSec) scSec.classList.remove('hidden');
   const legendEl = $('#imgModelLegend');
   const gridEl = $('#imgMetricGrid');
   const subEl = $('#imgScorecardSub');
@@ -6582,19 +6583,12 @@ function renderImageMetricComparison() {
     const live = (IMG_LAST_RESULTS || []).find(
       (r) => r && r.ok && r.slot === s.slot && r.catalogId === s.catalogId
     );
-    const refStd = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
-    const stdCost = live ? Number(live.standardPayGoCostUsd || refStd) : refStd;
-    const offPeakDiscount = (entry.pricing && entry.pricing.offPeakDiscount) || 0;
-    const offPeakCost = live
-      ? Number(live.offPeakPayGoCostUsd != null ? live.offPeakPayGoCostUsd : stdCost)
-      : (offPeakDiscount > 0 ? stdCost * (1 - offPeakDiscount) : stdCost);
-    const mp = live && live.megapixels != null
-      ? Number(live.megapixels)
-      : ({ '1K': 1.05, '2K': 4.19, '4K': 16.78 }[IMG_SELECTED_SIZE] || 4.19);
-    const imgTok = live && live.imageOutputTokens != null
-      ? Number(live.imageOutputTokens)
-      : ({ '1K': 1120, '2K': 1680, '4K': entry.id === 'gemini-nano-banana-2.1' ? 3780 : 2520 }[IMG_SELECTED_SIZE] || 1680);
-    const latencySec = live && live.latencyMs > 0 ? live.latencyMs / 1000 : 0;
+    if (!live) return null;
+    const stdCost = Number(live.standardPayGoCostUsd || 0);
+    const offPeakCost = Number(live.offPeakPayGoCostUsd != null ? live.offPeakPayGoCostUsd : stdCost);
+    const mp = Number(live.megapixels || 0);
+    const imgTok = Number(live.imageOutputTokens || 0);
+    const latencySec = live.latencyMs > 0 ? live.latencyMs / 1000 : 0;
 
     return {
       slot: s.slot,
@@ -6603,7 +6597,7 @@ function renderImageMetricComparison() {
       provider: 'google',
       publisher: 'google',
       model: entry.model,
-      isLive: Boolean(live),
+      isLive: true,
       standardPayGoCostUsd: stdCost,
       offPeakPayGoCostUsd: offPeakCost,
       latencySec,
@@ -6612,11 +6606,14 @@ function renderImageMetricComparison() {
     };
   }).filter(Boolean);
 
-  const anyLive = scored.some((r) => r.isLive);
+  if (!scored.length) {
+    if (scSec) scSec.classList.add('hidden');
+    return;
+  }
+  if (scSec) scSec.classList.remove('hidden');
+
   if (subEl) {
-    subEl.textContent = anyLive
-      ? `Live measured Vertex AI telemetry at ${IMG_SELECTED_SIZE} (${IMG_SELECTED_ASPECT}) — each panel has its own scale; the green zone marks the better end.`
-      : `Reference ${IMG_SELECTED_SIZE} unit economics & resolution — click Generate & Compare Images ▸ above to populate live wall-time and token telemetry.`;
+    subEl.textContent = `Live measured Vertex AI telemetry at ${IMG_SELECTED_SIZE} (${IMG_SELECTED_ASPECT}) — each panel has its own scale; the green zone marks the better end.`;
   }
 
   if (legendEl) {
@@ -6659,7 +6656,7 @@ function renderImageMetricComparison() {
       label: 'Wall time',
       icon: 'time',
       dir: 'lower',
-      hint: anyLive ? '↓ lower is better (measured)' : '↓ run generation to measure',
+      hint: '↓ lower is better (measured)',
       get: (r) => Math.max(r.latencySec || 0, 0),
       fmt: (v) => (v > 0 ? v.toFixed(1) + 's' : '—'),
     },
@@ -6695,7 +6692,6 @@ function renderImageEconomicsModeler() {
     if (econSec) econSec.classList.add('hidden');
     return;
   }
-  if (econSec) econSec.classList.remove('hidden');
   const volSlider = $('#imgVolumeSlider');
   const offPeakSlider = $('#imgOffPeakSlider');
   const offPeakSliderCard = $('#imgOffPeakSliderCard');
@@ -6726,25 +6722,24 @@ function renderImageEconomicsModeler() {
 
   const fmtUsdBig = (n) => '$' + Math.round(n).toLocaleString('en-US');
 
-  // Strictly model ONLY the active selected slots in IMG_SLOTS
+  // Strictly model ONLY completed live results in IMG_SLOTS
   const activeRows = IMG_SLOTS.map((s) => {
     const c = getImgCatalogItem(s.catalogId);
     if (!c) return null;
     const live = (IMG_LAST_RESULTS || []).find(
-      (r) => r && r.ok && r.slot === s.slot && r.catalogId === c.id && r.requestedSize === IMG_SELECTED_SIZE
+      (r) => r && r.ok && r.slot === s.slot && r.catalogId === c.id
     );
-    const stdPerImg = live
-      ? Number(live.standardPayGoCostUsd)
-      : ((c.pricing && c.pricing.referenceCostBySize && c.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05);
-    const hasOffPeak = !!(c.pricing && c.pricing.offPeakDiscount > 0);
-    const offPeakPerImg = hasOffPeak ? stdPerImg * (1 - c.pricing.offPeakDiscount) : null;
+    if (!live) return null;
+    const stdPerImg = Number(live.standardPayGoCostUsd || 0);
+    const hasOffPeak = Boolean(live.offPeakSupported || (c.pricing && c.pricing.offPeakDiscount > 0));
+    const offPeakPerImg = hasOffPeak
+      ? Number(live.offPeakPayGoCostUsd != null ? live.offPeakPayGoCostUsd : stdPerImg * (1 - ((c.pricing && c.pricing.offPeakDiscount) || 0.5)))
+      : null;
     const blendedVolCost = (showOffPeak && hasOffPeak)
       ? (volume * syncShare * stdPerImg) + (volume * offPeakShare * offPeakPerImg)
       : (volume * stdPerImg);
-    const tokEst = live
-      ? `${fmtInt(live.imageOutputTokens)} tok (measured)`
-      : ({ '1K': '1,120 tok', '2K': '1,680 tok', '4K': c.id === 'gemini-nano-banana-2.1' ? '3,780 tok' : '2,520 tok' }[IMG_SELECTED_SIZE] || '1,680 tok');
-    const resCap = `${IMG_SELECTED_SIZE} Native`;
+    const tokEst = `${fmtInt(live.imageOutputTokens || 0)} tok (measured)`;
+    const resCap = `${live.width || '?'}×${live.height || '?'} (${live.megapixels || '?'} MP)`;
     return {
       slot: s.slot,
       catalog: c,
@@ -6757,7 +6752,11 @@ function renderImageEconomicsModeler() {
     };
   }).filter(Boolean);
 
-  if (!activeRows.length) return;
+  if (!activeRows.length) {
+    if (econSec) econSec.classList.add('hidden');
+    return;
+  }
+  if (econSec) econSec.classList.remove('hidden');
 
   const costs = activeRows.map((r) => r.blendedVolCost);
   const minCost = Math.min(...costs);
