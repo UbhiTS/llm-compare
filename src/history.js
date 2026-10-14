@@ -34,6 +34,8 @@ const BASE_DIR = process.env.APP_DATA_DIR
 
 const MAX_LIST_PER_USER = 200;   // most-recent N returned to a user
 const MAX_LIST_ALL = 1000;       // most-recent N returned to an admin (all users)
+const RUN_RETENTION_DAYS = Math.max(1, Number(process.env.HISTORY_RETENTION_DAYS) || 7);
+const RUN_RETENTION_MS = RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000; // 7 days default TTL for unstarred runs
 
 const norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
 function userKey(username) {
@@ -215,7 +217,8 @@ function initSqlite() {
           title TEXT NOT NULL,
           kind TEXT NOT NULL,
           models_json TEXT NOT NULL,
-          summary_json TEXT NOT NULL
+          summary_json TEXT NOT NULL,
+          starred INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_runs_user_at ON runs(user_key, at DESC);
@@ -266,13 +269,16 @@ function initSqlite() {
           image_size TEXT NOT NULL,
           aspect_ratio TEXT NOT NULL,
           slots_json TEXT NOT NULL,
-          summary_json TEXT NOT NULL
+          summary_json TEXT NOT NULL,
+          starred INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_image_runs_at ON image_runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_image_runs_user_at ON image_runs(user_key, at DESC);
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE image_runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
 
       // Bind per-user vault attachment metadata table (`user_vault_files`) to this SQLite DB
       // using synchronous snapshot flush so new attachment records immediately persist to /data.
@@ -290,15 +296,17 @@ function initSqlite() {
 
       stmts = {
         upsert: sqliteDb.prepare(`
-          INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json, starred)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
             user_name = excluded.user_name,
             title = excluded.title,
             models_json = excluded.models_json,
-            summary_json = excluded.summary_json
+            summary_json = excluded.summary_json,
+            starred = excluded.starred
         `),
+        setStarred: sqliteDb.prepare(`UPDATE runs SET starred = ? WHERE id = ?`),
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
@@ -339,8 +347,8 @@ function initSqlite() {
         listPresetsByUser: sqliteDb.prepare(`SELECT * FROM user_saved_presets WHERE user_key = ? ORDER BY updated_at DESC`),
         allPresets: sqliteDb.prepare(`SELECT * FROM user_saved_presets ORDER BY updated_at DESC`),
         upsertImage: sqliteDb.prepare(`
-          INSERT INTO image_runs (id, at, user, user_key, user_name, pack_id, scenario_id, title, prompt, image_size, aspect_ratio, slots_json, summary_json)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO image_runs (id, at, user, user_key, user_name, pack_id, scenario_id, title, prompt, image_size, aspect_ratio, slots_json, summary_json, starred)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
             user_name = excluded.user_name,
@@ -349,8 +357,10 @@ function initSqlite() {
             image_size = excluded.image_size,
             aspect_ratio = excluded.aspect_ratio,
             slots_json = excluded.slots_json,
-            summary_json = excluded.summary_json
+            summary_json = excluded.summary_json,
+            starred = excluded.starred
         `),
+        setImageStarred: sqliteDb.prepare(`UPDATE image_runs SET starred = ? WHERE id = ?`),
         delImage: sqliteDb.prepare(`DELETE FROM image_runs WHERE id = ?`),
         allImage: sqliteDb.prepare(`SELECT * FROM image_runs ORDER BY at DESC`),
       };
@@ -521,6 +531,7 @@ function rowToMeta(r) {
     kind: r.kind || 'compare',
     models,
     summary,
+    starred: Boolean(r.starred),
   };
 }
 
@@ -538,11 +549,13 @@ function recordToMeta(rec) {
     kind: rec.kind === 'single' ? 'single' : 'compare',
     models: Array.isArray(rec.models) ? rec.models : [],
     summary: Array.isArray(rec.summary) ? rec.summary : [],
+    starred: Boolean(rec.starred),
   };
 }
 
 function upsertMetaInternal(meta, persistDisk = true) {
   if (!meta || !meta.id) return;
+  meta.starred = Boolean(meta.starred);
   metaById.set(meta.id, meta);
   if (stmts) {
     try {
@@ -556,7 +569,8 @@ function upsertMetaInternal(meta, persistDisk = true) {
         meta.title || 'Run',
         meta.kind || 'compare',
         JSON.stringify(meta.models || []),
-        JSON.stringify(meta.summary || [])
+        JSON.stringify(meta.summary || []),
+        meta.starred ? 1 : 0
       );
     } catch (_) {}
   }
@@ -582,6 +596,7 @@ function imageRowToMeta(r) {
     aspectRatio: r.aspect_ratio || '16:9',
     slots,
     summary,
+    starred: Boolean(r.starred),
   };
 }
 
@@ -602,11 +617,13 @@ function imageRecordToMeta(rec) {
     aspectRatio: rec.aspectRatio || '16:9',
     slots: Array.isArray(rec.slots) ? rec.slots : [],
     summary: Array.isArray(rec.summary) ? rec.summary : [],
+    starred: Boolean(rec.starred),
   };
 }
 
 function upsertImageMetaInternal(meta, persistDisk = true) {
   if (!meta || !meta.id) return;
+  meta.starred = Boolean(meta.starred);
   imageMetaById.set(meta.id, meta);
   if (stmts && stmts.upsertImage) {
     try {
@@ -623,7 +640,8 @@ function upsertImageMetaInternal(meta, persistDisk = true) {
         meta.imageSize || '1K',
         meta.aspectRatio || '16:9',
         JSON.stringify(meta.slots || []),
-        JSON.stringify(meta.summary || [])
+        JSON.stringify(meta.summary || []),
+        meta.starred ? 1 : 0
       );
     } catch (_) {}
   }
@@ -974,6 +992,7 @@ function listItem(meta) {
     taskId: meta.taskId,
     title: meta.title,
     summary: meta.summary,
+    starred: Boolean(meta.starred),
   };
 }
 
@@ -989,12 +1008,15 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
-async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge }) {
+async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge, starred }) {
   try {
+    maybePruneExpiredRuns();
     const id = safeId(passedId) || newId();
     const at = Date.now();
     const u = norm(user);
     const uKey = userKey(u);
+    const existingMeta = metaById.get(id);
+    const isStarred = starred != null ? Boolean(starred) : Boolean(existingMeta && existingMeta.starred);
     const promptText = (typeof customPrompt === 'string' && customPrompt.trim())
       ? customPrompt
       : ((task && typeof task.prompt === 'string') ? task.prompt : '');
@@ -1027,6 +1049,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
       title: (task && task.title) || (task && task.id) || 'Run',
       prompt: promptText,
       kind: kind === 'single' ? 'single' : 'compare',
+      starred: isStarred,
       attachments,
       models: (models || []).map((m) => ({
         slot: m.slot, catalogId: m.catalogId, label: m.label,
@@ -1525,6 +1548,8 @@ function deleteUserPrompt(username, promptId) {
   const uKey = userKey(u);
   const sid = String(promptId || '').trim();
   const existing = listSavedPrompts(u);
+  const targetPrompt = existing.find((x) => x && x.id === sid);
+  const candidateHashes = extractRunVaultHashes(targetPrompt);
   const filtered = existing.filter((x) => x && x.id !== sid);
   const removed = filtered.length !== existing.length;
   if (removed) {
@@ -1532,6 +1557,7 @@ function deleteUserPrompt(username, promptId) {
       try { stmts.delPrompt.run(uKey, sid); } catch (_) {}
     }
     saveUserPreferences(u, { savedPrompts: filtered });
+    gcOrphanedVaultRefsForUser(uKey, candidateHashes, true);
   }
   return { ok: true, removed, savedPrompts: filtered };
 }
@@ -1639,6 +1665,7 @@ function lastModels(username) {
 
 // Instant (<0.1ms) list of a single user's runs (newest first).
 function listRuns(username) {
+  maybePruneExpiredRuns();
   const u = norm(username);
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
@@ -1652,6 +1679,7 @@ function listRuns(username) {
 
 // Instant (<0.2ms) list of ALL users' runs for Admins (zero GCS FUSE file reads!).
 function listAllRuns() {
+  maybePruneExpiredRuns();
   const all = [];
   for (const m of metaById.values()) {
     all.push(listItem(m));
@@ -1760,13 +1788,147 @@ function getRun(id, { username, isAdmin }) {
   return null;
 }
 
-// Delete one run from SQLite index, memory, and disk.
-function deleteRun(id, { username, isAdmin }) {
+// Extract all 64-char sha256 vault references from a run record or metadata object.
+function extractRunVaultHashes(recOrMeta) {
+  const hashes = new Set();
+  if (!recOrMeta || typeof recOrMeta !== 'object') return hashes;
+  const addRef = (val) => {
+    if (typeof val === 'string' && /^[0-9a-f]{64}$/i.test(val.trim())) {
+      hashes.add(val.trim().toLowerCase());
+    }
+  };
+  if (Array.isArray(recOrMeta.attachments)) {
+    for (const a of recOrMeta.attachments) {
+      if (a && typeof a === 'object') {
+        addRef(a.sha256);
+        addRef(a.vaultRef);
+      }
+    }
+  }
+  for (const arr of [recOrMeta.results, recOrMeta.summary]) {
+    if (Array.isArray(arr)) {
+      for (const r of arr) {
+        if (r && typeof r === 'object') {
+          addRef(r.imageVaultRef);
+          addRef(r.thoughtVaultRef);
+          addRef(r.sha256);
+          addRef(r.vaultRef);
+        }
+      }
+    }
+  }
+  return hashes;
+}
+
+// Collect all vault sha256 hashes still referenced by ANY surviving saved prompt, text run,
+// or image run belonging to `uKey`. Used for reference-counted binary vault garbage collection.
+function collectReferencedVaultHashesForUser(uKey) {
+  const referenced = new Set();
+  if (!uKey || !/^[0-9a-f]{40}$/i.test(uKey)) return referenced;
+  const addRef = (val) => {
+    if (typeof val === 'string' && /^[0-9a-f]{64}$/i.test(val.trim())) {
+      referenced.add(val.trim().toLowerCase());
+    }
+  };
+
+  // 1. Saved Prompts in memory & SQLite
+  const pref = prefsByUserKey.get(uKey);
+  const promptLists = [];
+  if (pref && Array.isArray(pref.savedPrompts)) promptLists.push(pref.savedPrompts);
+  if (stmts && stmts.listPromptsByUser) {
+    try {
+      promptLists.push(stmts.listPromptsByUser.all(uKey).map(promptRowToItem).filter(Boolean));
+    } catch (_) {}
+  }
+  for (const list of promptLists) {
+    for (const p of list) {
+      if (p && Array.isArray(p.attachments)) {
+        for (const a of p.attachments) {
+          if (a && typeof a === 'object') {
+            addRef(a.sha256);
+            addRef(a.vaultRef);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Surviving Image Arena runs for `uKey`
+  for (const m of imageMetaById.values()) {
+    if (m.userKey !== uKey) continue;
+    for (const h of extractRunVaultHashes(m)) referenced.add(h);
+    const cached = fullPayloadCache.get(m.id);
+    if (cached) {
+      for (const h of extractRunVaultHashes(cached)) referenced.add(h);
+    } else {
+      const fp = path.join(BASE_DIR, uKey, `${m.id}.json`);
+      try {
+        if (fs.existsSync(fp)) {
+          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          for (const h of extractRunVaultHashes(rec)) referenced.add(h);
+        }
+      } catch (_) {}
+    }
+  }
+
+  // 3. Surviving Text/Code/Agent runs for `uKey`
+  for (const m of metaById.values()) {
+    if (m.userKey !== uKey) continue;
+    for (const h of extractRunVaultHashes(m)) referenced.add(h);
+    const cached = fullPayloadCache.get(m.id);
+    if (cached) {
+      for (const h of extractRunVaultHashes(cached)) referenced.add(h);
+    } else {
+      const fp = path.join(BASE_DIR, uKey, `${m.id}.json`);
+      try {
+        if (fs.existsSync(fp)) {
+          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          for (const h of extractRunVaultHashes(rec)) referenced.add(h);
+        }
+      } catch (_) {}
+    }
+  }
+
+  return referenced;
+}
+
+// Garbage-collect any vault binaries in `candidateHashes` that are no longer referenced by `uKey`.
+function gcOrphanedVaultRefsForUser(uKey, candidateHashes, triggerSnapshot = false) {
+  if (!uKey || !candidateHashes || candidateHashes.size === 0) {
+    return { freedFiles: 0, freedBytes: 0 };
+  }
+  const stillReferenced = collectReferencedVaultHashesForUser(uKey);
+  let freedFiles = 0;
+  let freedBytes = 0;
+  for (const sha256 of candidateHashes) {
+    if (!stillReferenced.has(sha256)) {
+      const res = vault.deleteVaultEntrySync(uKey, sha256, false);
+      if (res && res.removed) {
+        freedFiles++;
+        freedBytes += Number(res.bytesFreed) || 0;
+      }
+    }
+  }
+  if (freedFiles > 0 && triggerSnapshot) {
+    flushSnapshotSync();
+  }
+  return { freedFiles, freedBytes };
+}
+
+// Delete one run from SQLite index, memory, disk, and garbage-collect unreferenced vault files.
+function deleteRun(id, { username, isAdmin, stats } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
   const meta = metaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
+
+  const ownerKey = (meta && meta.userKey) || myKey;
+  const candidateHashes = extractRunVaultHashes(meta);
+  const cached = fullPayloadCache.get(sid);
+  if (cached) {
+    for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
+  }
 
   const candidates = [path.join(BASE_DIR, myKey, sid + '.json')];
   if (meta && meta.userKey) candidates.unshift(path.join(BASE_DIR, meta.userKey, sid + '.json'));
@@ -1782,6 +1944,10 @@ function deleteRun(id, { username, isAdmin }) {
   for (const fp of new Set(candidates)) {
     try {
       if (fs.existsSync(fp)) {
+        try {
+          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
+        } catch (_) {}
         fs.unlinkSync(fp);
         removed = true;
       }
@@ -1796,8 +1962,50 @@ function deleteRun(id, { username, isAdmin }) {
   if (stmts) {
     try { stmts.del.run(sid); } catch (_) {}
   }
-  if (removed) schedulePersistSnapshot();
+  if (removed) {
+    const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
+    if (stats && gc) {
+      stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
+      stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+    }
+    schedulePersistSnapshot();
+  }
   return removed;
+}
+
+// Star or unstar a Text/Code/Agent run so it is exempt from the 7-day auto-prune.
+function setRunStarred(id, starred, { username, isAdmin }) {
+  syncFromPersistSqliteIfNewer(false);
+  const sid = safeId(id);
+  if (!sid) return null;
+  const myKey = userKey(username);
+  const meta = metaById.get(sid);
+  if (!meta) return null;
+  if (!isAdmin && meta.userKey !== myKey) return null;
+
+  const nextStarred = Boolean(starred);
+  meta.starred = nextStarred;
+  if (stmts && stmts.setStarred) {
+    try { stmts.setStarred.run(nextStarred ? 1 : 0, sid); } catch (_) {}
+  }
+
+  const fp = path.join(BASE_DIR, meta.userKey, `${sid}.json`);
+  try {
+    let rec = fullPayloadCache.get(sid);
+    if (!rec && fs.existsSync(fp)) {
+      rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    }
+    if (rec && typeof rec === 'object') {
+      rec.starred = nextStarred;
+      cachePayload(sid, rec);
+      if (fs.existsSync(fp)) {
+        fs.writeFileSync(fp, JSON.stringify(rec));
+      }
+    }
+  } catch (_) {}
+
+  flushSnapshotSync();
+  return { ok: true, id: sid, starred: nextStarred };
 }
 
 // Instant (<0.2ms) Admin at-a-glance usage summary computed directly from the SQLite/memory index.
@@ -1805,19 +2013,22 @@ function deleteRun(id, { username, isAdmin }) {
 // while keeping the actual prompt text and file contents strictly private to each user.
 function usageSummary() {
   syncFromPersistSqliteIfNewer(false);
+  maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
-  let totalRuns = 0, runsToday = 0;
+  let totalRuns = 0, runsToday = 0, totalStarredRuns = 0;
   for (const rec of metaById.values()) {
     totalRuns++;
     const today = rec.at >= startOfDay;
     if (today) runsToday++;
+    if (rec.starred) totalStarredRuns++;
     const uKeyName = norm(rec.user);
     const u = byUser.get(uKeyName) || {
       user: uKeyName,
       userName: rec.userName || rec.user || uKeyName,
       runs: 0,
       runsToday: 0,
+      starredRuns: 0,
       lastAt: 0,
       costUsd: 0,
       savedPrompts: 0,
@@ -1825,6 +2036,7 @@ function usageSummary() {
     };
     u.runs++;
     if (today) u.runsToday++;
+    if (rec.starred) u.starredRuns++;
     if (rec.at > u.lastAt) { u.lastAt = rec.at; u.userName = rec.userName || rec.user || uKeyName; }
     (rec.summary || []).forEach((s) => { if (typeof s.costUsd === 'number') u.costUsd += s.costUsd; });
     byUser.set(uKeyName, u);
@@ -1844,6 +2056,7 @@ function usageSummary() {
       userName: uKeyName,
       runs: 0,
       runsToday: 0,
+      starredRuns: 0,
       lastAt: 0,
       costUsd: 0,
       savedPrompts: 0,
@@ -1863,10 +2076,12 @@ function usageSummary() {
   return {
     generatedAt: Date.now(),
     dayStartUtc: startOfDay,
+    retentionDays: RUN_RETENTION_DAYS,
     totals: {
       users: users.length,
       totalRuns,
       runsToday,
+      totalStarredRuns,
       totalSavedPrompts,
       totalSavedPresets,
     },
@@ -1977,6 +2192,7 @@ function imageListItem(meta) {
     slots: meta.slots || [],
     summary: meta.summary || [],
     results: meta.summary || [],
+    starred: Boolean(meta.starred),
   };
 }
 
@@ -1995,13 +2211,17 @@ async function saveImageRun({
   slots,
   results,
   attachments: rawAttachments,
+  starred,
 }) {
   try {
+    maybePruneExpiredRuns();
     const id = safeId(passedId) || newId();
     const at = Number(passedAt) > 0 ? Number(passedAt) : Date.now();
     const u = norm(user);
     if (!u) return null;
     const uKey = userKey(u);
+    const existingMeta = imageMetaById.get(id);
+    const isStarred = starred != null ? Boolean(starred) : Boolean(existingMeta && existingMeta.starred);
     const promptText = String(prompt || '').trim();
     const runTitle = String(title || promptText.slice(0, 72) || 'Image Arena Run').trim().slice(0, 160);
 
@@ -2100,6 +2320,7 @@ async function saveImageRun({
       prompt: promptText,
       imageSize: String(imageSize || '1K'),
       aspectRatio: String(aspectRatio || '16:9'),
+      starred: isStarred,
       attachments,
       slots: cleanSlots,
       results: storedResults,
@@ -2126,6 +2347,7 @@ async function saveImageRun({
 
 function listImageRuns(username) {
   syncFromPersistSqliteIfNewer(false);
+  maybePruneExpiredRuns();
   const key = userKey(username);
   ensureOwnerLoadedSync(key);
   const items = [];
@@ -2138,6 +2360,7 @@ function listImageRuns(username) {
 
 function listAllImageRuns() {
   syncFromPersistSqliteIfNewer(false);
+  maybePruneExpiredRuns();
   const all = [];
   for (const m of imageMetaById.values()) {
     all.push(imageListItem(m));
@@ -2240,12 +2463,19 @@ function getImageRun(id, { username, isAdmin }) {
   return null;
 }
 
-function deleteImageRun(id, { username, isAdmin }) {
+function deleteImageRun(id, { username, isAdmin, stats } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
   const meta = imageMetaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
+
+  const ownerKey = (meta && meta.userKey) || myKey;
+  const candidateHashes = extractRunVaultHashes(meta);
+  const cached = fullPayloadCache.get(sid);
+  if (cached) {
+    for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
+  }
 
   const candidates = [path.join(BASE_DIR, myKey, `${sid}.json`)];
   if (meta && meta.userKey) candidates.unshift(path.join(BASE_DIR, meta.userKey, `${sid}.json`));
@@ -2261,6 +2491,10 @@ function deleteImageRun(id, { username, isAdmin }) {
   for (const fp of new Set(candidates)) {
     try {
       if (fs.existsSync(fp)) {
+        try {
+          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
+        } catch (_) {}
         fs.unlinkSync(fp);
         removed = true;
       }
@@ -2275,34 +2509,81 @@ function deleteImageRun(id, { username, isAdmin }) {
   if (stmts && stmts.delImage) {
     try { stmts.delImage.run(sid); } catch (_) {}
   }
-  if (removed) schedulePersistSnapshot();
+  if (removed) {
+    const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
+    if (stats && gc) {
+      stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
+      stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+    }
+    schedulePersistSnapshot();
+  }
   return removed;
+}
+
+// Star or unstar an Image Arena run so it is exempt from the 7-day auto-prune.
+function setImageRunStarred(id, starred, { username, isAdmin }) {
+  syncFromPersistSqliteIfNewer(false);
+  const sid = safeId(id);
+  if (!sid) return null;
+  const myKey = userKey(username);
+  const meta = imageMetaById.get(sid);
+  if (!meta) return null;
+  if (!isAdmin && meta.userKey !== myKey) return null;
+
+  const nextStarred = Boolean(starred);
+  meta.starred = nextStarred;
+  if (stmts && stmts.setImageStarred) {
+    try { stmts.setImageStarred.run(nextStarred ? 1 : 0, sid); } catch (_) {}
+  }
+
+  const fp = path.join(BASE_DIR, meta.userKey, `${sid}.json`);
+  try {
+    let rec = fullPayloadCache.get(sid);
+    if (!rec && fs.existsSync(fp)) {
+      rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    }
+    if (rec && typeof rec === 'object') {
+      rec.starred = nextStarred;
+      cachePayload(sid, rec);
+      if (fs.existsSync(fp)) {
+        fs.writeFileSync(fp, JSON.stringify(rec));
+      }
+    }
+  } catch (_) {}
+
+  flushSnapshotSync();
+  return { ok: true, id: sid, starred: nextStarred };
 }
 
 function imageUsageSummary() {
   syncFromPersistSqliteIfNewer(false);
+  maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
   let totalRuns = 0;
   let runsToday = 0;
+  let totalStarredRuns = 0;
   let totalImages = 0;
   let totalCostUsd = 0;
   for (const rec of imageMetaById.values()) {
     totalRuns++;
     const today = rec.at >= startOfDay;
     if (today) runsToday++;
+    if (rec.starred) totalStarredRuns++;
     const uKeyName = norm(rec.user);
     const u = byUser.get(uKeyName) || {
       user: uKeyName,
       userName: rec.userName || rec.user || uKeyName,
       runs: 0,
       runsToday: 0,
+      starredRuns: 0,
       imagesGenerated: 0,
       lastAt: 0,
       costUsd: 0,
     };
     u.runs++;
     if (today) u.runsToday++;
+    if (rec.starred) u.starredRuns++;
     if (rec.at > u.lastAt) {
       u.lastAt = rec.at;
       u.userName = rec.userName || rec.user || uKeyName;
@@ -2324,10 +2605,12 @@ function imageUsageSummary() {
   return {
     generatedAt: Date.now(),
     dayStartUtc: startOfDay,
+    retentionDays: RUN_RETENTION_DAYS,
     totals: {
       users: users.length,
       totalRuns,
       runsToday,
+      totalStarredRuns,
       totalImages,
       totalCostUsd,
     },
@@ -2335,7 +2618,70 @@ function imageUsageSummary() {
   };
 }
 
+// Automatically prune unstarred runs older than `retentionMs` (default 7 days)
+// and garbage-collect any orphaned binary vault files they referenced.
+// Starred runs (`m.starred === true`) are kept permanently.
+let lastPruneCheckAt = 0;
+function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS } = {}) {
+  const cutoff = now - Math.max(60000, Number(retentionMs) || RUN_RETENTION_MS);
+  const expiredText = [];
+  const expiredImage = [];
+
+  for (const m of metaById.values()) {
+    if (!m.starred && Number(m.at || 0) > 0 && Number(m.at) < cutoff) {
+      expiredText.push(m);
+    }
+  }
+  for (const m of imageMetaById.values()) {
+    if (!m.starred && Number(m.at || 0) > 0 && Number(m.at) < cutoff) {
+      expiredImage.push(m);
+    }
+  }
+
+  const stats = { vaultFilesRemoved: 0, vaultBytesFreed: 0 };
+  let prunedTextRuns = 0;
+  let prunedImageRuns = 0;
+  for (const m of expiredText) {
+    if (deleteRun(m.id, { username: m.user, isAdmin: true, stats })) {
+      prunedTextRuns++;
+    }
+  }
+  for (const m of expiredImage) {
+    if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats })) {
+      prunedImageRuns++;
+    }
+  }
+
+  return {
+    prunedTextRuns,
+    prunedImageRuns,
+    totalPruned: prunedTextRuns + prunedImageRuns,
+    vaultFilesRemoved: stats.vaultFilesRemoved,
+    vaultBytesFreed: stats.vaultBytesFreed,
+    cutoff,
+    retentionDays: RUN_RETENTION_DAYS,
+  };
+}
+
+function maybePruneExpiredRuns() {
+  const now = Date.now();
+  if (now - lastPruneCheckAt < 5 * 60 * 1000) return null;
+  lastPruneCheckAt = now;
+  try {
+    return pruneExpiredRuns({ now, retentionMs: RUN_RETENTION_MS });
+  } catch (_) {
+    return null;
+  }
+}
+
 initSqlite();
+maybePruneExpiredRuns();
+{
+  const pruneTimer = setInterval(() => {
+    try { pruneExpiredRuns(); } catch (_) {}
+  }, 6 * 60 * 60 * 1000);
+  if (pruneTimer.unref) pruneTimer.unref();
+}
 
 module.exports = {
   saveRun,
@@ -2346,12 +2692,17 @@ module.exports = {
   listAllRuns,
   getRun,
   deleteRun,
+  setRunStarred,
   usageSummary,
   listImageRuns,
   listAllImageRuns,
   getImageRun,
   deleteImageRun,
+  setImageRunStarred,
   imageUsageSummary,
+  pruneExpiredRuns,
+  RUN_RETENTION_DAYS,
+  RUN_RETENTION_MS,
   lastModels,
   getUserPreferences,
   saveUserPreferences,

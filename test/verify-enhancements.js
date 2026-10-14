@@ -345,8 +345,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.29', 'package.json must be at version 1.0.29');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.29</span>'), 'index.html must display v1.0.29 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.30', 'package.json must be at version 1.0.30');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.30</span>'), 'index.html must display v1.0.30 in footer');
 
   // Verify Gemini 4 Argon (gemini-4-argon) in MODEL_CATALOG & providers
   const { DEFAULT_MODELS } = require('../src/pricing');
@@ -361,17 +361,23 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high']);
   assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'medium');
 
-  // Verify Image Gen History View server-side persistence + usage parity + .hist-title 11.5px + user next to date/time
+  // Verify Image Gen History View server-side persistence + usage parity + .hist-title 11.5px + user next to date/time + Star-to-Keep + 7-day auto-prune + Vault GC
   const historyMod = require('../src/history');
+  const vaultMod = require('../src/vault');
   assert.strictEqual(typeof historyMod.saveImageRun, 'function', 'history.js must export saveImageRun');
   assert.strictEqual(typeof historyMod.listImageRuns, 'function', 'history.js must export listImageRuns');
   assert.strictEqual(typeof historyMod.listAllImageRuns, 'function', 'history.js must export listAllImageRuns');
   assert.strictEqual(typeof historyMod.getImageRun, 'function', 'history.js must export getImageRun');
   assert.strictEqual(typeof historyMod.deleteImageRun, 'function', 'history.js must export deleteImageRun');
   assert.strictEqual(typeof historyMod.imageUsageSummary, 'function', 'history.js must export imageUsageSummary');
+  assert.strictEqual(typeof historyMod.setRunStarred, 'function', 'history.js must export setRunStarred');
+  assert.strictEqual(typeof historyMod.setImageRunStarred, 'function', 'history.js must export setImageRunStarred');
+  assert.strictEqual(typeof historyMod.pruneExpiredRuns, 'function', 'history.js must export pruneExpiredRuns');
+  assert.strictEqual(historyMod.RUN_RETENTION_DAYS, 7, 'Default history retention must be 7 days');
+
   const sampleDataUrl = `data:image/jpeg;base64,${SAMPLE_REFERENCE_ASSETS.storybookFox.data}`;
   const savedImgRun = await historyMod.saveImageRun({
-    id: 'test-img-run-v1029',
+    id: 'test-img-run-v1030',
     at: Date.now(),
     user: 'ubhi@google.com',
     userName: 'ubhi',
@@ -391,21 +397,77 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
       imageDataUrl: sampleDataUrl,
     }],
   });
-  assert(savedImgRun && savedImgRun.id === 'test-img-run-v1029', 'saveImageRun must persist image run metadata');
+  assert(savedImgRun && savedImgRun.id === 'test-img-run-v1030', 'saveImageRun must persist image run metadata');
+  assert.strictEqual(savedImgRun.starred, false, 'New image run must default to starred: false');
+
+  // Star and unstar image run
+  const starredRes = historyMod.setImageRunStarred('test-img-run-v1030', true, { username: 'ubhi@google.com', isAdmin: true });
+  assert(starredRes && starredRes.starred === true, 'setImageRunStarred(true) must mark image run as starred');
   const imgUsage = historyMod.imageUsageSummary();
-  assert(imgUsage && imgUsage.totals && imgUsage.totals.totalRuns >= 1 && Array.isArray(imgUsage.users), 'imageUsageSummary() must return user breakdown');
-  const hydratedImgRun = historyMod.getImageRun('test-img-run-v1029', { username: 'ubhi@google.com', isAdmin: true });
-  assert(hydratedImgRun && hydratedImgRun.results[0] && hydratedImgRun.results[0].imageDataUrl === sampleDataUrl, 'getImageRun() must hydrate full-res image from binary vault');
-  historyMod.deleteImageRun('test-img-run-v1029', { username: 'ubhi@google.com', isAdmin: true });
+  assert(imgUsage && imgUsage.totals && imgUsage.totals.totalRuns >= 1 && imgUsage.totals.totalStarredRuns >= 1 && Array.isArray(imgUsage.users), 'imageUsageSummary() must return user breakdown and totalStarredRuns');
+  const hydratedImgRun = historyMod.getImageRun('test-img-run-v1030', { username: 'ubhi@google.com', isAdmin: true });
+  assert(hydratedImgRun && hydratedImgRun.starred === true && hydratedImgRun.results[0] && hydratedImgRun.results[0].imageDataUrl === sampleDataUrl, 'getImageRun() must preserve starred: true and hydrate full-res image from binary vault');
+
+  // Test 7-day auto-pruning: an 8-day-old unstarred run is pruned + its orphaned vault binary is garbage-collected, while an 8-day-old starred run is preserved!
+  const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+  const uniqueImgBuf = Buffer.from(`unique-ephemeral-image-payload-${Date.now()}-${Math.random()}`);
+  const uniqueDataUrl = `data:image/png;base64,${uniqueImgBuf.toString('base64')}`;
+  await historyMod.saveImageRun({
+    id: 'test-img-expired-unstarred',
+    at: eightDaysAgo,
+    starred: false,
+    user: 'prune-test-user@google.com',
+    userName: 'prune-test-user',
+    title: 'Expired Unstarred Run',
+    prompt: 'Expired test',
+    results: [{
+      slot: 'A',
+      catalogId: 'gemini-nano-banana-2.1',
+      label: 'Gemini Nano Banana 2.1',
+      imageDataUrl: uniqueDataUrl,
+    }],
+  });
+  await historyMod.saveImageRun({
+    id: 'test-img-expired-starred',
+    at: eightDaysAgo,
+    starred: true,
+    user: 'prune-test-user@google.com',
+    userName: 'prune-test-user',
+    title: 'Old Starred Run Kept Forever',
+    prompt: 'Starred test',
+    results: [{
+      slot: 'A',
+      catalogId: 'gemini-nano-banana-2.1',
+      label: 'Gemini Nano Banana 2.1',
+      costUsd: 0.05,
+    }],
+  });
+  const pruneRes = historyMod.pruneExpiredRuns({ now: Date.now() });
+  assert(pruneRes.prunedImageRuns >= 1, 'pruneExpiredRuns must prune unstarred image runs older than 7 days');
+  assert(pruneRes.vaultFilesRemoved >= 1, 'pruneExpiredRuns must garbage-collect orphaned binary vault files from pruned runs');
+  assert.strictEqual(historyMod.getImageRun('test-img-expired-unstarred', { username: 'prune-test-user@google.com', isAdmin: true }), null, 'Expired unstarred run must be deleted');
+  const keptOldRun = historyMod.getImageRun('test-img-expired-starred', { username: 'prune-test-user@google.com', isAdmin: true });
+  assert(keptOldRun && keptOldRun.starred === true, 'Starred run older than 7 days must be kept forever');
+  const remainingVault = vaultMod.listUserVaultFiles('prune-test-user@google.com');
+  assert.strictEqual(remainingVault.length, 0, 'Orphaned binary vault entry for prune-test-user must be completely removed');
+
+  historyMod.deleteImageRun('test-img-expired-starred', { username: 'prune-test-user@google.com', isAdmin: true });
+  historyMod.deleteImageRun('test-img-run-v1030', { username: 'ubhi@google.com', isAdmin: true });
 
   const histTitleRule = stylesCss.match(/\.hist-title\s*\{([^}]+)\}/);
   const histWhenRule = stylesCss.match(/\.hist-when\s*\{([^}]+)\}/);
   assert(histTitleRule && histTitleRule[1].includes('font-size: 11.5px'), '.hist-title font-size must be 11.5px to match .hist-when');
   assert(histWhenRule && histWhenRule[1].includes('font-size: 11.5px'), '.hist-when font-size must be 11.5px');
   assert(
-    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}</div>') &&
-    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}</div>'),
-    'Both Text Arena and Image Gen History rows must render the user (.hist-who) right next to the date and time inside .hist-when'
+    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}${keptBadge}</div>') &&
+    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}${keptBadge}</div>'),
+    'Both Text Arena and Image Gen History rows must render the user (.hist-who) and ★ Kept badge right next to the date and time inside .hist-when'
+  );
+  assert(
+    appJs.includes('function toggleHistoryRunStar(') &&
+    appJs.includes('hist-star-btn') &&
+    appJs.includes('hist-star-filter-btn'),
+    'app.js must include toggleHistoryRunStar(), .hist-star-btn, and .hist-star-filter-btn'
   );
   assert(
     appJs.includes('function renderImageUsagePanel(') && appJs.includes("fetch('/api/image-arena/usage'") && appJs.includes("fetch('/api/image-arena/history'"),

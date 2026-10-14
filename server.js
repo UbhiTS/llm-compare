@@ -654,9 +654,9 @@ app.delete('/api/me/presets/:id', (req, res) => {
 app.get('/api/history', (req, res) => {
   if (req.query.scope === 'all') {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
-    return res.json({ scope: 'all', runs: history.listAllRuns() });
+    return res.json({ scope: 'all', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listAllRuns() });
   }
-  res.json({ scope: 'me', runs: history.listRuns(req.user.username) });
+  res.json({ scope: 'me', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listRuns(req.user.username) });
 });
 
 app.get('/api/history/:id', (req, res) => {
@@ -738,6 +738,13 @@ app.delete('/api/history/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/history/:id/star', (req, res) => {
+  const starred = Boolean(req.body && req.body.starred);
+  const out = history.setRunStarred(req.params.id, starred, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!out) return res.status(404).json({ error: 'Run not found or not yours to star.' });
+  res.json(out);
+});
+
 // Admin at-a-glance usage: who's active, runs today, totals.
 app.get('/api/usage', requireAdmin, (req, res) => {
   res.json(history.usageSummary());
@@ -771,9 +778,9 @@ app.get('/api/image-arena/config', (_req, res) => {
 app.get('/api/image-arena/history', (req, res) => {
   if (req.query.scope === 'all') {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
-    return res.json({ scope: 'all', runs: history.listAllImageRuns() });
+    return res.json({ scope: 'all', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listAllImageRuns() });
   }
-  res.json({ scope: 'me', runs: history.listImageRuns(req.user.username) });
+  res.json({ scope: 'me', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listImageRuns(req.user.username) });
 });
 
 app.get('/api/image-arena/usage', requireAdmin, (_req, res) => {
@@ -804,6 +811,7 @@ app.post('/api/image-arena/history', async (req, res) => {
         slots: item.slots,
         results: item.results || item.summary,
         attachments: item.attachments,
+        starred: item.starred,
       });
       if (out) saved.push(out);
     }
@@ -823,6 +831,13 @@ app.delete('/api/image-arena/history/:id', (req, res) => {
   const ok = history.deleteImageRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
   if (!ok) return res.status(404).json({ error: 'Image Arena run not found or not yours to delete.' });
   res.json({ ok: true });
+});
+
+app.post('/api/image-arena/history/:id/star', (req, res) => {
+  const starred = Boolean(req.body && req.body.starred);
+  const out = history.setImageRunStarred(req.params.id, starred, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!out) return res.status(404).json({ error: 'Image Arena run not found or not yours to star.' });
+  res.json(out);
 });
 
 app.post('/api/image-arena/run', async (req, res) => {

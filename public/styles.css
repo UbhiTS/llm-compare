@@ -906,9 +906,25 @@ a.ud-item[hidden] { display: none; }
 /* ---------- run history / log ---------- */
 .hist-list { display: flex; flex-direction: column; gap: 10px; }
 .hist-row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
-  border: 1px solid var(--border); background: var(--well); padding: 11px 13px; }
+  border: 1px solid var(--border); background: var(--well); padding: 11px 13px; transition: border-color 0.15s ease, background 0.15s ease; }
+.hist-row.is-starred {
+  border-left: 3px solid #f59e0b;
+  background: color-mix(in srgb, #f59e0b 4%, var(--well));
+}
 .hist-title { font-weight: 650; font-size: 11.5px; }
 .hist-when { color: var(--muted); font-size: 11.5px; margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.hist-kept-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 .hist-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
 .hist-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); padding: 2px 8px; }
 .hist-chip b { color: var(--text); font-weight: 600; }
@@ -918,6 +934,33 @@ a.ud-item[hidden] { display: none; }
   justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
+}
+
+/* Star / Keep Forever Icon Button */
+.hist-star-btn {
+  color: var(--muted);
+  background: var(--bg);
+  border-color: var(--border-hi);
+}
+
+.hist-star-btn:hover:not(:disabled) {
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.12);
+  transform: translateY(-1px);
+}
+
+.hist-star-btn.is-starred {
+  color: #fbbf24;
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.6);
+  box-shadow: 0 1px 6px rgba(245, 158, 11, 0.22);
+}
+
+.hist-star-btn.is-starred:hover:not(:disabled) {
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.25);
+  border-color: #fbbf24;
 }
 
 /* Base button styles ensuring exact 32px height and vertical alignment across all 3 buttons */
@@ -1062,6 +1105,10 @@ a.ud-item[hidden] { display: none; }
 .hist-sort-btn { background: var(--bg); border: 1px solid var(--border); color: var(--muted); padding: 4px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit; transition: color .12s ease, border-color .12s ease, background .12s ease; }
 .hist-sort-btn:hover { color: var(--text); border-color: var(--accent); }
 .hist-sort-btn.is-sorted { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.hist-star-filter-btn { background: var(--bg); border: 1px solid var(--border); color: var(--muted); padding: 4px 9px; font-size: 11.5px; font-weight: 600; cursor: pointer; font-family: inherit; transition: color .12s ease, border-color .12s ease, background .12s ease; }
+.hist-star-filter-btn:hover { color: #fbbf24; border-color: rgba(245, 158, 11, 0.55); }
+.hist-star-filter-btn.active { color: #fbbf24; border-color: rgba(245, 158, 11, 0.65); background: rgba(245, 158, 11, 0.16); }
+.hist-retention-note { font-size: 11px; color: var(--muted); display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 4px; border: 1px dashed var(--border); background: var(--bg); white-space: nowrap; }
 
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {

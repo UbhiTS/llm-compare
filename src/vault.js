@@ -744,26 +744,43 @@ function listUserVaultFiles(usernameOrKey) {
   return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
-// Remove a vault entry from SQLite `user_vault_files` and unlink its raw binary files.
-function deleteVaultEntryAsync(usernameOrKey, sha256) {
+// Remove a vault entry from SQLite `user_vault_files` and unlink its raw binary files synchronously.
+function deleteVaultEntrySync(usernameOrKey, sha256, triggerSnapshot = true) {
   const uKey = userKeyFromUsername(usernameOrKey);
   const h64 = safeHex64(sha256);
-  if (!uKey || !h64) return;
+  if (!uKey || !h64) return { removed: false, bytesFreed: 0 };
   const cacheKey = `${uKey}:${h64}`;
   const meta = metaCache.get(cacheKey);
   if (meta && meta.sha1) sha1ToSha256.delete(`${uKey}:${meta.sha1}`);
-  metaCache.delete(cacheKey);
+  const hadMeta = metaCache.delete(cacheKey);
+  let dbRemoved = false;
   if (vaultStmts && vaultStmts.delOne) {
     try {
-      vaultStmts.delOne.run(uKey, h64);
-      if (typeof onSqliteMutate === 'function') onSqliteMutate();
+      const r = vaultStmts.delOne.run(uKey, h64);
+      if (r && r.changes > 0) dbRemoved = true;
+      if (triggerSnapshot && typeof onSqliteMutate === 'function') onSqliteMutate();
     } catch (_) {}
   }
   const dir = getUserVaultDir(uKey);
   const suffixes = ['.bin', '.claude.bin', '.fit.bin', '.txt', '.meta.json'];
+  let fileRemoved = false;
+  let bytesFreed = 0;
   for (const sfx of suffixes) {
-    fsp.unlink(path.join(dir, `${h64}${sfx}`)).catch(() => {});
+    const fp = path.join(dir, `${h64}${sfx}`);
+    try {
+      if (fs.existsSync(fp)) {
+        try { bytesFreed += fs.statSync(fp).size || 0; } catch (_) {}
+        fs.unlinkSync(fp);
+        fileRemoved = true;
+      }
+    } catch (_) {}
   }
+  return { removed: Boolean(hadMeta || dbRemoved || fileRemoved), bytesFreed };
+}
+
+// Remove a vault entry from SQLite `user_vault_files` and unlink its raw binary files.
+function deleteVaultEntryAsync(usernameOrKey, sha256) {
+  return deleteVaultEntrySync(usernameOrKey, sha256, true);
 }
 
 module.exports = {
@@ -780,5 +797,6 @@ module.exports = {
   getVaultRawBinarySync,
   getVaultMetaRecordSync,
   listUserVaultFiles,
+  deleteVaultEntrySync,
   deleteVaultEntryAsync,
 };

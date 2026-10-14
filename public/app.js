@@ -60,6 +60,8 @@ function modelIconSvg(m) {
 }
 const ICON_PDF = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>';
 const ICON_TRASH = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+const ICON_STAR_OFF = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
+const ICON_STAR_ON = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
 // A compact, distinct name for tight spaces — drops the family prefix so the two
 // Geminis read as "3.5 Flash" / "3.1 Pro" instead of both truncating to "Ge…".
 function shortLabel(label) {
@@ -4539,10 +4541,11 @@ function liveCodeView(text) {
 // admins can toggle to all users and get an at-a-glance usage summary.
 let historyScope = 'me';          // 'all' for admins — they always see everyone
 let historyUserFilter = null;     // set by clicking a user in the usage table
+let historyStarredOnly = false;   // toggle to show only ★ starred (kept forever) runs
 let historyPage = 0;
 let usersSortKey = 'lastAt';      // 'user' | 'runs' | 'runsToday' | 'savedPrompts' | 'savedPresets' | 'costUsd' | 'lastAt'
 let usersSortDir = 'desc';        // 'asc' | 'desc'
-let runsSortKey = 'at';           // 'at' | 'title' | 'user' | 'cost' | 'correctness'
+let runsSortKey = 'at';           // 'at' | 'starred' | 'title' | 'user' | 'cost' | 'correctness' | 'resolution'
 let runsSortDir = 'desc';         // 'asc' | 'desc'
 const HIST_PAGE_SIZE = 6;           // rows rendered at once — keeps the DOM small however big history grows
 let _histState = { body: null, runs: [], usage: null, isAdmin: false };
@@ -4575,7 +4578,9 @@ function sortHistoryRuns(list) {
   const dir = runsSortDir === 'asc' ? 1 : -1;
   arr.sort((a, b) => {
     let cmp = 0;
-    if (runsSortKey === 'title') {
+    if (runsSortKey === 'starred') {
+      cmp = (a && a.starred ? 1 : 0) - (b && b.starred ? 1 : 0);
+    } else if (runsSortKey === 'title') {
       const ta = String((a && (a.title || a.scenarioTitle || a.prompt)) || '');
       const tb = String((b && (b.title || b.scenarioTitle || b.prompt)) || '');
       cmp = ta.localeCompare(tb, undefined, { sensitivity: 'base' });
@@ -4607,6 +4612,8 @@ function sortUsageUsers(list) {
       cmp = (Number(a && a.runs) || 0) - (Number(b && b.runs) || 0);
     } else if (usersSortKey === 'runsToday') {
       cmp = (Number(a && a.runsToday) || 0) - (Number(b && b.runsToday) || 0);
+    } else if (usersSortKey === 'starredRuns') {
+      cmp = (Number(a && a.starredRuns) || 0) - (Number(b && b.starredRuns) || 0);
     } else if (usersSortKey === 'imagesGenerated') {
       cmp = (Number(a && a.imagesGenerated) || 0) - (Number(b && b.imagesGenerated) || 0);
     } else if (usersSortKey === 'savedPrompts') {
@@ -4635,6 +4642,7 @@ async function syncLocalImageRunsToServer(localRuns, serverRuns) {
     const compactBatch = missing.slice(0, 40).map((r) => ({
       id: r.id,
       at: r.at,
+      starred: Boolean(r.starred),
       user: r.user || (ME && ME.username),
       userName: r.userName || r.user || (ME && ME.username),
       packId: r.packId || 'custom',
@@ -4721,18 +4729,22 @@ async function openHistoryModal(opts = {}) {
     // Merge local IndexedDB thumbnails/data into server runs by id so any local run has instant thumbnail access
     const byId = new Map();
     for (const sr of serverImgRuns) {
-      if (sr && sr.id) byId.set(sr.id, sr);
+      if (sr && sr.id) byId.set(sr.id, { ...sr, starred: Boolean(sr.starred) });
     }
     for (const lr of (localImgRuns || [])) {
       if (!lr || !lr.id) continue;
       if (!byId.has(lr.id)) {
         byId.set(lr.id, {
           ...lr,
+          starred: Boolean(lr.starred),
           user: lr.user || (ME && ME.username) || '',
           userName: lr.userName || lr.user || (ME && ME.username) || '',
           title: lr.title || lr.scenarioTitle || lr.prompt || 'Image Arena Comparison',
           summary: lr.summary || lr.results || [],
         });
+      } else {
+        const cur = byId.get(lr.id);
+        if (lr.starred && !cur.starred) cur.starred = true;
       }
     }
     const mergedImgRuns = Array.from(byId.values())
@@ -4746,18 +4758,20 @@ async function openHistoryModal(opts = {}) {
       usage,
       imgUsage,
       isAdmin,
+      retentionDays: Number(data.retentionDays || (srvImgResp && srvImgResp.retentionDays)) || 7,
     };
-    historyPage = 0; usersPage = 0; historyUserFilter = null;   // fresh view on (re)open
+    historyPage = 0; usersPage = 0; historyUserFilter = null; historyStarredOnly = false;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
     body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message;
   }
 }
 
-function renderRunsSortToolbar(totalCount, mode = 'text') {
-  if (!totalCount) return '';
+function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
+  const retDays = (_histState && _histState.retentionDays) || 7;
   const cols = [
     { key: 'at', label: 'Date / Time', defaultDir: 'desc' },
+    { key: 'starred', label: '★ Starred', defaultDir: 'desc' },
     { key: 'title', label: mode === 'image' ? 'Scenario / Prompt' : 'Task / Prompt', defaultDir: 'asc' },
   ];
   if (historyScope === 'all' && !historyUserFilter) {
@@ -4774,13 +4788,16 @@ function renderRunsSortToolbar(totalCount, mode = 'text') {
     const arrow = active ? (runsSortDir === 'asc' ? '▲' : '▼') : '⇅';
     return `<button type="button" class="hist-sort-btn${active ? ' is-sorted' : ''}" data-run-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort runs by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></button>`;
   }).join('');
+  const starFilterBtn = `<button type="button" class="hist-star-filter-btn${historyStarredOnly ? ' active' : ''}" title="Show only starred runs kept forever (exempt from ${retDays}-day auto-pruning)">★ Kept only (${fmtInt(starredCount)})</button>`;
+  const retentionBadge = `<span class="hist-retention-note" title="Unstarred runs and their binary vault images/attachments are automatically pruned after ${retDays} days to save storage. Star any run to keep it forever.">⏱ ${retDays}d auto-prune · ★ Star to keep</span>`;
   return `<div class="hist-toolbar">
     <span class="hist-toolbar-label">Sort runs (${fmtInt(totalCount)}):</span>
-    <div class="hist-sort-group">${btns}</div>
+    <div class="hist-sort-group">${btns}${starFilterBtn}${retentionBadge}</div>
   </div>`;
 }
 
 function imgHistRowHtml(r) {
+  const isStarred = Boolean(r && r.starred);
   const rawList = (Array.isArray(r.summary) && r.summary.length) ? r.summary : (Array.isArray(r.results) ? r.results : []);
   const slotList = rawList.filter((x) => x && isCurrentImageModel(x.catalogId));
   const thumbs = slotList.filter((x) => !x.error && (x.thumbDataUrl || x.imageDataUrl)).slice(0, 4).map((x) => {
@@ -4799,14 +4816,16 @@ function imgHistRowHtml(r) {
   const resChip = `<span class="hist-chip">${esc(r.imageSize || '2K')} (${esc(r.aspectRatio || '16:9')})</span>`;
   const userLabel = r.userName || r.user || (ME && ME.username) || '';
   const who = userLabel ? `<span class="hist-who">${esc(userLabel)}</span>` : '';
+  const keptBadge = isStarred ? `<span class="hist-kept-badge" title="Starred — kept forever (exempt from 7-day auto-pruning)">★ Kept</span>` : '';
   const runTitle = r.title || r.scenarioTitle || r.prompt || 'Image Arena Comparison';
-  return `<div class="hist-row" data-img-hist-id="${esc(r.id)}">
+  return `<div class="hist-row${isStarred ? ' is-starred' : ''}" data-img-hist-id="${esc(r.id)}">
     <div class="hist-main">
       <div class="hist-title">${esc(runTitle)}</div>
-      <div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}</div>
+      <div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}${keptBadge}</div>
       <div class="hist-chips">${thumbs}${resChip}${chips}</div>
     </div>
     <div class="hist-act">
+      <button class="hist-btn hist-icon-btn hist-star-btn${isStarred ? ' is-starred' : ''}" type="button" data-id="${esc(r.id)}" data-arena="image" title="${isStarred ? 'Starred (kept forever) — click to unstar' : 'Star this run to keep it forever (exempt from 7-day auto-pruning)'}" aria-label="Star image run">${isStarred ? ICON_STAR_ON : ICON_STAR_OFF}</button>
       <button class="hist-btn hist-restore hist-img-restore" type="button" data-id="${esc(r.id)}" title="Restore this image comparison to the Image Arena">Restore ▸</button>
       <button class="hist-btn hist-icon-btn hist-del hist-img-del" type="button" data-id="${esc(r.id)}" title="Delete this image run from history" aria-label="Delete image run">${ICON_TRASH}</button>
     </div>
@@ -4833,19 +4852,27 @@ function paintHistoryModal() {
       ? `<div class="hist-filter">Showing runs by <b>${esc(activeName)}</b>
            <button class="hf-clear" type="button">✕ show everyone</button></div>`
       : '';
-    const filteredImgRuns = historyUserFilter
+    const byUserImgRuns = historyUserFilter
       ? imgRuns.filter((r) => (r.user || r.userName) === historyUserFilter)
       : imgRuns;
+    const starredCount = byUserImgRuns.filter((r) => r && r.starred).length;
+    const filteredImgRuns = historyStarredOnly
+      ? byUserImgRuns.filter((r) => r && r.starred)
+      : byUserImgRuns;
     const sortedImgRuns = sortHistoryRuns(filteredImgRuns);
     const total = sortedImgRuns.length;
     const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
     historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);
     const start = historyPage * HIST_PAGE_SIZE;
     const pageRuns = sortedImgRuns.slice(start, start + HIST_PAGE_SIZE);
-    const sortToolbar = renderRunsSortToolbar(total, 'image');
+    const sortToolbar = (byUserImgRuns.length > 0 || historyStarredOnly)
+      ? renderRunsSortToolbar(total, 'image', starredCount)
+      : '';
     const imgRows = total
       ? pageRuns.map((r) => imgHistRowHtml(r)).join('')
-      : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>';
+      : (historyStarredOnly
+          ? '<p class="auth-loading">No starred Image &amp; GenMedia runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>'
+          : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>');
     const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
     body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${imgRows}</div>` + pager;
     body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
@@ -4853,6 +4880,7 @@ function paintHistoryModal() {
       historyPage = 0;
       usersPage = 0;
       historyUserFilter = null;
+      historyStarredOnly = false;
       paintHistoryModal();
     }));
     body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
@@ -4879,6 +4907,8 @@ function paintHistoryModal() {
       historyPage = 0;
       paintHistoryModal();
     }));
+    { const sf = body.querySelector('.hist-star-filter-btn');
+      if (sf) sf.addEventListener('click', () => { historyStarredOnly = !historyStarredOnly; historyPage = 0; paintHistoryModal(); }); }
     body.querySelectorAll('.u-row').forEach((r) => r.addEventListener('click', () => {
       historyUserFilter = (historyUserFilter === r.dataset.user) ? null : r.dataset.user;
       historyPage = 0;
@@ -4890,6 +4920,7 @@ function paintHistoryModal() {
       if (p) p.addEventListener('click', () => { if (usersPage > 0) { usersPage--; paintHistoryModal(); } }); }
     { const nx = body.querySelector('.u-pg-next');
       if (nx) nx.addEventListener('click', () => { usersPage++; paintHistoryModal(); }); }
+    body.querySelectorAll('.hist-star-btn').forEach((b) => b.addEventListener('click', () => toggleHistoryRunStar(b.dataset.id, b.dataset.arena || 'image')));
     body.querySelectorAll('.hist-img-restore').forEach((b) => b.addEventListener('click', async () => {
       await restoreImageArenaRun(b.dataset.id);
       closeAuthModal();
@@ -4923,17 +4954,23 @@ function paintHistoryModal() {
     ? `<div class="hist-filter">Showing runs by <b>${esc(activeName)}</b>
          <button class="hf-clear" type="button">✕ show everyone</button></div>`
     : '';
-  const filteredRuns = historyUserFilter ? runs.filter((r) => (r.user || r.userName) === historyUserFilter) : runs;
+  const byUserRuns = historyUserFilter ? runs.filter((r) => (r.user || r.userName) === historyUserFilter) : runs;
+  const starredCount = byUserRuns.filter((r) => r && r.starred).length;
+  const filteredRuns = historyStarredOnly ? byUserRuns.filter((r) => r && r.starred) : byUserRuns;
   const runs_ = sortHistoryRuns(filteredRuns);
   const total = runs_.length;
   const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
   historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
   const start = historyPage * HIST_PAGE_SIZE;
   const pageRuns = runs_.slice(start, start + HIST_PAGE_SIZE);
-  const sortToolbar = renderRunsSortToolbar(total, 'text');
+  const sortToolbar = (byUserRuns.length > 0 || historyStarredOnly)
+    ? renderRunsSortToolbar(total, 'text', starredCount)
+    : '';
   const rows = total
     ? pageRuns.map((h) => histRowHtml(h)).join('')
-    : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
+    : (historyStarredOnly
+        ? '<p class="auth-loading">No starred runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>'
+        : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>');
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
   body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
   body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
@@ -4941,6 +4978,7 @@ function paintHistoryModal() {
     historyPage = 0;
     usersPage = 0;
     historyUserFilter = null;
+    historyStarredOnly = false;
     paintHistoryModal();
   }));
   // click a column header in the admin usage table → sort users by that column
@@ -4969,6 +5007,8 @@ function paintHistoryModal() {
     historyPage = 0;
     paintHistoryModal();
   }));
+  { const sf = body.querySelector('.hist-star-filter-btn');
+    if (sf) sf.addEventListener('click', () => { historyStarredOnly = !historyStarredOnly; historyPage = 0; paintHistoryModal(); }); }
   // click a user row → show only their runs; click again (or the chip) → everyone
   body.querySelectorAll('.u-row').forEach((r) => r.addEventListener('click', () => {
     historyUserFilter = (historyUserFilter === r.dataset.user) ? null : r.dataset.user;
@@ -4981,6 +5021,7 @@ function paintHistoryModal() {
     if (p) p.addEventListener('click', () => { if (usersPage > 0) { usersPage--; paintHistoryModal(); } }); }
   { const nx = body.querySelector('.u-pg-next');
     if (nx) nx.addEventListener('click', () => { usersPage++; paintHistoryModal(); }); }
+  body.querySelectorAll('.hist-star-btn').forEach((b) => b.addEventListener('click', () => toggleHistoryRunStar(b.dataset.id, b.dataset.arena || 'text')));
   body.querySelectorAll('.hist-restore').forEach((b) => b.addEventListener('click', () => restoreHistory(b.dataset.id)));
   body.querySelectorAll('.hist-pdf-btn').forEach((b) => b.addEventListener('click', () => exportHistoryRunPdf(b.dataset.id, b)));
   body.querySelectorAll('.hist-del').forEach((b) => b.addEventListener('click', () => deleteHistoryRun(b.dataset.id)));
@@ -5001,6 +5042,7 @@ function histPagerHtml(page, pageCount, total, start, shown) {
 }
 
 function histRowHtml(h) {
+  const isStarred = Boolean(h && h.starred);
   const chips = (h.summary || []).map((s) => {
     const stat = s.error ? '<span class="hc-err">error</span>' : (s.total ? esc(s.correctness + '%') : 'done');
     const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
@@ -5008,14 +5050,50 @@ function histRowHtml(h) {
   }).join('');
   const userLabel = h.userName || h.user || (ME && ME.username) || '';
   const who = userLabel ? `<span class="hist-who">${esc(userLabel)}</span>` : '';
-  return `<div class="hist-row">
-    <div class="hist-main"><div class="hist-title">${esc(h.title)}</div><div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}</div><div class="hist-chips">${chips}</div></div>
+  const keptBadge = isStarred ? `<span class="hist-kept-badge" title="Starred — kept forever (exempt from 7-day auto-pruning)">★ Kept</span>` : '';
+  return `<div class="hist-row${isStarred ? ' is-starred' : ''}">
+    <div class="hist-main"><div class="hist-title">${esc(h.title)}</div><div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}${keptBadge}</div><div class="hist-chips">${chips}</div></div>
     <div class="hist-act">
+      <button class="hist-btn hist-icon-btn hist-star-btn${isStarred ? ' is-starred' : ''}" type="button" data-id="${esc(h.id)}" data-arena="text" title="${isStarred ? 'Starred (kept forever) — click to unstar' : 'Star this run to keep it forever (exempt from 7-day auto-pruning)'}" aria-label="Star run">${isStarred ? ICON_STAR_ON : ICON_STAR_OFF}</button>
       <button class="hist-btn hist-restore" type="button" data-id="${esc(h.id)}" title="Restore this comparison to the arena">Restore ▸</button>
       <button class="hist-btn hist-icon-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Export PDF report for this run" aria-label="Export PDF report">${ICON_PDF}</button>
       <button class="hist-btn hist-icon-btn hist-del" type="button" data-id="${esc(h.id)}" title="Delete this run from history" aria-label="Delete run">${ICON_TRASH}</button>
     </div>
   </div>`;
+}
+
+async function toggleHistoryRunStar(id, arena = 'text') {
+  if (!id) return;
+  const isImg = arena === 'image';
+  const list = isImg ? (_histState.imgRuns || []) : (_histState.runs || []);
+  const item = list.find((r) => r && r.id === id);
+  const nextStarred = !(item && item.starred);
+  if (item) item.starred = nextStarred;
+  paintHistoryModal();
+
+  try {
+    const endpoint = isImg
+      ? '/api/image-arena/history/' + encodeURIComponent(id) + '/star'
+      : '/api/history/' + encodeURIComponent(id) + '/star';
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ starred: nextStarred }),
+    });
+    if (resp.status === 401) { window.location.replace('/login'); return; }
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok || !j.ok) throw new Error((j && j.error) || 'Could not update star status.');
+    if (item) item.starred = Boolean(j.starred);
+    if (isImg && typeof setImageArenaRunStarredInLocalDb === 'function') {
+      await setImageArenaRunStarredInLocalDb(id, Boolean(j.starred));
+    }
+    paintHistoryModal();
+  } catch (e) {
+    if (item) item.starred = !nextStarred;
+    paintHistoryModal();
+    window.alert(e.message);
+  }
 }
 
 function renderImageUsagePanel(u) {
@@ -6348,6 +6426,7 @@ function initCurtainDrag() {
 const IMG_HIST_DB_NAME = 'llm_compare_image_history_v1';
 const IMG_HIST_STORE = 'runs';
 const IMG_HIST_MAX_RUNS = 25;
+const IMG_HIST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7-day auto-pruning for unstarred runs
 
 function openImageHistoryDb() {
   return new Promise((resolve, reject) => {
@@ -6381,13 +6460,55 @@ async function listImageArenaRunsFromHistory() {
       const store = tx.objectStore(IMG_HIST_STORE);
       const req = store.getAll();
       req.onsuccess = () => {
-        const rows = Array.isArray(req.result) ? req.result : [];
-        rows.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
-        resolve(rows);
+        const allRows = Array.isArray(req.result) ? req.result : [];
+        const cutoffMs = Date.now() - IMG_HIST_RETENTION_MS;
+        const kept = [];
+        const expiredIds = [];
+        for (const r of allRows) {
+          if (!r || !r.id) continue;
+          if (!r.starred && Number(r.at || 0) > 0 && Number(r.at || 0) < cutoffMs) {
+            expiredIds.push(r.id);
+          } else {
+            kept.push(r);
+          }
+        }
+        if (expiredIds.length) {
+          try {
+            const ptx = db.transaction(IMG_HIST_STORE, 'readwrite');
+            const pstore = ptx.objectStore(IMG_HIST_STORE);
+            expiredIds.forEach((id) => { try { pstore.delete(id); } catch (_) {} });
+          } catch (_) {}
+        }
+        kept.sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+        resolve(kept);
       };
       req.onerror = () => resolve([]);
     } catch (_) {
       resolve([]);
+    }
+  });
+}
+
+async function setImageArenaRunStarredInLocalDb(id, starred) {
+  if (!id) return false;
+  const db = await openImageHistoryDb();
+  if (!db) return false;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
+      const store = tx.objectStore(IMG_HIST_STORE);
+      const getReq = store.get(id);
+      getReq.onsuccess = () => {
+        const rec = getReq.result;
+        if (rec) {
+          rec.starred = Boolean(starred);
+          try { store.put(rec); } catch (_) {}
+        }
+      };
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (_) {
+      resolve(false);
     }
   });
 }
@@ -6470,6 +6591,7 @@ async function saveImageArenaRunToHistory(runRecord) {
           run: {
             id: runRecord.id,
             at: runRecord.at,
+            starred: Boolean(runRecord.starred),
             packId: runRecord.packId || 'custom',
             scenarioId: runRecord.scenarioId || 'custom',
             title: runRecord.title || runRecord.scenarioTitle || (runRecord.prompt || '').slice(0, 72) || 'Image Arena Comparison',
@@ -6491,7 +6613,9 @@ async function saveImageArenaRunToHistory(runRecord) {
     const store = tx.objectStore(IMG_HIST_STORE);
     store.put(runRecord);
     if (existing.length >= IMG_HIST_MAX_RUNS) {
-      const toPrune = existing.slice(IMG_HIST_MAX_RUNS - 1);
+      const unstarredOld = existing.filter((x) => x && x.id !== runRecord.id && !x.starred);
+      const excessCount = Math.max(0, existing.length - (IMG_HIST_MAX_RUNS - 1));
+      const toPrune = unstarredOld.slice(Math.max(0, unstarredOld.length - excessCount));
       toPrune.forEach((old) => {
         if (old && old.id && old.id !== runRecord.id) {
           try { store.delete(old.id); } catch (_) {}
