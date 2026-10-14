@@ -41,6 +41,9 @@ const IMAGE_MODEL_CATALOG = [
     shortLabel: 'Nano Banana 2',
     model: 'gemini-3.1-flash-image',
     family: 'Nano Banana 2',
+    provider: 'agentplatform',
+    publisher: 'google',
+    providerFamily: 'google',
     releaseDate: '2026-02-26',
     releaseBadge: 'High-Throughput Regional + Global',
     slaBadge: '99.5% Long-Term SLA',
@@ -65,6 +68,9 @@ const IMAGE_MODEL_CATALOG = [
     shortLabel: 'Nano Banana 2.1',
     model: 'gemini-nano-banana-2.1',
     family: 'Nano Banana 2.1',
+    provider: 'agentplatform',
+    publisher: 'google',
+    providerFamily: 'google',
     releaseDate: '2026-10-06',
     releaseBadge: '~50% Lower Cost · 4K + Visual Thinking',
     slaBadge: '95.0% Short-Term SLA',
@@ -89,6 +95,9 @@ const IMAGE_MODEL_CATALOG = [
     shortLabel: 'Nano Banana 2 Lite',
     model: 'gemini-3.1-flash-lite-image',
     family: 'Nano Banana 2 Lite',
+    provider: 'agentplatform',
+    publisher: 'google',
+    providerFamily: 'google',
     releaseDate: '2026-07-21',
     releaseBadge: 'Ultra-Low Latency · 1K Efficiency Specialist',
     slaBadge: '99.5% Long-Term SLA',
@@ -113,6 +122,9 @@ const IMAGE_MODEL_CATALOG = [
     shortLabel: 'Nano Banana Pro',
     model: 'gemini-3-pro-image',
     family: 'Nano Banana Pro',
+    provider: 'agentplatform',
+    publisher: 'google',
+    providerFamily: 'google',
     releaseDate: '2025-11-20',
     releaseBadge: 'Deep Visual Reasoning',
     slaBadge: '99.5% Long-Term SLA',
@@ -130,6 +142,90 @@ const IMAGE_MODEL_CATALOG = [
     },
     purchasingTiers: ['Standard PayGo', 'Provisioned Throughput (PTU)'],
     architectureGuidance: 'Flagship creative studio tier for dense multi-character composition and maximum reasoning depth.',
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'OpenAI GPT Image 2.5 Sunburst',
+    shortLabel: 'GPT Image 2.5 Sunburst',
+    model: 'gpt-image-2.5-sunburst',
+    family: 'GPT Image 2.5',
+    provider: 'openai',
+    publisher: 'openai',
+    providerFamily: 'openai',
+    releaseDate: '2026-09-15',
+    releaseBadge: 'Flagship Image Generation & Editing · Direct OpenAI API',
+    slaBadge: '99.9% OpenAI Enterprise SLA',
+    slaPct: 99.9,
+    endpointBadge: 'OpenAI API (/v1/images)',
+    supportedSizes: ['1K', '2K', '4K'],
+    maxReferenceImages: 16,
+    contextWindow: 32768,
+    pricing: {
+      inputPerM: 5.00,
+      imageInputPerM: 8.00,
+      imageOutputPerM: 30.00,
+      textOutputPerM: 10.00,
+      offPeakDiscount: 0,
+      referenceCostBySize: { '1K': 0.1248, '2K': 0.1872, '4K': 0.3744 },
+    },
+    purchasingTiers: ['Standard PayGo ($30/1M img output tok)', 'OpenAI Batch API'],
+    architectureGuidance: 'OpenAI flagship image generation & multi-reference editing engine (`gpt-image-2.5-sunburst`) supporting arbitrary 16px-aligned resolutions up to 3840px.',
+  },
+  {
+    id: 'gpt-image-2.5-flare',
+    label: 'OpenAI GPT Image 2.5 Flare',
+    shortLabel: 'GPT Image 2.5 Flare',
+    model: 'gpt-image-2.5-flare',
+    family: 'GPT Image 2.5',
+    provider: 'openai',
+    publisher: 'openai',
+    providerFamily: 'openai',
+    releaseDate: '2026-09-15',
+    releaseBadge: 'Fast Image Generation & Editing · Direct OpenAI API',
+    slaBadge: '99.9% OpenAI Enterprise SLA',
+    slaPct: 99.9,
+    endpointBadge: 'OpenAI API (/v1/images)',
+    supportedSizes: ['1K', '2K', '4K'],
+    maxReferenceImages: 16,
+    contextWindow: 32768,
+    pricing: {
+      inputPerM: 5.00,
+      imageInputPerM: 8.00,
+      imageOutputPerM: 30.00,
+      textOutputPerM: 10.00,
+      offPeakDiscount: 0,
+      referenceCostBySize: { '1K': 0.1248, '2K': 0.1872, '4K': 0.3744 },
+    },
+    purchasingTiers: ['Standard PayGo ($30/1M img output tok)', 'OpenAI Batch API'],
+    architectureGuidance: 'Low-latency OpenAI image generation & editing variant (`gpt-image-2.5-flare`) tuned for interactive creative iteration and high-throughput studio pipelines.',
+  },
+  {
+    id: 'gpt-image-2',
+    label: 'OpenAI GPT Image 2',
+    shortLabel: 'GPT Image 2',
+    model: 'gpt-image-2',
+    family: 'GPT Image 2',
+    provider: 'openai',
+    publisher: 'openai',
+    providerFamily: 'openai',
+    releaseDate: '2026-05-12',
+    releaseBadge: 'Multimodal Image Generation & Editing · Direct OpenAI API',
+    slaBadge: '99.9% OpenAI Enterprise SLA',
+    slaPct: 99.9,
+    endpointBadge: 'OpenAI API (/v1/images)',
+    supportedSizes: ['1K', '2K', '4K'],
+    maxReferenceImages: 16,
+    contextWindow: 32768,
+    pricing: {
+      inputPerM: 5.00,
+      imageInputPerM: 8.00,
+      imageOutputPerM: 30.00,
+      textOutputPerM: 10.00,
+      offPeakDiscount: 0,
+      referenceCostBySize: { '1K': 0.1248, '2K': 0.1872, '4K': 0.3744 },
+    },
+    purchasingTiers: ['Standard PayGo ($30/1M img output tok)', 'OpenAI Batch API'],
+    architectureGuidance: 'General-availability OpenAI GPT Image 2 baseline (`gpt-image-2`) for cross-provider quality, typography, and editing benchmarking against Vertex AI Nano Banana.',
   },
 ];
 
@@ -986,22 +1082,6 @@ function extractImageResponseParts(parts) {
 
 function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   const u = usageMetadata || {};
-  const promptTokens = Number(u.promptTokenCount) || 0;
-  const reasoningTokens = Number(u.thoughtsTokenCount) || 0;
-  const details = Array.isArray(u.candidatesTokensDetails) ? u.candidatesTokensDetails : [];
-
-  let imageOutputTokens = 0;
-  let textOutputTokens = 0;
-  for (const d of details) {
-    if (!d || typeof d.tokenCount !== 'number') continue;
-    if (String(d.modality || '').toUpperCase() === 'IMAGE') imageOutputTokens += d.tokenCount;
-    else if (String(d.modality || '').toUpperCase() === 'TEXT') textOutputTokens += d.tokenCount;
-  }
-  if (imageOutputTokens === 0 && textOutputTokens === 0) {
-    imageOutputTokens = Number(u.candidatesTokenCount) || 0;
-  }
-  const totalTokens = Number(u.totalTokenCount) || (promptTokens + imageOutputTokens + textOutputTokens + reasoningTokens);
-
   const p = (catalogEntry && catalogEntry.pricing) || {
     inputPerM: 0.50,
     imageOutputPerM: 60.00,
@@ -1009,7 +1089,49 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
     offPeakDiscount: 0,
   };
 
-  const inputCostUsd = (promptTokens / 1_000_000) * p.inputPerM;
+  let promptTokens = 0;
+  let reasoningTokens = 0;
+  let imageOutputTokens = 0;
+  let textOutputTokens = 0;
+  let totalTokens = 0;
+  let inputCostUsd = 0;
+
+  if (typeof u.input_tokens === 'number' || typeof u.output_tokens === 'number') {
+    // OpenAI /v1/images usage schema:
+    // { input_tokens, output_tokens, total_tokens, input_tokens_details: { text_tokens, image_tokens }, output_tokens_details: { image_tokens, text_tokens } }
+    const inDetails = u.input_tokens_details || {};
+    const outDetails = u.output_tokens_details || {};
+    const textInputTokens = Number(inDetails.text_tokens) || 0;
+    const imageInputTokens = Number(inDetails.image_tokens) || 0;
+    promptTokens = Number(u.input_tokens) || (textInputTokens + imageInputTokens);
+    imageOutputTokens = Number(outDetails.image_tokens) || Number(u.output_tokens) || 0;
+    textOutputTokens = Number(outDetails.text_tokens) || 0;
+    reasoningTokens = 0;
+    totalTokens = Number(u.total_tokens) || (promptTokens + imageOutputTokens + textOutputTokens);
+
+    if (p.imageInputPerM != null && (textInputTokens > 0 || imageInputTokens > 0)) {
+      inputCostUsd = (textInputTokens / 1_000_000) * p.inputPerM + (imageInputTokens / 1_000_000) * p.imageInputPerM;
+    } else {
+      inputCostUsd = (promptTokens / 1_000_000) * p.inputPerM;
+    }
+  } else {
+    // Vertex AI usageMetadata schema
+    promptTokens = Number(u.promptTokenCount) || 0;
+    reasoningTokens = Number(u.thoughtsTokenCount) || 0;
+    const details = Array.isArray(u.candidatesTokensDetails) ? u.candidatesTokensDetails : [];
+
+    for (const d of details) {
+      if (!d || typeof d.tokenCount !== 'number') continue;
+      if (String(d.modality || '').toUpperCase() === 'IMAGE') imageOutputTokens += d.tokenCount;
+      else if (String(d.modality || '').toUpperCase() === 'TEXT') textOutputTokens += d.tokenCount;
+    }
+    if (imageOutputTokens === 0 && textOutputTokens === 0) {
+      imageOutputTokens = Number(u.candidatesTokenCount) || 0;
+    }
+    totalTokens = Number(u.totalTokenCount) || (promptTokens + imageOutputTokens + textOutputTokens + reasoningTokens);
+    inputCostUsd = (promptTokens / 1_000_000) * p.inputPerM;
+  }
+
   const imageOutputCostUsd = (imageOutputTokens / 1_000_000) * p.imageOutputPerM;
   const textAndThinkingCostUsd = ((textOutputTokens + reasoningTokens) / 1_000_000) * p.textOutputPerM;
   const standardPayGoCostUsd = inputCostUsd + imageOutputCostUsd + textAndThinkingCostUsd;
@@ -1042,6 +1164,161 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   };
 }
 
+// OpenAI GPT Image 2 / 2.5 support arbitrary 16px-aligned dimensions up to 3840px max edge.
+const OPENAI_IMAGE_DIMENSIONS = {
+  '1K': {
+    '1:1': '1024x1024',
+    '4:3': '1152x864',
+    '3:4': '864x1152',
+    '16:9': '1280x720',
+    '9:16': '720x1280',
+  },
+  '2K': {
+    '1:1': '2048x2048',
+    '4:3': '2304x1728',
+    '3:4': '1728x2304',
+    '16:9': '2560x1440',
+    '9:16': '1440x2560',
+  },
+  '4K': {
+    '1:1': '3840x3840',
+    '4:3': '3840x2880',
+    '3:4': '2880x3840',
+    '16:9': '3840x2160',
+    '9:16': '2160x3840',
+  },
+};
+
+function resolveOpenAIImageSize(sizeId, aspectRatio) {
+  const tier = OPENAI_IMAGE_DIMENSIONS[sizeId] || OPENAI_IMAGE_DIMENSIONS['2K'];
+  return tier[aspectRatio] || tier['16:9'] || '1024x1024';
+}
+
+async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
+  const oaKey = (keys && keys.openai)
+    || globalKeys.get('OPENAI_API_KEY')
+    || process.env.OPENAI_API_KEY;
+  if (!oaKey) {
+    throw new Error('Missing OPENAI_API_KEY in environment (.env) or Settings.');
+  }
+
+  let effectiveSize = (Array.isArray(entry.supportedSizes) && imageSize && !entry.supportedSizes.includes(imageSize))
+    ? entry.supportedSizes[0]
+    : (imageSize || '2K');
+  const validAspect = aspectRatio || '16:9';
+  const promptText = String(prompt || '').trim() || 'Generate a high-resolution studio image.';
+  const safeAtts = (Array.isArray(attachments) ? attachments : []).filter(
+    (att) => att && typeof att.data === 'string' && att.data.length > 0
+  );
+
+  const sendOpenAIRequest = async (sizeTier) => {
+    const oaSize = resolveOpenAIImageSize(sizeTier, validAspect);
+    if (safeAtts.length > 0) {
+      const form = new FormData();
+      form.append('model', entry.model);
+      form.append('prompt', promptText);
+      form.append('n', '1');
+      form.append('size', oaSize);
+      form.append('quality', 'high');
+      const fieldName = safeAtts.length > 1 ? 'image[]' : 'image';
+      safeAtts.forEach((att, idx) => {
+        const rawB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
+        const mimeType = /^image\/(png|jpeg|webp|gif)$/i.test(String(att.mimeType || ''))
+          ? att.mimeType
+          : 'image/png';
+        const ext = (mimeType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
+        const buf = Buffer.from(rawB64, 'base64');
+        form.append(fieldName, new Blob([buf], { type: mimeType }), `ref-${idx}.${ext}`);
+      });
+      return providerFetch('https://api.openai.com/v1/images/edits', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${oaKey}` },
+        body: form,
+        signal,
+      });
+    }
+    return providerFetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${oaKey}`,
+      },
+      body: JSON.stringify({
+        model: entry.model,
+        prompt: promptText,
+        n: 1,
+        size: oaSize,
+        quality: 'high',
+      }),
+      signal,
+    });
+  };
+
+  const t0 = Date.now();
+  let r = await sendOpenAIRequest(effectiveSize);
+  if (r.status === 400 && effectiveSize !== '1K') {
+    const retry1K = await sendOpenAIRequest('1K');
+    if (retry1K.ok) {
+      r = retry1K;
+      effectiveSize = '1K';
+    }
+  }
+
+  const latencyMs = Date.now() - t0;
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const errMsg = (j && j.error && j.error.message) || JSON.stringify(j).slice(0, 320);
+    throw new Error(`OpenAI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
+  }
+
+  const firstItem = (j && Array.isArray(j.data) && j.data[0]) || null;
+  const finalB64 = firstItem && typeof firstItem.b64_json === 'string' ? firstItem.b64_json : '';
+  if (!finalB64) {
+    throw new Error(`Model "${entry.model}" returned no image data.`);
+  }
+
+  const finalMime = (j.output_format === 'jpeg' ? 'image/jpeg' : j.output_format === 'webp' ? 'image/webp' : 'image/png');
+  const dims = imageDimensionsFromBase64(finalB64) || { width: null, height: null };
+  const megapixels = (dims.width && dims.height)
+    ? Number(((dims.width * dims.height) / 1_000_000).toFixed(2))
+    : null;
+  const byteLength = Math.floor((finalB64.length * 3) / 4);
+  const econ = computeImageSlotEconomics(entry, j.usage, effectiveSize);
+
+  return {
+    slot,
+    ok: true,
+    catalogId: entry.id,
+    label: entry.label,
+    shortLabel: entry.shortLabel,
+    model: entry.model,
+    modelVersion: entry.model,
+    provider: entry.provider || 'openai',
+    publisher: entry.publisher || 'openai',
+    providerFamily: entry.providerFamily || 'openai',
+    releaseBadge: entry.releaseBadge,
+    slaBadge: entry.slaBadge,
+    slaPct: entry.slaPct,
+    endpointBadge: entry.endpointBadge,
+    architectureGuidance: entry.architectureGuidance,
+    requestedSize: effectiveSize,
+    requestedAspectRatio: validAspect,
+    mimeType: finalMime,
+    imageDataUrl: `data:${finalMime};base64,${finalB64}`,
+    width: dims.width,
+    height: dims.height,
+    megapixels,
+    byteLength,
+    hasThoughtImage: false,
+    thoughtImageDataUrl: null,
+    thoughtDims: null,
+    text: (firstItem && firstItem.revised_prompt) || '',
+    reasoning: '',
+    latencyMs,
+    ...econ,
+  };
+}
+
 async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
   const entry = getImageCatalogEntry(catalogId);
   if (!entry) {
@@ -1050,6 +1327,10 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const refCount = Array.isArray(attachments) ? attachments.length : 0;
   if (refCount > entry.maxReferenceImages) {
     throw new Error(`${entry.label} accepts at most ${entry.maxReferenceImages} reference images (${refCount} attached).`);
+  }
+
+  if (entry.provider === 'openai') {
+    return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal });
   }
 
   const key = (keys && (keys.agentplatform || keys.gemini))
@@ -1203,6 +1484,9 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     shortLabel: entry.shortLabel,
     model: entry.model,
     modelVersion: j.modelVersion || entry.model,
+    provider: entry.provider || 'agentplatform',
+    publisher: entry.publisher || 'google',
+    providerFamily: entry.providerFamily || 'google',
     releaseBadge: entry.releaseBadge,
     slaBadge: entry.slaBadge,
     slaPct: entry.slaPct,
@@ -1265,6 +1549,9 @@ async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', im
           label: entry ? entry.label : s.catalogId,
           shortLabel: entry ? entry.shortLabel : s.catalogId,
           model: entry ? entry.model : s.catalogId,
+          provider: entry ? entry.provider : '',
+          publisher: entry ? entry.publisher : '',
+          providerFamily: entry ? entry.providerFamily : '',
           slaBadge: entry ? entry.slaBadge : '',
           endpointBadge: entry ? entry.endpointBadge : '',
           error: scrubError(String((e && e.message) || e)),
@@ -1303,6 +1590,7 @@ module.exports = {
   getImageArenaConfig,
   extractImageResponseParts,
   computeImageSlotEconomics,
+  resolveOpenAIImageSize,
   runSingleImageSlot,
   runImageArenaComparison,
 };

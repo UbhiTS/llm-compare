@@ -37,29 +37,34 @@ const CLAUDE_MAX_OUTPUT_LEGACY = MAX_OUTPUT_TOKENS || 32000; // pre-4.6 models c
 // The version is read off the model id (claude-opus-4-5 → 4.5, claude-opus-5 → 5.0)
 // so newly added models default to the modern form without another code change.
 function claudeModelVersion(model) {
-  const m = String(model || '').match(/-(\d+)(?:-(\d+))?$/);
+  const m = String(model || '').match(/-(\d+)(?:-(\d+))?(?:-fast)?$/);
   if (!m) return 99;                                  // unknown → assume modern
   return Number(m[1]) + (m[2] != null ? Number(m[2]) / 10 : 0);
 }
 // --- Reasoning-depth controls, per the official docs -----------------------
 // Anthropic `output_config.effort` (platform.claude.com/docs/en/build-with-claude/effort):
 // the ladder is low < medium < high < xhigh < max, the API default is `high`,
-// and support is NOT uniform — `xhigh` is only on Fable 5 / Mythos 5 / Opus 5 /
-// Opus 4.8 / Opus 4.7 / Sonnet 5, and Opus 4.5 has effort but neither xhigh nor
+// and support is NOT uniform — `xhigh` is on Claude 5.5 / 5 / 4.8 / 4.7, while
+// Opus 4.6 / Sonnet 4.6 have low/medium/high/max, and Opus 4.5 has neither xhigh nor
 // max. Sending an unsupported level is a 400, so each model lists its own set.
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CLAUDE_EFFORT_SUPPORT = {
-  'claude-fable-5-1':  ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-fable-5':    ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-mythos-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-opus-5-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-opus-5':     ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-opus-4-8':   ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-opus-4-7':   ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-sonnet-5':   ['low', 'medium', 'high', 'xhigh', 'max'],
-  'claude-opus-4-6':   ['low', 'medium', 'high', 'max'],           // no xhigh
-  'claude-sonnet-4-6': ['low', 'medium', 'high', 'max'],           // no xhigh
-  'claude-opus-4-5':   ['low', 'medium', 'high'],                  // effort AND budget_tokens
+  'claude-fable-5-5':     ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-mythos-5-5':    ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-fable-5-1':     ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-fable-5':       ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-mythos-5':      ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-5-5':      ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-5-5-fast': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-5-5':    ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-haiku-5-5':     ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-5':        ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-8':      ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-7':      ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-sonnet-5':      ['low', 'medium', 'high', 'xhigh', 'max'],
+  'claude-opus-4-6':      ['low', 'medium', 'high', 'max'],           // no xhigh
+  'claude-sonnet-4-6':    ['low', 'medium', 'high', 'max'],           // no xhigh
+  'claude-opus-4-5':      ['low', 'medium', 'high'],                  // effort AND budget_tokens
 };
 // Sonnet 4.5 / Haiku 4.5 and earlier: no effort at all, budget_tokens only.
 // Note the docs are explicit that budget_tokens is "a target rather than a

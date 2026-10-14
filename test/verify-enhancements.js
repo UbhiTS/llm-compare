@@ -188,6 +188,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     getImageArenaConfig,
     extractImageResponseParts,
     computeImageSlotEconomics,
+    resolveOpenAIImageSize,
     runSingleImageSlot,
     runImageArenaComparison,
   } = require('../src/imageArena');
@@ -197,9 +198,36 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(imgCfg && imgCfg.ok, 'getImageArenaConfig() should return ok: true');
   assert.deepStrictEqual(
     imgCfg.catalog.map((m) => m.id).sort(),
-    ['gemini-3-pro-image', 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-nano-banana-2.1'],
-    'Image catalog should expose Nano Banana 2 Lite, Nano Banana 2, Nano Banana 2.1 and Nano Banana Pro'
+    [
+      'gemini-3-pro-image',
+      'gemini-3.1-flash-image',
+      'gemini-3.1-flash-lite-image',
+      'gemini-nano-banana-2.1',
+      'gpt-image-2',
+      'gpt-image-2.5-flare',
+      'gpt-image-2.5-sunburst',
+    ],
+    'Image catalog should expose Nano Banana 2 Lite, Nano Banana 2, Nano Banana 2.1, Nano Banana Pro, and OpenAI GPT Image 2 / 2.5'
   );
+  assert.strictEqual(resolveOpenAIImageSize('1K', '1:1'), '1024x1024', 'OpenAI 1K 1:1 size must map to 1024x1024');
+  assert.strictEqual(resolveOpenAIImageSize('2K', '16:9'), '2560x1440', 'OpenAI 2K 16:9 size must map to 2560x1440');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '16:9'), '3840x2160', 'OpenAI 4K 16:9 size must map to 3840x2160');
+  const sunburstEntry = imgCfg.catalog.find((m) => m.id === 'gpt-image-2.5-sunburst');
+  assert(sunburstEntry && sunburstEntry.provider === 'openai', 'gpt-image-2.5-sunburst must exist with provider: openai');
+  const oaEcon = computeImageSlotEconomics(
+    sunburstEntry,
+    {
+      input_tokens: 150,
+      output_tokens: 4160,
+      total_tokens: 4310,
+      input_tokens_details: { text_tokens: 50, image_tokens: 100 },
+      output_tokens_details: { image_tokens: 4160, text_tokens: 0 },
+    },
+    '1K'
+  );
+  assert.strictEqual(oaEcon.promptTokens, 150, 'OpenAI image economics must extract promptTokens from input_tokens');
+  assert.strictEqual(oaEcon.imageOutputTokens, 4160, 'OpenAI image economics must extract imageOutputTokens from output_tokens_details.image_tokens');
+  assert(Math.abs(oaEcon.standardPayGoCostUsd - ((50 * 5 + 100 * 8 + 4160 * 30) / 1_000_000)) < 1e-9, 'OpenAI image economics must compute exact text+image input and image output cost');
   const liteEntry = imgCfg.catalog.find((m) => m.id === 'gemini-3.1-flash-lite-image');
   assert(liteEntry, 'gemini-3.1-flash-lite-image must exist in IMAGE_MODEL_CATALOG');
   assert.deepStrictEqual(liteEntry.supportedSizes, ['1K'], 'gemini-3.1-flash-lite-image must declare supportedSizes: ["1K"]');
@@ -345,11 +373,11 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.31', 'package.json must be at version 1.0.31');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.31</span>'), 'index.html must display v1.0.31 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.32', 'package.json must be at version 1.0.32');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.32</span>'), 'index.html must display v1.0.32 in footer');
 
-  // Verify Gemini 4 Argon (gemini-4-argon) in MODEL_CATALOG & providers
-  const { DEFAULT_MODELS } = require('../src/pricing');
+  // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
+  const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');
   const providersMod = require('../src/providers');
   const argonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');
   assert(argonEntry, 'MODEL_CATALOG must include gemini-4-argon (Gemini 4 Argon)');
@@ -360,6 +388,43 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-4-argon', 'Slot A default must be gemini-4-argon');
   assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high']);
   assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'medium');
+
+  for (const [id, expectedIn, expectedOut] of [
+    ['claude-opus-5-5', 4.00, 20.00],
+    ['claude-opus-5-5-fast', 4.00, 20.00],
+    ['claude-sonnet-5-5', 2.00, 10.00],
+    ['claude-haiku-5-5', 0.10, 0.50],
+    ['gpt-6.1-sol', 2.00, 10.00],
+    ['gpt-6-sol', 2.00, 10.00],
+    ['gpt-6-astra', 10.00, 50.00],
+    ['gpt-6-luna', 0.10, 0.50],
+    ['gpt-5.6-sol', 4.00, 20.00],
+    ['gpt-5.5', 5.00, 30.00],
+    ['gpt-5.5-pro', 30.00, 180.00],
+    ['gpt-5.4', 2.50, 15.00],
+    ['gpt-5.4-pro', 30.00, 180.00],
+    ['gpt-5.4-mini', 0.75, 4.50],
+    ['gpt-5.4-nano', 0.20, 1.25],
+    ['gpt-5.3-codex', 1.75, 14.00],
+    ['gpt-oss-120b-maas', 0.09, 0.36],
+    ['gpt-oss-20b-maas', 0.07, 0.25],
+  ]) {
+    const entry = MODEL_CATALOG.find((m) => m.id === id);
+    assert(entry, `MODEL_CATALOG must include ${id}`);
+    assert.deepStrictEqual(entry.price, { input: expectedIn, output: expectedOut }, `${id} price must be $${expectedIn} / $${expectedOut}`);
+  }
+  assert.strictEqual(RETIRED_REPLACEMENT['claude-fable-5-5'], 'claude-sonnet-5-5', 'claude-fable-5-5 must map to claude-sonnet-5-5');
+  assert.strictEqual(RETIRED_REPLACEMENT['claude-mythos-5-5'], 'claude-opus-5-5', 'claude-mythos-5-5 must map to claude-opus-5-5');
+  assert(
+    RETIRED_CATALOG.some((m) => m.id === 'claude-fable-5-5') && RETIRED_CATALOG.some((m) => m.id === 'claude-mythos-5-5'),
+    'RETIRED_CATALOG must include claude-fable-5-5 and claude-mythos-5-5'
+  );
+  const opusFastItem = MODEL_CATALOG.find((m) => m.id === 'claude-opus-5-5-fast');
+  assert.deepStrictEqual(
+    providersMod.thinkingOptions(opusFastItem).options.map((o) => o.value),
+    ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-opus-5-5-fast must support adaptive effort options through max'
+  );
 
   // Verify Image Gen History View server-side persistence + usage parity + .hist-title 11.5px + user next to date/time + Star-to-Keep + 7-day auto-prune + Vault GC
   const historyMod = require('../src/history');
@@ -445,12 +510,17 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const pruneRes = historyMod.pruneExpiredRuns({ now: Date.now() });
   assert(pruneRes.prunedImageRuns >= 1, 'pruneExpiredRuns must prune unstarred image runs older than 7 days');
   assert(pruneRes.vaultFilesRemoved >= 1, 'pruneExpiredRuns must garbage-collect orphaned binary vault files from pruned runs');
-  assert.strictEqual(historyMod.getImageRun('test-img-expired-unstarred', { username: 'prune-test-user@google.com', isAdmin: true }), null, 'Expired unstarred run must be deleted');
+  assert.strictEqual(historyMod.getImageRun('test-img-expired-unstarred', { username: 'prune-test-user@google.com', isAdmin: true }), null, 'Expired unstarred run must be deleted from active 7-day history');
+  const postPruneImgUsage = historyMod.imageUsageSummary();
+  const pruneUserRow = postPruneImgUsage.users.find((u) => u.user === 'prune-test-user@google.com');
+  assert(pruneUserRow && pruneUserRow.runs >= 2, 'pruneExpiredRuns must preserve lifetime user and run counts in imageUsageSummary() even after unstarred 7-day payloads are pruned');
+  assert(typeof historyMod.recoverDeletedRunsFromSqliteBinary === 'function', 'historyMod must export recoverDeletedRunsFromSqliteBinary for recovering previously pruned SQLite B-tree run records');
   const keptOldRun = historyMod.getImageRun('test-img-expired-starred', { username: 'prune-test-user@google.com', isAdmin: true });
   assert(keptOldRun && keptOldRun.starred === true, 'Starred run older than 7 days must be kept forever');
   const remainingVault = vaultMod.listUserVaultFiles('prune-test-user@google.com');
   assert.strictEqual(remainingVault.length, 0, 'Orphaned binary vault entry for prune-test-user must be completely removed');
 
+  historyMod.deleteImageRun('test-img-expired-unstarred', { username: 'prune-test-user@google.com', isAdmin: true });
   historyMod.deleteImageRun('test-img-expired-starred', { username: 'prune-test-user@google.com', isAdmin: true });
   historyMod.deleteImageRun('test-img-run-v1030', { username: 'ubhi@google.com', isAdmin: true });
 

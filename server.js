@@ -844,7 +844,7 @@ app.post('/api/image-arena/run', async (req, res) => {
   const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys } = req.body || {};
   const keys = {};
   if (rawKeys && typeof rawKeys === 'object') {
-    for (const k of ['agentplatform', 'gemini', 'gcpProject']) {
+    for (const k of ['agentplatform', 'gemini', 'openai', 'gcpProject']) {
       if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
     }
   }

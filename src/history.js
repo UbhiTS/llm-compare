@@ -70,6 +70,12 @@ let stmts = null;
 const metaById = new Map();
 // Authoritative in-memory index map for Image & GenMedia Arena runs: id -> metadata object
 const imageMetaById = new Map();
+// Permanent lightweight ledger of all runs ever executed (survives 7-day payload auto-pruning):
+// id -> { id, at, user, userKey, userName, kind, callsCount, costUsd }
+const archivedMetaById = new Map();
+// Permanent lightweight ledger of all Image & GenMedia Arena runs ever executed:
+// id -> { id, at, user, userKey, userName, imagesCount, costUsd }
+const archivedImageMetaById = new Map();
 // Per-user preferences in-memory map: userKey -> { user, taskId, slots, models, savedPrompts, savedPresets, updatedAt }
 const prefsByUserKey = new Map();
 // Tracks which user keys have already been checked on disk so ensureOwnerLoadedSync is O(1) and never repeats GCS FUSE syscalls
@@ -81,6 +87,308 @@ let hadPersistedIndexOnBoot = false;
 let lastPersistMtimeMs = 0;
 let lastPersistSize = 0;
 let lastPersistCheckAt = 0;
+
+const SYNTHETIC_TEST_USER_RE = /^(adv_test_user_|adv_other_user_|redeploy_|prune-test-user)/i;
+
+function extractBalancedJsonArray(str, startIdx) {
+  if (!str || str[startIdx] !== '[') return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  const maxEnd = Math.min(str.length, startIdx + 20000);
+  for (let i = startIdx; i < maxEnd; i++) {
+    const ch = str[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+    } else {
+      if (ch === '"') inStr = true;
+      else if (ch === '[') depth++;
+      else if (ch === ']') {
+        depth--;
+        if (depth === 0) return str.slice(startIdx, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
+// Recover historical runs that were deleted from `runs` or `image_runs` before `VACUUM`
+// by scanning the raw SQLite binary pages and cryptographically verifying `userKey(user) === uKey`.
+function recoverDeletedRunsFromSqliteBinary(rawBuf) {
+  const textById = new Map();
+  const imageById = new Map();
+  if (!Buffer.isBuffer(rawBuf) || rawBuf.length < 100) {
+    return { textRuns: [], imageRuns: [] };
+  }
+  const len = rawBuf.length;
+  for (let i = 0; i < len - 60; i++) {
+    // 6-byte big-endian millisecond timestamp for years 2024..2035 starts with 0x01 (0x018c.. to 0x01ef..)
+    if (rawBuf[i] !== 0x01) continue;
+    const b1 = rawBuf[i + 1];
+    if (b1 < 0x8c || b1 > 0xef) continue;
+    if (i < 15) continue;
+
+    // Preceding bytes must be an ASCII run ID (e.g. `mn...-...` or custom ID)
+    let idEnd = i;
+    let idStart = i - 1;
+    while (
+      idStart >= 0 &&
+      idEnd - idStart <= 64 &&
+      ((rawBuf[idStart] >= 0x30 && rawBuf[idStart] <= 0x39) ||
+        (rawBuf[idStart] >= 0x61 && rawBuf[idStart] <= 0x7a) ||
+        (rawBuf[idStart] >= 0x41 && rawBuf[idStart] <= 0x5a) ||
+        rawBuf[idStart] === 0x2d ||
+        rawBuf[idStart] === 0x5f)
+    ) {
+      idStart--;
+    }
+    idStart++;
+    const idLen = idEnd - idStart;
+    if (idLen < 8 || idLen > 64) continue;
+    const id = rawBuf.toString('latin1', idStart, idEnd);
+    if (!safeId(id)) continue;
+
+    const at = rawBuf.readUIntBE(i, 6);
+    if (at < 1700000000000 || at > 2100000000000) continue;
+
+    // Immediately after the 6-byte timestamp is `user` followed by 40-char hex `user_key`
+    const afterAt = rawBuf.toString('utf8', i + 6, Math.min(len, i + 16000));
+    const keyMatch = /^([a-z0-9._+-]+(?:@[a-z0-9.-]+)?)([0-9a-f]{40})/i.exec(afterAt);
+    if (!keyMatch) continue;
+
+    let matchedUser = null;
+    let matchedKey = null;
+    const fullStr = keyMatch[1] + keyMatch[2];
+    for (let uLen = 1; uLen <= fullStr.length - 40; uLen++) {
+      const candUser = norm(fullStr.slice(0, uLen));
+      const candKey = fullStr.slice(uLen, uLen + 40).toLowerCase();
+      if (/^[0-9a-f]{40}$/.test(candKey) && userKey(candUser) === candKey) {
+        matchedUser = candUser;
+        matchedKey = candKey;
+        break;
+      }
+    }
+    if (!matchedUser || !matchedKey) continue;
+    if (SYNTHETIC_TEST_USER_RE.test(matchedUser)) continue;
+
+    const rest = afterAt.slice(matchedUser.length + 40);
+    let userName = matchedUser;
+    if (rest.startsWith(matchedUser)) {
+      userName = matchedUser;
+    }
+
+    const firstBracket = rest.indexOf('[{');
+    const arr1Str = firstBracket >= 0 ? extractBalancedJsonArray(rest, firstBracket) : null;
+    let arr1 = [];
+    let arr2 = [];
+    if (arr1Str) {
+      try { arr1 = JSON.parse(arr1Str); } catch (_) {}
+      const afterArr1 = rest.slice(firstBracket + arr1Str.length);
+      const secondBracket = afterArr1.indexOf('[');
+      const arr2Str = secondBracket >= 0 && secondBracket <= 8 ? extractBalancedJsonArray(afterArr1, secondBracket) : null;
+      if (arr2Str) {
+        try { arr2 = JSON.parse(arr2Str); } catch (_) {}
+      }
+    }
+
+    const summaryArr = (Array.isArray(arr2) && arr2.length > 0) ? arr2 : (Array.isArray(arr1) ? arr1 : []);
+    const isImageRun = summaryArr.some((s) => s && (s.hasImage !== undefined || s.imageOutputTokens !== undefined || s.imageVaultRef !== undefined));
+
+    if (isImageRun) {
+      let costUsd = 0;
+      let imagesCount = 0;
+      for (const s of summaryArr) {
+        if (s && typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) costUsd += s.costUsd;
+        if (s && !s.error && (s.hasImage || s.imageVaultRef || s.thumbDataUrl)) imagesCount++;
+      }
+      const prev = imageById.get(id);
+      if (!prev || costUsd > prev.costUsd) {
+        imageById.set(id, {
+          id,
+          at,
+          user: matchedUser,
+          userKey: matchedKey,
+          userName,
+          imagesCount: imagesCount || summaryArr.length || 1,
+          costUsd,
+        });
+      }
+    } else {
+      let costUsd = 0;
+      for (const s of summaryArr) {
+        if (s && typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) costUsd += s.costUsd;
+      }
+      const callsCount = Math.max(
+        Array.isArray(arr1) ? arr1.length : 0,
+        Array.isArray(arr2) ? arr2.length : 0,
+        1
+      );
+      const prefixBeforeJson = firstBracket >= 0 ? rest.slice(0, firstBracket) : rest.slice(0, 200);
+      const kind = prefixBeforeJson.includes('single') && !prefixBeforeJson.includes('compare') ? 'single' : 'compare';
+      const prev = textById.get(id);
+      if (!prev || costUsd > prev.costUsd) {
+        textById.set(id, {
+          id,
+          at,
+          user: matchedUser,
+          userKey: matchedKey,
+          userName,
+          kind,
+          callsCount,
+          costUsd,
+        });
+      }
+    }
+  }
+  return {
+    textRuns: Array.from(textById.values()),
+    imageRuns: Array.from(imageById.values()),
+  };
+}
+
+function metaToArchivedEntry(meta) {
+  if (!meta || !meta.id) return null;
+  const u = norm(meta.user);
+  if (!u) return null;
+  let costUsd = 0;
+  if (typeof meta.costUsd === 'number' && Number.isFinite(meta.costUsd)) {
+    costUsd = meta.costUsd;
+  } else if (Array.isArray(meta.summary)) {
+    for (const s of meta.summary) {
+      if (s && typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) costUsd += s.costUsd;
+    }
+  }
+  const callsCount = Math.max(
+    Number(meta.callsCount) || 0,
+    Array.isArray(meta.summary) ? meta.summary.length : 0,
+    Array.isArray(meta.models) ? meta.models.length : 0,
+    1
+  );
+  return {
+    id: meta.id,
+    at: Number(meta.at) || Date.now(),
+    user: u,
+    userKey: meta.userKey || userKey(u),
+    userName: meta.userName || meta.user || u,
+    kind: meta.kind === 'single' ? 'single' : 'compare',
+    callsCount,
+    costUsd,
+  };
+}
+
+function archivedRowToEntry(r) {
+  if (!r || !r.id) return null;
+  const u = norm(r.user);
+  return {
+    id: r.id,
+    at: Number(r.at) || 0,
+    user: u,
+    userKey: r.user_key || userKey(u),
+    userName: r.user_name || r.user || u,
+    kind: r.kind === 'single' ? 'single' : 'compare',
+    callsCount: Math.max(1, Number(r.calls_count) || 1),
+    costUsd: Number(r.cost_usd) || 0,
+  };
+}
+
+function upsertArchivedRunInternal(entry) {
+  const clean = metaToArchivedEntry(entry);
+  if (!clean || !clean.id) return;
+  const existing = archivedMetaById.get(clean.id);
+  if (existing && existing.costUsd > clean.costUsd) {
+    clean.costUsd = existing.costUsd;
+  }
+  archivedMetaById.set(clean.id, clean);
+  if (stmts && stmts.upsertArchivedRun) {
+    try {
+      stmts.upsertArchivedRun.run(
+        clean.id,
+        clean.at,
+        clean.user,
+        clean.userKey,
+        clean.userName,
+        clean.kind,
+        clean.callsCount,
+        clean.costUsd
+      );
+    } catch (_) {}
+  }
+}
+
+function imageMetaToArchivedEntry(meta) {
+  if (!meta || !meta.id) return null;
+  const u = norm(meta.user);
+  if (!u) return null;
+  let costUsd = 0;
+  let imagesCount = 0;
+  if (typeof meta.costUsd === 'number' && Number.isFinite(meta.costUsd)) {
+    costUsd = meta.costUsd;
+  }
+  if (typeof meta.imagesCount === 'number' && Number.isFinite(meta.imagesCount)) {
+    imagesCount = meta.imagesCount;
+  }
+  if (Array.isArray(meta.summary)) {
+    let sumCost = 0;
+    let sumImgs = 0;
+    for (const s of meta.summary) {
+      if (s && typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) sumCost += s.costUsd;
+      if (s && !s.error && (s.hasImage || s.imageVaultRef || s.thumbDataUrl)) sumImgs++;
+    }
+    if (costUsd === 0 && sumCost > 0) costUsd = sumCost;
+    if (imagesCount === 0 && sumImgs > 0) imagesCount = sumImgs;
+  }
+  return {
+    id: meta.id,
+    at: Number(meta.at) || Date.now(),
+    user: u,
+    userKey: meta.userKey || userKey(u),
+    userName: meta.userName || meta.user || u,
+    imagesCount: Math.max(0, imagesCount),
+    costUsd,
+  };
+}
+
+function archivedImageRowToEntry(r) {
+  if (!r || !r.id) return null;
+  const u = norm(r.user);
+  return {
+    id: r.id,
+    at: Number(r.at) || 0,
+    user: u,
+    userKey: r.user_key || userKey(u),
+    userName: r.user_name || r.user || u,
+    imagesCount: Math.max(0, Number(r.images_count) || 0),
+    costUsd: Number(r.cost_usd) || 0,
+  };
+}
+
+function upsertArchivedImageRunInternal(entry) {
+  const clean = imageMetaToArchivedEntry(entry);
+  if (!clean || !clean.id) return;
+  const existing = archivedImageMetaById.get(clean.id);
+  if (existing && existing.costUsd > clean.costUsd) {
+    clean.costUsd = existing.costUsd;
+  }
+  if (existing && existing.imagesCount > clean.imagesCount) {
+    clean.imagesCount = existing.imagesCount;
+  }
+  archivedImageMetaById.set(clean.id, clean);
+  if (stmts && stmts.upsertArchivedImageRun) {
+    try {
+      stmts.upsertArchivedImageRun.run(
+        clean.id,
+        clean.at,
+        clean.user,
+        clean.userKey,
+        clean.userName,
+        clean.imagesCount,
+        clean.costUsd
+      );
+    } catch (_) {}
+  }
+}
 
 function promptRowToItem(r) {
   if (!r) return null;
@@ -187,6 +495,7 @@ function initSqlite() {
     // on startup using readFileSync + writeFileSync (avoids copy_file_range FUSE issues and
     // ensures stale /tmp WAL files can never shadow the persistent DB).
     if (DatabaseSync) {
+      let bootRawSqliteBuf = null;
       if (fs.existsSync(PERSIST_SQLITE_PATH)) {
         try {
           const st = fs.statSync(PERSIST_SQLITE_PATH);
@@ -194,6 +503,7 @@ function initSqlite() {
             try { fs.unlinkSync(LOCAL_SQLITE_PATH + '-wal'); } catch (_) {}
             try { fs.unlinkSync(LOCAL_SQLITE_PATH + '-shm'); } catch (_) {}
             const buf = fs.readFileSync(PERSIST_SQLITE_PATH);
+            bootRawSqliteBuf = buf;
             fs.writeFileSync(LOCAL_SQLITE_PATH, buf);
             lastPersistMtimeMs = st.mtimeMs;
             lastPersistSize = st.size;
@@ -203,6 +513,12 @@ function initSqlite() {
           console.warn('[history] Warning copying persisted SQLite to /tmp:', (copyErr && copyErr.message) || copyErr);
         }
       }
+      // Recover any runs previously deleted by 7-day auto-pruning from unvacuumed B-tree pages
+      // BEFORE executing CREATE TABLE (which could allocate from the B-tree freelist).
+      const recoveredFromBinary = bootRawSqliteBuf
+        ? recoverDeletedRunsFromSqliteBinary(bootRawSqliteBuf)
+        : { textRuns: [], imageRuns: [] };
+
       sqliteDb = new DatabaseSync(LOCAL_SQLITE_PATH);
       sqliteDb.exec(`
         PRAGMA journal_mode = WAL;
@@ -222,6 +538,27 @@ function initSqlite() {
         );
         CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_runs_user_at ON runs(user_key, at DESC);
+        CREATE TABLE IF NOT EXISTS archived_runs (
+          id TEXT PRIMARY KEY,
+          at INTEGER NOT NULL,
+          user TEXT NOT NULL,
+          user_key TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT 'compare',
+          calls_count INTEGER NOT NULL DEFAULT 1,
+          cost_usd REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_archived_runs_user_at ON archived_runs(user_key, at DESC);
+        CREATE TABLE IF NOT EXISTS archived_image_runs (
+          id TEXT PRIMARY KEY,
+          at INTEGER NOT NULL,
+          user TEXT NOT NULL,
+          user_key TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          images_count INTEGER NOT NULL DEFAULT 0,
+          cost_usd REAL NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_archived_image_runs_user_at ON archived_image_runs(user_key, at DESC);
         CREATE TABLE IF NOT EXISTS user_prefs (
           user_key TEXT PRIMARY KEY,
           user TEXT NOT NULL,
@@ -309,6 +646,29 @@ function initSqlite() {
         setStarred: sqliteDb.prepare(`UPDATE runs SET starred = ? WHERE id = ?`),
         del: sqliteDb.prepare(`DELETE FROM runs WHERE id = ?`),
         all: sqliteDb.prepare(`SELECT * FROM runs ORDER BY at DESC`),
+        upsertArchivedRun: sqliteDb.prepare(`
+          INSERT INTO archived_runs (id, at, user, user_key, user_name, kind, calls_count, cost_usd)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            at = excluded.at,
+            user_name = excluded.user_name,
+            kind = excluded.kind,
+            calls_count = MAX(archived_runs.calls_count, excluded.calls_count),
+            cost_usd = MAX(archived_runs.cost_usd, excluded.cost_usd)
+        `),
+        delArchivedRun: sqliteDb.prepare(`DELETE FROM archived_runs WHERE id = ?`),
+        allArchivedRuns: sqliteDb.prepare(`SELECT * FROM archived_runs ORDER BY at DESC`),
+        upsertArchivedImageRun: sqliteDb.prepare(`
+          INSERT INTO archived_image_runs (id, at, user, user_key, user_name, images_count, cost_usd)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            at = excluded.at,
+            user_name = excluded.user_name,
+            images_count = MAX(archived_image_runs.images_count, excluded.images_count),
+            cost_usd = MAX(archived_image_runs.cost_usd, excluded.cost_usd)
+        `),
+        delArchivedImageRun: sqliteDb.prepare(`DELETE FROM archived_image_runs WHERE id = ?`),
+        allArchivedImageRuns: sqliteDb.prepare(`SELECT * FROM archived_image_runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
           INSERT INTO user_prefs (user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -365,19 +725,67 @@ function initSqlite() {
         allImage: sqliteDb.prepare(`SELECT * FROM image_runs ORDER BY at DESC`),
       };
 
+      // Load existing archived_runs and archived_image_runs ledger rows
+      try {
+        const archRows = stmts.allArchivedRuns.all();
+        for (const r of archRows) {
+          const entry = archivedRowToEntry(r);
+          if (entry && entry.id) archivedMetaById.set(entry.id, entry);
+        }
+      } catch (_) {}
+
+      try {
+        const archImgRows = stmts.allArchivedImageRuns.all();
+        for (const r of archImgRows) {
+          const entry = archivedImageRowToEntry(r);
+          if (entry && entry.id) archivedImageMetaById.set(entry.id, entry);
+        }
+      } catch (_) {}
+
       const rows = stmts.all.all();
       for (const r of rows) {
-        metaById.set(r.id, rowToMeta(r));
+        const m = rowToMeta(r);
+        metaById.set(r.id, m);
+        if (!archivedMetaById.has(r.id)) {
+          upsertArchivedRunInternal(m);
+          needsPersistFlush = true;
+        }
       }
       if (rows.length > 0) hadPersistedIndexOnBoot = true;
 
       try {
         const imgRows = stmts.allImage.all();
         for (const r of imgRows) {
-          imageMetaById.set(r.id, imageRowToMeta(r));
+          const m = imageRowToMeta(r);
+          imageMetaById.set(r.id, m);
+          if (!archivedImageMetaById.has(r.id)) {
+            upsertArchivedImageRunInternal(m);
+            needsPersistFlush = true;
+          }
         }
         if (imgRows.length > 0) hadPersistedIndexOnBoot = true;
       } catch (_) {}
+
+      // Insert any pruned runs recovered from unvacuumed SQLite B-tree pages
+      let recoveredTextCount = 0;
+      for (const recRun of recoveredFromBinary.textRuns || []) {
+        if (recRun && recRun.id && !archivedMetaById.has(recRun.id)) {
+          upsertArchivedRunInternal(recRun);
+          recoveredTextCount++;
+          needsPersistFlush = true;
+        }
+      }
+      let recoveredImageCount = 0;
+      for (const recImg of recoveredFromBinary.imageRuns || []) {
+        if (recImg && recImg.id && !archivedImageMetaById.has(recImg.id)) {
+          upsertArchivedImageRunInternal(recImg);
+          recoveredImageCount++;
+          needsPersistFlush = true;
+        }
+      }
+      if (recoveredTextCount > 0 || recoveredImageCount > 0) {
+        console.log(`[history] Recovered ${recoveredTextCount} pruned text runs and ${recoveredImageCount} pruned image runs from SQLite binary pages into lifetime usage ledger.`);
+      }
 
       try {
         const prefRows = stmts.allPrefs.all();
@@ -479,6 +887,32 @@ function initSqlite() {
           needsPersistFlush = true;
         }
 
+        // If any real user in `user_prefs` has saved `slots` from a past run (`saveRun()` writes `slots` + `updatedAt`)
+        // whose run row was pruned and overwritten before `archived_runs` existed, seed a baseline archived run
+        // so their historical user and run participation is preserved.
+        const usersWithArchivedRuns = new Set();
+        for (const ar of archivedMetaById.values()) {
+          if (ar && ar.userKey) usersWithArchivedRuns.add(ar.userKey);
+        }
+        for (const [uKey, pref] of prefsByUserKey.entries()) {
+          if (!pref || !pref.user || SYNTHETIC_TEST_USER_RE.test(pref.user)) continue;
+          if (usersWithArchivedRuns.has(uKey)) continue;
+          const hasRunSlots = Array.isArray(pref.slots) && pref.slots.length > 0 && Number(pref.updatedAt) > 0;
+          if (hasRunSlots) {
+            upsertArchivedRunInternal({
+              id: `hist-seed-${uKey.slice(0, 16)}`,
+              at: Number(pref.updatedAt) || Date.now(),
+              user: pref.user,
+              userKey: uKey,
+              userName: pref.user,
+              kind: 'compare',
+              callsCount: pref.slots.length,
+              costUsd: 0,
+            });
+            needsPersistFlush = true;
+          }
+        }
+
         if (needsPersistFlush) {
           flushSnapshotSync();
         }
@@ -557,6 +991,7 @@ function upsertMetaInternal(meta, persistDisk = true) {
   if (!meta || !meta.id) return;
   meta.starred = Boolean(meta.starred);
   metaById.set(meta.id, meta);
+  upsertArchivedRunInternal(meta);
   if (stmts) {
     try {
       stmts.upsert.run(
@@ -625,6 +1060,7 @@ function upsertImageMetaInternal(meta, persistDisk = true) {
   if (!meta || !meta.id) return;
   meta.starred = Boolean(meta.starred);
   imageMetaById.set(meta.id, meta);
+  upsertArchivedImageRunInternal(meta);
   if (stmts && stmts.upsertImage) {
     try {
       stmts.upsertImage.run(
@@ -715,7 +1151,23 @@ function syncFromPersistSqliteIfNewer(force = false) {
       fs.writeFileSync(tmpMerge, buf);
       const extDb = new DatabaseSync(tmpMerge);
       try {
-        // 1. Merge runs & image_runs
+        // 1. Merge runs, image_runs, archived_runs & archived_image_runs
+        try {
+          const extArchRuns = extDb.prepare(`SELECT * FROM archived_runs`).all();
+          for (const r of extArchRuns) {
+            if (r && r.id && !archivedMetaById.has(r.id)) {
+              upsertArchivedRunInternal(archivedRowToEntry(r));
+            }
+          }
+        } catch (_) {}
+        try {
+          const extArchImgRuns = extDb.prepare(`SELECT * FROM archived_image_runs`).all();
+          for (const r of extArchImgRuns) {
+            if (r && r.id && !archivedImageMetaById.has(r.id)) {
+              upsertArchivedImageRunInternal(archivedImageRowToEntry(r));
+            }
+          }
+        } catch (_) {}
         try {
           const extRuns = extDb.prepare(`SELECT * FROM runs`).all();
           for (const r of extRuns) {
@@ -855,7 +1307,11 @@ function scheduleBackgroundBackfill() {
       let imported = 0;
       for (const k of ownerDirs) {
         const dir = path.join(BASE_DIR, k);
-        const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json') && f !== 'prefs.json');
+        const dirEntries = await fsp.readdir(dir).catch(() => []);
+        if (dirEntries.includes('prefs.json') && !prefsByUserKey.has(k)) {
+          try { ensureOwnerLoadedSync(k); } catch (_) {}
+        }
+        const files = dirEntries.filter((f) => f.endsWith('.json') && f !== 'prefs.json');
         // Process in batches of 8 concurrent async reads so we never block the event loop
         for (let i = 0; i < files.length; i += 8) {
           const batch = files.slice(i, i + 8);
@@ -1915,14 +2371,23 @@ function gcOrphanedVaultRefsForUser(uKey, candidateHashes, triggerSnapshot = fal
 }
 
 // Delete one run from SQLite index, memory, disk, and garbage-collect unreferenced vault files.
-function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false } = {}) {
+// When `preserveLifetimeStats === true` (used by 7-day auto-pruning), the heavy `.json` payload,
+// binary vault blobs, and active 7-day `runs` row are removed while the lightweight `archived_runs`
+// ledger row is kept so cumulative user and run counts are never lost.
+function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
   const meta = metaById.get(sid);
+  const arch = archivedMetaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
+  if (!meta && arch && !isAdmin && arch.userKey !== myKey) return false;
 
-  const ownerKey = (meta && meta.userKey) || myKey;
+  if (preserveLifetimeStats && meta) {
+    upsertArchivedRunInternal(meta);
+  }
+
+  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || myKey;
   const candidateHashes = extractRunVaultHashes(meta);
   const cached = fullPayloadCache.get(sid);
   if (cached) {
@@ -1969,6 +2434,15 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
   fullPayloadCache.delete(sid);
   if (stmts) {
     try { stmts.del.run(sid); } catch (_) {}
+  }
+  if (!preserveLifetimeStats) {
+    if (archivedMetaById.has(sid)) {
+      archivedMetaById.delete(sid);
+      removed = true;
+    }
+    if (stmts && stmts.delArchivedRun) {
+      try { stmts.delArchivedRun.run(sid); } catch (_) {}
+    }
   }
   if (removed) {
     if (deferGc && stats && stats.byUserHashes instanceof Map) {
@@ -2027,6 +2501,9 @@ function setRunStarred(id, starred, { username, isAdmin }) {
 }
 
 // Instant (<0.2ms) Admin at-a-glance usage summary computed directly from the SQLite/memory index.
+// Combines active 7-day runs (`metaById`) with the permanent lifetime ledger (`archivedMetaById`,
+// deduplicated by run `id`) so 7-day payload auto-pruning never resets cumulative user counts,
+// `runsToday`, `totalRuns`, or `costUsd`.
 // Includes per-user and global counts of saved custom prompts (`savedPrompts`) and saved model presets (`savedPresets`)
 // while keeping the actual prompt text and file contents strictly private to each user.
 function usageSummary() {
@@ -2034,9 +2511,19 @@ function usageSummary() {
   maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
-  let totalRuns = 0, runsToday = 0, totalStarredRuns = 0;
+  const countedRunIds = new Set();
+  let totalRuns = 0;
+  let activeRuns = 0;
+  let runsToday = 0;
+  let totalStarredRuns = 0;
+  let totalCostUsd = 0;
+
+  // 1. Count all active (unpruned 7-day + starred) runs first
   for (const rec of metaById.values()) {
+    if (!rec || !rec.id) continue;
+    countedRunIds.add(rec.id);
     totalRuns++;
+    activeRuns++;
     const today = rec.at >= startOfDay;
     if (today) runsToday++;
     if (rec.starred) totalStarredRuns++;
@@ -2045,6 +2532,44 @@ function usageSummary() {
       user: uKeyName,
       userName: rec.userName || rec.user || uKeyName,
       runs: 0,
+      activeRuns: 0,
+      runsToday: 0,
+      starredRuns: 0,
+      lastAt: 0,
+      costUsd: 0,
+      savedPrompts: 0,
+      savedPresets: 0,
+    };
+    u.runs++;
+    u.activeRuns++;
+    if (today) u.runsToday++;
+    if (rec.starred) u.starredRuns++;
+    if (rec.at > u.lastAt) {
+      u.lastAt = rec.at;
+      u.userName = rec.userName || rec.user || uKeyName;
+    }
+    (rec.summary || []).forEach((s) => {
+      if (typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) {
+        u.costUsd += s.costUsd;
+        totalCostUsd += s.costUsd;
+      }
+    });
+    byUser.set(uKeyName, u);
+  }
+
+  // 2. Include all pruned historical runs from `archivedMetaById` (skipping any ID already counted above)
+  for (const arch of archivedMetaById.values()) {
+    if (!arch || !arch.id || countedRunIds.has(arch.id)) continue;
+    countedRunIds.add(arch.id);
+    totalRuns++;
+    const today = arch.at >= startOfDay;
+    if (today) runsToday++;
+    const uKeyName = norm(arch.user);
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: arch.userName || arch.user || uKeyName,
+      runs: 0,
+      activeRuns: 0,
       runsToday: 0,
       starredRuns: 0,
       lastAt: 0,
@@ -2054,12 +2579,18 @@ function usageSummary() {
     };
     u.runs++;
     if (today) u.runsToday++;
-    if (rec.starred) u.starredRuns++;
-    if (rec.at > u.lastAt) { u.lastAt = rec.at; u.userName = rec.userName || rec.user || uKeyName; }
-    (rec.summary || []).forEach((s) => { if (typeof s.costUsd === 'number') u.costUsd += s.costUsd; });
+    if (arch.at > u.lastAt) {
+      u.lastAt = arch.at;
+      u.userName = arch.userName || arch.user || uKeyName;
+    }
+    if (typeof arch.costUsd === 'number' && Number.isFinite(arch.costUsd)) {
+      u.costUsd += arch.costUsd;
+      totalCostUsd += arch.costUsd;
+    }
     byUser.set(uKeyName, u);
   }
 
+  // 3. Merge saved prompts, saved presets, and any real user with recorded workspace activity in `user_prefs`
   let totalSavedPrompts = 0;
   let totalSavedPresets = 0;
   for (const p of prefsByUserKey.values()) {
@@ -2068,11 +2599,16 @@ function usageSummary() {
     const spCount = Array.isArray(p.savedPrompts) ? p.savedPrompts.length : 0;
     const mpCount = Array.isArray(p.savedPresets) ? p.savedPresets.length : 0;
     const existing = byUser.get(uKeyName);
-    if (!existing && spCount === 0 && mpCount === 0) continue;
+    const hasWorkspaceActivity = Boolean(
+      !SYNTHETIC_TEST_USER_RE.test(uKeyName) &&
+      (Number(p.updatedAt) > 0 || (Array.isArray(p.slots) && p.slots.length > 0))
+    );
+    if (!existing && spCount === 0 && mpCount === 0 && !hasWorkspaceActivity) continue;
     const u = existing || {
       user: uKeyName,
       userName: uKeyName,
       runs: 0,
+      activeRuns: 0,
       runsToday: 0,
       starredRuns: 0,
       lastAt: 0,
@@ -2098,8 +2634,10 @@ function usageSummary() {
     totals: {
       users: users.length,
       totalRuns,
+      activeRuns,
       runsToday,
       totalStarredRuns,
+      totalCostUsd,
       totalSavedPrompts,
       totalSavedPresets,
     },
@@ -2488,14 +3026,20 @@ function getImageRun(id, { username, isAdmin }) {
   return null;
 }
 
-function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false } = {}) {
+function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
   const meta = imageMetaById.get(sid);
+  const arch = archivedImageMetaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
+  if (!meta && arch && !isAdmin && arch.userKey !== myKey) return false;
 
-  const ownerKey = (meta && meta.userKey) || myKey;
+  if (preserveLifetimeStats && meta) {
+    upsertArchivedImageRunInternal(meta);
+  }
+
+  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || myKey;
   const candidateHashes = extractRunVaultHashes(meta);
   const cached = fullPayloadCache.get(sid);
   if (cached) {
@@ -2542,6 +3086,15 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
   fullPayloadCache.delete(sid);
   if (stmts && stmts.delImage) {
     try { stmts.delImage.run(sid); } catch (_) {}
+  }
+  if (!preserveLifetimeStats) {
+    if (archivedImageMetaById.has(sid)) {
+      archivedImageMetaById.delete(sid);
+      removed = true;
+    }
+    if (stmts && stmts.delArchivedImageRun) {
+      try { stmts.delArchivedImageRun.run(sid); } catch (_) {}
+    }
   }
   if (removed) {
     if (deferGc && stats && stats.byUserHashes instanceof Map) {
@@ -2604,13 +3157,20 @@ function imageUsageSummary() {
   maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
+  const countedRunIds = new Set();
   let totalRuns = 0;
+  let activeRuns = 0;
   let runsToday = 0;
   let totalStarredRuns = 0;
   let totalImages = 0;
   let totalCostUsd = 0;
+
+  // 1. Active (7-day window + starred) Image Arena runs
   for (const rec of imageMetaById.values()) {
+    if (!rec || !rec.id) continue;
+    countedRunIds.add(rec.id);
     totalRuns++;
+    activeRuns++;
     const today = rec.at >= startOfDay;
     if (today) runsToday++;
     if (rec.starred) totalStarredRuns++;
@@ -2619,6 +3179,7 @@ function imageUsageSummary() {
       user: uKeyName,
       userName: rec.userName || rec.user || uKeyName,
       runs: 0,
+      activeRuns: 0,
       runsToday: 0,
       starredRuns: 0,
       imagesGenerated: 0,
@@ -2626,6 +3187,7 @@ function imageUsageSummary() {
       costUsd: 0,
     };
     u.runs++;
+    u.activeRuns++;
     if (today) u.runsToday++;
     if (rec.starred) u.starredRuns++;
     if (rec.at > u.lastAt) {
@@ -2633,7 +3195,7 @@ function imageUsageSummary() {
       u.userName = rec.userName || rec.user || uKeyName;
     }
     (rec.summary || []).forEach((s) => {
-      if (typeof s.costUsd === 'number') {
+      if (typeof s.costUsd === 'number' && Number.isFinite(s.costUsd)) {
         u.costUsd += s.costUsd;
         totalCostUsd += s.costUsd;
       }
@@ -2645,6 +3207,41 @@ function imageUsageSummary() {
     byUser.set(uKeyName, u);
   }
 
+  // 2. Pruned historical Image Arena runs from `archivedImageMetaById` (deduplicated by run `id`)
+  for (const arch of archivedImageMetaById.values()) {
+    if (!arch || !arch.id || countedRunIds.has(arch.id)) continue;
+    countedRunIds.add(arch.id);
+    totalRuns++;
+    const today = arch.at >= startOfDay;
+    if (today) runsToday++;
+    const uKeyName = norm(arch.user);
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: arch.userName || arch.user || uKeyName,
+      runs: 0,
+      activeRuns: 0,
+      runsToday: 0,
+      starredRuns: 0,
+      imagesGenerated: 0,
+      lastAt: 0,
+      costUsd: 0,
+    };
+    u.runs++;
+    if (today) u.runsToday++;
+    if (arch.at > u.lastAt) {
+      u.lastAt = arch.at;
+      u.userName = arch.userName || arch.user || uKeyName;
+    }
+    const imgCnt = Math.max(0, Number(arch.imagesCount) || 0);
+    u.imagesGenerated += imgCnt;
+    totalImages += imgCnt;
+    if (typeof arch.costUsd === 'number' && Number.isFinite(arch.costUsd)) {
+      u.costUsd += arch.costUsd;
+      totalCostUsd += arch.costUsd;
+    }
+    byUser.set(uKeyName, u);
+  }
+
   const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   return {
     generatedAt: Date.now(),
@@ -2653,6 +3250,7 @@ function imageUsageSummary() {
     totals: {
       users: users.length,
       totalRuns,
+      activeRuns,
       runsToday,
       totalStarredRuns,
       totalImages,
@@ -2663,7 +3261,8 @@ function imageUsageSummary() {
 }
 
 // Automatically prune unstarred runs older than `retentionMs` (default 7 days)
-// and garbage-collect any orphaned binary vault files they referenced.
+// and garbage-collect any orphaned binary vault files they referenced, while preserving
+// lightweight lifetime usage counters in `archived_runs` and `archived_image_runs`.
 // Starred runs (`m.starred === true`) are kept permanently.
 // Batches SQLite deletion + per-user vault GC + a single snapshot flush at the end so pruning
 // hundreds of runs is fast even on GCS FUSE.
@@ -2688,12 +3287,12 @@ function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, as
   let prunedTextRuns = 0;
   let prunedImageRuns = 0;
   for (const m of expiredText) {
-    if (deleteRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink })) {
+    if (deleteRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink, preserveLifetimeStats: true })) {
       prunedTextRuns++;
     }
   }
   for (const m of expiredImage) {
-    if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink })) {
+    if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink, preserveLifetimeStats: true })) {
       prunedImageRuns++;
     }
   }
@@ -2765,6 +3364,7 @@ module.exports = {
   setImageRunStarred,
   imageUsageSummary,
   pruneExpiredRuns,
+  recoverDeletedRunsFromSqliteBinary,
   RUN_RETENTION_DAYS,
   RUN_RETENTION_MS,
   lastModels,

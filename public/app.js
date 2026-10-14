@@ -46,11 +46,13 @@ const ICON_GROK = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><path 
 const ICON_META = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 14.5c0-4 2.5-7 5-7 2 0 3.5 2 5.5 5.2 2-3.2 3.5-5.2 5.5-5.2 2.5 0 5 3 5 7 0 2.5-1.5 4-3.3 4-1.6 0-2.9-1.2-4.7-4.2-1.8 3-3.1 4.2-4.7 4.2-1.8 0-3.3-1.5-3.3-4Z" fill="none" stroke="#3b82f6" stroke-width="2.1"/></svg>';
 const ICON_DEEPSEEK = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="#38bdf8" stroke-width="2"/><path d="M8 12.5c1.5-2.5 4.5-2.5 6 0s4.5 2.5 6 0" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/></svg>';
 const ICON_QWEN = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,2.5 20.5,7.5 20.5,16.5 12,21.5 3.5,16.5 3.5,7.5" fill="none" stroke="#a855f7" stroke-width="2"/><circle cx="12" cy="12" r="3" fill="#a855f7"/></svg>';
+const ICON_OPENAI = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.2" fill="none" stroke="#10a37f" stroke-width="2"/><polygon points="12,5.6 17.5,8.8 17.5,15.2 12,18.4 6.5,15.2 6.5,8.8" fill="none" stroke="#10a37f" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 const ICON_GENERIC = '<svg class="mi" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.6" fill="currentColor"/></svg>';
 // Pick a brand mark from a model's publisher / provider / model id / label.
 function modelIconSvg(m) {
   const s = (((m && m.providerFamily) || '') + ' ' + ((m && m.publisher) || '') + ' ' + ((m && m.provider) || '') + ' ' + ((m && m.model) || '') + ' ' + ((m && m.label) || '')).toLowerCase();
   if (s.indexOf('anthropic') >= 0 || s.indexOf('claude') >= 0) return ICON_CLAUDE;
+  if (s.indexOf('openai') >= 0 || s.indexOf('gpt') >= 0) return ICON_OPENAI;
   if (s.indexOf('gemini') >= 0 || s.indexOf('google') >= 0) return ICON_GEMINI;
   if (s.indexOf('xai') >= 0 || s.indexOf('grok') >= 0) return ICON_GROK;
   if (s.indexOf('meta') >= 0 || s.indexOf('llama') >= 0) return ICON_META;
@@ -4660,15 +4662,25 @@ async function syncLocalImageRunsToServer(localRuns, serverRuns) {
         model: res.model,
         thinkingLevel: res.thinkingLevel,
         imageSize: res.imageSize || r.imageSize,
+        requestedSize: res.requestedSize || res.imageSize || r.imageSize || '2K',
         aspectRatio: res.aspectRatio || r.aspectRatio,
+        width: res.width || null,
+        height: res.height || null,
+        megapixels: res.megapixels || null,
+        slaBadge: res.slaBadge || null,
+        savingsVsNanoBanana2Pct: res.savingsVsNanoBanana2Pct || 0,
         ok: Boolean(res.ok || !res.error),
         error: res.error || null,
         latencyMs: res.latencyMs,
         costUsd: res.costUsd != null ? res.costUsd : res.standardPayGoCostUsd,
         standardPayGoCostUsd: res.standardPayGoCostUsd != null ? res.standardPayGoCostUsd : res.costUsd,
+        standardPayGoPer1kUsd: res.standardPayGoPer1kUsd || null,
+        offPeakSupported: Boolean(res.offPeakSupported),
+        offPeakPayGoCostUsd: res.offPeakPayGoCostUsd != null ? res.offPeakPayGoCostUsd : null,
         promptTokens: res.promptTokens,
         imageOutputTokens: res.imageOutputTokens,
         thoughtsTokens: res.thoughtsTokens || res.reasoningTokens,
+        reasoningTokens: res.reasoningTokens || res.thoughtsTokens || 0,
         completionTokens: res.completionTokens,
         mimeType: res.mimeType || 'image/png',
         hasImage: Boolean(res.hasImage || res.imageDataUrl || res.imageVaultRef || res.thumbDataUrl),
@@ -4789,7 +4801,7 @@ function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
     return `<button type="button" class="hist-sort-btn${active ? ' is-sorted' : ''}" data-run-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort runs by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></button>`;
   }).join('');
   const starFilterBtn = `<button type="button" class="hist-star-filter-btn${historyStarredOnly ? ' active' : ''}" title="Show only starred runs kept forever (exempt from ${retDays}-day auto-pruning)">★ Kept only (${fmtInt(starredCount)})</button>`;
-  const retentionBadge = `<span class="hist-retention-note" title="Unstarred runs and their binary vault images/attachments are automatically pruned after ${retDays} days to save storage. Star any run to keep it forever.">⏱ ${retDays}d auto-prune · ★ Star to keep</span>`;
+  const retentionBadge = `<span class="hist-retention-note" title="Unstarred run payloads and their binary vault images/attachments are automatically pruned after ${retDays} days to save storage, while cumulative user and run counts are kept permanently. Star any run to keep its full payload forever.">⏱ ${retDays}d auto-prune · ★ Star to keep</span>`;
   return `<div class="hist-toolbar">
     <span class="hist-toolbar-label">Sort runs (${fmtInt(totalCount)}):</span>
     <div class="hist-sort-group">${btns}${starFilterBtn}${retentionBadge}</div>
@@ -4872,7 +4884,9 @@ function paintHistoryModal() {
       ? pageRuns.map((r) => imgHistRowHtml(r)).join('')
       : (historyStarredOnly
           ? '<p class="auth-loading">No starred Image &amp; GenMedia runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>'
-          : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>');
+          : (historyUserFilter
+              ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred Image &amp; GenMedia payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
+              : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>'));
     const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
     body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${imgRows}</div>` + pager;
     body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
@@ -4970,7 +4984,9 @@ function paintHistoryModal() {
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : (historyStarredOnly
         ? '<p class="auth-loading">No starred runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>'
-        : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>');
+        : (historyUserFilter
+            ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred run payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
+            : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>'));
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
   body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
   body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
@@ -5143,7 +5159,7 @@ function renderImageUsagePanel(u) {
       <div class="ustat"><div class="uk">Total cost</div><div class="uv">${esc(fmtCost(t.totalCostUsd || 0))}</div></div>
     </div>
     ${rows ? `<table class="usage-table"><thead><tr>${thHtml}</tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
-    <p class="hint">Click any column header to sort · Click a user row to filter their Image &amp; GenMedia runs. Today = since 00:00 UTC.</p>
+    <p class="hint">Click any column header to sort · Click a user row to filter their Image &amp; GenMedia runs · Lifetime user &amp; run counts are preserved across 7-day payload auto-pruning. Today = since 00:00 UTC.</p>
   </div>`;
 }
 
@@ -5201,7 +5217,7 @@ function renderUsagePanel(u) {
       <div class="ustat"><div class="uk">Saved presets</div><div class="uv">${fmtInt(t.totalSavedPresets || 0)}</div></div>
     </div>
     ${rows ? `<table class="usage-table"><thead><tr>${thHtml}</tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
-    <p class="hint">Click any column header to sort · Click a user row to filter their runs · Prompt/preset counts respect user privacy (contents remain private). Today = since 00:00 UTC.</p>
+    <p class="hint">Click any column header to sort · Click a user row to filter their runs · Lifetime user &amp; run counts are preserved across 7-day payload auto-pruning · Prompt/preset counts respect user privacy (contents remain private). Today = since 00:00 UTC.</p>
   </div>`;
 }
 
@@ -6226,11 +6242,13 @@ function renderImageArenaPlaceholderCards() {
       ? `<div class="metric span-3" id="img-mcard-offpeak-${slotObj.slot}"><div class="k">Off-Peak PayGo</div><div class="v" id="img-tile-offpeak-${slotObj.slot}">—</div></div>`
       : '';
 
+    const endpointLabel = entry.provider === 'openai' ? 'OpenAI API' : 'Vertex AI';
+
     col.innerHTML = `
       <header class="col-head">
         <div class="col-title-row">
           <span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66">${esc(slotObj.slot)}</span>
-          ${ICON_GEMINI}
+          ${modelIconSvg(entry)}
           <div>
             <h3 class="col-title" title="${esc(entry.label)}">${esc(entry.label)}</h3>
             <div class="col-sub" title="${esc(entry.releaseBadge)} · ${esc(entry.model)}">${esc(entry.releaseBadge)} · <code>${esc(entry.model)}</code></div>
@@ -6256,7 +6274,7 @@ function renderImageArenaPlaceholderCards() {
       </div>
       <div class="img-stage-wrap" id="img-stage-${slotObj.slot}" data-slot="${esc(slotObj.slot)}" style="--stage-ar:${esc(stageAr)};--curtain-pos:${IMG_CURTAIN_POS}%">
         <div style="padding:36px 24px;text-align:center;color:var(--muted);font-size:13px">
-          Click <strong>Generate &amp; Compare Images ▸</strong> to run <code>${esc(entry.model)}</code> at <strong>${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</strong> on Vertex AI.
+          Click <strong>Generate &amp; Compare Images ▸</strong> to run <code>${esc(entry.model)}</code> at <strong>${esc(IMG_SELECTED_SIZE)} (${esc(IMG_SELECTED_ASPECT)})</strong> on ${esc(endpointLabel)}.
         </div>
       </div>
       <div class="metrics">
@@ -6567,15 +6585,25 @@ async function saveImageArenaRunToHistory(runRecord) {
         model: res.model,
         thinkingLevel: res.thinkingLevel,
         imageSize: res.imageSize || runRecord.imageSize,
+        requestedSize: res.requestedSize || res.imageSize || runRecord.imageSize || '2K',
         aspectRatio: res.aspectRatio || runRecord.aspectRatio,
+        width: res.width || null,
+        height: res.height || null,
+        megapixels: res.megapixels || null,
+        slaBadge: res.slaBadge || null,
+        savingsVsNanoBanana2Pct: res.savingsVsNanoBanana2Pct || 0,
         ok: Boolean(res.ok || !res.error),
         error: res.error || null,
         latencyMs: res.latencyMs,
         costUsd: res.costUsd != null ? res.costUsd : res.standardPayGoCostUsd,
         standardPayGoCostUsd: res.standardPayGoCostUsd != null ? res.standardPayGoCostUsd : res.costUsd,
+        standardPayGoPer1kUsd: res.standardPayGoPer1kUsd || null,
+        offPeakSupported: Boolean(res.offPeakSupported),
+        offPeakPayGoCostUsd: res.offPeakPayGoCostUsd != null ? res.offPeakPayGoCostUsd : null,
         promptTokens: res.promptTokens,
         imageOutputTokens: res.imageOutputTokens,
         thoughtsTokens: res.thoughtsTokens || res.reasoningTokens,
+        reasoningTokens: res.reasoningTokens || res.thoughtsTokens || 0,
         completionTokens: res.completionTokens,
         mimeType: res.mimeType || 'image/png',
         hasImage: Boolean(res.hasImage || res.imageDataUrl || res.imageVaultRef || res.thumbDataUrl),
@@ -6750,7 +6778,49 @@ async function restoreImageArenaRun(runId) {
 
   IMG_LAST_RESULTS = currentModelImageResults(rec)
     .filter((r) => !slotMap || slotMap[r.slot])
-    .map((r) => (slotMap ? { ...r, slot: slotMap[r.slot] } : r));
+    .map((r) => {
+      const mapped = slotMap ? { ...r, slot: slotMap[r.slot] } : { ...r };
+      const entry = getImgCatalogItem(mapped.catalogId) || {};
+      const reqSz = mapped.requestedSize || mapped.imageSize || rec.imageSize || IMG_SELECTED_SIZE || '2K';
+      const reqAr = mapped.aspectRatio || rec.aspectRatio || IMG_SELECTED_ASPECT || '16:9';
+      let w = Number(mapped.width) || 0;
+      let h = Number(mapped.height) || 0;
+      if (!(w > 0 && h > 0)) {
+        const basePx = reqSz === '4K' ? 4096 : (reqSz === '1K' ? 1024 : 2048);
+        if (reqAr === '16:9') { w = basePx; h = Math.round(basePx * 9 / 16); }
+        else if (reqAr === '9:16') { w = Math.round(basePx * 9 / 16); h = basePx; }
+        else if (reqAr === '4:3') { w = basePx; h = Math.round(basePx * 3 / 4); }
+        else if (reqAr === '3:4') { w = Math.round(basePx * 3 / 4); h = basePx; }
+        else { w = basePx; h = basePx; }
+      }
+      const mp = Number(mapped.megapixels) || Number(((w * h) / 1_000_000).toFixed(2));
+      const stdCost = Number(mapped.standardPayGoCostUsd != null ? mapped.standardPayGoCostUsd : mapped.costUsd) || 0;
+      const offPeakSup = Boolean(mapped.offPeakSupported || (entry.pricing && entry.pricing.offPeakDiscount > 0));
+      const offPeakCost = mapped.offPeakPayGoCostUsd != null
+        ? Number(mapped.offPeakPayGoCostUsd)
+        : (offPeakSup ? Number((stdCost * 0.5).toFixed(6)) : stdCost);
+      return {
+        ...mapped,
+        label: mapped.label || entry.label || mapped.catalogId,
+        shortLabel: mapped.shortLabel || entry.shortLabel || entry.label || mapped.catalogId,
+        model: mapped.model || entry.model || mapped.catalogId,
+        requestedSize: reqSz,
+        imageSize: reqSz,
+        aspectRatio: reqAr,
+        width: w,
+        height: h,
+        megapixels: mp,
+        slaBadge: mapped.slaBadge || entry.slaBadge || 'Vertex AI Global',
+        savingsVsNanoBanana2Pct: mapped.savingsVsNanoBanana2Pct != null
+          ? mapped.savingsVsNanoBanana2Pct
+          : (mapped.catalogId === 'gemini-nano-banana-2.1' ? 50 : 0),
+        standardPayGoCostUsd: stdCost,
+        standardPayGoPer1kUsd: mapped.standardPayGoPer1kUsd != null ? Number(mapped.standardPayGoPer1kUsd) : Number((stdCost * 1000).toFixed(2)),
+        offPeakSupported: offPeakSup,
+        offPeakPayGoCostUsd: offPeakCost,
+        reasoningTokens: Number(mapped.reasoningTokens || mapped.thoughtsTokens || 0),
+      };
+    });
   IMG_LAST_RESULTS.forEach((r) => applyImageResultToCard(r));
   highlightImageWinnerTiles(IMG_LAST_RESULTS);
   updateSplitCurtainView();
@@ -6835,6 +6905,7 @@ async function runImageArenaComparisonClick() {
             aspectRatio: reqAspect,
             imageSize: reqSize,
             attachments: reqRefs,
+            keys: loadKeys(),
           }),
         });
         if (resp.status === 401) {
@@ -7099,8 +7170,9 @@ function renderImageMetricComparison() {
       slot: s.slot,
       label: entry.label,
       shortLabel: entry.shortLabel || entry.label,
-      provider: 'google',
-      publisher: 'google',
+      provider: entry.provider || 'google',
+      publisher: entry.publisher || 'google',
+      providerFamily: entry.providerFamily || entry.publisher || 'google',
       model: entry.model,
       isLive: true,
       standardPayGoCostUsd: stdCost,

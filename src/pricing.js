@@ -21,16 +21,28 @@
 //   • Gemini 3.5 Flash Lite — $0.30 in / $2.50 out  (Vertex, cheapest 3.5 option)
 //   • Gemini 3.1 Pro        — $2.00 in / $12.00 out (Vertex, ≤200K context)
 //   • Gemini 3.1 Flash Lite — $0.25 in / $1.50 out  (Vertex, 1M context)
+//   • Claude Opus 5.5       — $4.00 in / $20.00 out (Vertex Agent Platform; 1M context,
+//       also available as `claude-opus-5-5-fast` low-latency endpoint at $4.00 / $20.00)
+//   • Claude Sonnet 5.5     — $2.00 in / $10.00 out (Vertex Agent Platform; launched 2026-09-29)
+//   • Claude Haiku 5.5      — $0.10 in / $0.50 out  (Vertex Agent Platform; 200K context)
 //   • Claude Fable 5        — $10.00 in / $50.00 out (Anthropic list price; launched 2026-06-09)
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8       — $5.00 in / $25.00 out (Anthropic list price)
 //   • Claude Sonnet 5       — $3.00 in / $15.00 out (standard rate since 2026-09-01)
+//   • GPT-6.1 Sol           — $2.00 in / $10.00 out (OpenAI Responses/Chat API; 1M context)
+//   • GPT-6 Sol             — $2.00 in / $10.00 out (OpenAI Responses/Chat API; 1M context)
+//   • GPT-6 Astra           — $10.00 in / $50.00 out (OpenAI deep reasoning tier; 1M context)
+//   • GPT-6 Luna            — $0.10 in / $0.50 out  (OpenAI high-efficiency tier; 1M context)
+//   • GPT-5.6 Sol           — $4.00 in / $20.00 out (OpenAI 400K context)
+//   • GPT-5.5 / 5.5 Pro     — $5.00 / $30.00 and $30.00 / $180.00 (1M context)
+//   • GPT-5.4 family        — GPT-5.4 ($2.50/$15), Pro ($30/$180), Mini ($0.75/$4.50), Nano ($0.20/$1.25)
+//   • GPT-5.3 Codex         — $1.75 in / $14.00 out (OpenAI coding specialist; 400K context)
 // ---------------------------------------------------------------------------
 
 const PRICING = {
   gemini:    { input: 1.50, output: 9.00 },   // Gemini 3.5 Flash (May 2026)
-  openai:    { input: 2.50, output: 10.00 },  // unused by the catalog; kept as a fallback
-  anthropic: { input: 5.00, output: 25.00 },  // Claude Opus 4.8
+  openai:    { input: 2.00, output: 10.00 },  // GPT-6.1 Sol / GPT-6 Sol fallback
+  anthropic: { input: 4.00, output: 20.00 },  // Claude Opus 5.5 fallback
 };
 
 // The ONLY models a user may select. All run through Google Agent Platform
@@ -48,13 +60,16 @@ const MODEL_CATALOG = [
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.1-flash-lite', price: { input: 0.25, output: 1.50 }, context: 1000000 },
 
   // --- 2. Anthropic (Claude — Vertex AI Partner, verified live quota) ---
-  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
+  { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 4.00, output: 20.00 }, context: 1000000 },
+  { id: 'claude-opus-5-5-fast', label: 'Claude Opus 5.5 Fast', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5-fast', price: { input: 4.00, output: 20.00 }, context: 1000000 },
+  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5-5', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'claude-opus-5', label: 'Claude Opus 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5', price: { input: 3.00, output: 15.00 }, context: 1000000 },
   { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-8', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-7', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-6', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-4-6', price: { input: 3.00, output: 15.00 }, context: 1000000 },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-5-5', price: { input: 0.10, output: 0.50 }, context: 200000 },
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-4-5', price: { input: 1.00, output: 5.00 }, context: 200000 },
 
   // --- 3. xAI (Grok — Vertex AI Model Garden Global MaaS) ---
@@ -79,14 +94,22 @@ const MODEL_CATALOG = [
   { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Qwen3 Next 80B Instruct', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'qwen/qwen3-next-80b-a3b-instruct-maas', price: { input: 0.40, output: 1.60 }, context: 131072 },
 
   // --- 7. OpenAI & GPT-OSS (Verified live endpoints + Vertex AI MaaS) ---
-  { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-sol', price: { input: 6.00, output: 36.00 }, context: 1000000 },
-  { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-astra', price: { input: 4.00, output: 24.00 }, context: 1000000 },
-  { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-luna', price: { input: 0.30, output: 1.50 }, context: 1000000 },
-  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-sol', price: { input: 5.00, output: 30.00 }, context: 400000 },
+  { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6.1-sol', price: { input: 2.00, output: 10.00 }, context: 1000000 },
+  { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-sol', price: { input: 2.00, output: 10.00 }, context: 1000000 },
+  { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-astra', price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-luna', price: { input: 0.10, output: 0.50 }, context: 1000000 },
+  { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-sol', price: { input: 4.00, output: 20.00 }, context: 400000 },
   { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-terra', price: { input: 2.00, output: 12.00 }, context: 400000 },
   { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.6-luna', price: { input: 0.20, output: 1.20 }, context: 400000 },
-  { id: 'gpt-oss-120b-maas', label: 'GPT-OSS 120B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-120b-maas', price: { input: 0.30, output: 1.20 }, context: 131072 },
-  { id: 'gpt-oss-20b-maas', label: 'GPT-OSS 20B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-20b-maas', price: { input: 0.10, output: 0.40 }, context: 131072 },
+  { id: 'gpt-5.5', label: 'GPT-5.5', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.5', price: { input: 5.00, output: 30.00 }, context: 1000000 },
+  { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.5-pro', price: { input: 30.00, output: 180.00 }, context: 1000000 },
+  { id: 'gpt-5.4', label: 'GPT-5.4', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.4', price: { input: 2.50, output: 15.00 }, context: 1000000 },
+  { id: 'gpt-5.4-pro', label: 'GPT-5.4 Pro', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.4-pro', price: { input: 30.00, output: 180.00 }, context: 1000000 },
+  { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.4-mini', price: { input: 0.75, output: 4.50 }, context: 400000 },
+  { id: 'gpt-5.4-nano', label: 'GPT-5.4 Nano', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.4-nano', price: { input: 0.20, output: 1.25 }, context: 400000 },
+  { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-5.3-codex', price: { input: 1.75, output: 14.00 }, context: 400000 },
+  { id: 'gpt-oss-120b-maas', label: 'GPT-OSS 120B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-120b-maas', price: { input: 0.09, output: 0.36 }, context: 131072 },
+  { id: 'gpt-oss-20b-maas', label: 'GPT-OSS 20B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-20b-maas', price: { input: 0.07, output: 0.25 }, context: 131072 },
 
   // --- 8. Moonshot AI (Kimi — Vertex AI MaaS + Direct) ---
   { id: 'kimi-k2-thinking-maas', label: 'Kimi K2 Thinking (Vertex MaaS)', provider: 'agentplatform', publisher: 'moonshotai', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'moonshotai/kimi-k2-thinking-maas', price: { input: 0.60, output: 2.50 }, context: 256000 },
@@ -103,6 +126,8 @@ const MODEL_CATALOG = [
 // probes (`modelFromCatalog('C', 'claude-fable-5-1')`) can still resolve their
 // metadata while `MODEL_CATALOG` and `/api/config` never expose them in the UI.
 const RETIRED_CATALOG = [
+  { id: 'claude-fable-5-5', label: 'Claude Fable 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
+  { id: 'claude-mythos-5-5', label: 'Claude Mythos 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-1', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-fable-5', label: 'Claude Fable 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-mythos-5', label: 'Claude Mythos 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
@@ -113,6 +138,8 @@ const RETIRED_CATALOG = [
 ];
 
 const RETIRED_REPLACEMENT = {
+  'claude-fable-5-5': 'claude-sonnet-5-5',
+  'claude-mythos-5-5': 'claude-opus-5-5',
   'claude-fable-5-1': 'claude-sonnet-5',
   'claude-fable-5': 'claude-sonnet-5',
   'claude-mythos-5': 'claude-opus-5-5',
@@ -207,4 +234,4 @@ function priceFor(cfg) {
   return PRICING[cfg && cfg.provider] || { input: 0, output: 0 };
 }
 
-module.exports = { PRICING, MODEL_CATALOG, DEFAULT_MODELS, modelFromCatalog, resolveModels, priceFor };
+module.exports = { PRICING, MODEL_CATALOG, DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT, modelFromCatalog, resolveModels, priceFor };
