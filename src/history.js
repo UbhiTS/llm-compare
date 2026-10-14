@@ -968,18 +968,25 @@ function ensureOwnerLoadedSync(key) {
 }
 
 // Derive the compact per-slot summary shown in lists / usage (no code/reasoning).
-function summarize(models, results) {
+function summarize(models, results, attachments) {
   const byslot = {};
   (results || []).forEach((r) => { if (r && r.slot != null) byslot[r.slot] = r; });
-  return (models || []).map((m) => {
+  const inputVaultRefs = (Array.isArray(attachments) ? attachments : [])
+    .map((a) => a && (a.vaultRef || a.sha256))
+    .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
+  return (models || []).map((m, idx) => {
     const r = byslot[m.slot] || {};
-    return {
+    const out = {
       slot: m.slot, label: m.label, model: m.model,
       error: r.error || null,
       correctness: r.correctness, solved: r.solved, total: r.total,
       answerTokens: Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)),
       costUsd: r.costUsd, wallMs: r.wallMs,
     };
+    if (idx === 0 && inputVaultRefs.length > 0) {
+      out.inputVaultRefs = inputVaultRefs;
+    }
+    return out;
   });
 }
 
@@ -1057,7 +1064,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
         effort: m.effort || null,
       })),
       slots: (models || []).map((m) => ({ slot: m.slot, data: (results || []).find((r) => r && r.slot === m.slot) || null })),
-      summary: summarize(models, results),
+      summary: summarize(models, results, attachments),
       judge: judge || null,
     };
 
@@ -1797,6 +1804,9 @@ function extractRunVaultHashes(recOrMeta) {
       hashes.add(val.trim().toLowerCase());
     }
   };
+  if (Array.isArray(recOrMeta.vaultRefs)) {
+    for (const v of recOrMeta.vaultRefs) addRef(v);
+  }
   if (Array.isArray(recOrMeta.attachments)) {
     for (const a of recOrMeta.attachments) {
       if (a && typeof a === 'object') {
@@ -1813,6 +1823,9 @@ function extractRunVaultHashes(recOrMeta) {
           addRef(r.thoughtVaultRef);
           addRef(r.sha256);
           addRef(r.vaultRef);
+          if (Array.isArray(r.inputVaultRefs)) {
+            for (const v of r.inputVaultRefs) addRef(v);
+          }
         }
       }
     }
@@ -1822,6 +1835,8 @@ function extractRunVaultHashes(recOrMeta) {
 
 // Collect all vault sha256 hashes still referenced by ANY surviving saved prompt, text run,
 // or image run belonging to `uKey`. Used for reference-counted binary vault garbage collection.
+// Strictly uses in-memory / local SQLite metadata (`metaById`, `imageMetaById`, `fullPayloadCache`,
+// `prefsByUserKey`) so it never performs O(N) synchronous file reads across GCS FUSE.
 function collectReferencedVaultHashesForUser(uKey) {
   const referenced = new Set();
   if (!uKey || !/^[0-9a-f]{40}$/i.test(uKey)) return referenced;
@@ -1860,14 +1875,6 @@ function collectReferencedVaultHashesForUser(uKey) {
     const cached = fullPayloadCache.get(m.id);
     if (cached) {
       for (const h of extractRunVaultHashes(cached)) referenced.add(h);
-    } else {
-      const fp = path.join(BASE_DIR, uKey, `${m.id}.json`);
-      try {
-        if (fs.existsSync(fp)) {
-          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-          for (const h of extractRunVaultHashes(rec)) referenced.add(h);
-        }
-      } catch (_) {}
     }
   }
 
@@ -1878,14 +1885,6 @@ function collectReferencedVaultHashesForUser(uKey) {
     const cached = fullPayloadCache.get(m.id);
     if (cached) {
       for (const h of extractRunVaultHashes(cached)) referenced.add(h);
-    } else {
-      const fp = path.join(BASE_DIR, uKey, `${m.id}.json`);
-      try {
-        if (fs.existsSync(fp)) {
-          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-          for (const h of extractRunVaultHashes(rec)) referenced.add(h);
-        }
-      } catch (_) {}
     }
   }
 
@@ -1916,7 +1915,7 @@ function gcOrphanedVaultRefsForUser(uKey, candidateHashes, triggerSnapshot = fal
 }
 
 // Delete one run from SQLite index, memory, disk, and garbage-collect unreferenced vault files.
-function deleteRun(id, { username, isAdmin, stats } = {}) {
+function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
@@ -1930,28 +1929,37 @@ function deleteRun(id, { username, isAdmin, stats } = {}) {
     for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
   }
 
-  const candidates = [path.join(BASE_DIR, myKey, sid + '.json')];
-  if (meta && meta.userKey) candidates.unshift(path.join(BASE_DIR, meta.userKey, sid + '.json'));
-  if (isAdmin) {
-    try {
-      for (const k of fs.readdirSync(BASE_DIR)) {
-        if (/^[0-9a-f]{40}$/.test(k)) candidates.push(path.join(BASE_DIR, k, sid + '.json'));
-      }
-    } catch (_) {}
+  const candidates = [];
+  if (meta && meta.userKey) {
+    candidates.push(path.join(BASE_DIR, meta.userKey, sid + '.json'));
+  } else {
+    candidates.push(path.join(BASE_DIR, myKey, sid + '.json'));
+    if (isAdmin) {
+      try {
+        for (const k of fs.readdirSync(BASE_DIR)) {
+          if (/^[0-9a-f]{40}$/.test(k)) candidates.push(path.join(BASE_DIR, k, sid + '.json'));
+        }
+      } catch (_) {}
+    }
   }
 
   let removed = false;
   for (const fp of new Set(candidates)) {
-    try {
-      if (fs.existsSync(fp)) {
-        try {
-          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-          for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
-        } catch (_) {}
-        fs.unlinkSync(fp);
-        removed = true;
-      }
-    } catch (_) {}
+    if (asyncUnlink) {
+      fsp.unlink(fp).catch(() => {});
+      removed = true;
+    } else {
+      try {
+        if (fs.existsSync(fp)) {
+          try {
+            const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
+          } catch (_) {}
+          fs.unlinkSync(fp);
+          removed = true;
+        }
+      } catch (_) {}
+    }
   }
 
   if (metaById.has(sid)) {
@@ -1963,12 +1971,22 @@ function deleteRun(id, { username, isAdmin, stats } = {}) {
     try { stmts.del.run(sid); } catch (_) {}
   }
   if (removed) {
-    const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
-    if (stats && gc) {
-      stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
-      stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+    if (deferGc && stats && stats.byUserHashes instanceof Map) {
+      if (ownerKey && candidateHashes.size > 0) {
+        const set = stats.byUserHashes.get(ownerKey) || new Set();
+        for (const h of candidateHashes) set.add(h);
+        stats.byUserHashes.set(ownerKey, set);
+      }
+    } else {
+      const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
+      if (stats && gc) {
+        stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
+        stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+      }
     }
-    schedulePersistSnapshot();
+    if (!deferFlush) {
+      schedulePersistSnapshot();
+    }
   }
   return removed;
 }
@@ -2148,11 +2166,14 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
   }
 }
 
-function summarizeImageResults(slots, results, imageSize, aspectRatio) {
+function summarizeImageResults(slots, results, imageSize, aspectRatio, attachments) {
   const resList = Array.isArray(results) ? results : [];
+  const inputVaultRefs = (Array.isArray(attachments) ? attachments : [])
+    .map((a) => a && (a.vaultRef || a.sha256))
+    .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
   return resList.map((r, idx) => {
     const slotCfg = (Array.isArray(slots) && slots[idx]) || {};
-    return {
+    const out = {
       slot: r.slot || slotCfg.slot || String.fromCharCode(65 + idx),
       catalogId: r.catalogId || slotCfg.catalogId || 'nano-banana-2.1',
       label: r.label || slotCfg.label || 'Nano Banana',
@@ -2173,6 +2194,10 @@ function summarizeImageResults(slots, results, imageSize, aspectRatio) {
       imageVaultRef: r.imageVaultRef || null,
       thoughtVaultRef: r.thoughtVaultRef || null,
     };
+    if (idx === 0 && inputVaultRefs.length > 0) {
+      out.inputVaultRefs = inputVaultRefs;
+    }
+    return out;
   });
 }
 
@@ -2305,7 +2330,7 @@ async function saveImageRun({
       aspectRatio: s.aspectRatio || aspectRatio || '16:9',
     }));
 
-    const summary = summarizeImageResults(cleanSlots, storedResults, imageSize, aspectRatio);
+    const summary = summarizeImageResults(cleanSlots, storedResults, imageSize, aspectRatio, attachments);
     const record = {
       v: 1,
       arena: 'image',
@@ -2463,7 +2488,7 @@ function getImageRun(id, { username, isAdmin }) {
   return null;
 }
 
-function deleteImageRun(id, { username, isAdmin, stats } = {}) {
+function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
@@ -2477,28 +2502,37 @@ function deleteImageRun(id, { username, isAdmin, stats } = {}) {
     for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
   }
 
-  const candidates = [path.join(BASE_DIR, myKey, `${sid}.json`)];
-  if (meta && meta.userKey) candidates.unshift(path.join(BASE_DIR, meta.userKey, `${sid}.json`));
-  if (isAdmin) {
-    try {
-      for (const k of fs.readdirSync(BASE_DIR)) {
-        if (/^[0-9a-f]{40}$/.test(k)) candidates.push(path.join(BASE_DIR, k, `${sid}.json`));
-      }
-    } catch (_) {}
+  const candidates = [];
+  if (meta && meta.userKey) {
+    candidates.push(path.join(BASE_DIR, meta.userKey, `${sid}.json`));
+  } else {
+    candidates.push(path.join(BASE_DIR, myKey, `${sid}.json`));
+    if (isAdmin) {
+      try {
+        for (const k of fs.readdirSync(BASE_DIR)) {
+          if (/^[0-9a-f]{40}$/.test(k)) candidates.push(path.join(BASE_DIR, k, `${sid}.json`));
+        }
+      } catch (_) {}
+    }
   }
 
   let removed = false;
   for (const fp of new Set(candidates)) {
-    try {
-      if (fs.existsSync(fp)) {
-        try {
-          const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-          for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
-        } catch (_) {}
-        fs.unlinkSync(fp);
-        removed = true;
-      }
-    } catch (_) {}
+    if (asyncUnlink) {
+      fsp.unlink(fp).catch(() => {});
+      removed = true;
+    } else {
+      try {
+        if (fs.existsSync(fp)) {
+          try {
+            const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
+          } catch (_) {}
+          fs.unlinkSync(fp);
+          removed = true;
+        }
+      } catch (_) {}
+    }
   }
 
   if (imageMetaById.has(sid)) {
@@ -2510,12 +2544,22 @@ function deleteImageRun(id, { username, isAdmin, stats } = {}) {
     try { stmts.delImage.run(sid); } catch (_) {}
   }
   if (removed) {
-    const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
-    if (stats && gc) {
-      stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
-      stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+    if (deferGc && stats && stats.byUserHashes instanceof Map) {
+      if (ownerKey && candidateHashes.size > 0) {
+        const set = stats.byUserHashes.get(ownerKey) || new Set();
+        for (const h of candidateHashes) set.add(h);
+        stats.byUserHashes.set(ownerKey, set);
+      }
+    } else {
+      const gc = gcOrphanedVaultRefsForUser(ownerKey, candidateHashes, false);
+      if (stats && gc) {
+        stats.vaultFilesRemoved = (stats.vaultFilesRemoved || 0) + (gc.freedFiles || 0);
+        stats.vaultBytesFreed = (stats.vaultBytesFreed || 0) + (gc.freedBytes || 0);
+      }
     }
-    schedulePersistSnapshot();
+    if (!deferFlush) {
+      schedulePersistSnapshot();
+    }
   }
   return removed;
 }
@@ -2621,8 +2665,10 @@ function imageUsageSummary() {
 // Automatically prune unstarred runs older than `retentionMs` (default 7 days)
 // and garbage-collect any orphaned binary vault files they referenced.
 // Starred runs (`m.starred === true`) are kept permanently.
+// Batches SQLite deletion + per-user vault GC + a single snapshot flush at the end so pruning
+// hundreds of runs is fast even on GCS FUSE.
 let lastPruneCheckAt = 0;
-function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS } = {}) {
+function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, asyncUnlink = false } = {}) {
   const cutoff = now - Math.max(60000, Number(retentionMs) || RUN_RETENTION_MS);
   const expiredText = [];
   const expiredImage = [];
@@ -2638,18 +2684,30 @@ function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS } =
     }
   }
 
-  const stats = { vaultFilesRemoved: 0, vaultBytesFreed: 0 };
+  const stats = { vaultFilesRemoved: 0, vaultBytesFreed: 0, byUserHashes: new Map() };
   let prunedTextRuns = 0;
   let prunedImageRuns = 0;
   for (const m of expiredText) {
-    if (deleteRun(m.id, { username: m.user, isAdmin: true, stats })) {
+    if (deleteRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink })) {
       prunedTextRuns++;
     }
   }
   for (const m of expiredImage) {
-    if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats })) {
+    if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink })) {
       prunedImageRuns++;
     }
+  }
+
+  for (const [ownerKey, hashes] of stats.byUserHashes.entries()) {
+    const gc = gcOrphanedVaultRefsForUser(ownerKey, hashes, false);
+    if (gc) {
+      stats.vaultFilesRemoved += gc.freedFiles || 0;
+      stats.vaultBytesFreed += gc.freedBytes || 0;
+    }
+  }
+
+  if (prunedTextRuns + prunedImageRuns > 0) {
+    schedulePersistSnapshot();
   }
 
   return {
@@ -2668,17 +2726,23 @@ function maybePruneExpiredRuns() {
   if (now - lastPruneCheckAt < 5 * 60 * 1000) return null;
   lastPruneCheckAt = now;
   try {
-    return pruneExpiredRuns({ now, retentionMs: RUN_RETENTION_MS });
+    return pruneExpiredRuns({ now, retentionMs: RUN_RETENTION_MS, asyncUnlink: true });
   } catch (_) {
     return null;
   }
 }
 
 initSqlite();
-maybePruneExpiredRuns();
+// Never block synchronous module load (`require('./src/history')`) on GCS FUSE pruning at boot!
+// Defer initial prune until 15s after server startup so `/api/health` responds in <1s.
 {
+  const bootPruneTimer = setTimeout(() => {
+    try { maybePruneExpiredRuns(); } catch (_) {}
+  }, 15 * 1000);
+  if (bootPruneTimer.unref) bootPruneTimer.unref();
+
   const pruneTimer = setInterval(() => {
-    try { pruneExpiredRuns(); } catch (_) {}
+    try { pruneExpiredRuns({ asyncUnlink: true }); } catch (_) {}
   }, 6 * 60 * 60 * 1000);
   if (pruneTimer.unref) pruneTimer.unref();
 }

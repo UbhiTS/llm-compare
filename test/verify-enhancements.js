@@ -345,8 +345,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.30', 'package.json must be at version 1.0.30');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.30</span>'), 'index.html must display v1.0.30 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.31', 'package.json must be at version 1.0.31');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.31</span>'), 'index.html must display v1.0.31 in footer');
 
   // Verify Gemini 4 Argon (gemini-4-argon) in MODEL_CATALOG & providers
   const { DEFAULT_MODELS } = require('../src/pricing');
