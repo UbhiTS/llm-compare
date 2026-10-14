@@ -2420,8 +2420,10 @@ function renderAttachments() {
 
   listEl.innerHTML = CUSTOM_ATTACHMENTS.map((a) => {
     const b = attachmentBadgeInfo(a.name, a.mimeType);
-    const visual = a.previewUrl
-      ? `<img class="ca-thumb" src="${esc(a.previewUrl)}" alt="${esc(a.name)}" />`
+    const isImg = Boolean(a.previewUrl || (a.data && /^image\//i.test(a.mimeType || '')));
+    const imgSrc = a.previewUrl || (isImg && a.data ? `data:${a.mimeType || 'image/png'};base64,${a.data}` : '');
+    const visual = imgSrc
+      ? `<img class="ca-thumb" src="${esc(imgSrc)}" alt="${esc(a.name)}" />`
       : `<div class="ca-type-icon ${b.cls}">${esc(b.label)}</div>`;
     const metaParts = [formatBytes(a.size)];
     if (a.pageCount) metaParts.push(`${a.pageCount}p`);
@@ -2429,8 +2431,12 @@ function renderAttachments() {
     if (a.cached) metaParts.push('⚡ Cached');
     const optHtml = a.optBadge ? `<span class="ca-opt-badge" title="${esc(a.optBadge)}">✓ ${esc(a.optBadge)}</span>` : '';
     const warnHtml = a.warning ? `<span class="ca-warn-tag" title="${esc(a.warning)}">⚠ ${esc(a.warning)}</span>` : '';
+    const zoomHtml = isImg ? `<span class="ca-zoom-hint">🔍 Enlarge</span>` : '';
+    const itemTitle = isImg
+      ? 'Click to preview image'
+      : `${a.name} (${a.mimeType || 'file'} · ${metaParts.join(' · ')})`;
     return (
-      `<div class="ca-item" title="${esc(a.name)} (${esc(a.mimeType || 'file')} · ${metaParts.join(' · ')})">` +
+      `<div class="ca-item${isImg ? ' is-clickable' : ''}" data-att-id="${esc(a.id)}" title="${esc(itemTitle)}">` +
         visual +
         `<div class="ca-info">` +
           `<span class="ca-name">${esc(a.name)}</span>` +
@@ -2438,11 +2444,32 @@ function renderAttachments() {
           optHtml +
           warnHtml +
         `</div>` +
+        zoomHtml +
         `<button type="button" class="ca-remove" data-att-id="${esc(a.id)}" title="Remove ${esc(a.name)}">✕</button>` +
       `</div>`
     );
   }).join('');
   renderContextMeter();
+}
+
+function openCustomAttachmentLightbox(attId) {
+  const imgAtts = CUSTOM_ATTACHMENTS.filter((a) => a && (a.previewUrl || (a.data && /^image\//i.test(a.mimeType || ''))));
+  if (!imgAtts.length) return;
+  const items = imgAtts.map((a, i) => {
+    const cleanB64 = String(a.data || '').replace(/^data:[^;]+;base64,/, '');
+    const url = a.previewUrl || `data:${a.mimeType || 'image/png'};base64,${cleanB64}`;
+    return {
+      id: a.id,
+      badge: `Input Image #${i + 1} of ${imgAtts.length}`,
+      title: a.name || `Attached Image #${i + 1}`,
+      meta: `${formatBytes(a.size || 0)} · ${a.mimeType || 'image/png'}`,
+      url,
+      downloadName: a.name || `attachment-${i + 1}.png`,
+      defaultPixelated: false,
+    };
+  });
+  const startIdx = Math.max(0, items.findIndex((it) => String(it.id) === String(attId)));
+  openImageLightbox(items, startIdx);
 }
 
 function currentAttachmentsPayload() {
@@ -2551,7 +2578,14 @@ function initAttachmentsUI() {
   if (listEl) {
     listEl.addEventListener('click', (e) => {
       const rm = e.target.closest('.ca-remove');
-      if (rm && rm.dataset.attId) removeAttachment(rm.dataset.attId);
+      if (rm && rm.dataset.attId) {
+        removeAttachment(rm.dataset.attId);
+        return;
+      }
+      const item = e.target.closest('.ca-item.is-clickable');
+      if (item && item.dataset.attId) {
+        openCustomAttachmentLightbox(item.dataset.attId);
+      }
     });
   }
   [dz, ta].forEach((target) => {
@@ -5354,19 +5388,20 @@ function applyLightboxSizing() {
 
   if (stageEl) {
     stageEl.classList.toggle('is-actual-size', IMG_LIGHTBOX_ACTUAL_SIZE);
+    stageEl.title = 'Click anywhere to close preview';
   }
 
   if (imgEl) {
     imgEl.classList.toggle('is-actual-size', IMG_LIGHTBOX_ACTUAL_SIZE);
     if (IMG_LIGHTBOX_ACTUAL_SIZE && nw > 0 && nh > 0) {
       imgEl.style.cssText = `width:${nw}px;height:${nh}px;max-width:none !important;max-height:none !important;object-fit:unset;cursor:zoom-out;margin:auto;display:block;flex-shrink:0`;
-      imgEl.title = 'Click to fit image inside preview box';
+      imgEl.title = 'Click anywhere to close preview';
     } else if (nw > 0 && nw <= 512 && nh <= 512) {
-      imgEl.style.cssText = 'width:min(100%, 720px);height:min(100%, 640px);max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;margin:auto;display:block';
-      imgEl.title = 'Click to toggle 1:1 native pixel zoom';
+      imgEl.style.cssText = 'width:min(100%, 720px);height:min(100%, 640px);max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-out;margin:auto;display:block';
+      imgEl.title = 'Click anywhere to close preview';
     } else {
-      imgEl.style.cssText = 'width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in;margin:auto;display:block';
-      imgEl.title = 'Click to toggle 1:1 native pixel zoom';
+      imgEl.style.cssText = 'width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-out;margin:auto;display:block';
+      imgEl.title = 'Click anywhere to close preview';
     }
   }
 }
@@ -6868,6 +6903,7 @@ function initImageArenaBindings() {
   const lbActual = $('#imgLightboxActualSizeBtn');
   const lbOpenTab = $('#imgLightboxOpenTabBtn');
   const lbImg = $('#imgLightboxImg');
+  const lbStage = $('#imgLightboxStage');
   if (lbClose) lbClose.addEventListener('click', closeImageLightbox);
   if (lbPrev) lbPrev.addEventListener('click', () => stepImageLightbox(-1));
   if (lbNext) lbNext.addEventListener('click', () => stepImageLightbox(1));
@@ -6887,14 +6923,21 @@ function initImageArenaBindings() {
     lbOpenTab.addEventListener('click', openCurrentLightboxImageInNewTab);
   }
   if (lbImg) {
-    lbImg.addEventListener('click', () => {
-      IMG_LIGHTBOX_ACTUAL_SIZE = !IMG_LIGHTBOX_ACTUAL_SIZE;
-      applyLightboxSizing();
+    lbImg.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeImageLightbox();
+    });
+  }
+  if (lbStage) {
+    lbStage.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeImageLightbox();
     });
   }
   if (lbModal) {
     lbModal.addEventListener('click', (e) => {
-      if (e.target === lbModal) closeImageLightbox();
+      if (e.target.closest('.img-lightbox-actions')) return;
+      closeImageLightbox();
     });
   }
   document.addEventListener('keydown', (e) => {

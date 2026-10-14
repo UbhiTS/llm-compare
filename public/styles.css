@@ -2894,6 +2894,7 @@ a.ud-item[hidden] { display: none; }
   overflow: hidden;
   padding: 8px;
   box-sizing: border-box;
+  cursor: zoom-out;
 }
 
 .img-lightbox-stage.is-actual-size {
@@ -2910,7 +2911,7 @@ a.ud-item[hidden] { display: none; }
   object-fit: contain;
   display: block;
   user-select: none;
-  cursor: zoom-in;
+  cursor: zoom-out;
   margin: auto;
 }
 

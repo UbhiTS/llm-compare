@@ -30,3 +30,4 @@ scratchpad/
 # --- editor / AI-assistant scaffolding (not part of the app) ---
 .claude/
 CLAUDE.md
+public/sfly-test-images/

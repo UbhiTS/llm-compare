@@ -345,8 +345,14 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.27', 'package.json must be at version 1.0.27');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.27</span>'), 'index.html must display v1.0.27 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.28', 'package.json must be at version 1.0.28');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.28</span>'), 'index.html must display v1.0.28 in footer');
+  assert(
+    appJs.includes('function openCustomAttachmentLightbox(') &&
+    appJs.includes("if (e.target.closest('.img-lightbox-actions')) return;") &&
+    appJs.includes("'Click anywhere to close preview'"),
+    'app.js must support clicking any attached image to preview and clicking anywhere on or outside the lightbox image (outside .img-lightbox-actions) to close'
+  );
   const lowResSc = upscalePack && upscalePack.scenarios.find((s) => s.id === 'lowres-to-4k-upscale');
   assert(lowResSc && lowResSc.recommendedAspectRatio === '4:3', 'lowres-to-4k-upscale must use 4:3 to match 160x120 input thumbnail');
   const recolorPack = imgCfg.packs.find((p) => p.id === 'recoloring-restyling');
