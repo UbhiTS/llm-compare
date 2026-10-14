@@ -496,17 +496,34 @@ async function restoreLocalLibraryBackupIfNeeded() {
 }
 
 // ---------- init ----------
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pageshow', (e) => {
+    if (e && e.persisted) window.location.reload();
+  });
+}
 init();
 async function init() {
   initTheme();
   const prefetched = (typeof window !== 'undefined' && window.__ULLM_CONFIG_PROMISE__) || null;
   if (typeof window !== 'undefined') window.__ULLM_CONFIG_PROMISE__ = null;
-  const cfgResp = await (prefetched || fetch('/api/config', { credentials: 'same-origin' }));
+  const cfgResp = await (prefetched || fetch('/api/config', { credentials: 'same-origin', cache: 'no-store' }));
   if (cfgResp.status === 401) { window.location.replace('/login'); return; } // session expired/absent
   CONFIG = await cfgResp.json();
   if (CONFIG && CONFIG.version) {
     const vEl = $('#appVersion');
-    if (vEl) vEl.textContent = 'v' + String(CONFIG.version).replace(/^v/i, '');
+    const htmlVer = vEl ? String(vEl.textContent || '').trim().replace(/^v/i, '') : '';
+    const srvVer = String(CONFIG.version).replace(/^v/i, '');
+    if (htmlVer && srvVer && htmlVer !== srvVer) {
+      try {
+        const reloadKey = 'ullm.reloaded.' + srvVer;
+        if (typeof sessionStorage !== 'undefined' && !sessionStorage.getItem(reloadKey)) {
+          sessionStorage.setItem(reloadKey, '1');
+          window.location.reload();
+          return;
+        }
+      } catch (_) {}
+    }
+    if (vEl) vEl.textContent = 'v' + srvVer;
   }
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;

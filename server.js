@@ -102,11 +102,19 @@ app.use((req, res, next) => {
   next();
 });
 
+function setNoCacheHeaders(res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+}
+
 // Defense in depth (R6): every /api/* response body — JSON, NDJSON stream,
 // errors — has any configured secret value (server keys + this request's BYOK
 // keys) masked before it leaves the process. Exact-value masking only, so
 // normal model output is never rewritten.
 app.use('/api', (req, res, next) => {
+  setNoCacheHeaders(res);
   const origWrite = res.write.bind(res);
   const origEnd = res.end.bind(res);
   const textual = () => /json|ndjson|text/i.test(String(res.getHeader('Content-Type') || 'application/json'));
@@ -205,6 +213,7 @@ app.get('/favicon.ico', (_req, res) => {
 // the inline <style>/<script> run but nothing else can.
 app.get(['/login', '/login.html'], (req, res) => {
   const nonce = crypto.randomBytes(16).toString('base64');
+  setNoCacheHeaders(res);
   res.setHeader('Content-Security-Policy', [
     "default-src 'none'",
     `style-src 'nonce-${nonce}'`,
@@ -433,18 +442,42 @@ function getCachedStaticAsset(fileRel) {
     // In production, serve directly from memory without event-loop blocking statSync I/O
     if (process.env.NODE_ENV === 'production' && prev) return prev;
     const st = fs.statSync(fp);
+    if (fileRel === 'index.html') {
+      const themeAsset = getCachedStaticAsset('theme-init.js');
+      const cssAsset = getCachedStaticAsset('styles.css');
+      const jsAsset = getCachedStaticAsset('app.js');
+      const compositeKey = `${st.mtimeMs}|${pkg.version}|${themeAsset ? themeAsset.hash : ''}|${cssAsset ? cssAsset.hash : ''}|${jsAsset ? jsAsset.hash : ''}`;
+      if (prev && prev.compositeKey === compositeKey) return prev;
+      let htmlStr = fs.readFileSync(fp, 'utf8');
+      if (themeAsset && themeAsset.hash) {
+        htmlStr = htmlStr.replace(/theme-init\.js(\?v=[^"']*)?/g, `theme-init.js?v=${pkg.version}-${themeAsset.hash}`);
+      }
+      if (cssAsset && cssAsset.hash) {
+        htmlStr = htmlStr.replace(/styles\.css(\?v=[^"']*)?/g, `styles.css?v=${pkg.version}-${cssAsset.hash}`);
+      }
+      if (jsAsset && jsAsset.hash) {
+        htmlStr = htmlStr.replace(/app\.js(\?v=[^"']*)?/g, `app.js?v=${pkg.version}-${jsAsset.hash}`);
+      }
+      const raw = Buffer.from(htmlStr, 'utf8');
+      const gz = zlib.gzipSync(raw, { level: 6 });
+      const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 10);
+      const entry = { mtimeMs: st.mtimeMs, compositeKey, hash, raw, gz };
+      staticMemCache.set(fileRel, entry);
+      return entry;
+    }
     if (prev && prev.mtimeMs === st.mtimeMs) return prev;
     const raw = fs.readFileSync(fp);
     const gz = zlib.gzipSync(raw, { level: 6 });
-    const entry = { mtimeMs: st.mtimeMs, raw, gz };
+    const hash = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 10);
+    const entry = { mtimeMs: st.mtimeMs, hash, raw, gz };
     staticMemCache.set(fileRel, entry);
     return entry;
   } catch (_) {
     return null;
   }
 }
-// Warm static asset cache on boot
-Object.values(STATIC_ASSET_MIMES).forEach((m) => getCachedStaticAsset(m.file));
+// Warm static asset cache on boot (sub-assets first so index.html injects their content hashes)
+['theme-init.js', 'styles.css', 'app.js', 'index.html'].forEach((f) => getCachedStaticAsset(f));
 
 // Automatically gzip JSON responses > 1 KB when the client accepts gzip
 app.use((req, res, next) => {
@@ -475,15 +508,8 @@ app.use((req, res, next) => {
   if (!hit) return next();
   const entry = getCachedStaticAsset(hit.file);
   if (!entry) return next();
-  const hasVersionQuery = Boolean(req.query && req.query.v && (req.path === '/app.js' || req.path === '/styles.css' || req.path === '/theme-init.js'));
   res.setHeader('Content-Type', hit.type);
-  if (hasVersionQuery) {
-    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  } else if (req.path === '/' || req.path === '/index.html') {
-    res.setHeader('Cache-Control', 'no-cache');
-  } else {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  }
+  setNoCacheHeaders(res);
   res.setHeader('Vary', 'Accept-Encoding');
   const ae = String(req.headers['accept-encoding'] || '');
   if (/\bgzip\b/i.test(ae)) {
@@ -496,11 +522,13 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(PUBLIC_DIR, {
+  etag: false,
+  lastModified: false,
   setHeaders: (res, filePath) => {
     if (/\.(ico|png|jpg|jpeg|svg|woff2?|ttf|eot)$/i.test(filePath)) {
       res.setHeader('Cache-Control', 'public, max-age=86400');
     } else {
-      res.setHeader('Cache-Control', 'no-cache');
+      setNoCacheHeaders(res);
     }
   },
 }));

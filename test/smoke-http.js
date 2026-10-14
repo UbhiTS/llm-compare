@@ -143,9 +143,16 @@ async function waitUp() {
   check('GET / (index, loopback auto-auth)', r.status === 200 && /app\.js/.test(r.text), { status: r.status });
   const csp = r.headers.get('content-security-policy') || '';
   check('Security headers on /', /default-src 'self'/.test(csp) && r.headers.get('x-content-type-options') === 'nosniff', { status: r.status });
+  const rootCc = r.headers.get('cache-control') || '';
+  check(
+    'Zero-cache headers + content-hash cache-busters on /',
+    /no-store/.test(rootCc) && !/immutable/.test(rootCc) && /styles\.css\?v=[0-9.]+-[0-9a-f]{10}/.test(r.text) && /app\.js\?v=[0-9.]+-[0-9a-f]{10}/.test(r.text),
+    { status: r.status }
+  );
 
-  r = await req('GET', '/app.js');
-  check('GET /app.js', r.status === 200 && r.text.length > 10000, { status: r.status });
+  r = await req('GET', '/app.js?v=1.0.34');
+  const appCc = r.headers.get('cache-control') || '';
+  check('GET /app.js?v=... (no-store, never immutable)', r.status === 200 && r.text.length > 10000 && /no-store/.test(appCc) && !/immutable/.test(appCc), { status: r.status });
 
   r = await req('GET', '/api/config');
   const cfgKeys = ['catalog', 'codeExec', 'keysPresent', 'me', 'models', 'tasks', 'webGame'];
