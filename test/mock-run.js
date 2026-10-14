@@ -26,12 +26,27 @@ const fence = (code) => '```javascript\n' + code + '\n```';
 assert.deepStrictEqual(
   DEFAULT_MODELS.map((m) => ({ slot: m.slot, catalogId: m.catalogId })),
   [
-    { slot: 'A', catalogId: 'gemini-3.8-flash' },
+    { slot: 'A', catalogId: 'gemini-4-argon' },
     { slot: 'B', catalogId: 'claude-opus-5-5' },
     { slot: 'C', catalogId: 'gpt-6-sol' },
   ],
   'default slots should use the 3-model verified frontier lineup in the configured order'
 );
+
+const gemini4Argon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');
+assert(gemini4Argon, 'Gemini 4 Argon should be present in the model catalog');
+assert.deepStrictEqual(gemini4Argon.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Argon pricing');
+assert.strictEqual(gemini4Argon.region, 'global', 'Gemini 4 Argon should target the global region');
+assert.strictEqual(gemini4Argon.provider, 'agentplatform', 'Gemini 4 Argon should use agentplatform');
+const gemini4ArgonSlot = modelFromCatalog('A', 'gemini-4-argon');
+assert.strictEqual(gemini4ArgonSlot.model, 'gemini-4-argon', 'Gemini 4 Argon should use its stable API model id');
+assert.deepStrictEqual(
+  thinkingOptions(gemini4ArgonSlot).options.map((o) => o.value),
+  ['low', 'medium', 'high'],
+  'Gemini 4 Argon should expose low, medium, high thinking levels'
+);
+assert.strictEqual(thinkingOptions(gemini4ArgonSlot).defaultValue, 'medium', 'Gemini 4 Argon default thinkingLevel should be medium');
+assert.strictEqual(thinkingProfile(gemini4ArgonSlot).level, 'medium', 'Gemini 4 Argon thinkingProfile should show medium (default)');
 
 const gemini37 = MODEL_CATALOG.find((m) => m.id === 'gemini-3.7-flash');
 assert(gemini37, 'Gemini 3.7 Flash should be present in the model catalog');

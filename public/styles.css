@@ -907,9 +907,9 @@ a.ud-item[hidden] { display: none; }
 .hist-list { display: flex; flex-direction: column; gap: 10px; }
 .hist-row { display: flex; align-items: center; justify-content: space-between; gap: 14px;
   border: 1px solid var(--border); background: var(--well); padding: 11px 13px; }
-.hist-title { font-weight: 650; font-size: 14px; }
-.hist-when { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
-.hist-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.hist-title { font-weight: 650; font-size: 11.5px; }
+.hist-when { color: var(--muted); font-size: 11.5px; margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.hist-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
 .hist-chip { font-size: 11px; color: var(--muted); border: 1px solid var(--border); padding: 2px 8px; }
 .hist-chip b { color: var(--text); font-weight: 600; }
 .hist-act {
@@ -1011,7 +1011,7 @@ a.ud-item[hidden] { display: none; }
 }
 
 .hist-foot { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); text-align: right; }
-.hist-who { margin-left: 8px; font-weight: 500; font-size: 11.5px; color: var(--accent); border: 1px solid var(--border); padding: 1px 7px; }
+.hist-who { margin-left: 2px; font-weight: 500; font-size: 11.5px; color: var(--accent); border: 1px solid var(--border); padding: 1px 7px; }
 
 /* history pagination (keeps the DOM to one page of rows however big history grows) */
 .hist-pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }

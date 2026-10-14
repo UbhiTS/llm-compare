@@ -345,8 +345,72 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.28', 'package.json must be at version 1.0.28');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.28</span>'), 'index.html must display v1.0.28 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.29', 'package.json must be at version 1.0.29');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.29</span>'), 'index.html must display v1.0.29 in footer');
+
+  // Verify Gemini 4 Argon (gemini-4-argon) in MODEL_CATALOG & providers
+  const { DEFAULT_MODELS } = require('../src/pricing');
+  const providersMod = require('../src/providers');
+  const argonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');
+  assert(argonEntry, 'MODEL_CATALOG must include gemini-4-argon (Gemini 4 Argon)');
+  assert.strictEqual(argonEntry.label, 'Gemini 4 Argon', 'Gemini 4 Argon label must match');
+  assert.strictEqual(argonEntry.provider, 'agentplatform', 'Gemini 4 Argon must use Vertex AI Agent Platform');
+  assert.strictEqual(argonEntry.region, 'global', 'Gemini 4 Argon must route to global region');
+  assert.deepStrictEqual(argonEntry.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Argon pricing must be $2.00 / $10.00');
+  assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-4-argon', 'Slot A default must be gemini-4-argon');
+  assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high']);
+  assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'medium');
+
+  // Verify Image Gen History View server-side persistence + usage parity + .hist-title 11.5px + user next to date/time
+  const historyMod = require('../src/history');
+  assert.strictEqual(typeof historyMod.saveImageRun, 'function', 'history.js must export saveImageRun');
+  assert.strictEqual(typeof historyMod.listImageRuns, 'function', 'history.js must export listImageRuns');
+  assert.strictEqual(typeof historyMod.listAllImageRuns, 'function', 'history.js must export listAllImageRuns');
+  assert.strictEqual(typeof historyMod.getImageRun, 'function', 'history.js must export getImageRun');
+  assert.strictEqual(typeof historyMod.deleteImageRun, 'function', 'history.js must export deleteImageRun');
+  assert.strictEqual(typeof historyMod.imageUsageSummary, 'function', 'history.js must export imageUsageSummary');
+  const sampleDataUrl = `data:image/jpeg;base64,${SAMPLE_REFERENCE_ASSETS.storybookFox.data}`;
+  const savedImgRun = await historyMod.saveImageRun({
+    id: 'test-img-run-v1029',
+    at: Date.now(),
+    user: 'ubhi@google.com',
+    userName: 'ubhi',
+    title: '4K Studio Portrait Test',
+    packId: 'photorealism-typography',
+    scenarioId: 'studio-portrait',
+    prompt: 'High-contrast studio portrait',
+    aspectRatio: '16:9',
+    imageSize: '2K',
+    slots: [{ slot: 'A', catalogId: 'gemini-nano-banana-2.1', label: 'Gemini Nano Banana 2.1' }],
+    results: [{
+      slot: 'A',
+      catalogId: 'gemini-nano-banana-2.1',
+      label: 'Gemini Nano Banana 2.1',
+      latencyMs: 3120,
+      costUsd: 0.101,
+      imageDataUrl: sampleDataUrl,
+    }],
+  });
+  assert(savedImgRun && savedImgRun.id === 'test-img-run-v1029', 'saveImageRun must persist image run metadata');
+  const imgUsage = historyMod.imageUsageSummary();
+  assert(imgUsage && imgUsage.totals && imgUsage.totals.totalRuns >= 1 && Array.isArray(imgUsage.users), 'imageUsageSummary() must return user breakdown');
+  const hydratedImgRun = historyMod.getImageRun('test-img-run-v1029', { username: 'ubhi@google.com', isAdmin: true });
+  assert(hydratedImgRun && hydratedImgRun.results[0] && hydratedImgRun.results[0].imageDataUrl === sampleDataUrl, 'getImageRun() must hydrate full-res image from binary vault');
+  historyMod.deleteImageRun('test-img-run-v1029', { username: 'ubhi@google.com', isAdmin: true });
+
+  const histTitleRule = stylesCss.match(/\.hist-title\s*\{([^}]+)\}/);
+  const histWhenRule = stylesCss.match(/\.hist-when\s*\{([^}]+)\}/);
+  assert(histTitleRule && histTitleRule[1].includes('font-size: 11.5px'), '.hist-title font-size must be 11.5px to match .hist-when');
+  assert(histWhenRule && histWhenRule[1].includes('font-size: 11.5px'), '.hist-when font-size must be 11.5px');
+  assert(
+    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}</div>') &&
+    appJs.includes('<div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}</div>'),
+    'Both Text Arena and Image Gen History rows must render the user (.hist-who) right next to the date and time inside .hist-when'
+  );
+  assert(
+    appJs.includes('function renderImageUsagePanel(') && appJs.includes("fetch('/api/image-arena/usage'") && appJs.includes("fetch('/api/image-arena/history'"),
+    'app.js must render Image Usage admin summary panel and fetch server-backed /api/image-arena/history and /api/image-arena/usage'
+  );
   assert(
     appJs.includes('function openCustomAttachmentLightbox(') &&
     appJs.includes("if (e.target.closest('.img-lightbox-actions')) return;") &&

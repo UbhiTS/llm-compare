@@ -66,6 +66,8 @@ let stmts = null;
 // Kept 100% in sync with SQLite so both Node 20 and Node 22 answer listRuns /
 // listAllRuns / usageSummary / lastModels in <0.2ms with zero disk I/O!
 const metaById = new Map();
+// Authoritative in-memory index map for Image & GenMedia Arena runs: id -> metadata object
+const imageMetaById = new Map();
 // Per-user preferences in-memory map: userKey -> { user, taskId, slots, models, savedPrompts, savedPresets, updatedAt }
 const prefsByUserKey = new Map();
 // Tracks which user keys have already been checked on disk so ensureOwnerLoadedSync is O(1) and never repeats GCS FUSE syscalls
@@ -251,6 +253,23 @@ function initSqlite() {
         );
         CREATE INDEX IF NOT EXISTS idx_saved_presets_user_updated
           ON user_saved_presets(user_key, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS image_runs (
+          id TEXT PRIMARY KEY,
+          at INTEGER NOT NULL,
+          user TEXT NOT NULL,
+          user_key TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          pack_id TEXT NOT NULL,
+          scenario_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          image_size TEXT NOT NULL,
+          aspect_ratio TEXT NOT NULL,
+          slots_json TEXT NOT NULL,
+          summary_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_image_runs_at ON image_runs(at DESC);
+        CREATE INDEX IF NOT EXISTS idx_image_runs_user_at ON image_runs(user_key, at DESC);
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
@@ -319,6 +338,21 @@ function initSqlite() {
         delPreset: sqliteDb.prepare(`DELETE FROM user_saved_presets WHERE user_key = ? AND id = ?`),
         listPresetsByUser: sqliteDb.prepare(`SELECT * FROM user_saved_presets WHERE user_key = ? ORDER BY updated_at DESC`),
         allPresets: sqliteDb.prepare(`SELECT * FROM user_saved_presets ORDER BY updated_at DESC`),
+        upsertImage: sqliteDb.prepare(`
+          INSERT INTO image_runs (id, at, user, user_key, user_name, pack_id, scenario_id, title, prompt, image_size, aspect_ratio, slots_json, summary_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            at = excluded.at,
+            user_name = excluded.user_name,
+            title = excluded.title,
+            prompt = excluded.prompt,
+            image_size = excluded.image_size,
+            aspect_ratio = excluded.aspect_ratio,
+            slots_json = excluded.slots_json,
+            summary_json = excluded.summary_json
+        `),
+        delImage: sqliteDb.prepare(`DELETE FROM image_runs WHERE id = ?`),
+        allImage: sqliteDb.prepare(`SELECT * FROM image_runs ORDER BY at DESC`),
       };
 
       const rows = stmts.all.all();
@@ -326,6 +360,14 @@ function initSqlite() {
         metaById.set(r.id, rowToMeta(r));
       }
       if (rows.length > 0) hadPersistedIndexOnBoot = true;
+
+      try {
+        const imgRows = stmts.allImage.all();
+        for (const r of imgRows) {
+          imageMetaById.set(r.id, imageRowToMeta(r));
+        }
+        if (imgRows.length > 0) hadPersistedIndexOnBoot = true;
+      } catch (_) {}
 
       try {
         const prefRows = stmts.allPrefs.all();
@@ -521,6 +563,73 @@ function upsertMetaInternal(meta, persistDisk = true) {
   if (persistDisk) flushSnapshotSync();
 }
 
+function imageRowToMeta(r) {
+  let slots = [], summary = [];
+  try { slots = JSON.parse(r.slots_json || '[]'); } catch (_) {}
+  try { summary = JSON.parse(r.summary_json || '[]'); } catch (_) {}
+  return {
+    id: r.id,
+    arena: 'image',
+    at: Number(r.at) || 0,
+    user: r.user,
+    userKey: r.user_key,
+    userName: r.user_name || r.user,
+    packId: r.pack_id || 'custom',
+    scenarioId: r.scenario_id || 'custom',
+    title: r.title || 'Image Arena Run',
+    prompt: r.prompt || '',
+    imageSize: r.image_size || '1K',
+    aspectRatio: r.aspect_ratio || '16:9',
+    slots,
+    summary,
+  };
+}
+
+function imageRecordToMeta(rec) {
+  const u = norm(rec.user);
+  return {
+    id: rec.id,
+    arena: 'image',
+    at: Number(rec.at) || Date.now(),
+    user: u,
+    userKey: rec.userKey || userKey(u),
+    userName: rec.userName || rec.user || u,
+    packId: rec.packId || 'custom',
+    scenarioId: rec.scenarioId || 'custom',
+    title: rec.title || rec.scenarioTitle || 'Image Arena Run',
+    prompt: typeof rec.prompt === 'string' ? rec.prompt : '',
+    imageSize: rec.imageSize || '1K',
+    aspectRatio: rec.aspectRatio || '16:9',
+    slots: Array.isArray(rec.slots) ? rec.slots : [],
+    summary: Array.isArray(rec.summary) ? rec.summary : [],
+  };
+}
+
+function upsertImageMetaInternal(meta, persistDisk = true) {
+  if (!meta || !meta.id) return;
+  imageMetaById.set(meta.id, meta);
+  if (stmts && stmts.upsertImage) {
+    try {
+      stmts.upsertImage.run(
+        meta.id,
+        meta.at,
+        meta.user,
+        meta.userKey || userKey(meta.user),
+        meta.userName || meta.user,
+        meta.packId || 'custom',
+        meta.scenarioId || 'custom',
+        meta.title || 'Image Arena Run',
+        meta.prompt || '',
+        meta.imageSize || '1K',
+        meta.aspectRatio || '16:9',
+        JSON.stringify(meta.slots || []),
+        JSON.stringify(meta.summary || [])
+      );
+    } catch (_) {}
+  }
+  if (persistDisk) flushSnapshotSync();
+}
+
 // Synchronously checkpoint WAL and flush `/tmp` SQLite DB to `/data/history/history.sqlite`.
 // Uses Buffer write + atomic rename with direct writeFileSync fallback (GCS FUSE safe).
 // Executed BEFORE HTTP responses return on every mutation so Cloud Run CPU throttling or
@@ -588,12 +697,20 @@ function syncFromPersistSqliteIfNewer(force = false) {
       fs.writeFileSync(tmpMerge, buf);
       const extDb = new DatabaseSync(tmpMerge);
       try {
-        // 1. Merge runs
+        // 1. Merge runs & image_runs
         try {
           const extRuns = extDb.prepare(`SELECT * FROM runs`).all();
           for (const r of extRuns) {
             if (r && r.id && !metaById.has(r.id)) {
               upsertMetaInternal(rowToMeta(r), false);
+            }
+          }
+        } catch (_) {}
+        try {
+          const extImgRuns = extDb.prepare(`SELECT * FROM image_runs`).all();
+          for (const r of extImgRuns) {
+            if (r && r.id && !imageMetaById.has(r.id)) {
+              upsertImageMetaInternal(imageRowToMeta(r), false);
             }
           }
         } catch (_) {}
@@ -726,13 +843,17 @@ function scheduleBackgroundBackfill() {
           const batch = files.slice(i, i + 8);
           await Promise.all(batch.map(async (f) => {
             const id = f.slice(0, -5);
-            if (metaById.has(id)) return;
+            if (metaById.has(id) || imageMetaById.has(id)) return;
             try {
               const raw = await fsp.readFile(path.join(dir, f), 'utf8');
               const rec = JSON.parse(raw);
               if (rec && rec.id) {
                 rec.userKey = k;
-                upsertMetaInternal(recordToMeta(rec), false);
+                if (rec.arena === 'image') {
+                  upsertImageMetaInternal(imageRecordToMeta(rec), false);
+                } else {
+                  upsertMetaInternal(recordToMeta(rec), false);
+                }
                 imported++;
               }
             } catch (_) {}
@@ -809,12 +930,16 @@ function ensureOwnerLoadedSync(key) {
     let added = 0;
     for (const f of files) {
       const id = f.slice(0, -5);
-      if (metaById.has(id)) continue;
+      if (metaById.has(id) || imageMetaById.has(id)) continue;
       try {
         const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
         if (rec && rec.id) {
           rec.userKey = key;
-          upsertMetaInternal(recordToMeta(rec), false);
+          if (rec.arena === 'image') {
+            upsertImageMetaInternal(imageRecordToMeta(rec), false);
+          } else {
+            upsertMetaInternal(recordToMeta(rec), false);
+          }
           fullPayloadCache.set(rec.id, rec);
           added++;
         }
@@ -1808,10 +1933,413 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
   }
 }
 
+function summarizeImageResults(slots, results, imageSize, aspectRatio) {
+  const resList = Array.isArray(results) ? results : [];
+  return resList.map((r, idx) => {
+    const slotCfg = (Array.isArray(slots) && slots[idx]) || {};
+    return {
+      slot: r.slot || slotCfg.slot || String.fromCharCode(65 + idx),
+      catalogId: r.catalogId || slotCfg.catalogId || 'nano-banana-2.1',
+      label: r.label || slotCfg.label || 'Nano Banana',
+      model: r.model || slotCfg.model || '',
+      thinkingLevel: r.thinkingLevel || slotCfg.thinkingLevel || 'minimal',
+      imageSize: r.imageSize || slotCfg.imageSize || imageSize || '1K',
+      aspectRatio: r.aspectRatio || slotCfg.aspectRatio || aspectRatio || '16:9',
+      error: r.error || null,
+      latencyMs: Number(r.latencyMs) || 0,
+      costUsd: typeof r.costUsd === 'number' ? r.costUsd : 0,
+      promptTokens: Number(r.promptTokens) || 0,
+      imageOutputTokens: Number(r.imageOutputTokens) || 0,
+      thoughtsTokens: Number(r.thoughtsTokens) || 0,
+      completionTokens: Number(r.completionTokens) || 0,
+      mimeType: r.mimeType || 'image/png',
+      hasImage: Boolean(r.hasImage || r.imageDataUrl || r.imageVaultRef || r.thumbDataUrl),
+      thumbDataUrl: (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000) ? r.thumbDataUrl : null,
+      imageVaultRef: r.imageVaultRef || null,
+      thoughtVaultRef: r.thoughtVaultRef || null,
+    };
+  });
+}
+
+function imageListItem(meta) {
+  return {
+    id: meta.id,
+    arena: 'image',
+    at: meta.at,
+    user: meta.user,
+    userName: meta.userName || meta.user,
+    packId: meta.packId || 'custom',
+    scenarioId: meta.scenarioId || 'custom',
+    title: meta.title || 'Image Arena Run',
+    prompt: meta.prompt || '',
+    imageSize: meta.imageSize || '1K',
+    aspectRatio: meta.aspectRatio || '16:9',
+    slots: meta.slots || [],
+    summary: meta.summary || [],
+    results: meta.summary || [],
+  };
+}
+
+// Persist one completed Image & GenMedia Arena run (server-authoritative, SQLite + binary vault).
+async function saveImageRun({
+  id: passedId,
+  at: passedAt,
+  user,
+  userName,
+  packId,
+  scenarioId,
+  title,
+  prompt,
+  imageSize,
+  aspectRatio,
+  slots,
+  results,
+  attachments: rawAttachments,
+}) {
+  try {
+    const id = safeId(passedId) || newId();
+    const at = Number(passedAt) > 0 ? Number(passedAt) : Date.now();
+    const u = norm(user);
+    if (!u) return null;
+    const uKey = userKey(u);
+    const promptText = String(prompt || '').trim();
+    const runTitle = String(title || promptText.slice(0, 72) || 'Image Arena Run').trim().slice(0, 160);
+
+    // Store reference input attachments in the user's binary vault
+    const attachments = (Array.isArray(rawAttachments) ? rawAttachments : []).map((a) => {
+      if (!a || typeof a !== 'object') return null;
+      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
+      return ptr || {
+        name: a.name || 'reference.png',
+        mimeType: a.mimeType || 'image/png',
+        kind: a.kind || 'image',
+        size: Number(a.size) || 0,
+        sha256: a.sha256 || a.vaultRef || null,
+        vaultRef: a.vaultRef || a.sha256 || null,
+      };
+    }).filter(Boolean);
+
+    // Offload generated full-resolution images & thought images to the user's binary vault
+    // so `/data/history/<uKey>/<id>.json` stays compact and fast while full images restore on click!
+    const storedResults = (Array.isArray(results) ? results : []).map((r, idx) => {
+      if (!r || typeof r !== 'object') return null;
+      const slotName = r.slot || String.fromCharCode(65 + idx);
+      let imageVaultRef = r.imageVaultRef || null;
+      let mimeType = r.mimeType || 'image/png';
+      if (!imageVaultRef && typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:')) {
+        const m = r.imageDataUrl.match(/^data:([^;]+);base64,/i);
+        if (m) mimeType = m[1];
+        const ptr = vault.storeAttachmentInVaultSync(uKey, {
+          name: `img-${id}-slot-${slotName}.png`,
+          mimeType,
+          kind: 'image',
+          data: r.imageDataUrl,
+        });
+        if (ptr && (ptr.vaultRef || ptr.sha256)) imageVaultRef = ptr.vaultRef || ptr.sha256;
+      }
+
+      let thoughtVaultRef = r.thoughtVaultRef || null;
+      if (!thoughtVaultRef && typeof r.thoughtImageDataUrl === 'string' && r.thoughtImageDataUrl.startsWith('data:')) {
+        const tm = r.thoughtImageDataUrl.match(/^data:([^;]+);base64,/i);
+        const tMime = tm ? tm[1] : 'image/png';
+        const tPtr = vault.storeAttachmentInVaultSync(uKey, {
+          name: `thought-${id}-slot-${slotName}.png`,
+          mimeType: tMime,
+          kind: 'image',
+          data: r.thoughtImageDataUrl,
+        });
+        if (tPtr && (tPtr.vaultRef || tPtr.sha256)) thoughtVaultRef = tPtr.vaultRef || tPtr.sha256;
+      }
+
+      return {
+        slot: slotName,
+        catalogId: r.catalogId || 'nano-banana-2.1',
+        label: r.label || 'Nano Banana',
+        model: r.model || '',
+        thinkingLevel: r.thinkingLevel || 'minimal',
+        imageSize: r.imageSize || imageSize || '1K',
+        aspectRatio: r.aspectRatio || aspectRatio || '16:9',
+        error: r.error || null,
+        latencyMs: Number(r.latencyMs) || 0,
+        costUsd: typeof r.costUsd === 'number' ? r.costUsd : 0,
+        promptTokens: Number(r.promptTokens) || 0,
+        imageOutputTokens: Number(r.imageOutputTokens) || 0,
+        thoughtsTokens: Number(r.thoughtsTokens) || 0,
+        completionTokens: Number(r.completionTokens) || 0,
+        text: typeof r.text === 'string' ? r.text : '',
+        reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
+        mimeType,
+        hasImage: Boolean(r.hasImage || imageVaultRef || r.imageDataUrl || r.thumbDataUrl),
+        imageVaultRef,
+        thoughtVaultRef,
+        thumbDataUrl: (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000) ? r.thumbDataUrl : null,
+      };
+    }).filter(Boolean);
+
+    const cleanSlots = (Array.isArray(slots) && slots.length ? slots : storedResults).map((s, idx) => ({
+      slot: s.slot || String.fromCharCode(65 + idx),
+      catalogId: s.catalogId || 'nano-banana-2.1',
+      label: s.label || s.catalogId || 'Nano Banana',
+      thinkingLevel: s.thinkingLevel || 'minimal',
+      imageSize: s.imageSize || imageSize || '1K',
+      aspectRatio: s.aspectRatio || aspectRatio || '16:9',
+    }));
+
+    const summary = summarizeImageResults(cleanSlots, storedResults, imageSize, aspectRatio);
+    const record = {
+      v: 1,
+      arena: 'image',
+      id,
+      at,
+      user: u,
+      userKey: uKey,
+      userName: userName || user || u,
+      packId: String(packId || 'custom'),
+      scenarioId: String(scenarioId || 'custom'),
+      title: runTitle,
+      prompt: promptText,
+      imageSize: String(imageSize || '1K'),
+      aspectRatio: String(aspectRatio || '16:9'),
+      attachments,
+      slots: cleanSlots,
+      results: storedResults,
+      summary,
+    };
+
+    const meta = imageRecordToMeta(record);
+    upsertImageMetaInternal(meta, true);
+    cachePayload(id, record);
+
+    const dir = path.join(BASE_DIR, uKey);
+    await fsp.mkdir(dir, { recursive: true });
+    const tmp = path.join(dir, `${id}.json.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+    const finalPath = path.join(dir, `${id}.json`);
+    await fsp.writeFile(tmp, JSON.stringify(record));
+    await fsp.rename(tmp, finalPath);
+
+    return imageListItem(meta);
+  } catch (e) {
+    console.warn('[history] saveImageRun failed:', (e && e.message) || e);
+    return null;
+  }
+}
+
+function listImageRuns(username) {
+  syncFromPersistSqliteIfNewer(false);
+  const key = userKey(username);
+  ensureOwnerLoadedSync(key);
+  const items = [];
+  for (const m of imageMetaById.values()) {
+    if (m.userKey === key) items.push(imageListItem(m));
+  }
+  items.sort((a, b) => b.at - a.at);
+  return items.slice(0, MAX_LIST_PER_USER);
+}
+
+function listAllImageRuns() {
+  syncFromPersistSqliteIfNewer(false);
+  const all = [];
+  for (const m of imageMetaById.values()) {
+    all.push(imageListItem(m));
+  }
+  all.sort((a, b) => b.at - a.at);
+  return all.slice(0, MAX_LIST_ALL);
+}
+
+function hydrateImageRunForReturn(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  const ownerKey = rec.userKey || userKey(rec.user);
+  const hydratedResults = (Array.isArray(rec.results) ? rec.results : (Array.isArray(rec.summary) ? rec.summary : [])).map((r) => {
+    if (!r || typeof r !== 'object') return r;
+    const out = { ...r };
+    if (!out.imageDataUrl && ownerKey && out.imageVaultRef) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, out.imageVaultRef);
+      if (fromVault && fromVault.data) {
+        out.imageDataUrl = `data:${fromVault.mimeType || out.mimeType || 'image/png'};base64,${fromVault.data}`;
+      }
+    }
+    if (!out.imageDataUrl && out.thumbDataUrl) {
+      out.imageDataUrl = out.thumbDataUrl;
+    }
+    if (!out.thoughtImageDataUrl && ownerKey && out.thoughtVaultRef) {
+      const tVault = vault.readAttachmentFromVaultSync(ownerKey, out.thoughtVaultRef);
+      if (tVault && tVault.data) {
+        out.thoughtImageDataUrl = `data:${tVault.mimeType || 'image/png'};base64,${tVault.data}`;
+      }
+    }
+    return out;
+  });
+  const hydratedAttachments = (Array.isArray(rec.attachments) ? rec.attachments : []).map((a) => {
+    if (!a || typeof a !== 'object') return a;
+    if (!a.data && ownerKey && (a.vaultRef || a.sha256)) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a);
+      if (fromVault && fromVault.data) {
+        return { ...a, data: fromVault.data, mimeType: fromVault.mimeType || a.mimeType || 'image/png' };
+      }
+    }
+    return a;
+  });
+  return { ...rec, results: hydratedResults, attachments: hydratedAttachments };
+}
+
+function getImageRun(id, { username, isAdmin }) {
+  syncFromPersistSqliteIfNewer(false);
+  const sid = safeId(id);
+  if (!sid) return null;
+  const myKey = userKey(username);
+
+  if (fullPayloadCache.has(sid)) {
+    const cached = fullPayloadCache.get(sid);
+    if (cached && cached.arena === 'image') {
+      if (isAdmin || userKey(cached.user) === myKey) return hydrateImageRunForReturn(cached);
+      return null;
+    }
+  }
+
+  const meta = imageMetaById.get(sid);
+  if (meta) {
+    if (!isAdmin && meta.userKey !== myKey) return null;
+    const fp = path.join(BASE_DIR, meta.userKey, `${sid}.json`);
+    try {
+      if (fs.existsSync(fp)) {
+        const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        if (rec) {
+          cachePayload(sid, rec);
+          return hydrateImageRunForReturn(rec);
+        }
+      }
+    } catch (_) {}
+    return hydrateImageRunForReturn(meta);
+  }
+
+  const mine = path.join(BASE_DIR, myKey, `${sid}.json`);
+  try {
+    if (fs.existsSync(mine)) {
+      const own = JSON.parse(fs.readFileSync(mine, 'utf8'));
+      if (own && own.arena === 'image') {
+        cachePayload(sid, own);
+        return hydrateImageRunForReturn(own);
+      }
+    }
+  } catch (_) {}
+
+  if (!isAdmin) return null;
+  try {
+    for (const k of fs.readdirSync(BASE_DIR)) {
+      if (!/^[0-9a-f]{40}$/.test(k)) continue;
+      const fp = path.join(BASE_DIR, k, `${sid}.json`);
+      if (fs.existsSync(fp)) {
+        const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        if (rec && rec.arena === 'image') {
+          cachePayload(sid, rec);
+          return hydrateImageRunForReturn(rec);
+        }
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+function deleteImageRun(id, { username, isAdmin }) {
+  const sid = safeId(id);
+  if (!sid) return false;
+  const myKey = userKey(username);
+  const meta = imageMetaById.get(sid);
+  if (meta && !isAdmin && meta.userKey !== myKey) return false;
+
+  const candidates = [path.join(BASE_DIR, myKey, `${sid}.json`)];
+  if (meta && meta.userKey) candidates.unshift(path.join(BASE_DIR, meta.userKey, `${sid}.json`));
+  if (isAdmin) {
+    try {
+      for (const k of fs.readdirSync(BASE_DIR)) {
+        if (/^[0-9a-f]{40}$/.test(k)) candidates.push(path.join(BASE_DIR, k, `${sid}.json`));
+      }
+    } catch (_) {}
+  }
+
+  let removed = false;
+  for (const fp of new Set(candidates)) {
+    try {
+      if (fs.existsSync(fp)) {
+        fs.unlinkSync(fp);
+        removed = true;
+      }
+    } catch (_) {}
+  }
+
+  if (imageMetaById.has(sid)) {
+    imageMetaById.delete(sid);
+    removed = true;
+  }
+  fullPayloadCache.delete(sid);
+  if (stmts && stmts.delImage) {
+    try { stmts.delImage.run(sid); } catch (_) {}
+  }
+  if (removed) schedulePersistSnapshot();
+  return removed;
+}
+
+function imageUsageSummary() {
+  syncFromPersistSqliteIfNewer(false);
+  const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
+  const byUser = new Map();
+  let totalRuns = 0;
+  let runsToday = 0;
+  let totalImages = 0;
+  let totalCostUsd = 0;
+  for (const rec of imageMetaById.values()) {
+    totalRuns++;
+    const today = rec.at >= startOfDay;
+    if (today) runsToday++;
+    const uKeyName = norm(rec.user);
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: rec.userName || rec.user || uKeyName,
+      runs: 0,
+      runsToday: 0,
+      imagesGenerated: 0,
+      lastAt: 0,
+      costUsd: 0,
+    };
+    u.runs++;
+    if (today) u.runsToday++;
+    if (rec.at > u.lastAt) {
+      u.lastAt = rec.at;
+      u.userName = rec.userName || rec.user || uKeyName;
+    }
+    (rec.summary || []).forEach((s) => {
+      if (typeof s.costUsd === 'number') {
+        u.costUsd += s.costUsd;
+        totalCostUsd += s.costUsd;
+      }
+      if (!s.error && (s.hasImage || s.imageVaultRef || s.thumbDataUrl)) {
+        u.imagesGenerated++;
+        totalImages++;
+      }
+    });
+    byUser.set(uKeyName, u);
+  }
+
+  const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+  return {
+    generatedAt: Date.now(),
+    dayStartUtc: startOfDay,
+    totals: {
+      users: users.length,
+      totalRuns,
+      runsToday,
+      totalImages,
+      totalCostUsd,
+    },
+    users,
+  };
+}
+
 initSqlite();
 
 module.exports = {
   saveRun,
+  saveImageRun,
   attachJudgeToLatestRun,
   newId,
   listRuns,
@@ -1819,6 +2347,11 @@ module.exports = {
   getRun,
   deleteRun,
   usageSummary,
+  listImageRuns,
+  listAllImageRuns,
+  getImageRun,
+  deleteImageRun,
+  imageUsageSummary,
   lastModels,
   getUserPreferences,
   saveUserPreferences,

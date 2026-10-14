@@ -768,6 +768,63 @@ app.get('/api/image-arena/config', (_req, res) => {
   res.json(getImageArenaConfig());
 });
 
+app.get('/api/image-arena/history', (req, res) => {
+  if (req.query.scope === 'all') {
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
+    return res.json({ scope: 'all', runs: history.listAllImageRuns() });
+  }
+  res.json({ scope: 'me', runs: history.listImageRuns(req.user.username) });
+});
+
+app.get('/api/image-arena/usage', requireAdmin, (_req, res) => {
+  res.json(history.imageUsageSummary());
+});
+
+app.post('/api/image-arena/history', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const batch = Array.isArray(body.runs) ? body.runs : [body.run || body];
+    const saved = [];
+    for (const item of batch.slice(0, 60)) {
+      if (!item || typeof item !== 'object') continue;
+      // Preserve original run owner only if admin is syncing; otherwise bind to req.user
+      const ownerUser = (req.user.role === 'admin' && item.user) ? item.user : req.user.username;
+      const ownerName = (req.user.role === 'admin' && item.userName) ? item.userName : (req.user.name || req.user.username);
+      const out = await history.saveImageRun({
+        id: item.id,
+        at: item.at,
+        user: ownerUser,
+        userName: ownerName,
+        packId: item.packId,
+        scenarioId: item.scenarioId,
+        title: item.title || item.scenarioTitle,
+        prompt: item.prompt,
+        imageSize: item.imageSize,
+        aspectRatio: item.aspectRatio,
+        slots: item.slots,
+        results: item.results || item.summary,
+        attachments: item.attachments,
+      });
+      if (out) saved.push(out);
+    }
+    res.json({ ok: true, saved: saved[0] || null, savedCount: saved.length, runs: history.listImageRuns(req.user.username) });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.get('/api/image-arena/history/:id', (req, res) => {
+  const rec = history.getImageRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!rec) return res.status(404).json({ error: 'Image Arena run not found.' });
+  res.json({ run: rec });
+});
+
+app.delete('/api/image-arena/history/:id', (req, res) => {
+  const ok = history.deleteImageRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
+  if (!ok) return res.status(404).json({ error: 'Image Arena run not found or not yours to delete.' });
+  res.json({ ok: true });
+});
+
 app.post('/api/image-arena/run', async (req, res) => {
   const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys } = req.body || {};
   const keys = {};
@@ -790,6 +847,36 @@ app.post('/api/image-arena/run', async (req, res) => {
       keys,
       signal: ac.signal,
     });
+    // Pre-store generated images in the user's server-side binary vault and attach compact
+    // `imageVaultRef` / `thoughtVaultRef` pointers so subsequent `/api/image-arena/history`
+    // saves only need to send the tiny 1.5KB thumbnail + vaultRef (never re-uploading 4K PNGs).
+    try {
+      const uName = req.user && req.user.username;
+      if (uName && out && Array.isArray(out.results)) {
+        out.results.forEach((r, idx) => {
+          if (!r || typeof r !== 'object') return;
+          const slotTag = r.slot || String.fromCharCode(65 + idx);
+          if (typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:')) {
+            const ptr = history.vault.storeAttachmentInVaultSync(uName, {
+              name: `img-slot-${slotTag}.png`,
+              mimeType: r.mimeType || 'image/png',
+              kind: 'image',
+              data: r.imageDataUrl,
+            });
+            if (ptr && (ptr.vaultRef || ptr.sha256)) r.imageVaultRef = ptr.vaultRef || ptr.sha256;
+          }
+          if (typeof r.thoughtImageDataUrl === 'string' && r.thoughtImageDataUrl.startsWith('data:')) {
+            const tPtr = history.vault.storeAttachmentInVaultSync(uName, {
+              name: `thought-slot-${slotTag}.png`,
+              mimeType: 'image/png',
+              kind: 'image',
+              data: r.thoughtImageDataUrl,
+            });
+            if (tPtr && (tPtr.vaultRef || tPtr.sha256)) r.thoughtVaultRef = tPtr.vaultRef || tPtr.sha256;
+          }
+        });
+      }
+    } catch (_) {}
     // Stream as chunked Transfer-Encoding (application/x-image-arena-json) so:
     // 1) Cloud Run's Google Frontend (GFE) never truncates 4K image payloads at the 32 MiB
     //    non-streaming Content-Length cap, and

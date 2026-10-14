@@ -1388,7 +1388,7 @@ function addSlot() {
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5',
+    'gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5',
     'grok-4.20-reasoning', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
@@ -1398,7 +1398,7 @@ function addSlot() {
   });
   if (!chosenId) {
     const firstAvail = catalog().find((c) => modelAvailability(c).ok);
-    chosenId = firstAvail ? firstAvail.id : 'gemini-3.8-flash';
+    chosenId = firstAvail ? firstAvail.id : 'gemini-4-argon';
   }
   SLOT_IDS.push(nextSlot);
   SLOT_ASSIGN[nextSlot] = chosenId;
@@ -1427,7 +1427,7 @@ function builtinPresetSlots(presetName) {
   let target = [];
   if (presetName === 'frontier') {
     target = [
-      { id: 'gemini-3.8-flash',    effort: null },
+      { id: 'gemini-4-argon',      effort: null },
       { id: 'claude-opus-5-5',     effort: null },
       { id: 'gpt-6-sol',           effort: null },
     ];
@@ -4549,7 +4549,10 @@ let _histState = { body: null, runs: [], usage: null, isAdmin: false };
 function fmtWhen(ms) { try { return new Date(ms).toLocaleString(); } catch (e) { return ''; } }
 
 function runTotalCost(r) {
-  return ((r && r.summary) || []).reduce((sum, s) => sum + (Number(s && s.costUsd) || 0), 0);
+  const list = (r && Array.isArray(r.summary) && r.summary.length)
+    ? r.summary
+    : ((r && Array.isArray(r.results)) ? r.results : []);
+  return list.reduce((sum, s) => sum + (Number(s && (s.costUsd != null ? s.costUsd : s.standardPayGoCostUsd)) || 0), 0);
 }
 
 function runBestScore(r) {
@@ -4559,19 +4562,31 @@ function runBestScore(r) {
   return vals.length ? Math.max(...vals) : -1;
 }
 
+function runImageResolutionRank(r) {
+  const sz = String((r && r.imageSize) || '').toUpperCase();
+  if (sz === '4K') return 4;
+  if (sz === '2K') return 2;
+  if (sz === '1K') return 1;
+  return 0;
+}
+
 function sortHistoryRuns(list) {
   const arr = (list || []).slice();
   const dir = runsSortDir === 'asc' ? 1 : -1;
   arr.sort((a, b) => {
     let cmp = 0;
     if (runsSortKey === 'title') {
-      cmp = String((a && a.title) || '').localeCompare(String((b && b.title) || ''), undefined, { sensitivity: 'base' });
+      const ta = String((a && (a.title || a.scenarioTitle || a.prompt)) || '');
+      const tb = String((b && (b.title || b.scenarioTitle || b.prompt)) || '');
+      cmp = ta.localeCompare(tb, undefined, { sensitivity: 'base' });
     } else if (runsSortKey === 'user') {
       cmp = String((a && (a.userName || a.user)) || '').localeCompare(String((b && (b.userName || b.user)) || ''), undefined, { sensitivity: 'base' });
     } else if (runsSortKey === 'cost') {
       cmp = runTotalCost(a) - runTotalCost(b);
     } else if (runsSortKey === 'correctness') {
       cmp = runBestScore(a) - runBestScore(b);
+    } else if (runsSortKey === 'resolution') {
+      cmp = runImageResolutionRank(a) - runImageResolutionRank(b);
     } else {
       cmp = (Number(a && a.at) || 0) - (Number(b && b.at) || 0);
     }
@@ -4592,6 +4607,8 @@ function sortUsageUsers(list) {
       cmp = (Number(a && a.runs) || 0) - (Number(b && b.runs) || 0);
     } else if (usersSortKey === 'runsToday') {
       cmp = (Number(a && a.runsToday) || 0) - (Number(b && b.runsToday) || 0);
+    } else if (usersSortKey === 'imagesGenerated') {
+      cmp = (Number(a && a.imagesGenerated) || 0) - (Number(b && b.imagesGenerated) || 0);
     } else if (usersSortKey === 'savedPrompts') {
       cmp = (Number(a && a.savedPrompts) || 0) - (Number(b && b.savedPrompts) || 0);
     } else if (usersSortKey === 'savedPresets') {
@@ -4609,6 +4626,61 @@ function sortUsageUsers(list) {
 
 let historyArenaTab = 'text';
 
+async function syncLocalImageRunsToServer(localRuns, serverRuns) {
+  if (!Array.isArray(localRuns) || !localRuns.length) return null;
+  const serverIds = new Set((serverRuns || []).map((r) => r && r.id).filter(Boolean));
+  const missing = localRuns.filter((r) => r && r.id && !serverIds.has(r.id));
+  if (!missing.length) return null;
+  try {
+    const compactBatch = missing.slice(0, 40).map((r) => ({
+      id: r.id,
+      at: r.at,
+      user: r.user || (ME && ME.username),
+      userName: r.userName || r.user || (ME && ME.username),
+      packId: r.packId || 'custom',
+      scenarioId: r.scenarioId || 'custom',
+      title: r.title || r.scenarioTitle || (r.prompt || '').slice(0, 72) || 'Image Arena Comparison',
+      prompt: r.prompt || '',
+      imageSize: r.imageSize || '2K',
+      aspectRatio: r.aspectRatio || '16:9',
+      slots: r.slots || [],
+      results: (Array.isArray(r.results) ? r.results : []).map((res) => ({
+        slot: res.slot,
+        catalogId: res.catalogId,
+        label: res.label,
+        shortLabel: res.shortLabel,
+        model: res.model,
+        thinkingLevel: res.thinkingLevel,
+        imageSize: res.imageSize || r.imageSize,
+        aspectRatio: res.aspectRatio || r.aspectRatio,
+        ok: Boolean(res.ok || !res.error),
+        error: res.error || null,
+        latencyMs: res.latencyMs,
+        costUsd: res.costUsd != null ? res.costUsd : res.standardPayGoCostUsd,
+        standardPayGoCostUsd: res.standardPayGoCostUsd != null ? res.standardPayGoCostUsd : res.costUsd,
+        promptTokens: res.promptTokens,
+        imageOutputTokens: res.imageOutputTokens,
+        thoughtsTokens: res.thoughtsTokens || res.reasoningTokens,
+        completionTokens: res.completionTokens,
+        mimeType: res.mimeType || 'image/png',
+        hasImage: Boolean(res.hasImage || res.imageDataUrl || res.imageVaultRef || res.thumbDataUrl),
+        imageVaultRef: res.imageVaultRef || null,
+        thoughtVaultRef: res.thoughtVaultRef || null,
+        thumbDataUrl: res.thumbDataUrl || null,
+      })),
+    }));
+    await fetch('/api/image-arena/history', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runs: compactBatch }),
+    });
+    return true;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function openHistoryModal(opts = {}) {
   const isAdmin = ME && ME.role === 'admin';
   historyScope = isAdmin ? 'all' : 'me';
@@ -4620,16 +4692,61 @@ async function openHistoryModal(opts = {}) {
   const body = openAuthModal('Run history', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
-    const [histResp, usage, imgRuns] = await Promise.all([
+    const [histResp, usage, srvImgResp, srvImgUsage, localImgRuns] = await Promise.all([
       fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
       isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+      fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : { runs: [] })).catch(() => ({ runs: [] })),
+      isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
       typeof listImageArenaRunsFromHistory === 'function' ? listImageArenaRunsFromHistory().catch(() => []) : Promise.resolve([]),
       ensureImageArenaLoaded().catch(() => null), // image catalog, to hide runs from retired models
     ]);
     if (histResp.status === 401) { window.location.replace('/login'); return; }
     const data = await histResp.json();
     if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
-    _histState = { body, runs: data.runs || [], imgRuns: (imgRuns || []).filter(isVisibleImageRun), usage, isAdmin };
+
+    let serverImgRuns = (srvImgResp && Array.isArray(srvImgResp.runs)) ? srvImgResp.runs : [];
+    let imgUsage = srvImgUsage || null;
+
+    // One-time sync of any local IndexedDB runs into the server so admin usage & cross-device history include them
+    const didSync = await syncLocalImageRunsToServer(localImgRuns, serverImgRuns);
+    if (didSync) {
+      const [refetchedHist, refetchedUsage] = await Promise.all([
+        fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : { runs: serverImgRuns })).catch(() => ({ runs: serverImgRuns })),
+        isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : imgUsage)).catch(() => imgUsage) : Promise.resolve(null),
+      ]);
+      serverImgRuns = (refetchedHist && Array.isArray(refetchedHist.runs)) ? refetchedHist.runs : serverImgRuns;
+      if (refetchedUsage) imgUsage = refetchedUsage;
+    }
+
+    // Merge local IndexedDB thumbnails/data into server runs by id so any local run has instant thumbnail access
+    const byId = new Map();
+    for (const sr of serverImgRuns) {
+      if (sr && sr.id) byId.set(sr.id, sr);
+    }
+    for (const lr of (localImgRuns || [])) {
+      if (!lr || !lr.id) continue;
+      if (!byId.has(lr.id)) {
+        byId.set(lr.id, {
+          ...lr,
+          user: lr.user || (ME && ME.username) || '',
+          userName: lr.userName || lr.user || (ME && ME.username) || '',
+          title: lr.title || lr.scenarioTitle || lr.prompt || 'Image Arena Comparison',
+          summary: lr.summary || lr.results || [],
+        });
+      }
+    }
+    const mergedImgRuns = Array.from(byId.values())
+      .filter(isVisibleImageRun)
+      .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+
+    _histState = {
+      body,
+      runs: data.runs || [],
+      imgRuns: mergedImgRuns,
+      usage,
+      imgUsage,
+      isAdmin,
+    };
     historyPage = 0; usersPage = 0; historyUserFilter = null;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
@@ -4637,19 +4754,21 @@ async function openHistoryModal(opts = {}) {
   }
 }
 
-function renderRunsSortToolbar(totalCount) {
+function renderRunsSortToolbar(totalCount, mode = 'text') {
   if (!totalCount) return '';
   const cols = [
     { key: 'at', label: 'Date / Time', defaultDir: 'desc' },
-    { key: 'title', label: 'Task / Prompt', defaultDir: 'asc' },
+    { key: 'title', label: mode === 'image' ? 'Scenario / Prompt' : 'Task / Prompt', defaultDir: 'asc' },
   ];
   if (historyScope === 'all' && !historyUserFilter) {
     cols.push({ key: 'user', label: 'User', defaultDir: 'asc' });
   }
-  cols.push(
-    { key: 'cost', label: 'Run Cost', defaultDir: 'desc' },
-    { key: 'correctness', label: 'Test Score', defaultDir: 'desc' },
-  );
+  cols.push({ key: 'cost', label: 'Run Cost', defaultDir: 'desc' });
+  if (mode === 'image') {
+    cols.push({ key: 'resolution', label: 'Resolution', defaultDir: 'desc' });
+  } else {
+    cols.push({ key: 'correctness', label: 'Test Score', defaultDir: 'desc' });
+  }
   const btns = cols.map((c) => {
     const active = runsSortKey === c.key;
     const arrow = active ? (runsSortDir === 'asc' ? '▲' : '▼') : '⇅';
@@ -4662,32 +4781,34 @@ function renderRunsSortToolbar(totalCount) {
 }
 
 function imgHistRowHtml(r) {
-  const okResults = currentModelImageResults(r).filter((x) => x.ok);
-  const totalCost = okResults.reduce((s, x) => s + (Number(x.standardPayGoCostUsd) || 0), 0);
-  const thumbs = okResults.slice(0, 4).map((x) => {
+  const rawList = (Array.isArray(r.summary) && r.summary.length) ? r.summary : (Array.isArray(r.results) ? r.results : []);
+  const slotList = rawList.filter((x) => x && isCurrentImageModel(x.catalogId));
+  const thumbs = slotList.filter((x) => !x.error && (x.thumbDataUrl || x.imageDataUrl)).slice(0, 4).map((x) => {
     const src = x.thumbDataUrl || x.imageDataUrl || '';
     if (!src) return '';
-    return `<img src="${src}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:5px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : r.imageSize)})"/>`;
+    return `<img src="${src}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:4px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : (x.imageSize || r.imageSize || '2K'))})"/>`;
   }).join('');
-  const modelBadges = okResults.map((x) => `<span class="img-res-pill" style="font-size:10.5px">${esc(x.shortLabel || x.label || x.model)}</span>`).join(' ');
+  const chips = slotList.map((s) => {
+    const stat = s.error
+      ? '<span class="hc-err">error</span>'
+      : esc(`${s.imageSize || r.imageSize || '2K'}${s.latencyMs ? ' · ' + (s.latencyMs / 1000).toFixed(1) + 's' : ''}`);
+    const slotCost = s.costUsd != null ? s.costUsd : s.standardPayGoCostUsd;
+    const cost = slotCost != null ? ' · ' + esc(fmtCost(slotCost)) : '';
+    return `<span class="hist-chip"><b>${esc(s.shortLabel || s.label || s.model)}</b> ${stat}${cost}</span>`;
+  }).join('');
+  const resChip = `<span class="hist-chip">${esc(r.imageSize || '2K')} (${esc(r.aspectRatio || '16:9')})</span>`;
+  const userLabel = r.userName || r.user || (ME && ME.username) || '';
+  const who = userLabel ? `<span class="hist-who">${esc(userLabel)}</span>` : '';
+  const runTitle = r.title || r.scenarioTitle || r.prompt || 'Image Arena Comparison';
   return `<div class="hist-row" data-img-hist-id="${esc(r.id)}">
-    <div class="hist-main" style="display:flex;align-items:center;gap:12px;flex:1;min-width:0">
-      <div style="display:flex;gap:4px;flex-shrink:0">${thumbs}</div>
-      <div style="min-width:0;flex:1">
-        <div class="hist-title" style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.scenarioTitle || r.prompt || 'Image Arena Comparison')}</div>
-        <div class="hist-sub" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:3px">
-          <span>${fmtWhen(r.at)}</span>
-          <span>·</span>
-          <span class="img-res-pill" style="font-size:10.5px">${esc(r.imageSize || '2K')} (${esc(r.aspectRatio || '1:1')})</span>
-          ${modelBadges}
-          <span>·</span>
-          <span style="font-family:'JetBrains Mono',monospace;font-size:11.5px">PayGo ${fmtCost(totalCost)}</span>
-        </div>
-      </div>
+    <div class="hist-main">
+      <div class="hist-title">${esc(runTitle)}</div>
+      <div class="hist-when"><span>${esc(fmtWhen(r.at))}</span>${who}</div>
+      <div class="hist-chips">${thumbs}${resChip}${chips}</div>
     </div>
-    <div class="hist-actions">
-      <button type="button" class="btn btn-ghost hist-img-restore" data-id="${esc(r.id)}">Restore</button>
-      <button type="button" class="btn btn-ghost hist-img-del" data-id="${esc(r.id)}" title="Delete this image run">✕</button>
+    <div class="hist-act">
+      <button class="hist-btn hist-restore hist-img-restore" type="button" data-id="${esc(r.id)}" title="Restore this image comparison to the Image Arena">Restore ▸</button>
+      <button class="hist-btn hist-icon-btn hist-del hist-img-del" type="button" data-id="${esc(r.id)}" title="Delete this image run from history" aria-label="Delete image run">${ICON_TRASH}</button>
     </div>
   </div>`;
 }
@@ -4695,7 +4816,7 @@ function imgHistRowHtml(r) {
 // Render the current page of the already-fetched (light) history list. Called on
 // open, page nav, and after a delete — no refetch, so paging is instant.
 function paintHistoryModal() {
-  const { body, runs, imgRuns = [], usage, isAdmin } = _histState;
+  const { body, runs, imgRuns = [], usage, imgUsage, isAdmin } = _histState;
   if (!body) return;
 
   const arenaTabsHtml = `<div class="hist-arena-tabs">
@@ -4704,39 +4825,91 @@ function paintHistoryModal() {
   </div>`;
 
   if (historyArenaTab === 'image') {
-    const imgRows = imgRuns.length
-      ? imgRuns.map((r) => imgHistRowHtml(r)).join('')
-      : '<p class="auth-loading">No Image &amp; GenMedia runs saved in this browser yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>';
-    const clearBar = imgRuns.length
-      ? `<div class="hist-toolbar" style="justify-content:space-between">
-          <span class="hist-toolbar-label">Saved in browser IndexedDB (${fmtInt(imgRuns.length)} run${imgRuns.length === 1 ? '' : 's'}, full-res PNGs preserved):</span>
-          <button type="button" class="btn btn-ghost" id="histClearAllImgRunsBtn" style="font-size:11.5px">🗑 Clear all image runs</button>
-        </div>`
+    const usagePanel = (isAdmin && imgUsage) ? renderImageUsagePanel(imgUsage) : '';
+    const activeName = historyUserFilter
+      ? (((imgUsage && imgUsage.users) || []).find((x) => (x.user || x.userName) === historyUserFilter) || {}).userName || historyUserFilter
       : '';
-    body.innerHTML = arenaTabsHtml + clearBar + `<div class="hist-list">${imgRows}</div>`;
+    const filterChip = historyUserFilter
+      ? `<div class="hist-filter">Showing runs by <b>${esc(activeName)}</b>
+           <button class="hf-clear" type="button">✕ show everyone</button></div>`
+      : '';
+    const filteredImgRuns = historyUserFilter
+      ? imgRuns.filter((r) => (r.user || r.userName) === historyUserFilter)
+      : imgRuns;
+    const sortedImgRuns = sortHistoryRuns(filteredImgRuns);
+    const total = sortedImgRuns.length;
+    const pageCount = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
+    historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);
+    const start = historyPage * HIST_PAGE_SIZE;
+    const pageRuns = sortedImgRuns.slice(start, start + HIST_PAGE_SIZE);
+    const sortToolbar = renderRunsSortToolbar(total, 'image');
+    const imgRows = total
+      ? pageRuns.map((r) => imgHistRowHtml(r)).join('')
+      : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>';
+    const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
+    body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${imgRows}</div>` + pager;
     body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
       historyArenaTab = btn.dataset.histTab || 'text';
+      historyPage = 0;
+      usersPage = 0;
+      historyUserFilter = null;
       paintHistoryModal();
     }));
+    body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
+      const key = th.dataset.sort;
+      const defDir = th.dataset.defaultDir || 'desc';
+      if (usersSortKey === key) {
+        usersSortDir = usersSortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        usersSortKey = key;
+        usersSortDir = defDir;
+      }
+      usersPage = 0;
+      paintHistoryModal();
+    }));
+    body.querySelectorAll('.hist-sort-btn').forEach((btn) => btn.addEventListener('click', () => {
+      const key = btn.dataset.runSort;
+      const defDir = btn.dataset.defaultDir || 'desc';
+      if (runsSortKey === key) {
+        runsSortDir = runsSortDir === 'desc' ? 'asc' : 'desc';
+      } else {
+        runsSortKey = key;
+        runsSortDir = defDir;
+      }
+      historyPage = 0;
+      paintHistoryModal();
+    }));
+    body.querySelectorAll('.u-row').forEach((r) => r.addEventListener('click', () => {
+      historyUserFilter = (historyUserFilter === r.dataset.user) ? null : r.dataset.user;
+      historyPage = 0;
+      paintHistoryModal();
+    }));
+    { const c = body.querySelector('.hf-clear');
+      if (c) c.addEventListener('click', () => { historyUserFilter = null; historyPage = 0; paintHistoryModal(); }); }
+    { const p = body.querySelector('.u-pg-prev');
+      if (p) p.addEventListener('click', () => { if (usersPage > 0) { usersPage--; paintHistoryModal(); } }); }
+    { const nx = body.querySelector('.u-pg-next');
+      if (nx) nx.addEventListener('click', () => { usersPage++; paintHistoryModal(); }); }
     body.querySelectorAll('.hist-img-restore').forEach((b) => b.addEventListener('click', async () => {
       await restoreImageArenaRun(b.dataset.id);
       closeAuthModal();
     }));
     body.querySelectorAll('.hist-img-del').forEach((b) => b.addEventListener('click', async () => {
       await deleteImageArenaRunFromHistory(b.dataset.id);
-      _histState.imgRuns = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
+      _histState.imgRuns = (_histState.imgRuns || []).filter((x) => x.id !== b.dataset.id);
+      if (isAdmin) {
+        try {
+          const uResp = await fetch('/api/image-arena/usage', { credentials: 'same-origin' });
+          if (uResp.ok) _histState.imgUsage = await uResp.json();
+        } catch (_) {}
+      }
       updateImageHistoryButton();
       paintHistoryModal();
     }));
-    const clearAllBtn = body.querySelector('#histClearAllImgRunsBtn');
-    if (clearAllBtn) {
-      clearAllBtn.addEventListener('click', async () => {
-        await clearAllImageArenaHistory();
-        _histState.imgRuns = [];
-        updateImageHistoryButton();
-        paintHistoryModal();
-      });
-    }
+    const prev = body.querySelector('.hist-pg-prev');
+    if (prev) prev.addEventListener('click', () => { if (historyPage > 0) { historyPage--; paintHistoryModal(); } });
+    const next = body.querySelector('.hist-pg-next');
+    if (next) next.addEventListener('click', () => { if (historyPage < pageCount - 1) { historyPage++; paintHistoryModal(); } });
     return;
   }
 
@@ -4757,7 +4930,7 @@ function paintHistoryModal() {
   historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
   const start = historyPage * HIST_PAGE_SIZE;
   const pageRuns = runs_.slice(start, start + HIST_PAGE_SIZE);
-  const sortToolbar = renderRunsSortToolbar(total);
+  const sortToolbar = renderRunsSortToolbar(total, 'text');
   const rows = total
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>';
@@ -4765,6 +4938,9 @@ function paintHistoryModal() {
   body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
   body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
     historyArenaTab = btn.dataset.histTab || 'text';
+    historyPage = 0;
+    usersPage = 0;
+    historyUserFilter = null;
     paintHistoryModal();
   }));
   // click a column header in the admin usage table → sort users by that column
@@ -4830,14 +5006,66 @@ function histRowHtml(h) {
     const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
     return `<span class="hist-chip"><b>${esc(s.label)}</b> ${stat}${cost}</span>`;
   }).join('');
-  const who = (historyScope === 'all' && !historyUserFilter && h.userName) ? `<span class="hist-who">${esc(h.userName)}</span>` : '';
+  const userLabel = h.userName || h.user || (ME && ME.username) || '';
+  const who = userLabel ? `<span class="hist-who">${esc(userLabel)}</span>` : '';
   return `<div class="hist-row">
-    <div class="hist-main"><div class="hist-title">${esc(h.title)}${who}</div><div class="hist-when">${esc(fmtWhen(h.at))}</div><div class="hist-chips">${chips}</div></div>
+    <div class="hist-main"><div class="hist-title">${esc(h.title)}</div><div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}</div><div class="hist-chips">${chips}</div></div>
     <div class="hist-act">
       <button class="hist-btn hist-restore" type="button" data-id="${esc(h.id)}" title="Restore this comparison to the arena">Restore ▸</button>
       <button class="hist-btn hist-icon-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Export PDF report for this run" aria-label="Export PDF report">${ICON_PDF}</button>
       <button class="hist-btn hist-icon-btn hist-del" type="button" data-id="${esc(h.id)}" title="Delete this run from history" aria-label="Delete run">${ICON_TRASH}</button>
     </div>
+  </div>`;
+}
+
+function renderImageUsagePanel(u) {
+  const t = (u && u.totals) || {};
+  const all = sortUsageUsers((u && u.users) || []);
+  const pageCount = Math.max(1, Math.ceil(all.length / USER_PAGE_SIZE));
+  usersPage = Math.min(Math.max(0, usersPage), pageCount - 1);
+  const start = usersPage * USER_PAGE_SIZE;
+  const page = all.slice(start, start + USER_PAGE_SIZE);
+  const rows = page.map((x) => {
+    const id = x.user || x.userName;
+    const on = historyUserFilter === id;
+    const imgCnt = Number(x.imagesGenerated) || 0;
+    return `<tr class="u-row${on ? ' active' : ''}" data-user="${esc(id)}" title="Show only this user's image runs">
+      <td class="u-name">${esc(x.userName || x.user)}${on ? ' <span class="u-tag">filtered</span>' : ''}</td>
+      <td>${fmtInt(x.runs || 0)}</td>
+      <td>${fmtInt(x.runsToday || 0)}</td>
+      <td><span class="u-lib-badge${imgCnt > 0 ? ' has-items' : ''}" title="Total images generated by this user">${fmtInt(imgCnt)}</span></td>
+      <td>${esc(fmtCost(x.costUsd || 0))}</td>
+      <td class="hist-when">${esc(x.lastAt ? fmtWhen(x.lastAt) : '—')}</td></tr>`;
+  }).join('');
+  const thCols = [
+    { key: 'user', label: 'User', defaultDir: 'asc' },
+    { key: 'runs', label: 'Runs', defaultDir: 'desc' },
+    { key: 'runsToday', label: 'Today', defaultDir: 'desc' },
+    { key: 'imagesGenerated', label: 'Images', defaultDir: 'desc' },
+    { key: 'costUsd', label: 'Cost', defaultDir: 'desc' },
+    { key: 'lastAt', label: 'Last active', defaultDir: 'desc' },
+  ];
+  const thHtml = thCols.map((c) => {
+    const active = usersSortKey === c.key;
+    const arrow = active ? (usersSortDir === 'asc' ? '▲' : '▼') : '⇅';
+    return `<th class="sortable${active ? ' is-sorted' : ''}" data-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></th>`;
+  }).join('');
+  const pager = all.length > USER_PAGE_SIZE
+    ? `<div class="hist-pager users-pager">
+         <button class="hist-pg-btn u-pg-prev" type="button" ${usersPage === 0 ? 'disabled' : ''}>‹ Prev</button>
+         <span class="hist-pg-info">${start + 1}–${start + page.length} of ${fmtInt(all.length)} users · page ${usersPage + 1} of ${pageCount}</span>
+         <button class="hist-pg-btn u-pg-next" type="button" ${usersPage >= pageCount - 1 ? 'disabled' : ''}>Next ›</button>
+       </div>` : '';
+  return `<div class="usage-panel">
+    <div class="usage-stats">
+      <div class="ustat"><div class="uk">Active users</div><div class="uv">${fmtInt(t.users || 0)}</div></div>
+      <div class="ustat"><div class="uk">Runs today</div><div class="uv">${fmtInt(t.runsToday || 0)}</div></div>
+      <div class="ustat"><div class="uk">Runs total</div><div class="uv">${fmtInt(t.totalRuns || 0)}</div></div>
+      <div class="ustat"><div class="uk">Images generated</div><div class="uv">${fmtInt(t.totalImages || 0)}</div></div>
+      <div class="ustat"><div class="uk">Total cost</div><div class="uv">${esc(fmtCost(t.totalCostUsd || 0))}</div></div>
+    </div>
+    ${rows ? `<table class="usage-table"><thead><tr>${thHtml}</tr></thead><tbody>${rows}</tbody></table>${pager}` : ''}
+    <p class="hint">Click any column header to sort · Click a user row to filter their Image &amp; GenMedia runs. Today = since 00:00 UTC.</p>
   </div>`;
 }
 
@@ -6198,8 +6426,7 @@ function createTinyHistoryThumbnailDataUrl(srcDataUrl, targetW = 68, targetH = 4
 }
 
 async function saveImageArenaRunToHistory(runRecord) {
-  const db = await openImageHistoryDb();
-  if (!db || !runRecord || !runRecord.id) return;
+  if (!runRecord || !runRecord.id) return;
   try {
     if (Array.isArray(runRecord.results)) {
       await Promise.all(runRecord.results.map(async (r) => {
@@ -6209,6 +6436,56 @@ async function saveImageArenaRunToHistory(runRecord) {
         }
       }));
     }
+    // 1. Persist to server-authoritative history & admin usage tracker
+    try {
+      const compactResults = (Array.isArray(runRecord.results) ? runRecord.results : []).map((res) => ({
+        slot: res.slot,
+        catalogId: res.catalogId,
+        label: res.label,
+        shortLabel: res.shortLabel,
+        model: res.model,
+        thinkingLevel: res.thinkingLevel,
+        imageSize: res.imageSize || runRecord.imageSize,
+        aspectRatio: res.aspectRatio || runRecord.aspectRatio,
+        ok: Boolean(res.ok || !res.error),
+        error: res.error || null,
+        latencyMs: res.latencyMs,
+        costUsd: res.costUsd != null ? res.costUsd : res.standardPayGoCostUsd,
+        standardPayGoCostUsd: res.standardPayGoCostUsd != null ? res.standardPayGoCostUsd : res.costUsd,
+        promptTokens: res.promptTokens,
+        imageOutputTokens: res.imageOutputTokens,
+        thoughtsTokens: res.thoughtsTokens || res.reasoningTokens,
+        completionTokens: res.completionTokens,
+        mimeType: res.mimeType || 'image/png',
+        hasImage: Boolean(res.hasImage || res.imageDataUrl || res.imageVaultRef || res.thumbDataUrl),
+        imageVaultRef: res.imageVaultRef || null,
+        thoughtVaultRef: res.thoughtVaultRef || null,
+        thumbDataUrl: res.thumbDataUrl || null,
+      }));
+      await fetch('/api/image-arena/history', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          run: {
+            id: runRecord.id,
+            at: runRecord.at,
+            packId: runRecord.packId || 'custom',
+            scenarioId: runRecord.scenarioId || 'custom',
+            title: runRecord.title || runRecord.scenarioTitle || (runRecord.prompt || '').slice(0, 72) || 'Image Arena Comparison',
+            prompt: runRecord.prompt || '',
+            imageSize: runRecord.imageSize || '2K',
+            aspectRatio: runRecord.aspectRatio || '16:9',
+            slots: runRecord.slots || [],
+            results: compactResults,
+          },
+        }),
+      });
+    } catch (_) {}
+
+    // 2. Also keep in browser IndexedDB for instant local restore
+    const db = await openImageHistoryDb();
+    if (!db) return;
     const existing = await listImageArenaRunsFromHistory();
     const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
     const store = tx.objectStore(IMG_HIST_STORE);
@@ -6222,13 +6499,20 @@ async function saveImageArenaRunToHistory(runRecord) {
       });
     }
   } catch (e) {
-    console.warn('[imageArena] failed to save run to IndexedDB:', e);
+    console.warn('[imageArena] failed to save run to history:', e);
   }
 }
 
 async function deleteImageArenaRunFromHistory(id) {
+  if (!id) return false;
+  try {
+    await fetch('/api/image-arena/history/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      credentials: 'same-origin',
+    });
+  } catch (_) {}
   const db = await openImageHistoryDb();
-  if (!db || !id) return;
+  if (!db) return true;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IMG_HIST_STORE, 'readwrite');
@@ -6256,17 +6540,50 @@ async function clearAllImageArenaHistory() {
   });
 }
 
-// The 🗂 History button shows how many image runs are saved in this browser.
+// The 🗂 History button shows how many image runs are saved.
 async function updateImageHistoryButton() {
   const histBtn = $('#imgHistoryBtn');
   if (!histBtn) return;
-  const runs = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
-  histBtn.textContent = runs.length > 0 ? `🗂 History (${runs.length})` : '🗂 History';
+  const localRuns = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
+  let serverRuns = [];
+  try {
+    const scope = (ME && ME.role === 'admin') ? 'all' : 'me';
+    const r = await fetch('/api/image-arena/history?scope=' + scope, { credentials: 'same-origin' });
+    if (r.ok) {
+      const j = await r.json();
+      if (j && Array.isArray(j.runs)) serverRuns = j.runs.filter(isVisibleImageRun);
+    }
+  } catch (_) {}
+  const ids = new Set();
+  localRuns.forEach((x) => { if (x && x.id) ids.add(x.id); });
+  serverRuns.forEach((x) => { if (x && x.id) ids.add(x.id); });
+  histBtn.textContent = ids.size > 0 ? `🗂 History (${ids.size})` : '🗂 History';
 }
 
 async function restoreImageArenaRun(runId) {
   const runs = await listImageArenaRunsFromHistory();
-  const rec = runs.find((r) => r && r.id === runId);
+  let rec = runs.find((r) => r && r.id === runId) || null;
+  const needsServerHydration = !rec
+    || !Array.isArray(rec.results)
+    || rec.results.some((r) => r && !r.error && !r.imageDataUrl);
+  if (needsServerHydration) {
+    try {
+      const resp = await fetch('/api/image-arena/history/' + encodeURIComponent(runId), { credentials: 'same-origin' });
+      if (resp.ok) {
+        const j = await resp.json();
+        if (j && j.run) {
+          rec = {
+            ...j.run,
+            results: (j.run.results || j.run.summary || []).map((r) => ({
+              ...r,
+              ok: Boolean(r.ok != null ? r.ok : !r.error),
+              standardPayGoCostUsd: r.standardPayGoCostUsd != null ? r.standardPayGoCostUsd : r.costUsd,
+            })),
+          };
+        }
+      }
+    } catch (_) {}
+  }
   if (!rec) return;
 
   if (ACTIVE_ARENA_MODE !== 'image') {

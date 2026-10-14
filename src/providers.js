@@ -122,6 +122,7 @@ function openaiDefaultEffort() {
 // Offering a level a model rejects turns the picker into a hard failure — probe a
 // new model before listing it here.
 const GEMINI_LEVELS = {
+  'gemini-4-argon':         ['low', 'medium', 'high'],          // GA on Vertex global endpoint (verified 2026-10-14)
   'gemini-3.8-flash':       ['low', 'medium', 'high'],          // no minimal (verified)
   'gemini-3.7-flash':       ['low', 'medium', 'high'],
   'gemini-3.6-flash':       ['minimal', 'low', 'medium', 'high'],
@@ -132,6 +133,7 @@ const GEMINI_LEVELS = {
   'gemini-3.1-flash-lite':  ['minimal', 'low', 'medium', 'high'],
 };
 const GEMINI_DEFAULT_LEVEL = {
+  'gemini-4-argon': 'medium',
   'gemini-3.8-flash': 'medium', 'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',
   'gemini-3.5-flash-lite': 'minimal', 'gemini-3.1-pro': 'high', 'gemini-3.1-pro-preview': 'high',
   'gemini-3.1-flash-lite': 'minimal',
@@ -823,7 +825,25 @@ async function anthropic({ model, system, messages, keys, signal }) {
 
 // (agentplatform dispatcher is defined below alongside agentPlatformOpenAIMaaS)
 
-async function agentPlatformGemini({ model, system, messages, keys, signal, effort }) {
+// Gemini 4+ (e.g. `gemini-4-argon`) and explicitly global-scoped Gemini models
+// are served on the project-scoped `/v1/projects/<PROJECT>/locations/global`
+// Vertex AI path rather than the projectless `/v1/publishers/google` alias
+// (which routes to us-central1 and returns 404 for global-only models).
+// Because `AGENT_PLATFORM_API_KEY` belongs to project 419460847694 while
+// `GCP_PROJECT_ID` is used for Claude OAuth (`llm-compare-ubhits`), default to
+// `AGENT_PLATFORM_PROJECT_NUMBER` (`419460847694`) unless the user supplied a
+// custom `gcpProject` override alongside their own API key.
+function vertexGeminiBaseUrl(model, keys, region) {
+  const needsGlobalProjectPath = region === 'global' || geminiVersion(model) >= 4;
+  if (!needsGlobalProjectPath) {
+    return `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}`;
+  }
+  const proj = ((keys && keys.gcpProject) || process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694').trim();
+  const loc = (region || 'global').trim();
+  return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${encodeURIComponent(model)}`;
+}
+
+async function agentPlatformGemini({ model, system, messages, keys, signal, effort, region }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
@@ -843,8 +863,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     return body;
   };
 
-  const url =
-    `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:generateContent`;
+  const url = `${vertexGeminiBaseUrl(model, keys, region)}:generateContent`;
   // SECURITY: API key in the x-goog-api-key header, never in the URL.
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
 
@@ -991,7 +1010,7 @@ async function readSSE(response, onEvent) {
   }
 }
 
-async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort }) {
+async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
 
@@ -1010,7 +1029,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     if (system) body.systemInstruction = { parts: [{ text: system }] };
     return body;
   };
-  const url = `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
+  const url = `${vertexGeminiBaseUrl(model, keys, region)}:streamGenerateContent?alt=sse`;
   // SECURITY: API key in the x-goog-api-key header, never in the URL.
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
 
@@ -1312,7 +1331,7 @@ async function agentplatform({ publisher, model, system, messages, project, keys
   }
   const pub = publisher || 'google';
   if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, signal, effort });
-  return agentPlatformGemini({ model, system, messages, keys, signal, effort });
+  return agentPlatformGemini({ model, system, messages, keys, signal, effort, region });
 }
 
 const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
@@ -1337,7 +1356,7 @@ async function dispatchComplete({ provider, model, system, messages, publisher, 
     const pub = publisher || 'google';
     return pub === 'anthropic'
       ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort })
-      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort });
+      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region });
   }
   // OpenAI-compatible providers stream too, so an external model's column gets
   // the same live token feed as the Vertex ones.
