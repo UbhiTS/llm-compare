@@ -374,6 +374,44 @@ async function runTests() {
     'Other user referencing testUser vaultRef is rejected with ATTACHMENT_EXPIRED'
   );
 
+  // Verify Admin cross-user restore & >256 KB image hydration (e.g., 371.9 KB 44e795c4.jpeg)
+  const adminRaw = vault.getVaultRawBinarySync(otherUser, ptr.vaultRef, { isAdmin: true });
+  assert.ok(adminRaw && Buffer.compare(adminRaw.buffer, rawBinaryBuf) === 0, 'Admin can read cross-user vault binary when restoring another user run');
+  const adminHydrated = await normalizeAttachmentsAsync([ptr], { username: otherUser, isAdmin: true });
+  assert.equal(adminHydrated.length, 1, 'Admin can re-run/judge a restored cross-user attachment via vaultRef');
+  assert.equal(Buffer.from(adminHydrated[0].data, 'base64').length, rawBinaryBuf.length);
+
+  const largeJpegBuf = Buffer.alloc(380 * 1024, 0x7a); // 380 KB (> 256 KB)
+  const extRun = await saveRun({
+    user: testUser,
+    task: {
+      id: 'custom',
+      title: 'CNC vs 3D Printing CAD Review',
+      category: 'general',
+      prompt: 'Analyze 44e795c4.jpeg for CNC vs 3D printing.',
+      attachments: [
+        {
+          name: '44e795c4.jpeg',
+          mimeType: 'image/jpeg',
+          kind: 'image',
+          size: largeJpegBuf.length,
+          data: largeJpegBuf.toString('base64'),
+          estimatedTokens: 273,
+        },
+      ],
+    },
+    models: [{ slot: 'A', label: 'Gemini 4 Argon', model: 'gemini-4-argon' }],
+    results: [{ slot: 'A', code: 'CAD analysis output', costUsd: 0.002, wallMs: 800 }],
+  });
+  const restoredByAdmin = getRun(extRun.id, { username: otherUser, isAdmin: true });
+  assert.ok(restoredByAdmin && Array.isArray(restoredByAdmin.attachments) && restoredByAdmin.attachments.length === 1, 'Admin restores external user run');
+  assert.equal(
+    Buffer.from(restoredByAdmin.attachments[0].data, 'base64').length,
+    largeJpegBuf.length,
+    'hydrateRunAttachmentsForReturn hydrates >256 KB (380 KB) attachment inline on Restore'
+  );
+  await deleteRun(extRun.id, { username: testUser, isAdmin: false });
+
   // Clean up testUser vault prompt
   deleteUserPrompt(testUser, vaultSaveRes.saved.id);
 

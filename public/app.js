@@ -1155,15 +1155,19 @@ function restoreCustomAttachmentsFromData(list) {
     const mimeType = a.mimeType || (lowerName.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
     const isImage = !a.isEmpty && (/^image\/(png|jpeg|jpg|webp|gif)$/i.test(mimeType) || /\.(png|jpe?g|webp|gif)$/i.test(lowerName));
     const vaultHash = a.vaultRef || a.sha256 || null;
-    const isVaultCached = Boolean(a.cached || vaultHash || a.sha1);
-    const previewUrl = a.previewUrl || a.thumbnailUrl || (isImage && a.data
-      ? `data:${mimeType};base64,${a.data}`
-      : (isImage && vaultHash ? `/api/me/vault/${encodeURIComponent(vaultHash)}` : null));
+    const blobMissing = Boolean(a.blobMissing || a.hasBlob === false);
+    const isVaultCached = !blobMissing && Boolean(a.cached || vaultHash || a.sha1);
+    const cleanDataB64 = String(a.data || '').replace(/^data:[^;]+;base64,/, '');
+    const previewUrl = (isImage && cleanDataB64)
+      ? `data:${mimeType};base64,${cleanDataB64}`
+      : (blobMissing
+        ? null
+        : (a.previewUrl || a.thumbnailUrl || (isImage && vaultHash ? `/api/me/vault/${encodeURIComponent(vaultHash)}` : null)));
     const attObj = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       name: a.name || 'file',
       mimeType,
-      size: Number(a.size) || (a.data ? Math.round(a.data.length * 0.75) : 0),
+      size: Number(a.size) || (cleanDataB64 ? Math.round(cleanDataB64.length * 0.75) : 0),
       isEmpty: Boolean(a.isEmpty),
       pageCount: Number(a.pageCount) || 0,
       warning: a.warning || null,
@@ -1172,8 +1176,9 @@ function restoreCustomAttachmentsFromData(list) {
       sha256: a.sha256 || vaultHash || null,
       vaultRef: vaultHash,
       cached: isVaultCached,
+      blobMissing,
       estimatedTokens: Number(a.estimatedTokens) || 0,
-      data: a.data || '',
+      data: cleanDataB64,
       textContent: a.textContent || '',
       previewUrl,
     };
@@ -2424,10 +2429,10 @@ function renderAttachments() {
 
   listEl.innerHTML = CUSTOM_ATTACHMENTS.map((a) => {
     const b = attachmentBadgeInfo(a.name, a.mimeType);
-    const isImg = Boolean(a.previewUrl || (a.data && /^image\//i.test(a.mimeType || '')));
+    const isImg = !a.blobMissing && Boolean(a.previewUrl || (a.data && /^image\//i.test(a.mimeType || '')));
     const imgSrc = a.previewUrl || (isImg && a.data ? `data:${a.mimeType || 'image/png'};base64,${a.data}` : '');
     const visual = imgSrc
-      ? `<img class="ca-thumb" src="${esc(imgSrc)}" alt="${esc(a.name)}" />`
+      ? `<img class="ca-thumb" data-att-id="${esc(a.id)}" src="${esc(imgSrc)}" alt="${esc(a.name)}" />`
       : `<div class="ca-type-icon ${b.cls}">${esc(b.label)}</div>`;
     const metaParts = [formatBytes(a.size)];
     if (a.pageCount) metaParts.push(`${a.pageCount}p`);
@@ -2453,15 +2458,31 @@ function renderAttachments() {
       `</div>`
     );
   }).join('');
+  // Graceful fallback if a vault thumbnail URL fails to load (e.g. expired blob): swap broken <img> for clean file badge
+  listEl.querySelectorAll('img.ca-thumb').forEach((imgEl) => {
+    imgEl.addEventListener('error', () => {
+      const attId = imgEl.getAttribute('data-att-id');
+      const att = CUSTOM_ATTACHMENTS.find((x) => String(x.id) === String(attId));
+      if (att) {
+        att.previewUrl = null;
+        att.blobMissing = true;
+        att.cached = false;
+        if (!att.warning) att.warning = 'Original file binary expired — re-attach file to preview or re-run';
+        renderAttachments();
+      }
+    }, { once: true });
+  });
   renderContextMeter();
 }
 
 function openCustomAttachmentLightbox(attId) {
-  const imgAtts = CUSTOM_ATTACHMENTS.filter((a) => a && (a.previewUrl || (a.data && /^image\//i.test(a.mimeType || ''))));
+  const imgAtts = CUSTOM_ATTACHMENTS.filter((a) => a && !a.blobMissing && (a.previewUrl || (a.data && /^image\//i.test(a.mimeType || ''))));
   if (!imgAtts.length) return;
   const items = imgAtts.map((a, i) => {
     const cleanB64 = String(a.data || '').replace(/^data:[^;]+;base64,/, '');
-    const url = a.previewUrl || `data:${a.mimeType || 'image/png'};base64,${cleanB64}`;
+    const url = (cleanB64 && /^image\//i.test(a.mimeType || ''))
+      ? `data:${a.mimeType || 'image/png'};base64,${cleanB64}`
+      : (a.previewUrl || `data:${a.mimeType || 'image/png'};base64,${cleanB64}`);
     return {
       id: a.id,
       badge: `Input Image #${i + 1} of ${imgAtts.length}`,

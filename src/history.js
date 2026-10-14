@@ -971,6 +971,18 @@ function rowToMeta(r) {
 
 function recordToMeta(rec) {
   const u = norm(rec.user);
+  const rawSummary = Array.isArray(rec.summary) ? rec.summary.slice() : [];
+  if (rawSummary.length > 0 && Array.isArray(rec.attachments) && rec.attachments.length > 0) {
+    const first = rawSummary[0];
+    if (first && typeof first === 'object' && !Array.isArray(first.inputVaultRefs)) {
+      const inputVaultRefs = rec.attachments
+        .map((a) => a && (a.vaultRef || a.sha256))
+        .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
+      if (inputVaultRefs.length > 0) {
+        rawSummary[0] = { ...first, inputVaultRefs };
+      }
+    }
+  }
   return {
     id: rec.id,
     at: Number(rec.at) || Date.now(),
@@ -982,7 +994,7 @@ function recordToMeta(rec) {
     prompt: typeof rec.prompt === 'string' ? rec.prompt : '',
     kind: rec.kind === 'single' ? 'single' : 'compare',
     models: Array.isArray(rec.models) ? rec.models : [],
-    summary: Array.isArray(rec.summary) ? rec.summary : [],
+    summary: rawSummary,
     starred: Boolean(rec.starred),
   };
 }
@@ -2151,6 +2163,8 @@ function listAllRuns() {
   return all.slice(0, MAX_LIST_ALL);
 }
 
+const MAX_INLINE_RESTORE_BYTES = 10 * 1024 * 1024; // Hydrate attachments up to 10 MB inline on single-run Restore
+
 function hydrateRunAttachmentsForReturn(rec, fp) {
   if (!rec || !Array.isArray(rec.attachments) || !rec.attachments.length) return rec;
   const ownerKey = rec.userKey || userKey(rec.user);
@@ -2162,19 +2176,47 @@ function hydrateRunAttachmentsForReturn(rec, fp) {
       const ptr = vault.storeAttachmentInVaultSync(ownerKey, a);
       if (ptr) {
         migratedLegacyInline = true;
-        // For small attachments (<= 256 KB), keep inline data in the returned object for instant preview/tests
-        if ((Number(ptr.size) || 0) <= 262144) {
+        if ((Number(ptr.size) || 0) <= MAX_INLINE_RESTORE_BYTES) {
           return { ...ptr, data: a.data || '', textContent: a.textContent || '' };
         }
         return ptr;
       }
     }
-    // If stored as a vault pointer and small (<= 256 KB), hydrate data/textContent from the binary vault
-    if (ownerKey && (a.vaultRef || a.sha256 || a.sha1) && !a.data && (Number(a.size) || 0) <= 262144) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a);
+    // If stored as a vault pointer, hydrate data/textContent from the binary vault (including cross-user admin restores)
+    if ((a.vaultRef || a.sha256 || a.sha1) && !a.data) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner: true });
       if (fromVault) {
-        return { ...a, data: fromVault.data || '', textContent: fromVault.textContent || '' };
+        if ((Number(fromVault.size || a.size) || 0) <= MAX_INLINE_RESTORE_BYTES) {
+          return {
+            ...a,
+            sha1: a.sha1 || fromVault.sha1 || null,
+            sha256: a.sha256 || fromVault.sha256 || null,
+            vaultRef: a.vaultRef || fromVault.vaultRef || fromVault.sha256 || null,
+            data: fromVault.data || '',
+            textContent: fromVault.textContent || a.textContent || '',
+            hasBlob: true,
+            ...(fromVault.claudeDataBase64 ? { claudeDataBase64: fromVault.claudeDataBase64, claudeMimeType: fromVault.claudeMimeType || 'image/webp' } : {}),
+            ...(fromVault.fitDataBase64 ? { fitDataBase64: fromVault.fitDataBase64, fitMimeType: fromVault.fitMimeType || 'image/jpeg' } : {}),
+          };
+        }
+        return {
+          ...a,
+          sha1: a.sha1 || fromVault.sha1 || null,
+          sha256: a.sha256 || fromVault.sha256 || null,
+          vaultRef: a.vaultRef || fromVault.vaultRef || fromVault.sha256 || null,
+          hasBlob: true,
+        };
       }
+      // Binary file is missing on disk (e.g. legacy run created before binary vault or pruned blob):
+      // clear dead thumbnailUrl so the browser renders a clean file badge instead of a broken <img> icon.
+      return {
+        ...a,
+        thumbnailUrl: null,
+        previewUrl: null,
+        hasBlob: false,
+        blobMissing: true,
+        warning: a.warning || 'Original file binary expired — re-attach file to preview or re-run',
+      };
     }
     return a;
   });
@@ -2938,8 +2980,8 @@ function hydrateImageRunForReturn(rec) {
   const hydratedResults = (Array.isArray(rec.results) ? rec.results : (Array.isArray(rec.summary) ? rec.summary : [])).map((r) => {
     if (!r || typeof r !== 'object') return r;
     const out = { ...r };
-    if (!out.imageDataUrl && ownerKey && out.imageVaultRef) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, out.imageVaultRef);
+    if (!out.imageDataUrl && out.imageVaultRef) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, out.imageVaultRef, { fallbackAnyOwner: true });
       if (fromVault && fromVault.data) {
         out.imageDataUrl = `data:${fromVault.mimeType || out.mimeType || 'image/png'};base64,${fromVault.data}`;
       }
@@ -2947,8 +2989,8 @@ function hydrateImageRunForReturn(rec) {
     if (!out.imageDataUrl && out.thumbDataUrl) {
       out.imageDataUrl = out.thumbDataUrl;
     }
-    if (!out.thoughtImageDataUrl && ownerKey && out.thoughtVaultRef) {
-      const tVault = vault.readAttachmentFromVaultSync(ownerKey, out.thoughtVaultRef);
+    if (!out.thoughtImageDataUrl && out.thoughtVaultRef) {
+      const tVault = vault.readAttachmentFromVaultSync(ownerKey, out.thoughtVaultRef, { fallbackAnyOwner: true });
       if (tVault && tVault.data) {
         out.thoughtImageDataUrl = `data:${tVault.mimeType || 'image/png'};base64,${tVault.data}`;
       }
@@ -2957,11 +2999,12 @@ function hydrateImageRunForReturn(rec) {
   });
   const hydratedAttachments = (Array.isArray(rec.attachments) ? rec.attachments : []).map((a) => {
     if (!a || typeof a !== 'object') return a;
-    if (!a.data && ownerKey && (a.vaultRef || a.sha256)) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a);
+    if (!a.data && (a.vaultRef || a.sha256 || a.sha1)) {
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner: true });
       if (fromVault && fromVault.data) {
-        return { ...a, data: fromVault.data, mimeType: fromVault.mimeType || a.mimeType || 'image/png' };
+        return { ...a, data: fromVault.data, mimeType: fromVault.mimeType || a.mimeType || 'image/png', hasBlob: true };
       }
+      return { ...a, thumbnailUrl: null, previewUrl: null, hasBlob: false, blobMissing: true };
     }
     return a;
   });

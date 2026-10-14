@@ -600,15 +600,72 @@ function lookupSha256BySha1Sync(uKey, sha1) {
   return null;
 }
 
-// Read a stored attachment from the user's binary vault + SQLite `user_vault_files` record.
-function readAttachmentFromVaultSync(usernameOrKey, refOrItem) {
-  const uKey = userKeyFromUsername(usernameOrKey);
-  if (!uKey) return null;
-  const sha256 = resolveUserSha256Sync(uKey, refOrItem);
-  if (!sha256) return null;
+// Resolve an attachment binary across any user's vault (used ONLY when an Admin
+// restores/previews/re-runs another user's run or when hydrating a run whose
+// ownership has already been authorized).
+function findAnyOwnerKeyForRefSync(refOrItem) {
+  if (!refOrItem) return null;
+  let targetSha256 = null;
+  let targetSha1 = null;
+  if (typeof refOrItem === 'string') {
+    targetSha256 = safeHex64(refOrItem);
+    if (!targetSha256) targetSha1 = safeHex40(refOrItem);
+  } else if (typeof refOrItem === 'object') {
+    targetSha256 = safeHex64(refOrItem.sha256 || refOrItem.vaultRef);
+    targetSha1 = safeHex40(refOrItem.sha1);
+  }
+  if (!targetSha256 && !targetSha1) return null;
 
-  const dir = getUserVaultDir(uKey);
-  const binPath = path.join(dir, `${sha256}.bin`);
+  // 1. Fast check in in-memory / SQLite `metaCache`
+  for (const [, rec] of metaCache.entries()) {
+    if (!rec || !rec.userKey || !rec.sha256) continue;
+    if ((targetSha256 && rec.sha256 === targetSha256) || (targetSha1 && rec.sha1 === targetSha1)) {
+      const dir = getUserVaultDir(rec.userKey);
+      const binPath = dir ? path.join(dir, `${rec.sha256}.bin`) : null;
+      if (binPath && fs.existsSync(binPath)) {
+        return { uKey: rec.userKey, sha256: rec.sha256 };
+      }
+    }
+  }
+
+  // 2. Fallback directory scan in `/data/vault/*/<sha256>.bin` if targetSha256 is known
+  if (targetSha256) {
+    try {
+      const baseDir = getVaultBaseDir();
+      if (fs.existsSync(baseDir)) {
+        for (const d of fs.readdirSync(baseDir)) {
+          if (!HEX40.test(d)) continue;
+          const binPath = path.join(baseDir, d, `${targetSha256}.bin`);
+          if (fs.existsSync(binPath)) {
+            return { uKey: d.toLowerCase(), sha256: targetSha256 };
+          }
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Read a stored attachment from the user's binary vault + SQLite `user_vault_files` record.
+// When `opts && (opts.isAdmin || opts.fallbackAnyOwner)` is true, falls back to locating the
+// binary in the original run owner's vault if not present in `usernameOrKey`'s own vault.
+function readAttachmentFromVaultSync(usernameOrKey, refOrItem, opts = null) {
+  let uKey = userKeyFromUsername(usernameOrKey);
+  let sha256 = uKey ? resolveUserSha256Sync(uKey, refOrItem) : null;
+  let dir = uKey ? getUserVaultDir(uKey) : null;
+  let binPath = (dir && sha256) ? path.join(dir, `${sha256}.bin`) : null;
+
+  if ((!binPath || !fs.existsSync(binPath)) && opts && (opts.isAdmin || opts.fallbackAnyOwner)) {
+    const fallback = findAnyOwnerKeyForRefSync(refOrItem);
+    if (fallback) {
+      uKey = fallback.uKey;
+      sha256 = fallback.sha256;
+      dir = getUserVaultDir(uKey);
+      binPath = path.join(dir, `${sha256}.bin`);
+    }
+  }
+
+  if (!uKey || !sha256 || !binPath) return null;
   try {
     if (!fs.existsSync(binPath)) return null;
     const rawBuf = fs.readFileSync(binPath);
@@ -685,13 +742,25 @@ function readAttachmentFromVaultSync(usernameOrKey, refOrItem) {
 }
 
 // Direct raw binary lookup for `GET /api/me/vault/:sha256` (zero base64 overhead).
-function getVaultRawBinarySync(usernameOrKey, ref) {
-  const uKey = userKeyFromUsername(usernameOrKey);
-  if (!uKey) return null;
-  const sha256 = resolveUserSha256Sync(uKey, ref);
-  if (!sha256) return null;
-  const dir = getUserVaultDir(uKey);
-  const binPath = path.join(dir, `${sha256}.bin`);
+// When `opts && (opts.isAdmin || opts.fallbackAnyOwner)` is true, falls back to locating
+// the binary across user vaults if not present in `usernameOrKey`'s own vault.
+function getVaultRawBinarySync(usernameOrKey, ref, opts = null) {
+  let uKey = userKeyFromUsername(usernameOrKey);
+  let sha256 = uKey ? resolveUserSha256Sync(uKey, ref) : null;
+  let dir = uKey ? getUserVaultDir(uKey) : null;
+  let binPath = (dir && sha256) ? path.join(dir, `${sha256}.bin`) : null;
+
+  if ((!binPath || !fs.existsSync(binPath)) && opts && (opts.isAdmin || opts.fallbackAnyOwner)) {
+    const fallback = findAnyOwnerKeyForRefSync(ref);
+    if (fallback) {
+      uKey = fallback.uKey;
+      sha256 = fallback.sha256;
+      dir = getUserVaultDir(uKey);
+      binPath = path.join(dir, `${sha256}.bin`);
+    }
+  }
+
+  if (!uKey || !sha256 || !binPath) return null;
   try {
     if (!fs.existsSync(binPath)) return null;
     const buffer = fs.readFileSync(binPath);

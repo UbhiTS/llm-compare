@@ -50,7 +50,10 @@ const { getImageArenaConfig, runImageArenaComparison } = require('./src/imageAre
 // a response has already been sent.
 async function attachmentsOr409(req, res, raw, errorShape) {
   try {
-    return await normalizeAttachmentsAsync(raw, { username: req && req.user && req.user.username });
+    return await normalizeAttachmentsAsync(raw, {
+      username: req && req.user && req.user.username,
+      isAdmin: Boolean(req && req.user && req.user.role === 'admin'),
+    });
   } catch (e) {
     if (e && e.code === 'ATTACHMENT_EXPIRED') {
       res.status(409).json({ ...errorShape, code: 'ATTACHMENT_EXPIRED', error: scrubError(e.message), expired: e.expired });
@@ -614,9 +617,12 @@ app.get('/api/me/vault', (req, res) => {
 
 // Serve a raw binary file directly from the authenticated user's personal vault
 // (/data/vault/<userKey>/<sha256>.bin) for image previews and downloads.
-// Strictly scoped to req.user.username so users can never access another user's vault.
+// Strictly scoped to req.user.username for regular users; admins restoring cross-user
+// runs can resolve the binary from the run owner's vault folder.
 app.get('/api/me/vault/:sha256', (req, res) => {
-  const entry = history.vault.getVaultRawBinarySync(req.user.username, req.params.sha256);
+  const entry = history.vault.getVaultRawBinarySync(req.user.username, req.params.sha256, {
+    isAdmin: Boolean(req.user && req.user.role === 'admin'),
+  });
   if (!entry || !entry.buffer) return res.status(404).json({ ok: false, error: 'Vault file not found.' });
   const safeMime = /^(image\/(png|jpeg|webp|gif)|application\/pdf|text\/plain)$/i.test(entry.mimeType)
     ? entry.mimeType
@@ -1065,7 +1071,10 @@ function modelUsesOwnKey(m, keys) {
 app.post('/api/attachments/inspect', async (req, res) => {
   try {
     const rawAttachments = (req.body && req.body.attachments) || [];
-    const items = await inspectAttachmentsAsync(rawAttachments, { username: req.user && req.user.username });
+    const items = await inspectAttachmentsAsync(rawAttachments, {
+      username: req.user && req.user.username,
+      isAdmin: Boolean(req.user && req.user.role === 'admin'),
+    });
     res.json({ ok: true, attachments: items });
   } catch (e) {
     const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;

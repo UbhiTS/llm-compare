@@ -373,8 +373,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.32', 'package.json must be at version 1.0.32');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.32</span>'), 'index.html must display v1.0.32 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.33', 'package.json must be at version 1.0.33');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.33</span>'), 'index.html must display v1.0.33 in footer');
 
   // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');

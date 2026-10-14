@@ -583,6 +583,7 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
   const seenHashes = new Set();
   const expired = [];
   const username = opts && opts.username ? String(opts.username).trim().toLowerCase() : null;
+  const isAdmin = Boolean(opts && opts.isAdmin);
 
   for (let i = 0; i < Math.min(rawList.length, MAX_ATTACHMENTS); i++) {
     const item = rawList[i];
@@ -597,11 +598,11 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
     const refSha256 = item.sha256 || item.vaultRef;
     if ((refSha256 || item.sha1) && !data && !providedText) {
       let cached = (refSha256 && cacheGetAttachment(String(refSha256))) || (item.sha1 && cacheGetAttachment(String(item.sha1)));
-      if (cached && username && cached._owners instanceof Set && !cached._owners.has(username)) {
+      if (cached && username && !isAdmin && cached._owners instanceof Set && !cached._owners.has(username)) {
         cached = null;
       }
       if (!cached && username) {
-        const fromVault = vault.readAttachmentFromVaultSync(username, item);
+        const fromVault = vault.readAttachmentFromVaultSync(username, item, { isAdmin });
         if (fromVault) {
           // Ensure kind/textContent/estimatedTokens are fully populated if the vault entry came from a raw binary migration
           const vMime = inferMimeType(fromVault.name || name, fromVault.mimeType);
