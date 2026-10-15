@@ -469,17 +469,36 @@ async function runTests() {
   });
   assert.equal(pSave1.ok && pSave2.ok && mSave1.ok, true, 'Saved 2 prompts and 1 preset before simulated container redeploy');
 
-  // Verify Admin usageSummary() includes per-user savedPrompts & savedPresets counts + global totals
+  // Verify Admin usageSummary() only lists users with >= 1 Text Arena run (never 0-run users),
+  // while still tracking global savedPrompts & savedPresets totals and enriching active runners.
   const historyMod = require('../src/history');
+  const usageZeroRuns = historyMod.usageSummary();
+  assert.equal(
+    (usageZeroRuns.users || []).some((u) => u.user === redeployUser),
+    false,
+    'usageSummary excludes user who has 0 Text Arena runs'
+  );
+  const redeployRun = await saveRun({
+    user: redeployUser,
+    task: { id: 'custom', title: 'Redeploy User Text Run', category: 'general', prompt: 'Test prompt' },
+    models: [{ slot: 'A', label: 'Gemini 4 Argon', model: 'gemini-4-argon' }],
+    results: [{ slot: 'A', code: 'Test output', costUsd: 0.001, wallMs: 400 }],
+  });
   const usageBefore = historyMod.usageSummary();
   assert.ok(usageBefore && usageBefore.totals, 'usageSummary returns totals');
   assert.ok(usageBefore.totals.totalSavedPrompts >= 2, 'usageSummary totals.totalSavedPrompts includes saved prompts');
   assert.ok(usageBefore.totals.totalSavedPresets >= 1, 'usageSummary totals.totalSavedPresets includes saved presets');
   const uRowBefore = (usageBefore.users || []).find((u) => u.user === redeployUser);
-  assert.ok(uRowBefore, 'usageSummary includes user even when user has 0 comparison runs');
+  assert.ok(uRowBefore && uRowBefore.runs >= 1, 'usageSummary includes user once user has >= 1 comparison run');
   assert.equal(uRowBefore.savedPrompts, 2, 'Admin usage row shows exact savedPrompts count for user');
   assert.equal(uRowBefore.savedPresets, 1, 'Admin usage row shows exact savedPresets count for user');
   assert.equal(uRowBefore.prompt, undefined, 'Admin usage row never leaks private prompt text');
+  assert.equal(
+    (historyMod.imageUsageSummary().users || []).some((u) => u.user === redeployUser),
+    false,
+    'imageUsageSummary excludes user who has only used the Text Arena (0 image runs)'
+  );
+  await deleteRun(redeployRun.id, { username: redeployUser, isAdmin: true });
 
   // Simulate a real Cloud Run container redeploy:
   // Wipe the ephemeral /tmp SQLite database (and -wal / -shm) WITHOUT waiting for any timers,

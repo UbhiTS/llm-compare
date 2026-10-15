@@ -3009,7 +3009,8 @@ function usageSummary(opts = {}) {
     byUser.set(uKeyName, u);
   }
 
-  // 3. Merge saved prompts, saved presets, and any real user with recorded workspace activity in `user_prefs`
+  // 3. Attach saved prompts & saved presets counts to users who have at least 1 Text Arena run
+  // (never add users with 0 Text Arena runs to the Text Arena History user table).
   let totalSavedPrompts = 0;
   let totalSavedPresets = 0;
   for (const p of prefsByUserKey.values()) {
@@ -3017,76 +3018,17 @@ function usageSummary(opts = {}) {
     if (!uKeyName) continue;
     const spCount = Array.isArray(p.savedPrompts) ? p.savedPrompts.length : 0;
     const mpCount = Array.isArray(p.savedPresets) ? p.savedPresets.length : 0;
-    const existing = byUser.get(uKeyName);
-    const hasWorkspaceActivity = Boolean(
-      !SYNTHETIC_TEST_USER_RE.test(uKeyName) &&
-      (Number(p.updatedAt) > 0 || (Array.isArray(p.slots) && p.slots.length > 0))
-    );
-    if (!existing && spCount === 0 && mpCount === 0 && !hasWorkspaceActivity) continue;
-    const u = existing || {
-      user: uKeyName,
-      userName: uKeyName,
-      runs: 0,
-      activeRuns: 0,
-      runsToday: 0,
-      starredRuns: 0,
-      lastAt: 0,
-      costUsd: 0,
-      savedPrompts: 0,
-      savedPresets: 0,
-    };
-    u.savedPrompts = spCount;
-    u.savedPresets = mpCount;
-    if ((p.updatedAt || 0) > u.lastAt) {
-      u.lastAt = Number(p.updatedAt) || u.lastAt;
-    }
     totalSavedPrompts += spCount;
     totalSavedPresets += mpCount;
-    byUser.set(uKeyName, u);
+    const existing = byUser.get(uKeyName);
+    if (!existing || existing.runs < 1) continue;
+    existing.savedPrompts = spCount;
+    existing.savedPresets = mpCount;
   }
 
-  // 4. Also merge real platform users from Image Arena runs, 90-day audit runs, and registered accounts
-  // so Admin Usage rosters are 100% consistent across both Text and Image arenas.
-  const ensurePlatformUser = (rawUser, rawName, ts) => {
-    const uKeyName = norm(rawUser);
-    if (!uKeyName || SYNTHETIC_TEST_USER_RE.test(uKeyName)) return;
-    const u = byUser.get(uKeyName) || {
-      user: uKeyName,
-      userName: rawName || rawUser || uKeyName,
-      runs: 0,
-      activeRuns: 0,
-      runsToday: 0,
-      starredRuns: 0,
-      lastAt: 0,
-      costUsd: 0,
-      savedPrompts: 0,
-      savedPresets: 0,
-    };
-    const numTs = Number(ts) || 0;
-    if (numTs > u.lastAt) {
-      u.lastAt = numTs;
-      if (rawName) u.userName = rawName;
-    }
-    byUser.set(uKeyName, u);
-  };
-  for (const im of imageMetaById.values()) {
-    if (im && im.user) ensurePlatformUser(im.user, im.userName, im.at);
-  }
-  for (const aim of archivedImageMetaById.values()) {
-    if (aim && aim.user) ensurePlatformUser(aim.user, aim.userName, aim.at);
-  }
-  for (const aud of auditMetaById.values()) {
-    if (aud && aud.user) ensurePlatformUser(aud.user, aud.userName, aud.at);
-  }
-  if (Array.isArray(opts && opts.registeredUsers)) {
-    for (const ru of opts.registeredUsers) {
-      if (!ru || !ru.username) continue;
-      const createdMs = ru.createdAt ? (Date.parse(ru.createdAt) || 0) : 0;
-      ensurePlatformUser(ru.username, ru.name || ru.username, createdMs);
-    }
-  }
-
-  const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+  const users = Array.from(byUser.values())
+    .filter((u) => u && u.runs >= 1)
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   return {
     generatedAt: Date.now(),
     dayStartUtc: startOfDay,
@@ -3841,78 +3783,37 @@ function imageUsageSummary(opts = {}) {
     byUser.set(uKeyName, u);
   }
 
-  // 3. Merge all known platform users (from `user_prefs`, Text Arena runs, archived runs,
-  // 90-day audit runs, and registered users) so Admins see the exact same complete user roster
-  // in the Image Arena History modal as in the Text Arena History modal.
-  const ensurePlatformUser = (rawUser, rawName, ts, allowAll = false) => {
-    const uKeyName = norm(rawUser);
-    if (!uKeyName || (!allowAll && SYNTHETIC_TEST_USER_RE.test(uKeyName))) return;
-    const u = byUser.get(uKeyName) || {
-      user: uKeyName,
-      userName: rawName || rawUser || uKeyName,
-      runs: 0,
-      activeRuns: 0,
-      runsToday: 0,
-      starredRuns: 0,
-      imagesGenerated: 0,
-      lastAt: 0,
-      costUsd: 0,
-    };
-    const numTs = Number(ts) || 0;
-    if (numTs > u.lastAt) {
-      u.lastAt = numTs;
-      if (rawName) u.userName = rawName;
-    }
-    byUser.set(uKeyName, u);
-  };
-  for (const p of prefsByUserKey.values()) {
-    if (!p || !p.user) continue;
-    const uKeyName = norm(p.user);
-    const spCount = Array.isArray(p.savedPrompts) ? p.savedPrompts.length : 0;
-    const mpCount = Array.isArray(p.savedPresets) ? p.savedPresets.length : 0;
-    const hasWorkspaceActivity = Boolean(
-      !SYNTHETIC_TEST_USER_RE.test(uKeyName) &&
-      (Number(p.updatedAt) > 0 || (Array.isArray(p.slots) && p.slots.length > 0))
-    );
-    if (spCount > 0 || mpCount > 0 || hasWorkspaceActivity) {
-      ensurePlatformUser(p.user, p.user, p.updatedAt, true);
-    }
-  }
-  for (const r of metaById.values()) {
-    if (r && r.user) ensurePlatformUser(r.user, r.userName, r.at, true);
-  }
-  for (const ar of archivedMetaById.values()) {
-    if (ar && ar.user) ensurePlatformUser(ar.user, ar.userName, ar.at, true);
-  }
+  // 3. Only include users who have at least 1 Image Arena run (never include 0-run users or
+  // users who have only used the Text Arena). If a completed Image Arena run exists in the
+  // 90-day audit ledger for a user not yet in `byUser`, count it so no image runner is missed.
   for (const aud of auditMetaById.values()) {
-    if (aud && aud.user) {
-      ensurePlatformUser(aud.user, aud.userName, aud.at);
-      // If an Image Arena run was recorded in the 90-day audit ledger (e.g. before server-side
-      // saveImageRun existed or after 7-day output pruning), reflect its run count if not already counted.
-      if (aud.arena === 'image' && aud.id && !countedRunIds.has(aud.id) && aud.status === 'completed') {
-        const uKeyName = norm(aud.user);
-        const u = byUser.get(uKeyName);
-        if (u && u.runs === 0) {
-          countedRunIds.add(aud.id);
-          u.runs++;
-          totalRuns++;
-          if (aud.at >= startOfDay) {
-            u.runsToday++;
-            runsToday++;
-          }
-        }
-      }
-    }
-  }
-  if (Array.isArray(opts && opts.registeredUsers)) {
-    for (const ru of opts.registeredUsers) {
-      if (!ru || !ru.username) continue;
-      const createdMs = ru.createdAt ? (Date.parse(ru.createdAt) || 0) : 0;
-      ensurePlatformUser(ru.username, ru.name || ru.username, createdMs);
-    }
+    if (!aud || !aud.user || aud.arena !== 'image' || aud.status !== 'completed') continue;
+    if (aud.id && countedRunIds.has(aud.id)) continue;
+    const uKeyName = norm(aud.user);
+    if (!uKeyName || SYNTHETIC_TEST_USER_RE.test(uKeyName)) continue;
+    const existing = byUser.get(uKeyName);
+    if (existing && existing.runs > 0) continue;
+    countedRunIds.add(aud.id);
+    const numTs = Number(aud.at) || 0;
+    const today = numTs >= startOfDay;
+    totalRuns++;
+    if (today) runsToday++;
+    byUser.set(uKeyName, {
+      user: uKeyName,
+      userName: aud.userName || aud.user || uKeyName,
+      runs: 1,
+      activeRuns: 0,
+      runsToday: today ? 1 : 0,
+      starredRuns: 0,
+      imagesGenerated: 1,
+      lastAt: numTs,
+      costUsd: 0,
+    });
   }
 
-  const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+  const users = Array.from(byUser.values())
+    .filter((u) => u && u.runs >= 1)
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   return {
     generatedAt: Date.now(),
     dayStartUtc: startOfDay,

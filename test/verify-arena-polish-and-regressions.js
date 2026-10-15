@@ -34,7 +34,7 @@ const { TASKS } = require('../src/tasks');
   // ---------------------------------------------------------------------------
   // 1. Text vs Image Arena UI Parity & Removal of Numbers + Header/Footer Version & Timestamp
   // ---------------------------------------------------------------------------
-  assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.46</span>'), 'index.html must render #headerAppVersion next to LLM Compare title on top-left');
+  assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.47</span>'), 'index.html must render #headerAppVersion next to LLM Compare title on top-left');
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"') && indexHtml.includes('Last updated '), 'index.html footer must render #appLastUpdated with "Last updated" timestamp');
   assert(serverJs.includes('lastUpdated: LAST_UPDATED_ISO'), 'server.js /api/config must expose lastUpdated timestamp');
   assert(appJs.includes('function formatLastUpdatedStamp(isoStr)'), 'app.js must format lastUpdated timestamp');
@@ -117,15 +117,42 @@ const { TASKS } = require('../src/tasks');
   console.log('✓ 2. History restore Step 2 model synchronization verified for both Text and Image Arenas');
 
   // ---------------------------------------------------------------------------
-  // 3. Admin Image Arena History Roster & Server-Authoritative Per-Slot Merging
+  // 3. Admin Arena-Specific History Roster (runs >= 1) & Server-Authoritative Per-Slot Merging
   // ---------------------------------------------------------------------------
   const mockRegisteredUsers = [
     { username: 'ubhi@google.com', role: 'admin' },
     { username: 'john', role: 'user' },
     { username: 'alice@example.com', role: 'user' },
+    { username: 'zero_run_user', role: 'user' },
   ];
 
-  // Save a text run for alice so she is also in metaById
+  // Save a text run and an image run for ubhi@google.com (active in both arenas)
+  await history.saveRun({
+    id: 'txt_ubhi_1',
+    user: 'ubhi@google.com',
+    userName: 'ubhi@google.com',
+    at: Date.now() - 6000,
+    taskId: 'custom',
+    taskTitle: 'Ubhi prompt',
+    models: [{ slot: 'A', id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'agentplatform' }],
+    slots: [{ slot: 'A', data: { ok: true, durationMs: 400, costUsd: 0.001 } }],
+  });
+  await history.saveImageRun({
+    id: 'img_ubhi_1',
+    user: 'ubhi@google.com',
+    userName: 'ubhi@google.com',
+    at: Date.now() - 5500,
+    packId: 'retail-print',
+    scenarioId: 'holiday-card',
+    title: 'Ubhi image run',
+    prompt: 'Create a card.',
+    imageSize: '1K',
+    aspectRatio: '1:1',
+    slots: [{ slot: 'A', catalogId: 'gemini-3.1-flash-image' }],
+    results: [{ slot: 'A', catalogId: 'gemini-3.1-flash-image', ok: true, latencyMs: 1200, costUsd: 0.02 }],
+  });
+
+  // Save a text-only run for alice@example.com (no image runs)
   await history.saveRun({
     id: 'txt_alice_1',
     user: 'alice@example.com',
@@ -261,15 +288,35 @@ const { TASKS } = require('../src/tasks');
   assert.strictEqual(slotBSummary.imageVaultRef, 'img_john_slot_b_vault', 'Slot B must preserve server imageVaultRef after client thumb merge');
   assert.strictEqual(slotBSummary.thumbDataUrl, 'data:image/jpeg;base64,BB==', 'Slot B must include client thumbDataUrl');
 
-  // Verify both usageSummary and imageUsageSummary include all registered users (ubhi@google.com, john, alice@example.com)
+  // Verify arena-specific runs >= 1 filtering:
+  // - ubhi@google.com (1 Text run, 1 Image run) appears in BOTH usageSummary and imageUsageSummary
+  // - alice@example.com (1 Text run, 0 Image runs) appears ONLY in usageSummary and NOT in imageUsageSummary
+  // - john (0 Text runs, 1 Image run) appears ONLY in imageUsageSummary and NOT in usageSummary
+  // - zero_run_user (0 runs in both) appears in NEITHER
   const textUsage = history.usageSummary({ registeredUsers: mockRegisteredUsers });
   const imgUsage = history.imageUsageSummary({ registeredUsers: mockRegisteredUsers });
   const textUserNames = new Set(textUsage.users.map((u) => u.userName));
   const imgUserNames = new Set(imgUsage.users.map((u) => u.userName));
-  for (const expectedUser of ['ubhi@google.com', 'john', 'alice@example.com']) {
-    assert(textUserNames.has(expectedUser), `Text usageSummary must include user "${expectedUser}"`);
-    assert(imgUserNames.has(expectedUser), `Image imageUsageSummary must include user "${expectedUser}"`);
+
+  assert(textUserNames.has('ubhi@google.com'), 'Text usageSummary must include ubhi@google.com (has Text runs)');
+  assert(imgUserNames.has('ubhi@google.com'), 'Image imageUsageSummary must include ubhi@google.com (has Image runs)');
+
+  assert(textUserNames.has('alice@example.com'), 'Text usageSummary must include Text-only user alice@example.com');
+  assert(!imgUserNames.has('alice@example.com'), 'Image imageUsageSummary must NOT include Text-only user alice@example.com');
+
+  assert(imgUserNames.has('john'), 'Image imageUsageSummary must include Image-only user john');
+  assert(!textUserNames.has('john'), 'Text usageSummary must NOT include Image-only user john');
+
+  assert(!textUserNames.has('zero_run_user'), 'Text usageSummary must NOT include 0-run user');
+  assert(!imgUserNames.has('zero_run_user'), 'Image imageUsageSummary must NOT include 0-run user');
+
+  for (const u of textUsage.users) {
+    assert(u.runs >= 1, `Every user in Text usageSummary must have runs >= 1 (found ${u.userName} with ${u.runs})`);
   }
+  for (const u of imgUsage.users) {
+    assert(u.runs >= 1, `Every user in Image imageUsageSummary must have runs >= 1 (found ${u.userName} with ${u.runs})`);
+  }
+
   const johnImgRow = imgUsage.users.find((u) => u.userName === 'john');
   assert(johnImgRow && johnImgRow.runs >= 1 && johnImgRow.imagesGenerated >= 2, 'john row in imageUsageSummary must reflect his merged run and 2 generated images');
 
@@ -277,7 +324,7 @@ const { TASKS } = require('../src/tasks');
   assert(serverJs.includes('history.usageSummary({ registeredUsers: auth.listUsers() })'), 'server.js /api/usage must pass auth.listUsers()');
   assert(serverJs.includes('history.imageUsageSummary({ registeredUsers: auth.listUsers() })'), 'server.js /api/image-arena/usage must pass auth.listUsers()');
   assert(serverJs.includes('await history.saveImageRun({') && serverJs.includes('mergeSlots: true,'), 'server.js POST /api/image-arena/run must save image runs server-authoritatively with mergeSlots: true');
-  console.log('✓ 3. Admin Image Arena History roster & server-authoritative per-slot merging verified');
+  console.log('✓ 3. Arena-specific runs >= 1 History roster filtering & server-authoritative per-slot merging verified');
 
   // ---------------------------------------------------------------------------
   // 4. Tower of Hanoi & Pygame WASM Game Execution Regressions
