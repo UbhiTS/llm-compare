@@ -35,7 +35,9 @@ const BASE_DIR = process.env.APP_DATA_DIR
 const MAX_LIST_PER_USER = 200;   // most-recent N returned to a user
 const MAX_LIST_ALL = 1000;       // most-recent N returned to an admin (all users)
 const RUN_RETENTION_DAYS = Math.max(1, Number(process.env.HISTORY_RETENTION_DAYS) || 7);
-const RUN_RETENTION_MS = RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000; // 7 days default TTL for unstarred runs
+const RUN_RETENTION_MS = RUN_RETENTION_DAYS * 24 * 60 * 60 * 1000; // 7 days default TTL for unstarred run outputs & generated PNGs
+const AUDIT_RETENTION_DAYS = Math.max(7, Number(process.env.AUDIT_RETENTION_DAYS) || 90);
+const AUDIT_RETENTION_MS = AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000; // 90 days retention for input prompts, input attachments & audit logs
 
 const norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
 function userKey(username) {
@@ -84,6 +86,9 @@ const archivedMetaById = new Map();
 // Permanent lightweight ledger of all Image & GenMedia Arena runs ever executed:
 // id -> { id, at, user, userKey, userName, imagesCount, costUsd }
 const archivedImageMetaById = new Map();
+// 90-day security & compliance audit ledger of all input prompts, input attachments, and external user metadata:
+// id -> { id, at, arena, user, userKey, userName, accountType, ip, userAgent, taskId, title, prompt, attachments, inputVaultRefs, models, status, error, hiddenByUser, deletedAt }
+const auditMetaById = new Map();
 // Per-user preferences in-memory map: userKey -> { user, taskId, slots, models, savedPrompts, savedPresets, updatedAt }
 const prefsByUserKey = new Map();
 // Tracks which user keys have already been checked on disk so ensureOwnerLoadedSync is O(1) and never repeats GCS FUSE syscalls
@@ -398,6 +403,131 @@ function upsertArchivedImageRunInternal(entry) {
   }
 }
 
+function extractInputVaultHashesList(attachments, extraRefs) {
+  const set = new Set();
+  const addRef = (v) => {
+    if (typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v.trim())) {
+      set.add(v.trim().toLowerCase());
+    }
+  };
+  if (Array.isArray(extraRefs)) {
+    for (const r of extraRefs) addRef(r);
+  }
+  if (Array.isArray(attachments)) {
+    for (const a of attachments) {
+      if (a && typeof a === 'object') {
+        addRef(a.sha256);
+        addRef(a.vaultRef);
+      }
+    }
+  }
+  return Array.from(set);
+}
+
+function auditRowToEntry(r) {
+  if (!r || !r.id) return null;
+  const u = norm(r.user);
+  let attachments = [];
+  let inputVaultRefs = [];
+  let models = [];
+  try { attachments = JSON.parse(r.attachments_json || '[]'); } catch (_) {}
+  try { inputVaultRefs = JSON.parse(r.input_vault_refs_json || '[]'); } catch (_) {}
+  try { models = JSON.parse(r.models_json || '[]'); } catch (_) {}
+  const cleanAtts = Array.isArray(attachments) ? attachments : [];
+  const cleanRefs = extractInputVaultHashesList(cleanAtts, inputVaultRefs);
+  return {
+    id: r.id,
+    at: Number(r.at) || 0,
+    arena: r.arena || 'text',
+    user: u,
+    userKey: r.user_key || userKey(u),
+    userName: r.user_name || r.user || u,
+    accountType: r.account_type || 'google_internal',
+    ip: r.ip || null,
+    userAgent: r.user_agent || null,
+    taskId: r.task_id || 'custom',
+    title: r.title || 'Run',
+    prompt: typeof r.prompt === 'string' ? r.prompt : '',
+    attachments: cleanAtts,
+    inputVaultRefs: cleanRefs,
+    models: Array.isArray(models) ? models : [],
+    status: r.status || 'started',
+    error: r.error || null,
+    hiddenByUser: Boolean(r.hidden_by_user),
+    deletedAt: r.deleted_at ? Number(r.deleted_at) : null,
+  };
+}
+
+function upsertAuditRunInternal(entry, persistDisk = false) {
+  if (!entry || !entry.id) return null;
+  const sid = safeId(entry.id);
+  if (!sid) return null;
+  const existing = auditMetaById.get(sid);
+  const u = norm(entry.user || (existing && existing.user) || '');
+  if (!u) return null;
+  const uKey = entry.userKey || (existing && existing.userKey) || userKey(u);
+  const attachments = (Array.isArray(entry.attachments) && entry.attachments.length > 0)
+    ? entry.attachments
+    : ((existing && Array.isArray(existing.attachments)) ? existing.attachments : []);
+  const inputVaultRefs = extractInputVaultHashesList(attachments, [
+    ...(Array.isArray(entry.inputVaultRefs) ? entry.inputVaultRefs : []),
+    ...((existing && Array.isArray(existing.inputVaultRefs)) ? existing.inputVaultRefs : []),
+  ]);
+  const clean = {
+    id: sid,
+    at: Number(entry.at) || (existing && existing.at) || Date.now(),
+    arena: entry.arena || (existing && existing.arena) || 'text',
+    user: u,
+    userKey: uKey,
+    userName: entry.userName || (existing && existing.userName) || entry.user || u,
+    accountType: entry.accountType || (existing && existing.accountType) || (/@google\.com$/i.test(u) ? 'google_internal' : 'external'),
+    ip: entry.ip !== undefined ? (entry.ip || null) : ((existing && existing.ip) || null),
+    userAgent: entry.userAgent !== undefined ? (entry.userAgent || null) : ((existing && existing.userAgent) || null),
+    taskId: entry.taskId || (existing && existing.taskId) || 'custom',
+    title: entry.title || (existing && existing.title) || 'Run',
+    prompt: (typeof entry.prompt === 'string' && entry.prompt.length > 0)
+      ? entry.prompt
+      : ((existing && typeof existing.prompt === 'string') ? existing.prompt : ''),
+    attachments,
+    inputVaultRefs,
+    models: (Array.isArray(entry.models) && entry.models.length > 0)
+      ? entry.models
+      : ((existing && Array.isArray(existing.models)) ? existing.models : []),
+    status: entry.status || (existing && existing.status) || 'started',
+    error: entry.error !== undefined ? (entry.error || null) : ((existing && existing.error) || null),
+    hiddenByUser: entry.hiddenByUser !== undefined ? Boolean(entry.hiddenByUser) : Boolean(existing && existing.hiddenByUser),
+    deletedAt: entry.deletedAt !== undefined ? (entry.deletedAt ? Number(entry.deletedAt) : null) : ((existing && existing.deletedAt) || null),
+  };
+  auditMetaById.set(sid, clean);
+  if (stmts && stmts.upsertAuditRun) {
+    try {
+      stmts.upsertAuditRun.run(
+        clean.id,
+        clean.at,
+        clean.arena,
+        clean.user,
+        clean.userKey,
+        clean.userName,
+        clean.accountType,
+        clean.ip,
+        clean.userAgent,
+        clean.taskId,
+        clean.title,
+        clean.prompt,
+        JSON.stringify(clean.attachments || []),
+        JSON.stringify(clean.inputVaultRefs || []),
+        JSON.stringify(clean.models || []),
+        clean.status,
+        clean.error,
+        clean.hiddenByUser ? 1 : 0,
+        clean.deletedAt
+      );
+    } catch (_) {}
+  }
+  if (persistDisk) flushSnapshotSync();
+  return clean;
+}
+
 function promptRowToItem(r) {
   if (!r) return null;
   let attachments = [];
@@ -619,6 +749,29 @@ function initSqlite() {
         );
         CREATE INDEX IF NOT EXISTS idx_image_runs_at ON image_runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_image_runs_user_at ON image_runs(user_key, at DESC);
+        CREATE TABLE IF NOT EXISTS audit_runs (
+          id TEXT PRIMARY KEY,
+          at INTEGER NOT NULL,
+          arena TEXT NOT NULL DEFAULT 'text',
+          user TEXT NOT NULL,
+          user_key TEXT NOT NULL,
+          user_name TEXT NOT NULL,
+          account_type TEXT NOT NULL DEFAULT 'google_internal',
+          ip TEXT,
+          user_agent TEXT,
+          task_id TEXT NOT NULL DEFAULT 'custom',
+          title TEXT NOT NULL DEFAULT 'Run',
+          prompt TEXT NOT NULL DEFAULT '',
+          attachments_json TEXT NOT NULL DEFAULT '[]',
+          input_vault_refs_json TEXT NOT NULL DEFAULT '[]',
+          models_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'started',
+          error TEXT,
+          hidden_by_user INTEGER NOT NULL DEFAULT 0,
+          deleted_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_runs_at ON audit_runs(at DESC);
+        CREATE INDEX IF NOT EXISTS idx_audit_runs_user_at ON audit_runs(user_key, at DESC);
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
@@ -731,7 +884,43 @@ function initSqlite() {
         setImageStarred: sqliteDb.prepare(`UPDATE image_runs SET starred = ? WHERE id = ?`),
         delImage: sqliteDb.prepare(`DELETE FROM image_runs WHERE id = ?`),
         allImage: sqliteDb.prepare(`SELECT * FROM image_runs ORDER BY at DESC`),
+        upsertAuditRun: sqliteDb.prepare(`
+          INSERT INTO audit_runs (
+            id, at, arena, user, user_key, user_name, account_type, ip, user_agent,
+            task_id, title, prompt, attachments_json, input_vault_refs_json, models_json,
+            status, error, hidden_by_user, deleted_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            at = excluded.at,
+            arena = excluded.arena,
+            user_name = excluded.user_name,
+            account_type = excluded.account_type,
+            ip = COALESCE(excluded.ip, audit_runs.ip),
+            user_agent = COALESCE(excluded.user_agent, audit_runs.user_agent),
+            task_id = excluded.task_id,
+            title = excluded.title,
+            prompt = CASE WHEN excluded.prompt != '' THEN excluded.prompt ELSE audit_runs.prompt END,
+            attachments_json = CASE WHEN excluded.attachments_json != '[]' THEN excluded.attachments_json ELSE audit_runs.attachments_json END,
+            input_vault_refs_json = CASE WHEN excluded.input_vault_refs_json != '[]' THEN excluded.input_vault_refs_json ELSE audit_runs.input_vault_refs_json END,
+            models_json = CASE WHEN excluded.models_json != '[]' THEN excluded.models_json ELSE audit_runs.models_json END,
+            status = excluded.status,
+            error = excluded.error,
+            hidden_by_user = MAX(audit_runs.hidden_by_user, excluded.hidden_by_user),
+            deleted_at = COALESCE(excluded.deleted_at, audit_runs.deleted_at)
+        `),
+        delAuditRun: sqliteDb.prepare(`DELETE FROM audit_runs WHERE id = ?`),
+        allAuditRuns: sqliteDb.prepare(`SELECT * FROM audit_runs ORDER BY at DESC`),
       };
+
+      // Load existing audit_runs 90-day security ledger rows
+      try {
+        const auditRows = stmts.allAuditRuns.all();
+        for (const r of auditRows) {
+          const entry = auditRowToEntry(r);
+          if (entry && entry.id) auditMetaById.set(entry.id, entry);
+        }
+      } catch (_) {}
 
       // Load existing archived_runs and archived_image_runs ledger rows
       try {
@@ -1180,7 +1369,19 @@ function syncFromPersistSqliteIfNewer(force = false) {
       fs.writeFileSync(tmpMerge, buf);
       const extDb = new DatabaseSync(tmpMerge);
       try {
-        // 1. Merge runs, image_runs, archived_runs & archived_image_runs
+        // 1. Merge runs, image_runs, archived_runs, archived_image_runs & audit_runs
+        try {
+          const extAuditRuns = extDb.prepare(`SELECT * FROM audit_runs`).all();
+          for (const r of extAuditRuns) {
+            if (r && r.id) {
+              const entry = auditRowToEntry(r);
+              const cur = auditMetaById.get(r.id);
+              if (entry && (!cur || (entry.hiddenByUser && !cur.hiddenByUser) || (entry.status !== 'started' && cur.status === 'started'))) {
+                upsertAuditRunInternal(entry, false);
+              }
+            }
+          }
+        } catch (_) {}
         try {
           const extArchRuns = extDb.prepare(`SELECT * FROM archived_runs`).all();
           for (const r of extArchRuns) {
@@ -1555,7 +1756,22 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
 
     // 1. Update SQLite & in-memory metadata index immediately
     const meta = recordToMeta(record);
-    upsertMetaInternal(meta, true);
+    upsertMetaInternal(meta, false);
+    upsertAuditRunInternal({
+      id,
+      at,
+      arena: 'text',
+      user: u,
+      userKey: uKey,
+      userName: userName || user || u,
+      taskId: record.taskId,
+      title: record.title,
+      prompt: promptText,
+      attachments,
+      inputVaultRefs: extractInputVaultHashesList(attachments),
+      models: record.models,
+      status: 'completed',
+    }, true);
     cachePayload(id, record);
 
     // Update user preferences for active task and models selection on the slots
@@ -2033,7 +2249,9 @@ function saveUserPrompt(username, item) {
 }
 
 // Delete a saved prompt by ID from the user's library.
-function deleteUserPrompt(username, promptId) {
+// For non-admin deletions (`!opts.isAdmin`), any input prompt & attachments are retained in the
+// 90-day security audit ledger (`audit_runs`) so users cannot purge uploaded files from `/data/vault/` early.
+function deleteUserPrompt(username, promptId, opts = {}) {
   const u = norm(username);
   if (!u) return { ok: false, removed: false, savedPrompts: [] };
   syncFromPersistSqliteIfNewer(true);
@@ -2045,6 +2263,25 @@ function deleteUserPrompt(username, promptId) {
   const filtered = existing.filter((x) => x && x.id !== sid);
   const removed = filtered.length !== existing.length;
   if (removed) {
+    if (targetPrompt && !(opts && opts.isAdmin) && Array.isArray(targetPrompt.attachments) && targetPrompt.attachments.length > 0) {
+      upsertAuditRunInternal({
+        id: safeId(`sp_${sid}`) || `sp_${crypto.createHash('sha1').update(sid).digest('hex').slice(0, 16)}`,
+        at: Number(targetPrompt.updatedAt || targetPrompt.createdAt) || Date.now(),
+        arena: 'saved_prompt',
+        user: u,
+        userKey: uKey,
+        userName: u,
+        taskId: 'saved_prompt',
+        title: targetPrompt.title || 'Saved Prompt',
+        prompt: targetPrompt.prompt || '',
+        attachments: targetPrompt.attachments,
+        inputVaultRefs: extractInputVaultHashesList(targetPrompt.attachments),
+        models: [],
+        status: 'saved_prompt_deleted',
+        hiddenByUser: true,
+        deletedAt: Date.now(),
+      }, false);
+    }
     if (stmts && stmts.delPrompt) {
       try { stmts.delPrompt.run(uKey, sid); } catch (_) {}
     }
@@ -2405,6 +2642,27 @@ function collectReferencedVaultHashesForUser(uKey) {
     }
   }
 
+  // 4. 90-day Security Audit Ledger (`auditMetaById`) input attachments ONLY
+  // Protects user-uploaded input attachments (images, PDFs, Office docs) for 90 days
+  // even after 7-day output pruning or non-admin user deletion, while allowing heavy
+  // generated 4K output PNGs (`imageVaultRef`, `thoughtVaultRef`) to be pruned after 7 days.
+  const auditCutoff = Date.now() - AUDIT_RETENTION_MS;
+  for (const a of auditMetaById.values()) {
+    if (!a || a.userKey !== uKey) continue;
+    if (Number(a.at || 0) > 0 && Number(a.at) < auditCutoff) continue;
+    if (Array.isArray(a.inputVaultRefs)) {
+      for (const ref of a.inputVaultRefs) addRef(ref);
+    }
+    if (Array.isArray(a.attachments)) {
+      for (const att of a.attachments) {
+        if (att && typeof att === 'object') {
+          addRef(att.sha256);
+          addRef(att.vaultRef);
+        }
+      }
+    }
+  }
+
   return referenced;
 }
 
@@ -2435,7 +2693,7 @@ function gcOrphanedVaultRefsForUser(uKey, candidateHashes, triggerSnapshot = fal
 // When `preserveLifetimeStats === true` (used by 7-day auto-pruning), the heavy `.json` payload,
 // binary vault blobs, and active 7-day `runs` row are removed while the lightweight `archived_runs`
 // ledger row is kept so cumulative user and run counts are never lost.
-function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false } = {}) {
+function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false, keepAudit = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
@@ -2469,6 +2727,7 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
     }
   }
 
+  let diskRec = cached || null;
   let removed = false;
   for (const fp of new Set(candidates)) {
     if (asyncUnlink) {
@@ -2479,12 +2738,53 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
         if (fs.existsSync(fp)) {
           try {
             const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            if (rec && !diskRec) diskRec = rec;
             for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
           } catch (_) {}
           fs.unlinkSync(fp);
           removed = true;
         }
       } catch (_) {}
+    }
+  }
+
+  // Soft-hide / 90-day paper trail preservation:
+  // When a non-admin user deletes a run (`!isAdmin`) or when 7-day auto-pruning removes outputs (`preserveLifetimeStats`),
+  // preserve the input prompt & input attachments in `audit_runs` for 90 days.
+  if (!isAdmin || preserveLifetimeStats || keepAudit) {
+    const src = diskRec || meta;
+    const existingAudit = auditMetaById.get(sid);
+    if (src || existingAudit) {
+      const firstSum = (meta && Array.isArray(meta.summary) && meta.summary[0]) || null;
+      const sumInputRefs = (firstSum && Array.isArray(firstSum.inputVaultRefs)) ? firstSum.inputVaultRefs : [];
+      upsertAuditRunInternal({
+        id: sid,
+        at: (src && src.at) || (existingAudit && existingAudit.at) || Date.now(),
+        arena: 'text',
+        user: (src && src.user) || (existingAudit && existingAudit.user) || norm(username),
+        userKey: ownerKey,
+        userName: (src && src.userName) || (existingAudit && existingAudit.userName) || username,
+        taskId: (src && src.taskId) || (existingAudit && existingAudit.taskId) || 'custom',
+        title: (src && src.title) || (existingAudit && existingAudit.title) || 'Run',
+        prompt: (src && typeof src.prompt === 'string' && src.prompt) ? src.prompt : ((existingAudit && existingAudit.prompt) || ''),
+        attachments: (src && Array.isArray(src.attachments) && src.attachments.length) ? src.attachments : ((existingAudit && existingAudit.attachments) || []),
+        inputVaultRefs: extractInputVaultHashesList(src && src.attachments, sumInputRefs),
+        models: (src && Array.isArray(src.models) && src.models.length) ? src.models : ((existingAudit && existingAudit.models) || []),
+        status: existingAudit ? existingAudit.status : 'completed',
+        hiddenByUser: !isAdmin ? true : (existingAudit ? existingAudit.hiddenByUser : false),
+        deletedAt: !isAdmin ? Date.now() : (existingAudit ? existingAudit.deletedAt : null),
+      }, false);
+    }
+  } else {
+    if (auditMetaById.has(sid)) {
+      const aud = auditMetaById.get(sid);
+      if (aud && Array.isArray(aud.inputVaultRefs)) {
+        for (const h of aud.inputVaultRefs) candidateHashes.add(h);
+      }
+      auditMetaById.delete(sid);
+    }
+    if (stmts && stmts.delAuditRun) {
+      try { stmts.delAuditRun.run(sid); } catch (_) {}
     }
   }
 
@@ -2952,7 +3252,22 @@ async function saveImageRun({
     };
 
     const meta = imageRecordToMeta(record);
-    upsertImageMetaInternal(meta, true);
+    upsertImageMetaInternal(meta, false);
+    upsertAuditRunInternal({
+      id,
+      at,
+      arena: 'image',
+      user: u,
+      userKey: uKey,
+      userName: userName || user || u,
+      taskId: record.scenarioId || record.packId || 'image',
+      title: runTitle,
+      prompt: promptText,
+      attachments,
+      inputVaultRefs: extractInputVaultHashesList(attachments),
+      models: cleanSlots,
+      status: 'completed',
+    }, true);
     cachePayload(id, record);
 
     const dir = path.join(BASE_DIR, uKey);
@@ -3088,7 +3403,7 @@ function getImageRun(id, { username, isAdmin }) {
   return null;
 }
 
-function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false } = {}) {
+function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, deferGc = false, asyncUnlink = false, preserveLifetimeStats = false, keepAudit = false } = {}) {
   const sid = safeId(id);
   if (!sid) return false;
   const myKey = userKey(username);
@@ -3122,6 +3437,7 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
     }
   }
 
+  let diskRec = cached || null;
   let removed = false;
   for (const fp of new Set(candidates)) {
     if (asyncUnlink) {
@@ -3132,12 +3448,53 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
         if (fs.existsSync(fp)) {
           try {
             const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+            if (rec && !diskRec) diskRec = rec;
             for (const h of extractRunVaultHashes(rec)) candidateHashes.add(h);
           } catch (_) {}
           fs.unlinkSync(fp);
           removed = true;
         }
       } catch (_) {}
+    }
+  }
+
+  // Soft-hide / 90-day paper trail preservation for Image Arena:
+  // Preserves input prompt & reference input attachments (`inputVaultRefs`) for 90 days,
+  // while allowing heavy generated 4K output PNGs (`imageVaultRef`, `thoughtVaultRef`) to be pruned after 7 days.
+  if (!isAdmin || preserveLifetimeStats || keepAudit) {
+    const src = diskRec || meta;
+    const existingAudit = auditMetaById.get(sid);
+    if (src || existingAudit) {
+      const firstSum = (meta && Array.isArray(meta.summary) && meta.summary[0]) || null;
+      const sumInputRefs = (firstSum && Array.isArray(firstSum.inputVaultRefs)) ? firstSum.inputVaultRefs : [];
+      upsertAuditRunInternal({
+        id: sid,
+        at: (src && src.at) || (existingAudit && existingAudit.at) || Date.now(),
+        arena: 'image',
+        user: (src && src.user) || (existingAudit && existingAudit.user) || norm(username),
+        userKey: ownerKey,
+        userName: (src && src.userName) || (existingAudit && existingAudit.userName) || username,
+        taskId: (src && (src.scenarioId || src.packId)) || (existingAudit && existingAudit.taskId) || 'image',
+        title: (src && src.title) || (existingAudit && existingAudit.title) || 'Image Arena Run',
+        prompt: (src && typeof src.prompt === 'string' && src.prompt) ? src.prompt : ((existingAudit && existingAudit.prompt) || ''),
+        attachments: (src && Array.isArray(src.attachments) && src.attachments.length) ? src.attachments : ((existingAudit && existingAudit.attachments) || []),
+        inputVaultRefs: extractInputVaultHashesList(src && src.attachments, sumInputRefs),
+        models: (src && Array.isArray(src.slots) && src.slots.length) ? src.slots : ((existingAudit && existingAudit.models) || []),
+        status: existingAudit ? existingAudit.status : 'completed',
+        hiddenByUser: !isAdmin ? true : (existingAudit ? existingAudit.hiddenByUser : false),
+        deletedAt: !isAdmin ? Date.now() : (existingAudit ? existingAudit.deletedAt : null),
+      }, false);
+    }
+  } else {
+    if (auditMetaById.has(sid)) {
+      const aud = auditMetaById.get(sid);
+      if (aud && Array.isArray(aud.inputVaultRefs)) {
+        for (const h of aud.inputVaultRefs) candidateHashes.add(h);
+      }
+      auditMetaById.delete(sid);
+    }
+    if (stmts && stmts.delAuditRun) {
+      try { stmts.delAuditRun.run(sid); } catch (_) {}
     }
   }
 
@@ -3328,11 +3685,152 @@ function imageUsageSummary() {
 // Starred runs (`m.starred === true`) are kept permanently.
 // Batches SQLite deletion + per-user vault GC + a single snapshot flush at the end so pruning
 // hundreds of runs is fast even on GCS FUSE.
+// Record a run in the 90-day security & compliance audit ledger BEFORE calling upstream LLMs.
+// Captures input prompt, input attachments (stored immediately into `/data/vault/<uKey>/<sha256>.bin`),
+// selected models, and (for external accounts ONLY) client IP and User-Agent.
+function recordPreExecutionAudit({
+  id: passedId,
+  arena = 'text',
+  user,
+  userName,
+  isExternal = false,
+  ip = null,
+  userAgent = null,
+  taskId = 'custom',
+  title = 'Run',
+  prompt = '',
+  attachments: rawAttachments = [],
+  models = [],
+  status = 'started',
+} = {}) {
+  try {
+    const id = safeId(passedId) || newId();
+    const u = norm(user);
+    if (!u) return null;
+    const uKey = userKey(u);
+    const at = Date.now();
+    const externalAccount = Boolean(isExternal && !/@google\.com$/i.test(u));
+    const storedAttachments = (Array.isArray(rawAttachments) ? rawAttachments : []).map((a) => {
+      if (!a || typeof a !== 'object') return null;
+      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
+      return ptr || {
+        name: String(a.name || 'file').slice(0, 200),
+        mimeType: String(a.mimeType || 'application/octet-stream').slice(0, 100),
+        kind: a.kind ? String(a.kind).slice(0, 40) : undefined,
+        size: Number(a.size) || 0,
+        sha256: a.sha256 || a.vaultRef || null,
+        vaultRef: a.vaultRef || a.sha256 || null,
+      };
+    }).filter(Boolean);
+    const inputVaultRefs = extractInputVaultHashesList(storedAttachments);
+    const cleanModels = (Array.isArray(models) ? models : []).map((m, idx) => ({
+      slot: (m && m.slot) || String.fromCharCode(65 + idx),
+      catalogId: (m && (m.catalogId || m.id)) || '',
+      label: (m && m.label) || '',
+      provider: (m && m.provider) || '',
+      model: (m && m.model) || '',
+      effort: (m && (m.effort || m.thinkingLevel)) || null,
+    }));
+    return upsertAuditRunInternal({
+      id,
+      at,
+      arena: String(arena || 'text'),
+      user: u,
+      userKey: uKey,
+      userName: userName || user || u,
+      accountType: externalAccount ? 'external' : 'google_internal',
+      ip: externalAccount && ip ? String(ip).slice(0, 120) : null,
+      userAgent: externalAccount && userAgent ? String(userAgent).slice(0, 500) : null,
+      taskId: String(taskId || 'custom').slice(0, 100),
+      title: String(title || 'Run').slice(0, 160),
+      prompt: typeof prompt === 'string' ? prompt : '',
+      attachments: storedAttachments,
+      inputVaultRefs,
+      models: cleanModels,
+      status: status || 'started',
+      error: null,
+      hiddenByUser: false,
+      deletedAt: null,
+    }, true);
+  } catch (e) {
+    console.warn('[history] recordPreExecutionAudit failed:', (e && e.message) || e);
+    return null;
+  }
+}
+
+async function finalizeAuditRun(id, { status = 'completed', error = null } = {}) {
+  try {
+    const sid = safeId(id);
+    if (!sid) return null;
+    const existing = auditMetaById.get(sid);
+    if (!existing) return null;
+    return upsertAuditRunInternal({
+      ...existing,
+      status: status || existing.status || 'completed',
+      error: error != null ? String(error).slice(0, 500) : existing.error,
+    }, true);
+  } catch (_) {
+    return null;
+  }
+}
+
+function listAuditRuns({ limit = 500, arena = null, user = null, externalOnly = false, includeHidden = true } = {}) {
+  syncFromPersistSqliteIfNewer(false);
+  maybePruneExpiredRuns();
+  const maxItems = Math.max(1, Math.min(2000, Number(limit) || 500));
+  const filterUser = user ? norm(user) : null;
+  const filterArena = arena ? String(arena).trim().toLowerCase() : null;
+  const out = [];
+  for (const a of auditMetaById.values()) {
+    if (!a || !a.id) continue;
+    if (!includeHidden && a.hiddenByUser) continue;
+    if (externalOnly && a.accountType !== 'external') continue;
+    if (filterUser && norm(a.user) !== filterUser) continue;
+    if (filterArena && String(a.arena || '').toLowerCase() !== filterArena) continue;
+    out.push({
+      id: a.id,
+      at: a.at,
+      arena: a.arena,
+      user: a.user,
+      userName: a.userName,
+      accountType: a.accountType,
+      ip: a.ip || null,
+      userAgent: a.userAgent || null,
+      taskId: a.taskId,
+      title: a.title,
+      prompt: a.prompt,
+      attachments: a.attachments || [],
+      inputVaultRefs: a.inputVaultRefs || [],
+      models: a.models || [],
+      status: a.status || 'completed',
+      error: a.error || null,
+      hiddenByUser: Boolean(a.hiddenByUser),
+      deletedAt: a.deletedAt || null,
+    });
+  }
+  out.sort((x, y) => (y.at || 0) - (x.at || 0));
+  return out.slice(0, maxItems);
+}
+
+function getAuditRun(id) {
+  syncFromPersistSqliteIfNewer(false);
+  const sid = safeId(id);
+  if (!sid) return null;
+  const a = auditMetaById.get(sid);
+  if (!a) return null;
+  return hydrateRunAttachmentsForReturn({
+    ...a,
+    attachments: Array.isArray(a.attachments) ? a.attachments.map((x) => ({ ...x })) : [],
+  }, null);
+}
+
 let lastPruneCheckAt = 0;
-function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, asyncUnlink = false } = {}) {
+function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, auditRetentionMs = AUDIT_RETENTION_MS, asyncUnlink = false } = {}) {
   const cutoff = now - Math.max(60000, Number(retentionMs) || RUN_RETENTION_MS);
+  const auditCutoff = now - Math.max(60000, Number(auditRetentionMs) || AUDIT_RETENTION_MS);
   const expiredText = [];
   const expiredImage = [];
+  const expiredAudit = [];
 
   for (const m of metaById.values()) {
     if (!m.starred && Number(m.at || 0) > 0 && Number(m.at) < cutoff) {
@@ -3344,10 +3842,16 @@ function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, as
       expiredImage.push(m);
     }
   }
+  for (const a of auditMetaById.values()) {
+    if (Number(a.at || 0) > 0 && Number(a.at) < auditCutoff && !metaById.has(a.id) && !imageMetaById.has(a.id)) {
+      expiredAudit.push(a);
+    }
+  }
 
   const stats = { vaultFilesRemoved: 0, vaultBytesFreed: 0, byUserHashes: new Map() };
   let prunedTextRuns = 0;
   let prunedImageRuns = 0;
+  let prunedAuditRuns = 0;
   for (const m of expiredText) {
     if (deleteRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink, preserveLifetimeStats: true })) {
       prunedTextRuns++;
@@ -3356,6 +3860,18 @@ function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, as
   for (const m of expiredImage) {
     if (deleteImageRun(m.id, { username: m.user, isAdmin: true, stats, deferFlush: true, deferGc: true, asyncUnlink, preserveLifetimeStats: true })) {
       prunedImageRuns++;
+    }
+  }
+  for (const a of expiredAudit) {
+    auditMetaById.delete(a.id);
+    if (stmts && stmts.delAuditRun) {
+      try { stmts.delAuditRun.run(a.id); } catch (_) {}
+    }
+    prunedAuditRuns++;
+    if (a.userKey && Array.isArray(a.inputVaultRefs) && a.inputVaultRefs.length > 0) {
+      const set = stats.byUserHashes.get(a.userKey) || new Set();
+      for (const h of a.inputVaultRefs) set.add(h);
+      stats.byUserHashes.set(a.userKey, set);
     }
   }
 
@@ -3367,18 +3883,21 @@ function pruneExpiredRuns({ now = Date.now(), retentionMs = RUN_RETENTION_MS, as
     }
   }
 
-  if (prunedTextRuns + prunedImageRuns > 0) {
+  if (prunedTextRuns + prunedImageRuns + prunedAuditRuns > 0) {
     schedulePersistSnapshot();
   }
 
   return {
     prunedTextRuns,
     prunedImageRuns,
+    prunedAuditRuns,
     totalPruned: prunedTextRuns + prunedImageRuns,
     vaultFilesRemoved: stats.vaultFilesRemoved,
     vaultBytesFreed: stats.vaultBytesFreed,
     cutoff,
+    auditCutoff,
     retentionDays: RUN_RETENTION_DAYS,
+    auditRetentionDays: AUDIT_RETENTION_DAYS,
   };
 }
 
@@ -3427,8 +3946,14 @@ module.exports = {
   imageUsageSummary,
   pruneExpiredRuns,
   recoverDeletedRunsFromSqliteBinary,
+  recordPreExecutionAudit,
+  finalizeAuditRun,
+  listAuditRuns,
+  getAuditRun,
   RUN_RETENTION_DAYS,
   RUN_RETENTION_MS,
+  AUDIT_RETENTION_DAYS,
+  AUDIT_RETENTION_MS,
   lastModels,
   getUserPreferences,
   saveUserPreferences,

@@ -11,6 +11,7 @@
 // Rough fallback token estimate (~4 chars/token) used only if a provider
 // omits usage data. Real usage is preferred and used whenever returned.
 // 0 = uncapped (let each model use its own max). Set MAX_OUTPUT_TOKENS in .env to clamp.
+const crypto = require('crypto');
 const { getClaudeToken } = require('./gcloudToken');
 // Upstream calls go through providerFetch (header timeout + 429/5xx/network retries).
 const { providerFetch } = require('./providerFetch');
@@ -25,6 +26,45 @@ const {
   toOpenAIChatContent,
 } = require('./attachments');
 const { withImagePolicy, IMAGE_REJECTION_RE } = require('./imagePolicy');
+
+// Build upstream abuse-attribution metadata for OpenAI (`user`) and Vertex AI (`labels` / `metadata.user_id`)
+// so any upstream safety alert from Google Cloud Trust & Safety or OpenAI can be attributed to the exact
+// application user (distinguishing `external` accounts from `google_internal` accounts).
+function buildUpstreamAttribution(auditUser) {
+  if (!auditUser) return null;
+  const rawUser = typeof auditUser === 'string'
+    ? auditUser
+    : String((auditUser && (auditUser.username || auditUser.user)) || '').trim().toLowerCase();
+  if (!rawUser) return null;
+  const isExt = typeof auditUser === 'object' && auditUser !== null && auditUser.isExternal != null
+    ? Boolean(auditUser.isExternal && !/@google\.com$/i.test(rawUser))
+    : !/@google\.com$/i.test(rawUser);
+  const accountType = isExt ? 'external' : 'google_internal';
+  // GCP label values must be lowercase letters, digits, underscores, or dashes (max 63 chars).
+  const sanitizedLabelUser = rawUser
+    .replace(/@/g, '_at_')
+    .replace(/[^a-z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[-_]+|[-_]+$/g, '')
+    .slice(0, 60) || 'user';
+  // For OpenAI (3rd-party external API), pass `ext:<username>` for external accounts and a
+  // pseudonymous SHA-256 tag `goog:<20-hex>` for @google.com accounts so internal emails aren't leaked to OpenAI.
+  const openaiUser = isExt
+    ? `ext:${rawUser.replace(/[^a-z0-9._@-]/gi, '_').slice(0, 56)}`
+    : `goog:${crypto.createHash('sha256').update(rawUser).digest('hex').slice(0, 20)}`;
+  const claudeUserId = `${accountType}:${sanitizedLabelUser}`.slice(0, 64);
+  return {
+    accountType,
+    isExternal: isExt,
+    openaiUser,
+    claudeUserId,
+    vertexLabels: {
+      app_name: 'llm_compare',
+      account_type: accountType,
+      app_user: sanitizedLabelUser,
+    },
+  };
+}
 
 const MAX_OUTPUT_TOKENS = parseInt(process.env.MAX_OUTPUT_TOKENS, 10) || 0;
 const CLAUDE_MAX_OUTPUT = MAX_OUTPUT_TOKENS || 128000; // Anthropic requires max_tokens; Opus 4.8 supports 128k
@@ -528,13 +568,15 @@ async function upstreamError(cfg, model, r) {
   return err;
 }
 
-async function openaiCompat(cfg, { model, system, messages, keys, signal, effort }) {
+async function openaiCompat(cfg, { model, system, messages, keys, signal, effort, auditUser }) {
   const key = compatKey(cfg, keys);
   const isOpenAI = cfg.keyField === 'openai';
+  const attr = isOpenAI ? buildUpstreamAttribution(auditUser) : null;
   const msgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: isOpenAI });
   const eff = isOpenAI ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
   const reqBody = { model, messages: msgs };
   if (eff) reqBody.reasoning_effort = eff;
+  if (attr && attr.openaiUser) reqBody.user = attr.openaiUser;
   const t0 = Date.now();
   let r = await providerFetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
@@ -550,6 +592,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     curMsgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: false });
     const fbBody = { model, messages: curMsgs };
     if (eff) fbBody.reasoning_effort = eff;
+    if (attr && attr.openaiUser) fbBody.user = attr.openaiUser;
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -561,10 +604,12 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
   if (r.status === 400 && eff && !(await isImageError(r, messages))) {
     // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
     // (same model, attachments unchanged).
+    const noEffBody = { model, messages: curMsgs };
+    if (attr && attr.openaiUser) noEffBody.user = attr.openaiUser;
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: curMsgs }),
+      body: JSON.stringify(noEffBody),
       signal,
     });
   }
@@ -599,8 +644,9 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
 // return exact `output_tokens_details.reasoning_tokens`. Returns null if the endpoint or
 // model does not support `/v1/responses` (or org is unverified for summaries), allowing
 // `openaiCompatStream` to fall back cleanly to `/v1/chat/completions`.
-async function openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort }) {
+async function openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser }) {
   const key = compatKey(cfg, keys);
+  const attr = buildUpstreamAttribution(auditUser);
   const eff = validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort();
   const input = [];
   if (system) input.push({ role: 'developer', content: system });
@@ -613,17 +659,21 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
     });
   }
 
-  const sendReq = (withSummary, targetModel = model) => providerFetch(`${cfg.base}/responses`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
+  const sendReq = (withSummary, targetModel = model) => {
+    const reqPayload = {
       model: targetModel,
       input,
       stream: true,
       reasoning: withSummary ? { effort: eff, summary: 'auto' } : { effort: eff },
-    }),
-    signal,
-  });
+    };
+    if (attr && attr.openaiUser) reqPayload.user = attr.openaiUser;
+    return providerFetch(`${cfg.base}/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+      body: JSON.stringify(reqPayload),
+      signal,
+    });
+  };
 
   const t0 = Date.now();
   let r = await sendReq(true, model);
@@ -679,11 +729,11 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 
 // Streamed variant — same contract, emits onDelta so the UI gets a live feed
 // (without this an external model's column sits blank until it finishes).
-async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal, effort }) {
+async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser }) {
   const isOpenAI = cfg.keyField === 'openai';
   if (isOpenAI) {
     try {
-      const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort });
+      const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser });
       if (res) return res;
     } catch (e) {
       if (e && e.status) throw e; // labelled upstream (image) error — never a silent chat fallback
@@ -692,6 +742,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   }
 
   const key = compatKey(cfg, keys);
+  const attr = isOpenAI ? buildUpstreamAttribution(auditUser) : null;
   const eff = isOpenAI ? (validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort()) : null;
   const buildBody = (includeEffort, targetModel = model, allowFiles = true) => {
     const msgs = buildOpenAIChatMessages(system, messages, {
@@ -701,6 +752,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     const b = { model: targetModel, messages: msgs, stream: true };
     if (cfg.usageOpt) b.stream_options = { include_usage: true }; // OpenAI reports usage in the final chunk
     if (includeEffort && eff) b.reasoning_effort = eff;
+    if (attr && attr.openaiUser) b.user = attr.openaiUser;
     return b;
   };
   const t0 = Date.now();
@@ -848,9 +900,10 @@ function vertexGeminiBaseUrl(model, keys, region) {
   return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${encodeURIComponent(model)}`;
 }
 
-async function agentPlatformGemini({ model, system, messages, keys, signal, effort, region }) {
+async function agentPlatformGemini({ model, system, messages, keys, signal, effort, region, auditUser }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
+  const attr = buildUpstreamAttribution(auditUser);
 
   const buildBody = (inlineDocs = true) => {
     const contents = messages.map((m) => ({
@@ -865,6 +918,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     };
     if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
     if (system) body.systemInstruction = { parts: [{ text: system }] };
+    if (attr && attr.vertexLabels) body.labels = attr.vertexLabels;
     return body;
   };
 
@@ -911,9 +965,10 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   };
 }
 
-async function agentPlatformClaude({ model, system, messages, project, keys, signal, effort }) {
+async function agentPlatformClaude({ model, system, messages, project, keys, signal, effort, auditUser }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
+  const attr = buildUpstreamAttribution(auditUser);
 
   const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
     const b = {
@@ -927,6 +982,7 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
       })),
     };
     if (system) b.system = system;
+    if (attr && attr.claudeUserId) b.metadata = { user_id: attr.claudeUserId };
     return JSON.stringify(b);
   };
 
@@ -1015,9 +1071,10 @@ async function readSSE(response, onEvent) {
   }
 }
 
-async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region }) {
+async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region, auditUser }) {
   const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
+  const attr = buildUpstreamAttribution(auditUser);
 
   const buildBody = (inlineDocs = true) => {
     const contents = messages.map((m) => ({
@@ -1032,6 +1089,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     };
     if (MAX_OUTPUT_TOKENS) body.generationConfig.maxOutputTokens = MAX_OUTPUT_TOKENS;
     if (system) body.systemInstruction = { parts: [{ text: system }] };
+    if (attr && attr.vertexLabels) body.labels = attr.vertexLabels;
     return body;
   };
   const url = `${vertexGeminiBaseUrl(model, keys, region)}:streamGenerateContent?alt=sse`;
@@ -1073,9 +1131,10 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   };
 }
 
-async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort }) {
+async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort, auditUser }) {
   const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
   const userToken = keys && keys.claudeBearerToken;
+  const attr = buildUpstreamAttribution(auditUser);
   const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
     const b = {
       anthropic_version: 'vertex-2023-10-16',
@@ -1089,6 +1148,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
       })),
     };
     if (system) b.system = system;
+    if (attr && attr.claudeUserId) b.metadata = { user_id: attr.claudeUserId };
     return JSON.stringify(b);
   };
   const makeUrl = (m) =>
@@ -1330,13 +1390,13 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
   };
 }
 
-async function agentplatform({ publisher, model, system, messages, project, keys, effort, endpointType, region, thinkingMode, signal }) {
+async function agentplatform({ publisher, model, system, messages, project, keys, effort, endpointType, region, thinkingMode, signal, auditUser }) {
   if (endpointType === 'openai-maas') {
-    return agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode });
+    return agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode, auditUser });
   }
   const pub = publisher || 'google';
-  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, signal, effort });
-  return agentPlatformGemini({ model, system, messages, keys, signal, effort, region });
+  if (pub === 'anthropic') return agentPlatformClaude({ model, system, messages, project, keys, signal, effort, auditUser });
+  return agentPlatformGemini({ model, system, messages, keys, signal, effort, region, auditUser });
 }
 
 const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
@@ -1353,24 +1413,24 @@ async function complete(args) {
     (msgs) => dispatchComplete({ ...args, messages: msgs }));
 }
 
-async function dispatchComplete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode }) {
+async function dispatchComplete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode, auditUser }) {
   if (provider === 'agentplatform' && onDelta) {
     if (endpointType === 'openai-maas') {
-      return agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode });
+      return agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode, auditUser });
     }
     const pub = publisher || 'google';
     return pub === 'anthropic'
-      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort })
-      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region });
+      ? agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort, auditUser })
+      : agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region, auditUser });
   }
   // OpenAI-compatible providers stream too, so an external model's column gets
   // the same live token feed as the Vertex ones.
   if (OPENAI_COMPAT[provider] && onDelta) {
-    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys, signal, effort });
+    return openaiCompatStream(OPENAI_COMPAT[provider], { model, system, messages, onDelta, keys, signal, effort, auditUser });
   }
   const fn = ADAPTERS[provider];
   if (!fn) throw new Error(`Unknown provider: ${provider}`);
-  return fn({ model, system, messages, publisher, project, keys, signal, effort, endpointType, region, thinkingMode });
+  return fn({ model, system, messages, publisher, project, keys, signal, effort, endpointType, region, thinkingMode, auditUser });
 }
 
-module.exports = { complete, estimateTokens, thinkingProfile, thinkingOptions, validateEffort, ADAPTERS };
+module.exports = { complete, estimateTokens, thinkingProfile, thinkingOptions, validateEffort, buildUpstreamAttribution, ADAPTERS };

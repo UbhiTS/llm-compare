@@ -37,6 +37,9 @@ const MAX_OPENAI_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_RUNS_P
 const MAX_RUNS_PER_DAY = MAX_OPENAI_RUNS_PER_DAY;
 // Separate daily budget for re-running a SINGLE OpenAI model (the per-column "Run again").
 const MAX_SINGLE_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) || 3));
+// Per-user daily Vertex AI run cap for external accounts (protects shared GCP project quota/billing).
+// @google.com accounts and admins are exempt.
+const MAX_EXTERNAL_VERTEX_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY) || 25));
 const RATE_EXEMPT_ADMINS = process.env.RATE_LIMIT_EXEMPT_ADMINS !== '0';
 
 // scrypt cost params. N=2^15 ⇒ ~32MB per hash; bump maxmem so it doesn't throw.
@@ -73,6 +76,40 @@ let SETUP_CODE = process.env.SETUP_CODE ? String(process.env.SETUP_CODE) : null;
 // ---------- helpers ----------
 function normalize(u) { return String(u == null ? '' : u).trim().toLowerCase(); }
 
+// Returns true for non-@google.com username/password external accounts (false for Google OIDC sessions).
+function isExternalAccount(user) {
+  if (!user || typeof user !== 'object') return false;
+  if (user.external === true) return false;
+  const uname = normalize(user.username);
+  if (!uname || /@google\.com$/i.test(uname)) return false;
+  return true;
+}
+
+function normalizeExpiresAt(val) {
+  if (val == null || val === '') return null;
+  const s = String(val).trim();
+  if (!s) return null;
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59.999Z` : s;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) throw new Error('Invalid expiration date format (use YYYY-MM-DD or ISO-8601).');
+  return new Date(ms).toISOString();
+}
+
+function normalizeDailyVertexLimit(val) {
+  if (val == null || val === '') return null;
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < 0 || n > 10000) {
+    throw new Error('Daily Vertex AI run limit must be between 0 and 10000 (or blank for default).');
+  }
+  return Math.floor(n);
+}
+
+function isAccountExpired(u, nowMs = Date.now()) {
+  if (!u || !u.expiresAt) return false;
+  const expMs = Date.parse(u.expiresAt);
+  return Number.isFinite(expMs) && nowMs > expMs;
+}
+
 function loadUsers() {
   try {
     const raw = fs.readFileSync(USERS_FILE, 'utf8');
@@ -91,6 +128,8 @@ function loadUsers() {
           createdAt: v.createdAt || new Date().toISOString(),
           mustChangePassword: !!v.mustChangePassword,
           passwordChangedAt: v.passwordChangedAt || null,
+          expiresAt: v.expiresAt || null,
+          dailyVertexLimit: (typeof v.dailyVertexLimit === 'number' && Number.isFinite(v.dailyVertexLimit) && v.dailyVertexLimit >= 0) ? Math.floor(v.dailyVertexLimit) : null,
         };
       }
     }
@@ -222,6 +261,8 @@ async function createUser(username, password, role, opts = {}) {
   const uErr = validateUsername(uname); if (uErr) throw new Error(uErr);
   const pErr = validatePassword(password, uname); if (pErr) throw new Error(pErr);
   if (ownUser(uname)) throw new Error('That username already exists.');
+  const expiresAt = (opts && opts.expiresAt !== undefined) ? normalizeExpiresAt(opts.expiresAt) : null;
+  const dailyVertexLimit = (opts && opts.dailyVertexLimit !== undefined) ? normalizeDailyVertexLimit(opts.dailyVertexLimit) : null;
   const hash = await hashPassword(password);
   const mustChangePassword = Boolean(opts && opts.mustChangePassword);
   users[uname] = {
@@ -231,6 +272,8 @@ async function createUser(username, password, role, opts = {}) {
     createdAt: new Date().toISOString(),
     mustChangePassword,
     passwordChangedAt: null,
+    expiresAt,
+    dailyVertexLimit,
   };
   saveUsers();
   return publicUser(users[uname]);
@@ -261,11 +304,16 @@ async function setupAdmin(password) {
   }
 }
 
-async function authenticate(username, password) {
+async function authenticate(username, password, opts = {}) {
   const u = ownUser(normalize(username));
   if (!u) { await verifyHash(String(password || ''), DUMMY_HASH); return null; } // equalise timing
   const ok = await verifyHash(String(password || ''), u.hash);
-  return ok ? publicUser(u) : null;
+  if (!ok) return null;
+  if (isAccountExpired(u)) {
+    if (opts && opts.includeExpired) return { ...publicUser(u), expired: true };
+    return null;
+  }
+  return publicUser(u);
 }
 
 async function changePassword(username, currentPassword, newPassword) {
@@ -313,6 +361,30 @@ async function adminResetPassword(target, newTempPassword, mustChange = true) {
   return publicUser(tu);
 }
 
+function updateUserLimits(target, { expiresAt, dailyVertexLimit } = {}) {
+  const t = normalize(target);
+  const tu = ownUser(t);
+  if (!tu) throw new Error('User not found.');
+  if (expiresAt !== undefined) {
+    tu.expiresAt = normalizeExpiresAt(expiresAt);
+  }
+  if (dailyVertexLimit !== undefined) {
+    tu.dailyVertexLimit = normalizeDailyVertexLimit(dailyVertexLimit);
+  }
+  saveUsers();
+  if (isAccountExpired(tu)) {
+    destroyUserSessions(t);
+  } else {
+    for (const [, s] of sessions) {
+      if (!s.external && s.username === t) {
+        s.accountExpiresAt = tu.expiresAt || null;
+        s.dailyVertexLimit = tu.dailyVertexLimit != null ? tu.dailyVertexLimit : null;
+      }
+    }
+  }
+  return publicUser(tu);
+}
+
 function deleteUser(target, actorUsername) {
   const t = normalize(target);
   const tu = ownUser(t);
@@ -333,6 +405,9 @@ function publicUser(u) {
     createdAt: u.createdAt,
     mustChangePassword: !!u.mustChangePassword,
     passwordChangedAt: u.passwordChangedAt || null,
+    expiresAt: u.expiresAt || null,
+    expired: isAccountExpired(u),
+    dailyVertexLimit: (typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit)) ? u.dailyVertexLimit : null,
   };
 }
 function listUsers() {
@@ -374,9 +449,11 @@ function getSessionByToken(token) {
   if (Date.now() - s.createdAt > SESSION_ABSOLUTE_TTL_MS) { sessions.delete(token); return null; } // hard lifetime cap
   if (!s.external) {
     const u = ownUser(s.username);
-    if (!u) { sessions.delete(token); return null; } // local user was deleted
+    if (!u || isAccountExpired(u)) { sessions.delete(token); return null; } // local user was deleted or expired
     s.role = u.role;                                 // reflect current role
     s.mustChangePassword = !!u.mustChangePassword;   // reflect forced password change flag
+    s.accountExpiresAt = u.expiresAt || null;
+    s.dailyVertexLimit = (typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit)) ? u.dailyVertexLimit : null;
   } else {
     s.mustChangePassword = false;                    // never applies to Google OIDC sessions
   }
@@ -505,6 +582,49 @@ function refundRun(user, kind) {
   if (used > 0) runCounts.set(key, used - 1);
 }
 
+// Per-user daily Vertex AI run quota for external accounts.
+// @google.com accounts (`user.external === true` or `@google.com` email) and admins are exempt.
+function vertexLimitForUser(user) {
+  if (!user) return MAX_EXTERNAL_VERTEX_RUNS_PER_DAY;
+  const u = ownUser(normalize(user.username));
+  if (u && typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit) && u.dailyVertexLimit >= 0) {
+    return Math.floor(u.dailyVertexLimit);
+  }
+  if (typeof user.dailyVertexLimit === 'number' && Number.isFinite(user.dailyVertexLimit) && user.dailyVertexLimit >= 0) {
+    return Math.floor(user.dailyVertexLimit);
+  }
+  return MAX_EXTERNAL_VERTEX_RUNS_PER_DAY;
+}
+function exemptFromVertexQuota(user) {
+  if (!user || !isExternalAccount(user)) return true;
+  if (RATE_EXEMPT_ADMINS && user.role === 'admin') return true;
+  return false;
+}
+const vqKey = (user) => 'vertex|' + normalize(user.username) + '|' + utcDay();
+function vertexRunQuota(user) {
+  const limit = vertexLimitForUser(user);
+  if (exemptFromVertexQuota(user)) return { limited: false, limit: null, used: 0, remaining: Infinity };
+  const used = runCounts.get(vqKey(user)) || 0;
+  return { limited: true, limit, used, remaining: Math.max(0, limit - used), resetAt: nextUtcMidnightISO() };
+}
+function consumeVertexRun(user) {
+  const limit = vertexLimitForUser(user);
+  if (exemptFromVertexQuota(user)) return { ok: true, limited: false, limit: null, used: 0, remaining: Infinity };
+  const key = vqKey(user);
+  const used = runCounts.get(key) || 0;
+  if (used >= limit) {
+    return { ok: false, limited: true, kind: 'vertex', limit, used, remaining: 0, resetAt: nextUtcMidnightISO() };
+  }
+  runCounts.set(key, used + 1);
+  return { ok: true, limited: true, kind: 'vertex', limit, used: used + 1, remaining: Math.max(0, limit - (used + 1)), resetAt: nextUtcMidnightISO() };
+}
+function refundVertexRun(user) {
+  if (exemptFromVertexQuota(user)) return;
+  const key = vqKey(user);
+  const used = runCounts.get(key) || 0;
+  if (used > 0) runCounts.set(key, used - 1);
+}
+
 // ---------- periodic cleanup (bounds memory; never blocks shutdown) ----------
 setInterval(() => {
   const now = Date.now();
@@ -519,7 +639,8 @@ setInterval(() => {
 module.exports = {
   COOKIE_NAME, ADMIN_USERNAME, MIN_PASSWORD_LEN,
   // users
-  setupRequired, userExists, createUser, setupAdmin, authenticate, changePassword, setMustChangePassword, adminResetPassword, deleteUser, listUsers,
+  setupRequired, userExists, createUser, setupAdmin, authenticate, changePassword, setMustChangePassword, adminResetPassword, updateUserLimits, deleteUser, listUsers,
+  isExternalAccount, isAccountExpired,
   // sessions
   createSession, getSession, destroySession, destroyUserSessions,
   // cookies + middleware
@@ -528,6 +649,7 @@ module.exports = {
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
   // per-user daily run quota
   runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, MAX_OPENAI_RUNS_PER_DAY,
+  vertexRunQuota, consumeVertexRun, refundVertexRun, MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)

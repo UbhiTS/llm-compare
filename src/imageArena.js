@@ -1214,7 +1214,9 @@ async function readJsonBodyWithRetry(sendFn, signal, maxBodyRetries = 1) {
   }
 }
 
-async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
+async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser }) {
+  const { buildUpstreamAttribution } = require('./providers');
+  const attr = buildUpstreamAttribution(auditUser);
   let oaKey = (keys && keys.openai)
     || globalKeys.get('OPENAI_API_KEY')
     || process.env.OPENAI_API_KEY;
@@ -1244,6 +1246,7 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
       form.append('n', '1');
       form.append('size', oaSize);
       form.append('quality', 'high');
+      if (attr && attr.openaiUser) form.append('user', attr.openaiUser);
       const fieldName = safeAtts.length > 1 ? 'image[]' : 'image';
       safeAtts.forEach((att, idx) => {
         const rawB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
@@ -1261,19 +1264,21 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
         signal,
       });
     }
+    const genPayload = {
+      model: entry.model,
+      prompt: promptText,
+      n: 1,
+      size: oaSize,
+      quality: 'high',
+    };
+    if (attr && attr.openaiUser) genPayload.user = attr.openaiUser;
     return providerFetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${oaKey}`,
       },
-      body: JSON.stringify({
-        model: entry.model,
-        prompt: promptText,
-        n: 1,
-        size: oaSize,
-        quality: 'high',
-      }),
+      body: JSON.stringify(genPayload),
       signal,
     });
   };
@@ -1360,7 +1365,7 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
   };
 }
 
-async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
+async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser }) {
   const entry = getImageCatalogEntry(catalogId);
   if (!entry) {
     throw new Error(`Unknown image model "${catalogId}".`);
@@ -1371,8 +1376,10 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   }
 
   if (entry.provider === 'openai') {
-    return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal });
+    return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser });
   }
+  const { buildUpstreamAttribution } = require('./providers');
+  const attr = buildUpstreamAttribution(auditUser);
 
   let key = (keys && (keys.agentplatform || keys.gemini))
     || globalKeys.get('AGENT_PLATFORM_API_KEY')
@@ -1413,13 +1420,15 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const buildPayload = (sizeOverride = effectiveSize) => {
     const imageConfig = { aspectRatio: aspectRatio || '16:9' };
     if (sizeOverride) imageConfig.imageSize = sizeOverride;
-    return JSON.stringify({
+    const bodyObj = {
       contents: [{ role: 'user', parts: userParts }],
       generationConfig: {
         responseModalities: ['TEXT', 'IMAGE'],
         imageConfig,
       },
-    });
+    };
+    if (attr && attr.vertexLabels) bodyObj.labels = attr.vertexLabels;
+    return JSON.stringify(bodyObj);
   };
 
   const buildGlobalProjectUrl = (proj) =>
@@ -1566,7 +1575,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   };
 }
 
-async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', imageSize = '2K', attachments = [], keys = {}, signal }) {
+async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', imageSize = '2K', attachments = [], keys = {}, signal, auditUser }) {
   const validAspect = IMAGE_ASPECT_RATIOS.some((a) => a.id === aspectRatio) ? aspectRatio : '16:9';
   const validSize = IMAGE_RESOLUTIONS.some((s) => s.id === imageSize) ? imageSize : '2K';
 
@@ -1595,6 +1604,7 @@ async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', im
           attachments,
           keys,
           signal,
+          auditUser,
         });
       } catch (e) {
         const entry = getImageCatalogEntry(s.catalogId);

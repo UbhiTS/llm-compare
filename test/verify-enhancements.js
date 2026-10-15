@@ -379,8 +379,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.37', 'package.json must be at version 1.0.37');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.37</span>'), 'index.html must display v1.0.37 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.38', 'package.json must be at version 1.0.38');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.38</span>'), 'index.html must display v1.0.38 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;
@@ -690,6 +690,129 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const curtainNoteMatch = stylesCss.match(/\.img-curtain-note\s*\{([^}]+)\}/);
   assert(curtainNoteMatch && curtainNoteMatch[1].includes('text-align: center') && curtainNoteMatch[1].includes('margin: 10px auto 0'), '.img-curtain-note must be center-aligned');
   console.log('✓ Image & GenMedia Arena (v1.0.25) in-card synchronized Split-Curtain vs Original Reference, full-column-width output stages, 4-model Nano Banana catalog (incl. Nano Banana 2 Lite with automatic 1K cap), progressive card rendering + all_done scorecard/economics gating, project 419460847694 priority over GCP_PROJECT_ID, reference limits, History modal & Video Generation tab verified');
+
+  // 22) v1.0.38: 90-Day Input Prompt & Attachment Audit Retention, 7-Day Output Pruning,
+  //     Pre-Execution Logging (@google.com vs External Accounts), Upstream Abuse Attribution,
+  //     and External Account Daily Vertex AI Cap + Optional Account Expiration Date
+  {
+    const historyMod = require('../src/history');
+    const authMod = require('../src/auth');
+    const { buildUpstreamAttribution } = require('../src/providers');
+
+    assert.strictEqual(historyMod.AUDIT_RETENTION_DAYS, 90, 'AUDIT_RETENTION_DAYS must be 90 days');
+    assert.strictEqual(historyMod.RUN_RETENTION_DAYS, 7, 'RUN_RETENTION_DAYS must remain 7 days for unstarred outputs & generated 4K PNGs');
+    assert.strictEqual(authMod.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY, 25, 'Default daily Vertex AI cap for external accounts must be 25');
+
+    // Terminology check: never use "external customer accounts"
+    assert(!/external customer account/i.test(appJs), 'app.js must use "external accounts" / "external users", never "external customer accounts"');
+    assert(appJs.includes('(recommended for external accounts)'), 'app.js must label forced password change as "(recommended for external accounts)"');
+
+    // Upstream abuse attribution check
+    const googAttr = buildUpstreamAttribution({ username: 'ubhi@google.com', isExternal: false });
+    assert(googAttr && googAttr.vertexLabels.app_name === 'llm_compare', 'Vertex labels must include app_name=llm_compare');
+    assert.strictEqual(googAttr.vertexLabels.account_type, 'google_internal', '@google.com users must have account_type=google_internal');
+    assert(googAttr.openaiUser.startsWith('goog:'), '@google.com users must send pseudonymous SHA-256 goog:<hex> to OpenAI');
+    const extAttr = buildUpstreamAttribution({ username: 'ext_tester', isExternal: true });
+    assert.strictEqual(extAttr.vertexLabels.account_type, 'external', 'External accounts must have account_type=external');
+    assert.strictEqual(extAttr.openaiUser, 'ext:ext_tester', 'OpenAI user field must attribute external account');
+    assert.strictEqual(extAttr.claudeUserId, 'external:ext_tester', 'Claude metadata.user_id must attribute external account');
+
+    // Pre-execution audit logging: @google.com (no IP/UA) vs external account (full IP/UA) + soft-delete
+    const googAuditId = 'audit_goog_' + Date.now();
+    await historyMod.recordPreExecutionAudit({
+      id: googAuditId,
+      user: 'ubhi@google.com',
+      userName: 'Tarun Ubhi',
+      isExternal: false,
+      ip: '203.0.113.10',
+      userAgent: 'Mozilla/5.0 TestBrowser',
+      arena: 'text',
+      taskId: 'custom',
+      title: 'Googler Pre-Exec Test',
+      prompt: 'Test prompt from google.com user',
+      models: [{ slot: 'A', catalogId: 'gemini-3-8-flash', label: 'Gemini 3.8 Flash' }],
+      attachments: [],
+    });
+    const googAuditRec = historyMod.getAuditRun(googAuditId);
+    assert(googAuditRec, 'Pre-execution audit record must be saved before upstream execution');
+    assert.strictEqual(googAuditRec.status, 'started', 'Initial pre-execution status must be started');
+    assert.strictEqual(googAuditRec.ip, null, '@google.com audit record must not store IP');
+    assert.strictEqual(googAuditRec.userAgent, null, '@google.com audit record must not store User-Agent');
+
+    const extAuditId = 'audit_ext_' + Date.now();
+    const sampleInputAtt = {
+      name: 'audit-input.txt',
+      mimeType: 'text/plain',
+      kind: 'text',
+      textContent: 'Confidential audit test attachment content ' + extAuditId,
+    };
+    await historyMod.recordPreExecutionAudit({
+      id: extAuditId,
+      user: 'ext_audit_user',
+      userName: 'ext_audit_user',
+      isExternal: true,
+      ip: '198.51.100.42',
+      userAgent: 'ExternalTestAgent/1.0',
+      arena: 'text',
+      taskId: 'custom',
+      title: 'External Pre-Exec Test',
+      prompt: 'External account prompt with attachment',
+      models: [{ slot: 'A', catalogId: 'gemini-3-8-flash', label: 'Gemini 3.8 Flash' }],
+      attachments: [sampleInputAtt],
+    });
+    await historyMod.saveRun({
+      id: extAuditId,
+      user: 'ext_audit_user',
+      userName: 'ext_audit_user',
+      task: { id: 'custom', title: 'External Pre-Exec Test', prompt: 'External account prompt with attachment', attachments: [sampleInputAtt] },
+      models: [{ slot: 'A', catalogId: 'gemini-3-8-flash', label: 'Gemini 3.8 Flash' }],
+      results: [{ slot: 'A', label: 'Gemini 3.8 Flash', finalAnswer: 'Done', metrics: { totalCostUsd: 0.001, wallClockMs: 100 } }],
+      ip: '198.51.100.42',
+      userAgent: 'ExternalTestAgent/1.0',
+      isExternal: true,
+    });
+    // Non-admin user deletes the run -> soft-hidden from user history, but retained in 90-day admin audit + vault!
+    const delOk = historyMod.deleteRun(extAuditId, { username: 'ext_audit_user', isAdmin: false });
+    assert.strictEqual(delOk, true, 'Non-admin deleteRun must succeed');
+    const userVisibleRuns = historyMod.listRuns('ext_audit_user');
+    assert(!userVisibleRuns.some((r) => r.id === extAuditId), 'Deleted run must be hidden from non-admin user history view');
+    const retainedAudit = historyMod.getAuditRun(extAuditId);
+    assert(retainedAudit && retainedAudit.hiddenByUser === true, '90-day audit record must remain intact with hiddenByUser=true after user delete');
+    assert.strictEqual(retainedAudit.ip, '198.51.100.42', 'External account audit record must retain client IP');
+    assert.strictEqual(retainedAudit.userAgent, 'ExternalTestAgent/1.0', 'External account audit record must retain User-Agent');
+    assert(Array.isArray(retainedAudit.attachments) && retainedAudit.attachments.length === 1 && !retainedAudit.attachments[0].blobMissing, 'Input attachment binary in /data/vault/ must survive user deletion for 90-day audit');
+
+    // External account daily Vertex AI quota + account expiration date
+    assert.strictEqual(authMod.isExternalAccount({ username: 'ubhi@google.com', role: 'user' }), false, '@google.com user is not an external account');
+    assert.strictEqual(authMod.isExternalAccount({ username: 'demo_user', role: 'user' }), true, 'Username/password user is an external account');
+    const googVertexQ = authMod.vertexRunQuota({ username: 'ubhi@google.com', role: 'user' });
+    assert.strictEqual(googVertexQ.limited, false, '@google.com user has unlimited Vertex AI runs');
+    const extTempUser = 'ext_cap_' + Date.now().toString(36);
+    await authMod.createUser(extTempUser, 'TempPass1234!', 'user', {
+      mustChangePassword: true,
+      dailyVertexLimit: 2,
+      expiresAt: '2099-12-31',
+    });
+    const q1 = authMod.consumeVertexRun({ username: extTempUser, role: 'user' });
+    const q2 = authMod.consumeVertexRun({ username: extTempUser, role: 'user' });
+    const q3 = authMod.consumeVertexRun({ username: extTempUser, role: 'user' });
+    assert.strictEqual(q1.ok, true, 'First Vertex run within 2/day cap must succeed');
+    assert.strictEqual(q2.ok, true, 'Second Vertex run within 2/day cap must succeed');
+    assert.strictEqual(q3.ok, false, 'Third Vertex run exceeding 2/day cap must be blocked');
+    authMod.refundVertexRun({ username: extTempUser, role: 'user' });
+    const qAfterRefund = authMod.vertexRunQuota({ username: extTempUser, role: 'user' });
+    assert.strictEqual(qAfterRefund.remaining, 1, 'Refunding an aborted Vertex run must restore quota');
+
+    // Expire the account in the past and verify authenticate blocks login
+    authMod.updateUserLimits(extTempUser, { expiresAt: '2020-01-01', dailyVertexLimit: 2 });
+    const authNormal = await authMod.authenticate(extTempUser, 'TempPass1234!');
+    assert.strictEqual(authNormal, null, 'Expired external account must return null on normal authenticate');
+    const authInclExp = await authMod.authenticate(extTempUser, 'TempPass1234!', { includeExpired: true });
+    assert(authInclExp && authInclExp.expired === true, 'Expired external account must return expired:true with includeExpired:true');
+    authMod.deleteUser(extTempUser, 'admin');
+
+    console.log('✓ v1.0.38 90-day input prompt/attachment audit retention, 7-day output pruning, soft-delete, pre-execution logging, upstream attribution & external account Vertex cap/expiration verified');
+  }
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });

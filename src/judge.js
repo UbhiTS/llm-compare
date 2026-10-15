@@ -290,7 +290,7 @@ const JUDGE_SYSTEM_PROMPT =
  * @param judge   a resolved model config (provider/model/publisher/effort).
  * @returns { judge, criteria, blindOrder, results:[{slot,label,scores,overall,note}], winnerSlot, why, raw }
  */
-async function judgeOutputs({ task, entries, judge, keys, signal }) {
+async function judgeOutputs({ task, entries, judge, keys, signal, auditUser }) {
   const usable = (entries || []).filter((e) => e && String(e.text || '').trim());
   if (usable.length < 2) throw new Error('Need at least two non-empty outputs to compare.');
 
@@ -328,6 +328,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal }) {
     messages: [{ role: 'user', content, attachments: budgeted }],
     keys,
     signal,
+    auditUser,
   });
 
   let resp = await runJudgeCall(promptText);

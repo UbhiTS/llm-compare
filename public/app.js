@@ -527,6 +527,7 @@ async function init() {
   }
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
+  myVertexQuota = CONFIG.me && CONFIG.me.vertexQuota;
   SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
   SAVED_PRESETS = Array.isArray(CONFIG.me && CONFIG.me.savedPresets) ? CONFIG.me.savedPresets : [];
   await restoreLocalLibraryBackupIfNeeded();
@@ -672,6 +673,7 @@ function initUserMenu(me) {
   $('#userAvatar').textContent = (ME.username[0] || '?').toUpperCase();
   $('#userChip').title = ME.username + ' · ' + ME.role;
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
+  { const al = $('#auditLogBtn'); if (al) al.hidden = ME.role !== 'admin'; }
   { const gk = $('#globalKeysBtn'); if (gk) gk.hidden = ME.role !== 'admin'; }
   { const cp = $('#changePwBtn'); if (cp) cp.hidden = !!(ME.external || isGoogleUser); }
 
@@ -684,6 +686,7 @@ function initUserMenu(me) {
   $('#logoutBtn').addEventListener('click', logout);
   $('#changePwBtn').addEventListener('click', () => { toggle(false); openChangePwModal(); });
   $('#manageUsersBtn').addEventListener('click', () => { toggle(false); openUsersModal(); });
+  { const al = $('#auditLogBtn'); if (al) al.addEventListener('click', () => { toggle(false); openAuditLogModal(); }); }
   { const gk = $('#globalKeysBtn'); if (gk) gk.addEventListener('click', () => { toggle(false); openGlobalKeysModal(); }); }
   $('#apiKeysBtn').addEventListener('click', () => { toggle(false); openKeysModal(); });
 }
@@ -758,8 +761,9 @@ function usesSharedPersonalKeyModels() {
 // /api/config load and on each run's `quota` event).
 let myQuota = null;        // daily budget for full comparison runs
 let mySingleQuota = null;  // separate daily budget for single-model re-runs
+let myVertexQuota = null;  // daily Vertex AI run cap for external accounts (unlimited for @google.com & admins)
 
-// Badge near Run: your-keys (unlimited), Vertex AI (unlimited), or live 3/day OpenAI counter.
+// Badge near Run: your-keys (unlimited), Vertex AI (unlimited or external account cap), or live 3/day OpenAI counter.
 function updateQuotaBadge() {
   const b = $('#quotaBadge'); if (!b) return;
   const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
@@ -773,24 +777,33 @@ function updateQuotaBadge() {
   if (isAdmin) {
     b.textContent = 'admin · no limit';
     b.className = 'quota-badge own';
-    b.title = 'Admins are exempt from the daily OpenAI run limit.';
+    b.title = 'Admins are exempt from the daily OpenAI and Vertex AI run limits.';
     return;
   }
   const remaining = (myQuota && typeof myQuota.remaining === 'number') ? myQuota.remaining : limit;
   const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || limit;
   const sRemaining = (mySingleQuota && typeof mySingleQuota.remaining === 'number') ? mySingleQuota.remaining : sLimit;
+  const vLimited = Boolean(myVertexQuota && myVertexQuota.limited);
+  const vLimit = (myVertexQuota && typeof myVertexQuota.limit === 'number')
+    ? myVertexQuota.limit
+    : ((CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25);
+  const vRemaining = (myVertexQuota && typeof myVertexQuota.remaining === 'number') ? myVertexQuota.remaining : vLimit;
+  const vertexLabel = vLimited ? `Vertex AI: ${vRemaining}/${vLimit} left` : 'Vertex AI · Unlimited';
   if (!usesSharedPersonalKeyModels()) {
-    b.textContent = `Vertex AI · Unlimited (OpenAI: ${remaining}/${limit} left)`;
-    b.className = 'quota-badge own';
-    b.title = `Gemini & Claude run on org-sponsored Google Vertex AI (Agent Platform) with UNLIMITED daily runs! Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`;
+    b.textContent = `${vertexLabel} (OpenAI: ${remaining}/${limit} left)`;
+    b.className = 'quota-badge ' + (vLimited ? (vRemaining <= 0 ? 'out' : vRemaining <= 3 ? 'low' : 'shared') : 'own');
+    b.title = vLimited
+      ? `External account daily Vertex AI cap: ${vRemaining}/${vLimit} runs remaining today. Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`
+      : `Gemini & Claude run on org-sponsored Google Vertex AI (Agent Platform) with UNLIMITED daily runs! Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`;
     return;
   }
-  b.textContent = `OpenAI: ${remaining} of ${limit} left today · Vertex: Unlimited`;
-  b.className = 'quota-badge ' + (remaining <= 0 ? 'out' : remaining <= 1 ? 'low' : 'shared');
+  b.textContent = `OpenAI: ${remaining} of ${limit} left today · ${vLimited ? `Vertex: ${vRemaining}/${vLimit}` : 'Vertex: Unlimited'}`;
+  b.className = 'quota-badge ' + (remaining <= 0 || (vLimited && vRemaining <= 0) ? 'out' : remaining <= 1 ? 'low' : 'shared');
   b.title = `Shared OpenAI runs: ${remaining}/${limit} left today`
     + (sLimit ? ` (${sRemaining}/${sLimit} single-model re-runs left)` : '')
+    + (vLimited ? ` · External account Vertex AI cap: ${vRemaining}/${vLimit} left today` : '')
     + ((myQuota && myQuota.resetAt) ? `. Resets at ${new Date(myQuota.resetAt).toLocaleString()}` : '')
-    + '. Gemini & Claude on Vertex AI are ALWAYS unlimited — deselect OpenAI or add your own OpenAI API key to run without limits.';
+    + '.';
 }
 
 function openKeysModal() {
@@ -881,6 +894,62 @@ function openAuthModal(title, opts) {
   return $('#authModalBody');
 }
 
+async function openAuditLogModal() {
+  const body = openAuthModal('🛡️ 90-Day Security & Compliance Audit Log', { wide: true });
+  body.innerHTML = '<p class="auth-loading">Loading 90-day audit trail…</p>';
+  try {
+    const r = await fetch('/api/admin/audit?limit=250', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Failed to load audit log.');
+    renderAuditLogModal(body, data);
+  } catch (e) {
+    body.innerHTML = '<p class="auth-err"></p>';
+    body.querySelector('p').textContent = e.message;
+  }
+}
+
+function renderAuditLogModal(body, data) {
+  const runs = Array.isArray(data && data.runs) ? data.runs : [];
+  const auditDays = (data && data.auditRetentionDays) || 90;
+  const outDays = (data && data.runRetentionDays) || 7;
+  const rows = runs.map((r) => {
+    const acctBadge = r.isExternal
+      ? '<span class="u-status warn" title="External account (IP & User-Agent logged)">External</span>'
+      : '<span class="u-tag" title="@google.com account (pre-execution prompt/attachments logged, no IP/UA)">@google.com</span>';
+    const statusBadge = r.hiddenByUser
+      ? '<span class="u-status warn" title="User deleted this run from their history view — retained for 90-day admin audit">🗑️ Hidden by user</span>'
+      : `<span class="u-tag">${esc(r.status || 'completed')}</span>`;
+    const attLinks = (Array.isArray(r.attachments) ? r.attachments : []).map((a) => {
+      const ref = a && (a.vaultRef || a.sha256);
+      if (ref) {
+        return `<a href="/api/me/vault/${encodeURIComponent(ref)}" target="_blank" rel="noopener" class="u-tag" title="Open retained input attachment from vault">📎 ${esc(a.name || ref.slice(0, 8))}</a>`;
+      }
+      return `<span class="u-tag">📎 ${esc((a && a.name) || 'attachment')}</span>`;
+    }).join(' ');
+    const netMeta = r.isExternal && (r.ip || r.userAgent)
+      ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">IP: <code>${esc(r.ip || 'n/a')}</code> · UA: <code>${esc(String(r.userAgent || 'n/a').slice(0, 90))}</code></div>`
+      : '';
+    return `<tr>
+      <td style="white-space:nowrap;font-size:12px">${esc(fmtWhen(r.at))}<div style="font-size:11px;color:var(--muted)">${esc(r.arena || 'text')}</div></td>
+      <td><b>${esc(r.user || '')}</b><div style="margin-top:3px">${acctBadge}</div></td>
+      <td>${statusBadge}</td>
+      <td style="max-width:440px">
+        <div style="font-weight:600;font-size:12.5px">${esc(r.title || r.taskId || 'Run')}</div>
+        <div style="font-size:12px;color:var(--muted);white-space:pre-wrap;max-height:72px;overflow:auto;margin-top:2px">${esc(String(r.prompt || '').slice(0, 600))}</div>
+        ${attLinks ? `<div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${attLinks}</div>` : ''}
+        ${netMeta}
+      </td>
+    </tr>`;
+  }).join('');
+
+  body.innerHTML =
+    `<p class="keys-intro" style="margin-top:0;margin-bottom:12px">All input prompts and uploaded input attachments are retained for <b>${auditDays} days</b> (recorded pre-execution before upstream Vertex AI or OpenAI calls). Unstarred model outputs and generated 4K images are pruned after <b>${outDays} days</b>. Non-admin deletes only hide the run from the user's view while preserving the ${auditDays}-day audit record below.</p>` +
+    (runs.length
+      ? `<table class="users-table"><thead><tr><th>Timestamp</th><th>User</th><th>Status</th><th>Input Prompt, Attachments &amp; Attribution</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="auth-loading">No audit records recorded yet.</p>');
+}
+
 async function openUsersModal() {
   const body = openAuthModal('Manage external users', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
@@ -895,15 +964,26 @@ async function openUsersModal() {
 }
 
 function renderUsersModal(body, data) {
+  const defaultVertexCap = (CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25;
   const rows = (data.users || []).map((u) => {
     const isMe = u.username === data.me;
     const statusBadge = u.mustChangePassword
       ? '<span class="u-status warn" title="User will be forced to set a new password on next sign-in (or immediately if signed in)">⚠️ Must change on login</span>'
       : '<span class="u-status ok" title="Password active">✓ Active</span>';
+    const expiryBadge = u.expired
+      ? `<span class="u-status warn" title="External account has expired">⛔ Expired (${esc(u.expiresAt || '')})</span>`
+      : (u.expiresAt
+        ? `<span class="u-tag" title="External account expiration date">Expires ${esc(u.expiresAt)}</span>`
+        : '<span class="u-tag" title="No account expiration date">No expiry</span>');
+    const vertexCapVal = u.dailyVertexLimit || defaultVertexCap;
+    const vertexBadge = u.role === 'admin'
+      ? '<span class="u-tag" title="Admins have unlimited Vertex AI runs">Unlimited Vertex</span>'
+      : `<span class="u-tag" title="Daily Vertex AI run cap for this external account">${esc(String(vertexCapVal))}/day Vertex</span>`;
     const forceBtn = u.mustChangePassword
       ? `<button class="u-btn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="0" title="Clear forced password change requirement">Clear force</button>`
       : `<button class="u-btn warn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="1" title="Force this user to change their password on next login (or immediately if signed in)">Force PW change</button>`;
     const resetBtn = `<button class="u-btn u-reset-pw" type="button" data-user="${esc(u.username)}" title="Assign a new temporary password and require change on next login">Set temp PW</button>`;
+    const limitsBtn = `<button class="u-btn u-edit-limits" type="button" data-user="${esc(u.username)}" title="Configure optional account expiration date and daily Vertex AI run cap">Limits</button>`;
     const del = isMe
       ? '<span class="u-tag">you</span>'
       : `<button class="u-del" type="button" data-user="${esc(u.username)}" title="Delete user">Remove</button>`;
@@ -911,10 +991,11 @@ function renderUsersModal(body, data) {
       <td class="u-name">${esc(u.username)}</td>
       <td><span class="u-role ${u.role === 'admin' ? 'is-admin' : ''}">${esc(u.role)}</span></td>
       <td>${statusBadge}</td>
-      <td class="u-act"><div class="u-act-btns">${forceBtn}${resetBtn}${del}</div></td>
+      <td><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${vertexBadge}${expiryBadge}</div></td>
+      <td class="u-act"><div class="u-act-btns">${forceBtn}${resetBtn}${limitsBtn}${del}</div></td>
     </tr>
     <tr class="u-reset-row hidden" data-reset-row="${esc(u.username)}">
-      <td colspan="4">
+      <td colspan="5">
         <div class="u-reset-box">
           <span style="font-size:12px;color:var(--muted)">New temp password for <b>${esc(u.username)}</b>:</span>
           <input type="password" class="u-reset-input" data-user="${esc(u.username)}" autocomplete="new-password" placeholder="Min 10 characters…" />
@@ -924,16 +1005,37 @@ function renderUsersModal(body, data) {
         </div>
         <div class="auth-msg u-reset-msg" data-user="${esc(u.username)}" style="margin-top:6px"></div>
       </td>
+    </tr>
+    <tr class="u-limits-row hidden" data-limits-row="${esc(u.username)}">
+      <td colspan="5">
+        <div class="u-reset-box">
+          <span style="font-size:12px;color:var(--muted)">Limits for <b>${esc(u.username)}</b>:</span>
+          <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px">Daily Vertex cap:
+            <input type="number" min="1" max="1000" class="u-limits-vertex" data-user="${esc(u.username)}" value="${esc(String(vertexCapVal))}" style="width:78px;padding:5px 8px" />
+          </label>
+          <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px">Expires on (optional):
+            <input type="date" class="u-limits-expires" data-user="${esc(u.username)}" value="${esc(u.expiresAt || '')}" style="padding:5px 8px" />
+          </label>
+          <button class="submit-btn u-limits-save" type="button" data-user="${esc(u.username)}" style="margin:0;padding:6px 12px;font-size:12px">Save limits</button>
+          <button class="u-btn u-limits-clear-exp" type="button" data-user="${esc(u.username)}" title="Clear expiration date">Clear expiry</button>
+          <button class="u-btn u-limits-cancel" type="button" data-user="${esc(u.username)}">Cancel</button>
+        </div>
+        <div class="auth-msg u-limits-msg" data-user="${esc(u.username)}" style="margin-top:6px"></div>
+      </td>
     </tr>`;
   }).join('');
   body.innerHTML =
-    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login or force a password change for any external user at any time.</p>' +
-    '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login, set a daily Vertex AI run cap, or configure an optional account expiration date for any external account at any time.</p>' +
+    '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th>Vertex Cap &amp; Expiry</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '<form class="add-user-form" id="addUserForm">' +
       '<h4>Add an external user</h4>' +
       '<div class="auth-field"><label>Username</label><input id="nuUser" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="3–32 chars: a–z 0–9 . _ -" /></div>' +
       '<div class="auth-field"><label>Temporary / Initial password</label><input id="nuPass" type="password" autocomplete="new-password" placeholder="Min 10 chars (user will change on first login)" /></div>' +
-      '<label class="auth-check"><input id="nuForcePw" type="checkbox" checked /> Force user to change password on first sign-in (recommended for customers)</label>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
+        '<div class="auth-field"><label>Daily Vertex AI run cap</label><input id="nuVertexLimit" type="number" min="1" max="1000" value="' + esc(String(defaultVertexCap)) + '" /></div>' +
+        '<div class="auth-field"><label>Account expiration date <span class="u-tag">optional</span></label><input id="nuExpiresAt" type="date" /></div>' +
+      '</div>' +
+      '<label class="auth-check"><input id="nuForcePw" type="checkbox" checked /> Force user to change password on first sign-in (recommended for external accounts)</label>' +
       '<label class="auth-check"><input id="nuAdmin" type="checkbox" /> Make this user an admin (can manage users)</label>' +
       '<div class="auth-msg" id="nuMsg"></div>' +
       '<button class="submit-btn" type="submit">+ Add user</button>' +
@@ -961,6 +1063,22 @@ function renderUsersModal(body, data) {
   body.querySelectorAll('.u-reset-input').forEach((inp) => inp.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); saveUserTempPassword(inp.dataset.user, body); }
   }));
+  body.querySelectorAll('.u-edit-limits').forEach((b) => b.addEventListener('click', () => {
+    const uname = b.dataset.user;
+    const row = body.querySelector(`.u-limits-row[data-limits-row="${CSS.escape(uname)}"]`);
+    if (row) row.classList.toggle('hidden');
+  }));
+  body.querySelectorAll('.u-limits-cancel').forEach((b) => b.addEventListener('click', () => {
+    const uname = b.dataset.user;
+    const row = body.querySelector(`.u-limits-row[data-limits-row="${CSS.escape(uname)}"]`);
+    if (row) row.classList.add('hidden');
+  }));
+  body.querySelectorAll('.u-limits-clear-exp').forEach((b) => b.addEventListener('click', () => {
+    const uname = b.dataset.user;
+    const expInp = body.querySelector(`.u-limits-expires[data-user="${CSS.escape(uname)}"]`);
+    if (expInp) expInp.value = '';
+  }));
+  body.querySelectorAll('.u-limits-save').forEach((b) => b.addEventListener('click', () => saveUserLimits(b.dataset.user, body)));
   body.querySelector('#addUserForm').addEventListener('submit', (e) => { e.preventDefault(); addUser(body); });
 }
 
@@ -1069,13 +1187,17 @@ async function addUser(body) {
   const role = body.querySelector('#nuAdmin').checked ? 'admin' : 'user';
   const forceChk = body.querySelector('#nuForcePw');
   const mustChangePassword = forceChk ? !!forceChk.checked : true;
+  const expEl = body.querySelector('#nuExpiresAt');
+  const vLimEl = body.querySelector('#nuVertexLimit');
+  const expiresAt = expEl && expEl.value ? expEl.value.trim() : null;
+  const dailyVertexLimit = vLimEl && vLimEl.value ? Number(vLimEl.value) : undefined;
   const btn = body.querySelector('#addUserForm .submit-btn');
   btn.disabled = true;
   try {
     const r = await fetch('/api/auth/users', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, role, mustChangePassword }),
+      body: JSON.stringify({ username, password, role, mustChangePassword, expiresAt, dailyVertexLimit }),
     });
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
@@ -1083,6 +1205,32 @@ async function addUser(body) {
     renderUsersModal(body, { users: j.users, me: (ME && ME.username) }); // refresh list
   } catch (e) {
     msg.className = 'auth-msg err'; msg.textContent = e.message; btn.disabled = false;
+  }
+}
+
+async function saveUserLimits(username, body) {
+  const escUser = CSS.escape(username);
+  const vInp = body.querySelector(`.u-limits-vertex[data-user="${escUser}"]`);
+  const eInp = body.querySelector(`.u-limits-expires[data-user="${escUser}"]`);
+  const msg = body.querySelector(`.u-limits-msg[data-user="${escUser}"]`);
+  const btn = body.querySelector(`.u-limits-save[data-user="${escUser}"]`);
+  const dailyVertexLimit = vInp && vInp.value ? Number(vInp.value) : null;
+  const expiresAt = eInp && eInp.value ? eInp.value.trim() : null;
+  if (msg) { msg.className = 'auth-msg u-limits-msg'; msg.textContent = ''; }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth/users/' + encodeURIComponent(username) + '/limits', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dailyVertexLimit, expiresAt }),
+    });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'Could not update external account limits.');
+    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+  } catch (e) {
+    if (msg) { msg.className = 'auth-msg err u-limits-msg'; msg.textContent = e.message; }
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -3943,14 +4091,17 @@ async function streamRun(payload, results, signal, own, retried) {
     }
     throw new Error((j && j.error) || 'An attachment expired from the server cache — please re-attach it.');
   }
-  if (resp.status === 429) {                                                     // daily per-user OpenAI run limit
+  if (resp.status === 429) {                                                     // daily per-user OpenAI or external Vertex run limit
     const j = await resp.json().catch(() => ({}));
     if (j && j.quota) {
       if (payload.mode === 'single') mySingleQuota = j.quota; else myQuota = j.quota;
-      updateQuotaBadge();
     }
+    if (j && j.vertexQuota) {
+      myVertexQuota = j.vertexQuota;
+    }
+    updateQuotaBadge();
     window._lastQuotaObj = j || {};
-    window._lastQuotaMsg = (j && j.error) || 'Daily OpenAI limit reached. Switch to Gemini & Claude (Vertex AI) for unlimited runs!';
+    window._lastQuotaMsg = (j && j.error) || 'Daily run limit reached.';
     return 'quota';
   }
   if (!resp.ok || !resp.body) throw new Error('Request failed: ' + resp.status);
@@ -4180,8 +4331,11 @@ function handleEvent(ev, results, own) {
       if (ev.quota && ev.quota.limited) {
         // a stream that owns exactly one slot is a single-model re-run
         if (own && Object.keys(own).length === 1) mySingleQuota = ev.quota; else myQuota = ev.quota;
-        updateQuotaBadge();
       }
+      if (ev.vertexQuota) {
+        myVertexQuota = ev.vertexQuota;
+      }
+      updateQuotaBadge();
       break;
     case 'context_warning': {
       const cw = $(`#ctx-warn-${ev.slot}`);
@@ -5000,8 +5154,9 @@ function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
     const arrow = active ? (runsSortDir === 'asc' ? '▲' : '▼') : '⇅';
     return `<button type="button" class="hist-sort-btn${active ? ' is-sorted' : ''}" data-run-sort="${esc(c.key)}" data-default-dir="${esc(c.defaultDir)}" title="Sort runs by ${esc(c.label)}">${esc(c.label)} <span class="sort-ind">${arrow}</span></button>`;
   }).join('');
-  const starFilterBtn = `<button type="button" class="hist-star-filter-btn${historyStarredOnly ? ' active' : ''}" title="Show only starred runs kept forever (exempt from ${retDays}-day auto-pruning)">★ Kept only (${fmtInt(starredCount)})</button>`;
-  const retentionBadge = `<span class="hist-retention-note" title="Unstarred run payloads and their binary vault images/attachments are automatically pruned after ${retDays} days to save storage, while cumulative user and run counts are kept permanently. Star any run to keep its full payload forever.">⏱ ${retDays}d auto-prune · ★ Star to keep</span>`;
+  const auditDays = (CONFIG && CONFIG.auditRetentionDays) || 90;
+  const starFilterBtn = `<button type="button" class="hist-star-filter-btn${historyStarredOnly ? ' active' : ''}" title="Show only starred runs kept forever (exempt from ${retDays}-day output auto-pruning)">★ Kept only (${fmtInt(starredCount)})</button>`;
+  const retentionBadge = `<span class="hist-retention-note" title="Unstarred run outputs and generated images are automatically pruned after ${retDays} days to save storage (star any run to keep forever). Input prompts and input attachments are retained for ${auditDays} days for security & compliance audit.">⏱ ${retDays}d output prune · 🛡️ ${auditDays}d input audit · ★ Star to keep</span>`;
   return `<div class="hist-toolbar">
     <span class="hist-toolbar-label">Sort runs (${fmtInt(totalCount)}):</span>
     <div class="hist-sort-group">${btns}${starFilterBtn}${retentionBadge}</div>

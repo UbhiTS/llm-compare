@@ -95,7 +95,7 @@ function buildFixMessage(task, failing) {
   );
 }
 
-async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, repair }) {
+async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, repair, auditUser }) {
   const slot = modelConfig.slot;
   const system = task.language
     ? CODE_SYSTEM_PROMPT
@@ -230,6 +230,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
         onDelta,
         keys,
         signal,
+        auditUser,
       })
     );
 

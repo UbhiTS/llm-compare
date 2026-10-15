@@ -42,7 +42,7 @@ const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = 
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
 const { buildComparisonPdf, pdfFilename } = require('./src/pdfReport');
-const { getImageArenaConfig, runImageArenaComparison } = require('./src/imageArena');
+const { IMAGE_MODEL_CATALOG, DEFAULT_IMAGE_SLOTS, getImageArenaConfig, runImageArenaComparison } = require('./src/imageArena');
 
 // Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
 // request references cached files that have expired, answer 409 with the list
@@ -270,11 +270,19 @@ app.post('/api/auth/login', async (req, res) => {
     const ms = Math.max(auth.lockRemainingMs(ukey), auth.lockRemainingMs(ipkey));
     return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(ms / 1000)}s.` });
   }
-  const user = await auth.authenticate(username, password);
+  const user = await auth.authenticate(username, password, { includeExpired: true });
   if (!user) {
     auth.recordFailure(ukey);
     auth.recordFailure(ipkey);
     return res.status(401).json({ error: 'Invalid username or password.' });
+  }
+  if (user.expired) {
+    auth.recordSuccess(ukey);
+    auth.recordSuccess(ipkey);
+    return res.status(403).json({
+      code: 'ACCOUNT_EXPIRED',
+      error: `This external account expired on ${user.expiresAt || 'its expiration date'}. Please contact the administrator.`,
+    });
   }
   auth.recordSuccess(ukey);
   auth.recordSuccess(ipkey);
@@ -282,7 +290,13 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({
     ok: true,
     mustChangePassword: !!user.mustChangePassword,
-    user: { username: user.username, role: user.role, mustChangePassword: !!user.mustChangePassword },
+    user: {
+      username: user.username,
+      role: user.role,
+      mustChangePassword: !!user.mustChangePassword,
+      expiresAt: user.expiresAt || null,
+      dailyVertexLimit: user.dailyVertexLimit || null,
+    },
   });
 });
 
@@ -434,10 +448,24 @@ app.get('/api/auth/users', requireAdmin, (req, res) => {
 });
 
 app.post('/api/auth/users', requireAdmin, async (req, res) => {
-  const { username, password, role, mustChangePassword } = req.body || {};
+  const { username, password, role, mustChangePassword, expiresAt, dailyVertexLimit } = req.body || {};
   const wantForce = mustChangePassword !== undefined ? Boolean(mustChangePassword) : true;
   try {
-    const user = await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user', { mustChangePassword: wantForce });
+    const user = await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user', {
+      mustChangePassword: wantForce,
+      expiresAt,
+      dailyVertexLimit,
+    });
+    res.json({ ok: true, user, users: auth.listUsers() });
+  } catch (e) {
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.post('/api/auth/users/:username/limits', requireAdmin, (req, res) => {
+  try {
+    const { expiresAt, dailyVertexLimit } = req.body || {};
+    const user = auth.updateUserLimits(req.params.username, { expiresAt, dailyVertexLimit });
     res.json({ ok: true, user, users: auth.listUsers() });
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
@@ -636,6 +664,9 @@ app.get('/api/config', (req, res) => {
     allowedDomains: googleAuth.allowedDomains(),
     maxRunsPerDay: auth.MAX_RUNS_PER_DAY,
     maxSingleRunsPerDay: auth.MAX_SINGLE_RUNS_PER_DAY,
+    maxExternalVertexRunsPerDay: auth.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
+    auditRetentionDays: history.AUDIT_RETENTION_DAYS,
+    runRetentionDays: history.RUN_RETENTION_DAYS,
     me: {
       username: req.user.username,
       role: req.user.role,
@@ -643,6 +674,7 @@ app.get('/api/config', (req, res) => {
       mustChangePassword: !!req.user.mustChangePassword,
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
+      vertexQuota: auth.vertexRunQuota(req.user),
       lastModels: history.lastModels(req.user.username),
       preferences: {
         taskId: prefs.taskId || 'custom',
@@ -685,7 +717,7 @@ app.post('/api/me/prompts', (req, res) => {
 });
 
 app.delete('/api/me/prompts/:id', (req, res) => {
-  const out = history.deleteUserPrompt(req.user.username, req.params.id);
+  const out = history.deleteUserPrompt(req.user.username, req.params.id, { isAdmin: req.user.role === 'admin' });
   if (!out.removed) return res.status(404).json({ ok: false, error: 'Saved prompt not found.' });
   res.json({ ok: true, removed: true, savedPrompts: out.savedPrompts });
 });
@@ -836,6 +868,28 @@ app.get('/api/usage', requireAdmin, (req, res) => {
   res.json(history.usageSummary());
 });
 
+// Admin 90-day security & compliance audit trail (input prompts + input attachments).
+app.get('/api/admin/audit', requireAdmin, (req, res) => {
+  const runs = history.listAuditRuns({
+    user: req.query.user,
+    arena: req.query.arena,
+    includeHidden: req.query.includeHidden !== '0',
+    limit: req.query.limit,
+  });
+  res.json({
+    ok: true,
+    auditRetentionDays: history.AUDIT_RETENTION_DAYS,
+    runRetentionDays: history.RUN_RETENTION_DAYS,
+    runs,
+  });
+});
+
+app.get('/api/admin/audit/:id', requireAdmin, (req, res) => {
+  const run = history.getAuditRun(req.params.id);
+  if (!run) return res.status(404).json({ ok: false, error: 'Audit record not found.' });
+  res.json({ ok: true, run });
+});
+
 // ---------- global (shared) provider keys — admin only ----------
 // These are the credentials every user runs on when they haven't brought their
 // own. Stored as Secret Manager versions (see src/globalKeys.js); the VALUES are
@@ -883,6 +937,7 @@ app.post('/api/image-arena/history', async (req, res) => {
       // Preserve original run owner only if admin is syncing; otherwise bind to req.user
       const ownerUser = (req.user.role === 'admin' && item.user) ? item.user : req.user.username;
       const ownerName = (req.user.role === 'admin' && item.userName) ? item.userName : (req.user.name || req.user.username);
+      const isExt = auth.isExternalAccount(req.user);
       const out = await history.saveImageRun({
         id: item.id,
         at: item.at,
@@ -898,6 +953,9 @@ app.post('/api/image-arena/history', async (req, res) => {
         results: item.results || item.summary,
         attachments: item.attachments,
         starred: item.starred,
+        ip: isExt ? req.ip : null,
+        userAgent: isExt ? req.headers['user-agent'] : null,
+        isExternal: isExt,
       });
       if (out) saved.push(out);
     }
@@ -934,9 +992,52 @@ app.post('/api/image-arena/run', async (req, res) => {
       if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
     }
   }
+  const requestedSlots = Array.isArray(slots) && slots.length ? slots.slice(0, 4) : DEFAULT_IMAGE_SLOTS;
+  const resolvedSlotEntries = requestedSlots.map((s, idx) => {
+    const slotId = String((s && s.slot) || String.fromCharCode(65 + idx)).slice(0, 4);
+    const requested = s && s.catalogId ? String(s.catalogId).slice(0, 100) : '';
+    const catId = requested || IMAGE_MODEL_CATALOG[idx % IMAGE_MODEL_CATALOG.length].id;
+    const entry = IMAGE_MODEL_CATALOG.find((m) => m.id === catId || m.model === catId) || null;
+    return { slot: slotId, id: catId, label: entry ? entry.label : catId, provider: entry ? entry.provider : 'agentplatform' };
+  });
+  const usesSharedVertexKey = resolvedSlotEntries.some((m) => m.provider === 'agentplatform' && !(keys.agentplatform || keys.gemini));
+  if (usesSharedVertexKey) {
+    const vQuota = auth.consumeVertexRun(req.user);
+    if (!vQuota.ok) {
+      return res.status(429).json({
+        ok: false,
+        vertexQuotaExhausted: true,
+        error: `Daily Vertex AI limit reached (${vQuota.limit}/day for external accounts). Add your own API key in Settings or contact the administrator.`,
+        vertexQuota: vQuota,
+      });
+    }
+  }
+  const isExt = auth.isExternalAccount(req.user);
+  const auditUser = { username: req.user.username, isExternal: isExt };
+  const runId = history.newId();
+  await history.recordPreExecutionAudit({
+    id: runId,
+    user: req.user.username,
+    userName: req.user.name || req.user.username,
+    isExternal: isExt,
+    ip: isExt ? req.ip : null,
+    userAgent: isExt ? req.headers['user-agent'] : null,
+    arena: 'image',
+    taskId: 'image-arena',
+    title: 'Image Arena Run',
+    prompt: String(prompt || ''),
+    models: resolvedSlotEntries.map((s) => ({ slot: s.slot, id: s.id, label: s.label, provider: s.provider })),
+    attachments: Array.isArray(attachments) ? attachments : [],
+  });
+
   const ac = new AbortController();
+  let finished = false;
   res.on('close', () => {
-    if (!res.writableFinished) ac.abort();
+    if (!finished && !res.writableFinished) {
+      ac.abort();
+      if (usesSharedVertexKey) auth.refundVertexRun(req.user);
+      history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
+    }
   });
   try {
     const out = await runImageArenaComparison({
@@ -947,7 +1048,12 @@ app.post('/api/image-arena/run', async (req, res) => {
       attachments: Array.isArray(attachments) ? attachments : [],
       keys,
       signal: ac.signal,
+      auditUser,
     });
+    finished = true;
+    out.runId = runId;
+    out.vertexQuota = auth.vertexRunQuota(req.user);
+    history.finalizeAuditRun(runId, { status: 'completed' }).catch(() => {});
     // Pre-store generated images in the user's server-side binary vault and attach compact
     // `imageVaultRef` / `thoughtVaultRef` pointers so subsequent `/api/image-arena/history`
     // saves only need to send the tiny 1.5KB thumbnail + vaultRef (never re-uploading 4K PNGs).
@@ -995,6 +1101,8 @@ app.post('/api/image-arena/run', async (req, res) => {
     }
     res.end();
   } catch (e) {
+    finished = true;
+    history.finalizeAuditRun(runId, { status: 'error' }).catch(() => {});
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
 });
@@ -1069,13 +1177,42 @@ app.post('/api/judge', async (req, res) => {
     const quota = auth.consumeRun(req.user, 'single');
     if (!quota.ok) return res.status(429).json({ error: `Daily OpenAI limit reached (${quota.limit}/day). Switch the Judge model to Gemini or Claude (Vertex AI) to score without a limit.` });
   }
+  if (judge.provider === 'agentplatform' && !modelUsesOwnKey(judge, keys)) {
+    const vQuota = auth.consumeVertexRun(req.user);
+    if (!vQuota.ok) {
+      return res.status(429).json({
+        vertexQuotaExhausted: true,
+        error: `Daily Vertex AI limit reached (${vQuota.limit}/day for external accounts). Add your own API key in Settings or contact the administrator.`,
+      });
+    }
+  }
+
+  const isExt = auth.isExternalAccount(req.user);
+  const auditUser = { username: req.user.username, isExternal: isExt };
+  const judgeAuditId = history.newId();
+  await history.recordPreExecutionAudit({
+    id: judgeAuditId,
+    user: req.user.username,
+    userName: req.user.name || req.user.username,
+    isExternal: isExt,
+    ip: isExt ? req.ip : null,
+    userAgent: isExt ? req.headers['user-agent'] : null,
+    arena: 'judge',
+    taskId: task.id,
+    title: `Judge · ${task.title}`,
+    prompt: task.prompt,
+    models: [judge],
+    attachments: task.attachments || [],
+  });
 
   try {
-    const verdict = await judgeOutputs({ task, entries: clean, judge, keys });
+    const verdict = await judgeOutputs({ task, entries: clean, judge, keys, auditUser });
+    history.finalizeAuditRun(judgeAuditId, { status: 'completed' }).catch(() => {});
     await history.attachJudgeToLatestRun(req.user.username, task.id, verdict, req.body && req.body.runId);
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
     res.json({ ok: true, ...verdict });
   } catch (e) {
+    history.finalizeAuditRun(judgeAuditId, { status: 'error' }).catch(() => {});
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
 });
@@ -1250,6 +1387,8 @@ app.post('/api/run', async (req, res) => {
   // model on the server's shared personal key consume the 3/day allowance.
   // Gemini & Claude run on org-sponsored Vertex AI (agentplatform) and remain available all day.
   const usesSharedExternalKey = chosenModels.some((m) => m.provider !== 'agentplatform' && !modelUsesOwnKey(m, keys));
+  // External account daily Vertex AI guardrail (default 25/day; @google.com and admins are unlimited).
+  const usesSharedVertexKey = chosenModels.some((m) => m.provider === 'agentplatform' && !modelUsesOwnKey(m, keys));
   // Two daily budgets. A re-run of ONE model draws on the smaller 'single' bucket
   // so retrying a slot can't burn the full-comparison allowance. The client asks
   // for 'single', but we only honour it when exactly one model is actually being
@@ -1282,6 +1421,20 @@ app.post('/api/run', async (req, res) => {
     }
     quotaInfo = quota;
   }
+  let vertexQuotaInfo = auth.vertexRunQuota(req.user);
+  if (usesSharedVertexKey) {
+    const vQuota = auth.consumeVertexRun(req.user);
+    if (!vQuota.ok) {
+      if (usesSharedExternalKey) auth.refundRun(req.user, kind);
+      return res.status(429).json({
+        type: 'error',
+        vertexQuotaExhausted: true,
+        error: `Daily Vertex AI limit reached — you've used all ${vQuota.limit} Vertex AI runs for today on this external account. Add your own API key in Settings or contact the administrator.`,
+        vertexQuota: vQuota,
+      });
+    }
+    vertexQuotaInfo = vQuota;
+  }
   const iters = Math.max(1, Math.min(8, Number(maxIterations) || 1)); // single-shot by default (no self-debug retries)
 
   // NDJSON stream: one JSON object per line.
@@ -1298,7 +1451,7 @@ app.post('/api/run', async (req, res) => {
     }
   };
 
-  emit({ type: 'quota', quota: quotaInfo }); // let the UI update the "runs left today" counter
+  emit({ type: 'quota', quota: quotaInfo, vertexQuota: vertexQuotaInfo }); // let the UI update the "runs left today" counter
 
   // If the client goes away (closes the tab, or hits "Run again" to restart a
   // slot) abort the upstream provider calls instead of letting them finish
@@ -1316,6 +1469,28 @@ app.post('/api/run', async (req, res) => {
   }, 15000);
   if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
 
+  const runId = history.newId();
+  const isExt = auth.isExternalAccount(req.user);
+  const auditUser = { username: req.user.username, isExternal: isExt };
+
+  // Pre-execution 90-day security & compliance audit log: written BEFORE upstream
+  // model APIs are called so aborted or safety-blocked prompts/attachments are still recorded.
+  // @google.com users log without IP/User-Agent; external accounts log full IP + User-Agent.
+  await history.recordPreExecutionAudit({
+    id: runId,
+    user: req.user.username,
+    userName: req.user.name || req.user.username,
+    isExternal: isExt,
+    ip: isExt ? req.ip : null,
+    userAgent: isExt ? req.headers['user-agent'] : null,
+    arena: 'text',
+    taskId: task.id,
+    title: task.title,
+    prompt: typeof customPrompt === 'string' && customPrompt.trim() ? customPrompt : task.prompt,
+    models: chosenModels,
+    attachments: task.attachments || [],
+  });
+
   // NOTE: this must be res 'close', NOT req 'close'. The request stream closes as
   // soon as its body has been read, which is long before the run ends — listening
   // there aborts every run the instant it starts. res 'close' fires either when
@@ -1326,20 +1501,21 @@ app.post('/api/run', async (req, res) => {
     aborted = true;
     ac.abort();
     if (usesSharedExternalKey) auth.refundRun(req.user, kind);
+    if (usesSharedVertexKey) auth.refundVertexRun(req.user);
+    history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
     console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
   });
 
-  const runId = history.newId();
   let results = null;
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair, runId });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair, runId, auditUser });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   } finally {
     clearInterval(heartbeatTimer);
   }
   finished = true;
-  if (aborted) return res.end();   // nothing to log: the client threw this run away
+  if (aborted) return res.end();   // client disconnected: pre-execution audit record already marked 'aborted'
   // Log this run to the durable per-user history. FIRE-AND-FORGET: saveRun is
   // async and never throws, so this never blocks res.end() or the event loop on
   // a slow gcsfuse write (which would otherwise stall other users on this single
@@ -1355,7 +1531,12 @@ app.post('/api/run', async (req, res) => {
       models: chosenModels,
       results,
       kind,
+      ip: isExt ? req.ip : null,
+      userAgent: isExt ? req.headers['user-agent'] : null,
+      isExternal: isExt,
     }).catch(() => {});
+  } else {
+    history.finalizeAuditRun(runId, { status: 'error' }).catch(() => {});
   }
   res.end();
 });
