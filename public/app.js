@@ -536,6 +536,7 @@ async function init() {
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;
   myVertexQuota = CONFIG.me && CONFIG.me.vertexQuota;
+  myQuotas = (CONFIG.me && CONFIG.me.quotas) || null;  // every per-provider budget (OpenAI, Anthropic, Moonshot, Vertex AI)
   SAVED_PROMPTS = Array.isArray(CONFIG.me && CONFIG.me.savedPrompts) ? CONFIG.me.savedPrompts : [];
   SAVED_PRESETS = Array.isArray(CONFIG.me && CONFIG.me.savedPresets) ? CONFIG.me.savedPresets : [];
   await restoreLocalLibraryBackupIfNeeded();
@@ -683,6 +684,7 @@ function initUserMenu(me) {
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
   { const al = $('#auditLogBtn'); if (al) al.hidden = ME.role !== 'admin'; }
   { const gk = $('#globalKeysBtn'); if (gk) gk.hidden = ME.role !== 'admin'; }
+  { const st = $('#settingsBtn'); if (st) st.hidden = ME.role !== 'admin'; }
   { const cp = $('#changePwBtn'); if (cp) cp.hidden = !!(ME.external || isGoogleUser); }
 
   const chip = $('#userChip');
@@ -696,6 +698,7 @@ function initUserMenu(me) {
   $('#manageUsersBtn').addEventListener('click', () => { toggle(false); openUsersModal(); });
   { const al = $('#auditLogBtn'); if (al) al.addEventListener('click', () => { toggle(false); openAuditLogModal(); }); }
   { const gk = $('#globalKeysBtn'); if (gk) gk.addEventListener('click', () => { toggle(false); openGlobalKeysModal(); }); }
+  { const st = $('#settingsBtn'); if (st) st.addEventListener('click', () => { toggle(false); openSettingsModal(); }); }
   $('#apiKeysBtn').addEventListener('click', () => { toggle(false); openKeysModal(); });
 }
 
@@ -749,98 +752,106 @@ function keySourceFor(m, k) {
   return { group: m.provider, state: 'shared', present: true };
 }
 
-// True only when every selected model runs on the user's OWN credential — the
-// same condition the server uses before skipping the quota.
-function allModelsUseOwnKeys() {
+// True only when every model in `list` runs on the user's OWN credential: the
+// same condition the server uses before skipping every daily budget.
+function allModelsUseOwnKeys(list) {
   const k = loadKeys();
-  const list = (ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS;
-  return list.length > 0 && list.every((m) => keySourceFor(m, k).state === 'own');
+  const models = list || textArenaModels();
+  return models.length > 0 && models.every((m) => keySourceFor(m, k).state === 'own');
 }
 
-// True when at least one selected model uses a non-Vertex external provider
-// (e.g. OpenAI / Moonshot / direct Anthropic) on the server's shared personal key.
-// Models on Google Vertex AI (Agent Platform: Gemini & Claude) are sponsored by
-// the GCP org and do NOT consume or get blocked by the 3/day OpenAI limit.
-function usesSharedPersonalKeyModels() {
+// True when at least one model uses a non-Vertex provider (OpenAI / Anthropic /
+// Moonshot) on the shared key. Used by the "swap to Vertex AI" offer.
+function usesSharedPersonalKeyModels(list) {
   const k = loadKeys();
-  const list = (MODELS && MODELS.length) ? MODELS : (ARENA_MODELS || []);
-  return list.some((m) => m.provider !== 'agentplatform' && keySourceFor(m, k).state !== 'own');
+  return (list || textArenaModels()).some((m) => m.provider !== 'agentplatform' && keySourceFor(m, k).state !== 'own');
 }
 
+// Live "runs left today" state (authoritative values come from the server on
+// /api/config load and with every run, reserve, judge and 429 response).
+let myQuota = null;        // OpenAI budget (legacy field)
+let mySingleQuota = null;  // legacy: single-model re-runs now count against the same budget
+let myVertexQuota = null;  // Vertex AI budget (legacy field)
+let myQuotas = null;       // { openai, anthropic, moonshot, vertex }: per-user daily budgets on the global keys
 
-// Live "runs left today" state (authoritative value comes from the server on
-// /api/config load and on each run's `quota` event).
-let myQuota = null;        // daily budget for full comparison runs
-let mySingleQuota = null;  // separate daily budget for single-model re-runs
-let myVertexQuota = null;  // daily Vertex AI run cap for external accounts (unlimited for @google.com & admins)
+// One rule for the whole app (mirrors chargeDailyBudgets in server.js): a run is
+// one Run click in either arena and counts once per provider budget it touches.
+const BUDGET_LABELS = { openai: 'OpenAI', anthropic: 'Anthropic', moonshot: 'Moonshot', vertex: 'Vertex AI' };
+const BUDGET_ORDER = ['openai', 'anthropic', 'moonshot', 'vertex'];
+function budgetBucketFor(m) {
+  const p = m && m.provider;
+  return (p === 'openai' || p === 'anthropic' || p === 'moonshot') ? p : 'vertex';
+}
+function budgetFor(provider) {
+  const q = myQuotas && myQuotas[provider];
+  const limit = (q && typeof q.limit === 'number') ? q.limit : ((CONFIG && CONFIG.limits && CONFIG.limits[provider]) ?? 0);
+  const limited = q ? q.limited !== false : true;
+  const remaining = (q && typeof q.remaining === 'number') ? q.remaining : limit;
+  return { provider, limited, limit, remaining, resetAt: q && q.resetAt };
+}
+function textArenaModels() {
+  return (MODELS && MODELS.length) ? MODELS : (ARENA_MODELS || []);
+}
+function imageArenaModels() {
+  if (typeof IMG_SLOTS === 'undefined' || !IMG_CONFIG) return [];
+  return IMG_SLOTS.map((s) => getImgCatalogItem(s.catalogId)).filter(Boolean);
+}
 
-// Badge near Run: your-keys (unlimited), Vertex AI (unlimited or external account cap), or live 3/day OpenAI counter.
-function updateQuotaBadge() {
-  const b = $('#quotaBadge'); if (!b) return;
-  const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
+// Badge near Run (both arenas): own keys, admin, or the live per-provider budgets
+// for the providers this lineup uses on the shared keys.
+function renderQuotaBadge(b, models) {
+  if (!b) return;
   const isAdmin = ME && ME.role === 'admin';
-  if (allModelsUseOwnKeys()) {
+  const allLines = BUDGET_ORDER.map((p) => {
+    const q = budgetFor(p);
+    return `${BUDGET_LABELS[p]} ${q.remaining}/${q.limit}`;
+  }).join(' · ');
+  const resetAt = (myQuotas && myQuotas.vertex && myQuotas.vertex.resetAt) || null;
+  const rule = 'A run counts once per provider, however many models it compares. Text and image runs share the same budgets; runs on your own keys never count.';
+  if (models.length && allModelsUseOwnKeys(models)) {
     b.textContent = 'your keys · no limit';
     b.className = 'quota-badge own';
-    b.title = 'Every selected model runs on your own personal key, so this run is not counted against any daily limit.';
+    b.title = 'Every selected model runs on your own key, so this run does not count against any daily limit.';
     return;
   }
   if (isAdmin) {
     b.textContent = 'admin · no limit';
     b.className = 'quota-badge own';
-    b.title = 'Admins are exempt from the daily OpenAI and Vertex AI run limits.';
+    b.title = 'Admins are not limited on the global keys.';
     return;
   }
-  const remaining = (myQuota && typeof myQuota.remaining === 'number') ? myQuota.remaining : limit;
-  const sLimit = (CONFIG && CONFIG.maxSingleRunsPerDay) || limit;
-  const sRemaining = (mySingleQuota && typeof mySingleQuota.remaining === 'number') ? mySingleQuota.remaining : sLimit;
-  const vLimited = Boolean(myVertexQuota && myVertexQuota.limited);
-  const vLimit = (myVertexQuota && typeof myVertexQuota.limit === 'number')
-    ? myVertexQuota.limit
-    : ((CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25);
-  const vRemaining = (myVertexQuota && typeof myVertexQuota.remaining === 'number') ? myVertexQuota.remaining : vLimit;
-  const vertexLabel = vLimited ? `Vertex AI: ${vRemaining}/${vLimit} left` : 'Vertex AI · Unlimited';
-  if (!usesSharedPersonalKeyModels()) {
-    b.textContent = `${vertexLabel} (OpenAI: ${remaining}/${limit} left)`;
-    b.className = 'quota-badge ' + (vLimited ? (vRemaining <= 0 ? 'out' : vRemaining <= 3 ? 'low' : 'shared') : 'own');
-    b.title = vLimited
-      ? `External account daily Vertex AI cap: ${vRemaining}/${vLimit} runs remaining today. Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`
-      : `Gemini & Claude run on org-sponsored Google Vertex AI (Agent Platform) with UNLIMITED daily runs! Shared OpenAI budget remaining today: ${remaining}/${limit} runs.`;
-    return;
-  }
-  b.textContent = `OpenAI: ${remaining} of ${limit} left today · ${vLimited ? `Vertex: ${vRemaining}/${vLimit}` : 'Vertex: Unlimited'}`;
-  b.className = 'quota-badge ' + (remaining <= 0 || (vLimited && vRemaining <= 0) ? 'out' : remaining <= 1 ? 'low' : 'shared');
-  b.title = `Shared OpenAI runs: ${remaining}/${limit} left today`
-    + (sLimit ? ` (${sRemaining}/${sLimit} single-model re-runs left)` : '')
-    + (vLimited ? ` · External account Vertex AI cap: ${vRemaining}/${vLimit} left today` : '')
-    + ((myQuota && myQuota.resetAt) ? `. Resets at ${new Date(myQuota.resetAt).toLocaleString()}` : '')
-    + '.';
+  const k = loadKeys();
+  const shared = BUDGET_ORDER.filter((p) => models.some((m) => budgetBucketFor(m) === p && keySourceFor(m, k).state !== 'own'));
+  const show = shared.length ? shared : ['vertex'];
+  const states = show.map(budgetFor);
+  b.textContent = states.map((q) => `${BUDGET_LABELS[q.provider]}: ${q.remaining}/${q.limit} left`).join(' · ');
+  b.className = 'quota-badge ' + (states.some((q) => q.remaining <= 0) ? 'out' : states.some((q) => q.remaining <= 1) ? 'low' : 'shared');
+  b.title = `Daily runs left on the global keys (per user): ${allLines}. ${rule}`
+    + (resetAt ? ` Resets at ${new Date(resetAt).toLocaleString()}.` : '');
+}
+function updateQuotaBadge() {
+  renderQuotaBadge($('#quotaBadge'), textArenaModels());
+  renderQuotaBadge($('#imgQuotaBadge'), imageArenaModels());
 }
 
 function openKeysModal() {
   const body = openAuthModal('Your API keys');
   const k = loadKeys();
-  const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
-  const vLimited = Boolean(myVertexQuota && myVertexQuota.limited);
-  const vLimit = (vLimited && typeof myVertexQuota.limit === 'number')
-    ? myVertexQuota.limit
-    : ((CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25);
+  const lim = (CONFIG && CONFIG.limits) || {};
+  const limitsLine = BUDGET_ORDER.map((p) => `<b>${BUDGET_LABELS[p]} ${esc(String(lim[p] ?? 0))}</b>`).join(', ');
   body.innerHTML =
     '<div class="key-scope personal">' +
-      '<div class="ks-head">🔒 Personal keys — this browser only</div>' +
+      '<div class="ks-head">🔒 Personal keys: this browser only</div>' +
       '<ul class="ks-facts">' +
-        '<li><b>Stored only in this browser</b> (localStorage). They are never written to the server\'s database, disk or logs, and no other user — not even an admin — can see them.</li>' +
+        '<li><b>Stored only in this browser</b> (localStorage). They are never written to the server\'s database, disk or logs, and no other user, not even an admin, can see them.</li>' +
         '<li><b>Sent with each of your runs</b> over HTTPS, because the server has to hold the key to call the provider. It is used in memory for that run and then discarded.</li>' +
-        '<li><b>Your key only.</b> Every request for the models a key covers uses only your key (and your GCP project) — never the shared keys, not even as a fallback. If your key is wrong or out of quota, that slot fails with the provider\'s error.</li>' +
-        '<li>Clearing your browser data — or pressing <b>Clear all</b> below — removes them completely.</li>' +
+        '<li><b>Your key only.</b> Every request for the models a key covers uses only your key (and your GCP project), never the shared keys, not even as a fallback. If your key is wrong or out of quota, that slot fails with the provider\'s error.</li>' +
+        '<li>Clearing your browser data, or pressing <b>Clear all</b> below, removes them completely.</li>' +
       '</ul>' +
     '</div>' +
-    '<p class="keys-intro">Runs on the <b>shared keys</b> have daily caps: shared <b>OpenAI</b> models are capped at <b>' + limit + ' runs/day</b>' +
-    (vLimited
-      ? ' and <b>Vertex AI</b> (Gemini, Claude &amp; partner models) at <b>' + vLimit + ' runs/day</b> for your account'
-      : ', and <b>Vertex AI</b> (Gemini, Claude &amp; partner models) is unlimited for your account') +
-    '. <b>Runs on your own keys are never capped.</b>' +
-    ((ME && ME.role === 'admin') ? ' Shared keys are managed under <b>Global API keys</b>.' : '') + '</p>' +
+    '<p class="keys-intro">Runs on the <b>shared keys</b> count toward daily limits per user: ' + limitsLine + ' runs a day. ' +
+    'A run counts once per provider, however many models it compares, and text and image runs share the same budgets. <b>Runs on your own keys are never capped.</b>' +
+    ((ME && ME.role === 'admin') ? ' Limits are set in <b>Settings</b>; shared keys under <b>Global API keys</b>.' : '') + '</p>' +
     '<form class="add-user-form" id="keysForm">' +
       '<div class="auth-field"><label>Gemini / Vertex AI API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots (text &amp; image)" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
       '<div class="auth-field"><label>Your GCP project ID <span class="u-tag">for Gemini 4 &amp; the OAuth token</span></label><input id="k-proj" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my-gcp-project (the project your own key / token belongs to)" value="' + esc(k.gcpProject || '') + '" /></div>' +
@@ -849,7 +860,7 @@ function openKeysModal() {
       '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT text &amp; GPT Image</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
       '<div class="auth-field"><label>Moonshot API key <span class="u-tag">Kimi K3</span></label><input id="k-moonshot" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (platform.moonshot.ai)" value="' + esc(k.moonshot || '') + '" /></div>' +
       '<div class="auth-field"><label>Anthropic API key</label><input id="k-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-… (for a direct Anthropic slot)" value="' + esc(k.anthropic || '') + '" /></div>' +
-      '<details class="keys-adv"' + (k.claudeBearerToken ? ' open' : '') + '><summary>Advanced — Claude &amp; partner models via Google Vertex</summary>' +
+      '<details class="keys-adv"' + (k.claudeBearerToken ? ' open' : '') + '><summary>Advanced: Claude &amp; partner models via Google Vertex</summary>' +
         '<p class="keys-intro" style="margin:8px 0 10px">Claude and partner models on Vertex (Grok, Qwen, DeepSeek, Llama, GLM, GPT-OSS, Kimi) use an OAuth token, not an API key. Add your token <b>and</b> your GCP project ID above to run them on your own project.</p>' +
         '<div class="auth-field"><label>Vertex OAuth bearer token</label><input id="k-claude" type="password" autocomplete="off" spellcheck="false" placeholder="ya29.… (gcloud auth print-access-token)" value="' + esc(k.claudeBearerToken || '') + '" /></div>' +
       '</details>' +
@@ -867,7 +878,7 @@ function openKeysModal() {
     const m = body.querySelector('#keysMsg');
     if (nk.claudeBearerToken && !nk.gcpProject) {
       m.className = 'auth-msg err';
-      m.textContent = 'Add your GCP project ID too — your own OAuth token only ever runs on your own project.';
+      m.textContent = 'Add your GCP project ID too: your own OAuth token only ever runs on your own project.';
       return;
     }
     saveKeys(nk);
@@ -990,7 +1001,7 @@ async function openUsersModal() {
 }
 
 function renderUsersModal(body, data) {
-  const defaultVertexCap = (CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25;
+  const defaultVertexCap = (CONFIG && CONFIG.limits && Number.isFinite(CONFIG.limits.vertex)) ? CONFIG.limits.vertex : 10;
   const rows = (data.users || []).map((u) => {
     const isMe = u.username === data.me;
     const statusBadge = u.mustChangePassword
@@ -1004,10 +1015,13 @@ function renderUsersModal(body, data) {
       : (expDate
         ? `<span class="u-tag" title="External account expiration date">Expires ${esc(expDate)}</span>`
         : '<span class="u-tag" title="No account expiration date">No expiry</span>');
-    const vertexCapVal = u.dailyVertexLimit || defaultVertexCap;
+    const hasCustomCap = typeof u.dailyVertexLimit === 'number';
+    const vertexCapVal = hasCustomCap ? u.dailyVertexLimit : defaultVertexCap;
     const vertexBadge = u.role === 'admin'
       ? '<span class="u-tag" title="Admins have unlimited Vertex AI runs">Unlimited Vertex</span>'
-      : `<span class="u-tag" title="Daily Vertex AI run cap on the shared key for this external account (runs on the user's own key are never capped)">${esc(String(vertexCapVal))}/day Vertex</span>`;
+      : (hasCustomCap
+        ? `<span class="u-tag u-tag-custom" title="Custom daily Vertex AI limit for this account on the shared key (default is ${esc(String(defaultVertexCap))}/day; runs on the user's own key never count)">${esc(String(vertexCapVal))}/day Vertex · custom</span>`
+        : `<span class="u-tag" title="Default daily Vertex AI limit from Settings (runs on the user's own key never count)">${esc(String(vertexCapVal))}/day Vertex</span>`);
     const uAttr = esc(u.username);
     // Four compact square icon actions (title + aria-label carry the full meaning).
     const forceBtn = u.mustChangePassword
@@ -1042,7 +1056,7 @@ function renderUsersModal(body, data) {
         <div class="u-reset-box">
           <span style="font-size:12px;color:var(--muted)">Limits for <b>${esc(u.username)}</b>:</span>
           <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px">Daily Vertex cap:
-            <input type="number" min="1" max="1000" class="u-limits-vertex" data-user="${esc(u.username)}" value="${esc(String(vertexCapVal))}" style="width:78px;padding:5px 8px" />
+            <input type="number" min="0" max="10000" class="u-limits-vertex" data-user="${esc(u.username)}" value="${hasCustomCap ? esc(String(u.dailyVertexLimit)) : ''}" placeholder="${esc(String(defaultVertexCap))} (default)" title="Leave blank to use the default from Settings" style="width:110px;padding:5px 8px" />
           </label>
           <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px" title="Optional account expiration date">Expires:
             <input type="date" class="u-limits-expires" data-user="${esc(u.username)}" value="${esc(expDate)}" style="padding:5px 8px" />
@@ -1063,7 +1077,7 @@ function renderUsersModal(body, data) {
       '<div class="auth-field"><label>Username</label><input id="nuUser" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="3–32 chars: a–z 0–9 . _ -" /></div>' +
       '<div class="auth-field"><label>Temporary / Initial password</label><input id="nuPass" type="password" autocomplete="new-password" placeholder="Min 10 chars (user will change on first login)" /></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
-        '<div class="auth-field"><label>Daily Vertex AI run cap</label><input id="nuVertexLimit" type="number" min="1" max="1000" value="' + esc(String(defaultVertexCap)) + '" /></div>' +
+        '<div class="auth-field"><label>Daily Vertex AI runs <span class="u-tag">optional</span></label><input id="nuVertexLimit" type="number" min="0" max="10000" placeholder="' + esc(String(defaultVertexCap)) + ' (default from Settings)" /></div>' +
         '<div class="auth-field"><label>Account expiration date <span class="u-tag">optional</span></label><input id="nuExpiresAt" type="date" /></div>' +
       '</div>' +
       '<label class="auth-check"><input id="nuForcePw" type="checkbox" checked /> Force user to change password on first sign-in (recommended for external accounts)</label>' +
@@ -1125,6 +1139,119 @@ function renderUsersModal(body, data) {
   body.querySelector('#addUserForm').addEventListener('submit', (e) => { e.preventDefault(); addUser(body); });
 }
 
+// ---------- Settings (admin): daily run limits on the global keys + internal admins ----------
+async function openSettingsModal() {
+  const body = openAuthModal('Settings', { wide: true });
+  body.innerHTML = '<p class="auth-loading">Loading…</p>';
+  let data;
+  try {
+    const r = await fetch('/api/admin/settings', { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || 'Failed to load settings.');
+  } catch (e) { body.innerHTML = '<p class="auth-err"></p>'; body.querySelector('p').textContent = e.message; return; }
+  renderSettingsModal(body, data);
+}
+
+const SETTINGS_PROVIDER_HINTS = {
+  openai: 'GPT text models + GPT Image',
+  anthropic: 'Direct Anthropic API (Claude on Vertex counts as Vertex AI)',
+  moonshot: 'Direct Moonshot (Kimi) API',
+  vertex: 'Gemini, Claude, partner models & Nano Banana on Vertex AI',
+};
+
+function renderSettingsModal(body, data) {
+  const s = data.settings || {};
+  const limits = s.limits || {};
+  const defaults = data.defaults || {};
+  const maxLimit = data.maxLimit || 10000;
+  const bootstrap = data.bootstrapAdmins || [];
+  const added = s.adminEmails || [];
+  const limitRows = (data.providers || []).map((p) => `
+    <tr>
+      <td class="u-name">${esc(p.label)}<div class="st-hint">${esc(SETTINGS_PROVIDER_HINTS[p.id] || '')}</div></td>
+      <td><input type="number" class="st-limit" data-provider="${esc(p.id)}" min="0" max="${maxLimit}" step="1" value="${esc(String(limits[p.id] ?? defaults[p.id] ?? 0))}" aria-label="${esc(p.label)} runs per user per day" /></td>
+      <td><span class="u-tag">default ${esc(String(defaults[p.id] ?? ''))}</span></td>
+      <td>${p.globalKey
+        ? '<span class="u-status ok" title="A global key is configured for this provider">✓ Global key set</span>'
+        : '<span class="u-tag" title="No global key configured: users need their own key for this provider">No global key</span>'}</td>
+    </tr>`).join('');
+  const bootRows = bootstrap.map((e) => `<tr>
+      <td class="u-name">${esc(e)}</td><td><span class="u-role is-admin">admin</span></td>
+      <td><span class="u-tag" title="Set by ADMIN_EMAILS on the server, so it can't be removed here">built-in</span></td><td class="u-act"></td></tr>`).join('');
+  const addedRows = added.map((e) => `<tr>
+      <td class="u-name">${esc(e)}</td><td><span class="u-role is-admin">admin</span></td>
+      <td><span class="u-tag">added in Settings</span></td>
+      <td class="u-act"><div class="u-act-btns"><button class="u-icon-btn danger st-rm-admin" type="button" data-email="${esc(e)}" title="Remove admin access" aria-label="Remove admin access for ${esc(e)}">${ICON_TRASH}</button></div></td></tr>`).join('');
+  const domains = (data.allowedDomains || []).map((d) => '@' + d).join(', ');
+  const known = (data.knownInternalUsers || []).filter((e) => !bootstrap.includes(e) && !added.includes(e));
+  const updated = s.updatedAt ? `Last changed ${esc(new Date(s.updatedAt).toLocaleString())}${s.updatedBy ? ' by ' + esc(s.updatedBy) : ''}.` : '';
+  body.innerHTML =
+    '<h4 class="st-h">Daily runs per user on the global API keys</h4>' +
+    '<p class="keys-intro">Applies to every user, <code>@google.com</code> and external alike' + (data.adminsExempt ? ' (admins aren\'t limited)' : '') +
+      '. A run is one Run click in the text or image arena and counts once per provider it uses, however many models it compares; re-runs, crash fixes and Blind Judge calls count too. ' +
+      'Runs on a user\'s own keys never count. <b>0</b> turns that global key off for non-admins.</p>' +
+    '<table class="users-table st-table"><thead><tr><th>Provider</th><th>Runs / user / day</th><th></th><th>Global key</th></tr></thead><tbody>' + limitRows + '</tbody></table>' +
+    '<div class="st-actions"><button class="submit-btn" type="button" id="stSaveLimits">Save limits</button><span class="auth-msg" id="stLimitsMsg"></span></div>' +
+    '<p class="st-note">External accounts can also get a custom Vertex AI limit in <b>Manage users</b>. ' + updated + '</p>' +
+    '<h4 class="st-h">Internal admins</h4>' +
+    '<p class="keys-intro">Google sign-in accounts (' + esc(domains || 'your Workspace domain') + ') that can manage users, keys, settings and the audit log. Changes apply right away, no sign-out needed.</p>' +
+    '<table class="users-table st-table"><thead><tr><th>Account</th><th>Role</th><th>Source</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + bootRows + addedRows + '</tbody></table>' +
+    '<div class="st-add">' +
+      '<input type="email" id="stAdminEmail" list="stKnownUsers" autocomplete="off" spellcheck="false" placeholder="name@' + esc((data.allowedDomains && data.allowedDomains[0]) || 'google.com') + '" aria-label="Google sign-in email to make an admin" />' +
+      '<datalist id="stKnownUsers">' + known.map((e) => `<option value="${esc(e)}"></option>`).join('') + '</datalist>' +
+      '<button class="submit-btn" type="button" id="stAddAdmin">+ Add admin</button>' +
+    '</div>' +
+    '<div class="auth-msg" id="stAdminMsg"></div>';
+
+  const post = async (payload, msgId, okText) => {
+    const msgEl = body.querySelector('#' + msgId);
+    msgEl.className = 'auth-msg'; msgEl.textContent = 'Saving…';
+    try {
+      const r = await fetch('/api/admin/settings', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (r.status === 401) { window.location.replace('/login'); return; }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || 'Could not save settings.');
+      if (CONFIG && j.settings) CONFIG.limits = { ...j.settings.limits };
+      updateQuotaBadge();
+      renderSettingsModal(body, j);
+      const m2 = body.querySelector('#' + msgId);
+      if (m2) { m2.className = 'auth-msg ok'; m2.textContent = okText; }
+    } catch (e) {
+      msgEl.className = 'auth-msg err'; msgEl.textContent = e.message;
+    }
+  };
+
+  body.querySelector('#stSaveLimits').addEventListener('click', () => {
+    const payload = {};
+    let bad = '';
+    body.querySelectorAll('.st-limit').forEach((inp) => {
+      const v = inp.value.trim();
+      const n = Number(v);
+      if (v === '' || !Number.isInteger(n) || n < 0 || n > maxLimit) bad = bad || `Use a whole number from 0 to ${maxLimit}.`;
+      payload[inp.dataset.provider] = n;
+    });
+    if (bad) { const m = body.querySelector('#stLimitsMsg'); m.className = 'auth-msg err'; m.textContent = bad; return; }
+    post({ limits: payload }, 'stLimitsMsg', 'Saved. New limits apply to the next run.');
+  });
+  const addAdmin = () => {
+    const email = (body.querySelector('#stAdminEmail').value || '').trim().toLowerCase();
+    if (!email) { const m = body.querySelector('#stAdminMsg'); m.className = 'auth-msg err'; m.textContent = 'Enter a Google sign-in email.'; return; }
+    post({ adminEmails: [...added, email] }, 'stAdminMsg', `${email} is now an admin.`);
+  };
+  body.querySelector('#stAddAdmin').addEventListener('click', addAdmin);
+  body.querySelector('#stAdminEmail').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addAdmin(); } });
+  body.querySelectorAll('.st-rm-admin').forEach((b) => b.addEventListener('click', () => {
+    const email = b.dataset.email;
+    if (!window.confirm(`Remove admin access for ${email}?`)) return;
+    post({ adminEmails: added.filter((x) => x !== email) }, 'stAdminMsg', `Removed admin access for ${email}.`);
+  }));
+}
+
 // ---------- global (shared) API keys — admin only ----------
 // The credentials everyone runs on when they haven't brought their own. Stored
 // as Secret Manager versions server-side; this UI only ever sees presence + a
@@ -1143,7 +1270,8 @@ async function openGlobalKeysModal() {
 }
 
 function renderGlobalKeysModal(body, data) {
-  const limit = (CONFIG && CONFIG.maxRunsPerDay) || 5;
+  const lim = (CONFIG && CONFIG.limits) || {};
+  const limitsLine = BUDGET_ORDER.map((p) => `${BUDGET_LABELS[p]} ${lim[p] ?? 0}`).join(', ');
   const rows = (data.keys || []).map((k) => {
     const state = k.present
       ? `<span class="gk-set">${esc(k.masked)}</span><span class="u-tag">${esc(k.source)}</span>`
@@ -1167,8 +1295,8 @@ function renderGlobalKeysModal(body, data) {
         '<li>Values are <b>never sent back to this page</b> (you only ever see a masked tail), and every change is logged with the admin who made it.</li>' +
       '</ul>' +
     '</div>' +
-    '<p class="keys-intro">Runs on these shared keys are capped at <b>' + limit + '/day per user</b>. ' +
-    'A user who adds their own key for every model they select — under <em>Your API keys</em>, which stays in their browser — runs <b>unlimited</b>.</p>' +
+    '<p class="keys-intro">Runs on these shared keys count toward each user\'s daily limits (<b>' + esc(limitsLine) + ' runs/day</b>, set in <b>Settings</b>). ' +
+    'A user who adds their own key for every model they select, under <em>Your API keys</em> (which stays in their browser), runs <b>unlimited</b> and never touches these keys.</p>' +
     (data.enabled ? '' : '<div class="auth-msg err">Secret Manager isn\'t configured on the server (GCP_PROJECT_ID unset), so keys can only be read from the deploy environment.</div>') +
     '<div class="gk-list">' + rows + '</div>' +
     '<div class="auth-msg" id="gkMsg"></div>';
@@ -4134,14 +4262,11 @@ async function streamRun(payload, results, signal, own, retried) {
     }
     throw new Error((j && j.error) || 'An attachment expired from the server cache — please re-attach it.');
   }
-  if (resp.status === 429) {                                                     // daily per-user OpenAI or external Vertex run limit
+  if (resp.status === 429) {                                                     // a daily per-user budget on the global keys is used up
     const j = await resp.json().catch(() => ({}));
-    if (j && j.quota) {
-      if (payload.mode === 'single') mySingleQuota = j.quota; else myQuota = j.quota;
-    }
-    if (j && j.vertexQuota) {
-      myVertexQuota = j.vertexQuota;
-    }
+    if (j && j.quotas) myQuotas = j.quotas;
+    if (j && j.quota && j.provider === 'openai') myQuota = j.quota;
+    if (j && j.vertexQuota) myVertexQuota = j.vertexQuota;
     updateQuotaBadge();
     window._lastQuotaObj = j || {};
     window._lastQuotaMsg = (j && j.error) || 'Daily run limit reached.';
@@ -4256,9 +4381,9 @@ async function run() {
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
       slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(m), 'err'); });
-      if (window._lastQuotaObj && window._lastQuotaObj.openaiQuotaExhausted) {
+      if (window._lastQuotaObj && (window._lastQuotaObj.externalQuotaExhausted || window._lastQuotaObj.openaiQuotaExhausted)) {
         const switchToVertex = window.confirm(
-          `${m}\n\nWould you like to automatically replace the OpenAI slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison right now with UNLIMITED Vertex AI runs?`
+          `${m}\n\nReplace the OpenAI / external slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison now? It will count against your Vertex AI budget instead.`
         );
         if (switchToVertex) {
           const vertexFallbacks = ['claude-opus-5-5', 'gemini-3.8-flash', 'claude-sonnet-5', 'gemini-3.1-pro', 'claude-haiku-4-5'];
@@ -4370,14 +4495,10 @@ function handleEvent(ev, results, own) {
     case 'start':
     case 'ping':
       break;
-    case 'quota': // server's authoritative daily-runs count for this run
-      if (ev.quota && ev.quota.limited) {
-        // a stream that owns exactly one slot is a single-model re-run
-        if (own && Object.keys(own).length === 1) mySingleQuota = ev.quota; else myQuota = ev.quota;
-      }
-      if (ev.vertexQuota) {
-        myVertexQuota = ev.vertexQuota;
-      }
+    case 'quota': // server's authoritative daily-runs counts for this run
+      if (ev.quotas) myQuotas = ev.quotas;
+      if (ev.quota && ev.quota.limited) myQuota = ev.quota;
+      if (ev.vertexQuota) myVertexQuota = ev.vertexQuota;
       updateQuotaBadge();
       break;
     case 'context_warning': {
@@ -6275,6 +6396,7 @@ function renderImageSlotsConfigurator() {
 
   const catalog = IMG_CONFIG.catalog || [];
   const maxActiveSlots = Math.min(4, Math.max(1, catalog.length));
+  updateQuotaBadge(); // the image badge reflects which budgets this lineup uses
 
   if (badge) badge.textContent = `${IMG_SLOTS.length} of ${maxActiveSlots} active`;
   if (addBtn) {
@@ -7288,6 +7410,34 @@ async function restoreImageArenaRun(runId) {
 }
 
 // ---------- Run Parallel Per-Slot Progressive Image Generation ----------
+// When a non-Vertex budget (GPT Image on the shared OpenAI key) is used up, swap those
+// slots to Gemini image models, like the text arena's "swap to Vertex AI" offer.
+// dryRun=true only reports whether there is anything to swap.
+function swapSharedExternalImageSlotsToVertex(dryRun) {
+  const cat = (IMG_CONFIG && IMG_CONFIG.catalog) || [];
+  const k = loadKeys();
+  const vertexIds = cat.filter((c) => c.provider === 'agentplatform').map((c) => c.id);
+  const targets = IMG_SLOTS.filter((s) => {
+    const e = getImgCatalogItem(s.catalogId);
+    return e && e.provider !== 'agentplatform' && keySourceFor(e, k).state !== 'own';
+  });
+  if (!targets.length || !vertexIds.length) return false;
+  if (dryRun) return true;
+  const used = new Set(IMG_SLOTS.map((s) => s.catalogId));
+  targets.forEach((s) => {
+    const rep = vertexIds.find((id) => !used.has(id)) || vertexIds[0];
+    used.add(rep);
+    s.catalogId = rep;
+  });
+  IMG_LAST_RESULTS = [];
+  renderImageSlotsConfigurator();
+  renderImageArenaPlaceholderCards();
+  updateSplitCurtainView();
+  renderImageMetricComparison();
+  renderImageEconomicsModeler();
+  return true;
+}
+
 async function runImageArenaComparisonClick() {
   if (IMG_RUNNING) return;
   const promptEl = $('#imgPromptInput');
@@ -7302,8 +7452,51 @@ async function runImageArenaComparisonClick() {
   const timerBadge = $('#imgStatusTimer');
   if (runBtn) {
     runBtn.disabled = true;
-    runBtn.textContent = '⏳ Generating on Vertex AI…';
+    runBtn.textContent = '⏳ Starting…';
   }
+  const finishEarly = () => {
+    IMG_RUNNING = false;
+    if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = 'Generate &amp; Compare Images ▸'; }
+  };
+
+  // One run = one Run click (same rule as the text arena): reserve it ONCE, so it counts once
+  // per provider budget it touches however many slots it has; every slot then carries the ticket.
+  // Done before clearing the cards, so a used-up budget leaves the previous results in place.
+  let runTicket = '';
+  try {
+    const rr = await fetch('/api/image-arena/reserve', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slots: IMG_SLOTS.map((s) => ({ slot: s.slot, catalogId: s.catalogId })), keys: loadKeys() }),
+    });
+    if (rr.status === 401) { window.location.replace('/login'); return; }
+    const rj = await rr.json().catch(() => ({}));
+    if (rj && rj.quotas) { myQuotas = rj.quotas; updateQuotaBadge(); }
+    if (rr.status === 403 && rj && rj.code === 'PASSWORD_CHANGE_REQUIRED') { openChangePwModal({ forced: true }); finishEarly(); return; }
+    if (rr.status === 429) {
+      const m = (rj && rj.error) || 'Daily run limit reached.';
+      if (timerBadge) timerBadge.textContent = 'Daily limit reached';
+      finishEarly();
+      if (rj && (rj.externalQuotaExhausted || rj.openaiQuotaExhausted) && swapSharedExternalImageSlotsToVertex(true)) {
+        if (window.confirm(`${m}\n\nReplace the GPT Image slot(s) with Gemini (Nano Banana) models and run now? It will count against your Vertex AI budget instead.`)) {
+          swapSharedExternalImageSlotsToVertex(false);
+          setTimeout(() => runImageArenaComparisonClick(), 50);
+        }
+      } else {
+        window.alert(m);
+      }
+      return;
+    }
+    if (!rr.ok || !rj || !rj.ok || !rj.ticket) throw new Error((rj && rj.error) || `Could not start the run (${rr.status}).`);
+    runTicket = rj.ticket;
+  } catch (e) {
+    if (timerBadge) timerBadge.textContent = `Error: ${e.message}`;
+    finishEarly();
+    window.alert(e.message || 'Could not start the image run.');
+    return;
+  }
+  if (runBtn) runBtn.textContent = '⏳ Generating…';
 
   IMG_LAST_RESULTS = [];
   renderImageArenaPlaceholderCards();
@@ -7360,6 +7553,7 @@ async function runImageArenaComparisonClick() {
             imageSize: reqSize,
             attachments: reqRefs,
             keys: loadKeys(),
+            ticket: runTicket, // this run was already charged once at reserve
           }),
         });
         if (resp.status === 401) {
@@ -7379,6 +7573,7 @@ async function runImageArenaComparisonClick() {
         } catch (parseErr) {
           throw new Error(`Invalid response payload for Slot ${slotObj.slot} (${Math.round((rawText || '').length / 1024)} KB): ${parseErr.message}`);
         }
+        if (data && data.quotas) { myQuotas = data.quotas; updateQuotaBadge(); }
         if (!resp.ok || !data || !data.ok) {
           throw new Error((data && data.error) || `Slot ${slotObj.slot} failed (${resp.status})`);
         }

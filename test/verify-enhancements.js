@@ -380,8 +380,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.39', 'package.json must be at version 1.0.39');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.39</span>'), 'index.html must display v1.0.39 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.40', 'package.json must be at version 1.0.40');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.40</span>'), 'index.html must display v1.0.40 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;
@@ -702,7 +702,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
     assert.strictEqual(historyMod.AUDIT_RETENTION_DAYS, 90, 'AUDIT_RETENTION_DAYS must be 90 days');
     assert.strictEqual(historyMod.RUN_RETENTION_DAYS, 7, 'RUN_RETENTION_DAYS must remain 7 days for unstarred outputs & generated 4K PNGs');
-    assert.strictEqual(authMod.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY, 25, 'Default daily Vertex AI cap for external accounts must be 25');
+    assert.strictEqual(authMod.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY, 10, 'Default daily Vertex AI budget (every user since v1.0.40) must be 10');
 
     // Terminology check: never use "external customer accounts"
     assert(!/external customer account/i.test(appJs), 'app.js must use "external accounts" / "external users", never "external customer accounts"');
@@ -787,7 +787,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     assert.strictEqual(authMod.isExternalAccount({ username: 'ubhi@google.com', role: 'user' }), false, '@google.com user is not an external account');
     assert.strictEqual(authMod.isExternalAccount({ username: 'demo_user', role: 'user' }), true, 'Username/password user is an external account');
     const googVertexQ = authMod.vertexRunQuota({ username: 'ubhi@google.com', role: 'user' });
-    assert.strictEqual(googVertexQ.limited, false, '@google.com user has unlimited Vertex AI runs');
+    // v1.0.40: daily budgets apply to every user (@google.com included); admins are exempt.
+    assert.strictEqual(googVertexQ.limited, true, '@google.com (non-admin) user has the same daily Vertex AI budget as everyone');
+    assert.strictEqual(googVertexQ.limit, 10, 'default Vertex AI budget is 10 runs/day');
+    assert.strictEqual(authMod.vertexRunQuota({ username: 'ubhi@google.com', role: 'admin' }).limited, false, 'admins are not limited');
     const extTempUser = 'ext_cap_' + Date.now().toString(36);
     await authMod.createUser(extTempUser, 'TempPass1234!', 'user', {
       mustChangePassword: true,

@@ -41,6 +41,10 @@ const globalKeys = require('./src/globalKeys');
 // Strict BYOK: single source of truth for "does this model run on the user's own
 // credential" - own-key models never touch shared keys and never count toward caps.
 const { modelUsesOwnKey } = require('./src/byok');
+// Admin Settings: per-provider daily run limits on the global keys + internal admins.
+const appSettings = require('./src/appSettings');
+// Image Arena per-run quota tickets (one charge per Run click, not per slot).
+const runTickets = require('./src/runTickets');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
@@ -475,6 +479,64 @@ app.post('/api/auth/users/:username/limits', requireAdmin, (req, res) => {
   }
 });
 
+// ---------- Settings (admin): daily run limits on the global keys + internal admins ----------
+function globalKeyConfigured(provider) {
+  if (provider === 'openai') return globalKeys.has('OPENAI_API_KEY');
+  if (provider === 'moonshot') return globalKeys.has('MOONSHOT_API_KEY');
+  if (provider === 'anthropic') return !!process.env.ANTHROPIC_API_KEY;
+  return globalKeys.has('AGENT_PLATFORM_API_KEY') || globalKeys.has('GEMINI_API_KEY') || autoMintEnabled();
+}
+// Google sign-in users seen in history, to suggest when adding an internal admin.
+function knownInternalUsers() {
+  const domains = googleAuth.allowedDomains();
+  const seen = new Set();
+  try {
+    for (const u of (history.usageSummary().users || [])) {
+      const e = String((u && u.user) || '').toLowerCase();
+      if (e.includes('@') && (!domains.length || domains.includes(e.split('@')[1]))) seen.add(e);
+    }
+  } catch (_) { /* suggestions are optional */ }
+  return Array.from(seen).sort().slice(0, 300);
+}
+function settingsPayload() {
+  return {
+    ok: true,
+    settings: appSettings.get(),
+    defaults: appSettings.DEFAULT_LIMITS,
+    maxLimit: appSettings.MAX_LIMIT,
+    providers: appSettings.PROVIDERS.map((p) => ({ id: p, label: appSettings.PROVIDER_LABELS[p], globalKey: globalKeyConfigured(p) })),
+    bootstrapAdmins: appSettings.BOOTSTRAP_ADMIN_EMAILS,
+    allowedDomains: googleAuth.allowedDomains(),
+    adminsExempt: process.env.RATE_LIMIT_EXEMPT_ADMINS !== '0',
+    knownInternalUsers: knownInternalUsers(),
+  };
+}
+app.get('/api/admin/settings', requireAdmin, (req, res) => res.json(settingsPayload()));
+app.post('/api/admin/settings', requireAdmin, (req, res) => {
+  const body = req.body || {};
+  try {
+    // Lockout guard: a Google-signed-in admin can't remove their own internal-admin access here.
+    if (Array.isArray(body.adminEmails) && req.user.external) {
+      const me = String(req.user.username || '').toLowerCase();
+      const keeps = appSettings.isBootstrapAdmin(me) || body.adminEmails.some((e) => String(e || '').trim().toLowerCase() === me);
+      if (!keeps) return res.status(400).json({ ok: false, error: "You can't remove your own admin access. Ask another admin to do it." });
+    }
+    const before = appSettings.get();
+    const after = appSettings.update(
+      { limits: body.limits, adminEmails: body.adminEmails },
+      { actor: req.user.username, allowedDomains: googleAuth.allowedDomains() }
+    );
+    // Paper trail for who changed limits / admins, and from what to what.
+    log.event('NOTICE', `[settings] updated by ${req.user.username}`, {
+      by: req.user.username, limitsBefore: before.limits, limitsAfter: after.limits,
+      adminsBefore: before.adminEmails, adminsAfter: after.adminEmails,
+    });
+    res.json(settingsPayload());
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
 app.post('/api/auth/users/:username/force-password-change', requireAdmin, (req, res) => {
   try {
     const mustChange = req.body && req.body.mustChangePassword !== undefined ? Boolean(req.body.mustChangePassword) : true;
@@ -665,9 +727,11 @@ app.get('/api/config', (req, res) => {
     webGame: webGameOn,
     gcpProject: process.env.GCP_PROJECT_ID || '',
     allowedDomains: googleAuth.allowedDomains(),
-    maxRunsPerDay: auth.MAX_RUNS_PER_DAY,
-    maxSingleRunsPerDay: auth.MAX_SINGLE_RUNS_PER_DAY,
-    maxExternalVertexRunsPerDay: auth.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
+    maxRunsPerDay: appSettings.limitFor('openai'),
+    maxSingleRunsPerDay: appSettings.limitFor('openai'),
+    maxExternalVertexRunsPerDay: appSettings.limitFor('vertex'),
+    // Per-user daily run limits on the global keys (Settings), per provider.
+    limits: appSettings.get().limits,
     auditRetentionDays: history.AUDIT_RETENTION_DAYS,
     runRetentionDays: history.RUN_RETENTION_DAYS,
     me: {
@@ -678,6 +742,7 @@ app.get('/api/config', (req, res) => {
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
       vertexQuota: auth.vertexRunQuota(req.user),
+      quotas: auth.quotaSnapshot(req.user),
       lastModels: history.lastModels(req.user.username),
       preferences: {
         taskId: prefs.taskId || 'custom',
@@ -987,36 +1052,115 @@ app.post('/api/image-arena/history/:id/star', (req, res) => {
   res.json(out);
 });
 
-app.post('/api/image-arena/run', async (req, res) => {
-  const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys } = req.body || {};
+// ---------- daily run budgets on the GLOBAL keys: one rule for the whole app ----------
+// A run (one Run click in the text or image arena, a single-model re-run, a crash fix or a
+// Blind Judge call) is charged ONCE per provider budget it touches, however many models or
+// slots it has. Limits are per user per UTC day (Settings; defaults OpenAI 3, Anthropic 3,
+// Moonshot 3, Vertex AI 10) for every user; admins are exempt. Models on the user's own key
+// never count: strict BYOK means they never touch the global keys.
+function budgetBucket(m) {
+  switch (m && m.provider) {
+    case 'openai': return 'openai';
+    case 'anthropic': return 'anthropic';
+    case 'moonshot': return 'moonshot';
+    default: return 'vertex'; // agentplatform: Gemini, Claude, partner MaaS, Nano Banana (+ Gemini direct)
+  }
+}
+function budgetsNeeded(models, keys) {
+  const need = new Set();
+  for (const m of Array.isArray(models) ? models : []) if (!modelUsesOwnKey(m, keys)) need.add(budgetBucket(m));
+  return appSettings.PROVIDERS.filter((p) => need.has(p)); // stable order
+}
+function quotaExhaustedBody(user, provider, q, arena) {
+  const label = appSettings.PROVIDER_LABELS[provider] || provider;
+  const external = provider !== 'vertex';
+  const swapTo = arena === 'image' ? 'a Gemini (Nano Banana) model' : 'a Gemini or Claude model on Vertex AI';
+  const fix = external
+    ? `Swap the ${label} slot to ${swapTo}, or add your own ${label} key in Your API keys.`
+    : 'Add your own Gemini / Vertex AI key in Your API keys, or ask an admin to raise the limit.';
+  return {
+    type: 'error',
+    quotaExhausted: true,
+    provider,
+    openaiQuotaExhausted: provider === 'openai',
+    externalQuotaExhausted: external,
+    vertexQuotaExhausted: provider === 'vertex',
+    error: q.limit === 0
+      ? `${label} runs on the shared key are turned off. ${fix}`
+      : `Daily ${label} limit reached: you've used all ${q.limit} ${label} runs for today on the shared key (text and image runs share this budget). ${fix}`,
+    quota: q,
+    vertexQuota: auth.providerQuota(user, 'vertex'),
+    quotas: auth.quotaSnapshot(user),
+  };
+}
+// Charge every budget a run needs, all-or-nothing. `skip` = budgets this run was already
+// charged for (Image Arena top-ups). -> { ok, charged:[...], quotas } | { ok:false, body }
+function chargeDailyBudgets(user, models, keys, { arena = 'text', skip = [] } = {}) {
+  const skipList = Array.isArray(skip) ? skip : [];
+  const charged = [];
+  for (const p of budgetsNeeded(models, keys)) {
+    if (skipList.includes(p)) continue;
+    const q = auth.consumeProviderRun(user, p);
+    if (!q.ok) {
+      for (const c of charged) auth.refundProviderRun(user, c);
+      return { ok: false, body: quotaExhaustedBody(user, p, q, arena) };
+    }
+    charged.push(p);
+  }
+  return { ok: true, charged, quotas: auth.quotaSnapshot(user) };
+}
+function refundDailyBudgets(user, charged) {
+  for (const p of charged || []) auth.refundProviderRun(user, p);
+}
+
+function sanitizeImageKeys(rawKeys) {
   const keys = {};
   if (rawKeys && typeof rawKeys === 'object') {
     for (const k of ['agentplatform', 'gemini', 'openai', 'gcpProject']) {
       if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
     }
   }
+  return keys;
+}
+function resolveImageSlotEntries(slots) {
   const requestedSlots = Array.isArray(slots) && slots.length ? slots.slice(0, 4) : DEFAULT_IMAGE_SLOTS;
-  const resolvedSlotEntries = requestedSlots.map((s, idx) => {
+  return requestedSlots.map((s, idx) => {
     const slotId = String((s && s.slot) || String.fromCharCode(65 + idx)).slice(0, 4);
     const requested = s && s.catalogId ? String(s.catalogId).slice(0, 100) : '';
     const catId = requested || IMAGE_MODEL_CATALOG[idx % IMAGE_MODEL_CATALOG.length].id;
     const entry = IMAGE_MODEL_CATALOG.find((m) => m.id === catId || m.model === catId) || null;
     return { slot: slotId, id: catId, label: entry ? entry.label : catId, provider: entry ? entry.provider : 'agentplatform', publisher: entry ? entry.publisher : 'google' };
   });
-  // Only slots on the SHARED Vertex key count toward the external-account daily Vertex cap;
-  // a slot on the user's own key runs only on that key (strict BYOK) and is never capped.
-  const usesSharedVertexKey = resolvedSlotEntries.some((m) => m.provider === 'agentplatform' && !modelUsesOwnKey(m, keys));
-  if (usesSharedVertexKey) {
-    const vQuota = auth.consumeVertexRun(req.user);
-    if (!vQuota.ok) {
-      return res.status(429).json({
-        ok: false,
-        vertexQuotaExhausted: true,
-        error: `Daily Vertex AI limit reached (${vQuota.limit}/day for external accounts). Add your own API key in Settings or contact the administrator.`,
-        vertexQuota: vQuota,
-      });
-    }
+}
+
+// One Image Arena run = one Run click: charge it ONCE up front (same rule as a text run)
+// and hand back a ticket. Its per-slot requests present the ticket and aren't charged again.
+app.post('/api/image-arena/reserve', (req, res) => {
+  const keys = sanitizeImageKeys(req.body && req.body.keys);
+  const entries = resolveImageSlotEntries(req.body && req.body.slots);
+  const charge = chargeDailyBudgets(req.user, entries, keys, { arena: 'image' });
+  if (!charge.ok) return res.status(429).json({ ok: false, ...charge.body });
+  const ticket = runTickets.create({ username: req.user.username, slots: entries, charged: charge.charged });
+  res.json({ ok: true, ticket: ticket.id, charged: charge.charged, quotas: charge.quotas });
+});
+
+app.post('/api/image-arena/run', async (req, res) => {
+  const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys, ticket: ticketId } = req.body || {};
+  const keys = sanitizeImageKeys(rawKeys);
+  const resolvedSlotEntries = resolveImageSlotEntries(slots);
+  // Per-run charging: a slot that presents its run's ticket was already paid for at reserve...
+  const ticket = runTickets.get(ticketId, req.user.username);
+  const slotId = resolvedSlotEntries[0] && resolvedSlotEntries[0].slot;
+  const claimed = !!(ticket && resolvedSlotEntries.length === 1
+    && runTickets.claimSlot(ticket, slotId, resolvedSlotEntries[0].id));
+  // ...unless it needs a budget the reservation didn't cover (e.g. reserved with an own key,
+  // sent without it): top up, once per run. No valid ticket (stale page) = its own run.
+  const charge = chargeDailyBudgets(req.user, resolvedSlotEntries, keys, { arena: 'image', skip: claimed ? ticket.charged : [] });
+  if (!charge.ok) {
+    if (claimed && runTickets.settleSlot(ticket, slotId, { abandoned: true })) refundDailyBudgets(req.user, ticket.charged);
+    return res.status(429).json({ ok: false, ...charge.body });
   }
+  if (claimed) for (const p of charge.charged) if (!ticket.charged.includes(p)) ticket.charged.push(p);
   const isExt = auth.isExternalAccount(req.user);
   const auditUser = { username: req.user.username, isExternal: isExt };
   const runId = history.newId();
@@ -1040,7 +1184,13 @@ app.post('/api/image-arena/run', async (req, res) => {
   res.on('close', () => {
     if (!finished && !res.writableFinished) {
       ac.abort();
-      if (usesSharedVertexKey) auth.refundVertexRun(req.user);
+      // Abandoned: a ticketed run is refunded only once EVERY slot of it was abandoned
+      // (same as an abandoned text run); a stand-alone request refunds its own charge.
+      if (claimed) {
+        if (runTickets.settleSlot(ticket, slotId, { abandoned: true })) refundDailyBudgets(req.user, ticket.charged);
+      } else {
+        refundDailyBudgets(req.user, charge.charged);
+      }
       history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
     }
   });
@@ -1056,8 +1206,10 @@ app.post('/api/image-arena/run', async (req, res) => {
       auditUser,
     });
     finished = true;
+    if (claimed) runTickets.settleSlot(ticket, slotId, { abandoned: false });
     out.runId = runId;
     out.vertexQuota = auth.vertexRunQuota(req.user);
+    out.quotas = auth.quotaSnapshot(req.user);
     history.finalizeAuditRun(runId, { status: 'completed' }).catch(() => {});
     // Pre-store generated images in the user's server-side binary vault and attach compact
     // `imageVaultRef` / `thoughtVaultRef` pointers so subsequent `/api/image-arena/history`
@@ -1107,6 +1259,7 @@ app.post('/api/image-arena/run', async (req, res) => {
     res.end();
   } catch (e) {
     finished = true;
+    if (claimed) runTickets.settleSlot(ticket, slotId, { abandoned: false }); // failed, not abandoned: no refund (same as text)
     history.finalizeAuditRun(runId, { status: 'error' }).catch(() => {});
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
@@ -1176,20 +1329,17 @@ app.post('/api/judge', async (req, res) => {
     if (typeof rawKeys[k] === 'string' && rawKeys[k].trim()) keys[k] = rawKeys[k].trim();
   }
 
-  // Only external/OpenAI judge models on the shared personal key consume the 3/day OpenAI quota.
-  // Gemini and Claude on Vertex AI (agentplatform) are org-sponsored and run without this cap.
-  if (judge.provider !== 'agentplatform' && !modelUsesOwnKey(judge, keys)) {
-    const quota = auth.consumeRun(req.user, 'single');
-    if (!quota.ok) return res.status(429).json({ error: `Daily OpenAI limit reached (${quota.limit}/day). Switch the Judge model to Gemini or Claude (Vertex AI) to score without a limit.` });
-  }
-  if (judge.provider === 'agentplatform' && !modelUsesOwnKey(judge, keys)) {
-    const vQuota = auth.consumeVertexRun(req.user);
-    if (!vQuota.ok) {
-      return res.status(429).json({
-        vertexQuotaExhausted: true,
-        error: `Daily Vertex AI limit reached (${vQuota.limit}/day for external accounts). Add your own API key in Settings or contact the administrator.`,
-      });
-    }
+  // A Blind Judge call is a run on the judge model's provider budget (same rule as any run);
+  // a judge on the user's own key never counts.
+  const judgeCharge = chargeDailyBudgets(req.user, [judge], keys, { arena: 'text' });
+  if (!judgeCharge.ok) {
+    const b = judgeCharge.body;
+    return res.status(429).json({
+      ...b,
+      error: b.externalQuotaExhausted
+        ? `${b.error} Or switch the Judge model to a Gemini or Claude model on Vertex AI.`
+        : b.error,
+    });
   }
 
   const isExt = auth.isExternalAccount(req.user);
@@ -1380,17 +1530,8 @@ app.post('/api/run', async (req, res) => {
   // add/remove catalog models, never modify their settings.
   const chosenModels = resolveModels(models);
 
-  // Per-user daily OpenAI guardrail: ONLY runs that include an OpenAI (or external non-Vertex)
-  // model on the server's shared personal key consume the 3/day allowance.
-  // Gemini & Claude run on org-sponsored Vertex AI (agentplatform) and remain available all day.
-  const usesSharedExternalKey = chosenModels.some((m) => m.provider !== 'agentplatform' && !modelUsesOwnKey(m, keys));
-  // External account daily Vertex AI guardrail (default 25/day; @google.com and admins are unlimited).
-  const usesSharedVertexKey = chosenModels.some((m) => m.provider === 'agentplatform' && !modelUsesOwnKey(m, keys));
-  // Two daily budgets. A re-run of ONE model draws on the smaller 'single' bucket
-  // so retrying a slot can't burn the full-comparison allowance. The client asks
-  // for 'single', but we only honour it when exactly one model is actually being
-  // run — otherwise a crafted request could get a full comparison out of the
-  // cheaper bucket.
+  // `kind` only labels the run in logs now: a single-model re-run is a run like any other
+  // (one rule for the whole app, see chargeDailyBudgets).
   const kind = (req.body && req.body.mode === 'single' && chosenModels.length === 1) ? 'single' : 'compare';
 
   // Crash-repair round: the client hands back the code it actually ran and the
@@ -1404,34 +1545,12 @@ app.post('/api/run', async (req, res) => {
     && typeof rawRepair.error === 'string' && rawRepair.error.trim())
     ? { code: rawRepair.code.slice(0, 20000), error: rawRepair.error.slice(0, 4000) }
     : null;
-  let quotaInfo = auth.runQuota(req.user, kind); // surfaced to the client so it can show the live OpenAI counter
-  if (usesSharedExternalKey) {
-    const quota = auth.consumeRun(req.user, kind);
-    if (!quota.ok) {
-      const what = kind === 'single' ? 'single-model OpenAI re-runs' : 'OpenAI comparison runs';
-      return res.status(429).json({
-        type: 'error',
-        openaiQuotaExhausted: true,
-        error: `Daily OpenAI limit reached — you've used all ${quota.limit} ${what} for today (shared OpenAI key). Gemini & Claude run on org-sponsored Vertex AI with no 3-run limit! Swap the OpenAI slot to a Gemini or Claude model (or add your own OpenAI key in Settings) to keep running.`,
-        quota,
-      });
-    }
-    quotaInfo = quota;
-  }
-  let vertexQuotaInfo = auth.vertexRunQuota(req.user);
-  if (usesSharedVertexKey) {
-    const vQuota = auth.consumeVertexRun(req.user);
-    if (!vQuota.ok) {
-      if (usesSharedExternalKey) auth.refundRun(req.user, kind);
-      return res.status(429).json({
-        type: 'error',
-        vertexQuotaExhausted: true,
-        error: `Daily Vertex AI limit reached — you've used all ${vQuota.limit} Vertex AI runs for today on this external account. Add your own API key in Settings or contact the administrator.`,
-        vertexQuota: vQuota,
-      });
-    }
-    vertexQuotaInfo = vQuota;
-  }
+  // Daily budgets on the global keys: this run is charged once per provider it touches
+  // (OpenAI / Anthropic / Moonshot / Vertex AI), however many models it compares.
+  const charge = chargeDailyBudgets(req.user, chosenModels, keys, { arena: 'text' });
+  if (!charge.ok) return res.status(429).json(charge.body);
+  const quotaInfo = auth.providerQuota(req.user, 'openai');
+  const vertexQuotaInfo = auth.providerQuota(req.user, 'vertex');
   const iters = Math.max(1, Math.min(8, Number(maxIterations) || 1)); // single-shot by default (no self-debug retries)
 
   // NDJSON stream: one JSON object per line.
@@ -1448,7 +1567,7 @@ app.post('/api/run', async (req, res) => {
     }
   };
 
-  emit({ type: 'quota', quota: quotaInfo, vertexQuota: vertexQuotaInfo }); // let the UI update the "runs left today" counter
+  emit({ type: 'quota', quota: quotaInfo, vertexQuota: vertexQuotaInfo, quotas: charge.quotas }); // let the UI update the "runs left today" counters
 
   // If the client goes away (closes the tab, or hits "Run again" to restart a
   // slot) abort the upstream provider calls instead of letting them finish
@@ -1497,8 +1616,7 @@ app.post('/api/run', async (req, res) => {
     if (finished || res.writableFinished) return;
     aborted = true;
     ac.abort();
-    if (usesSharedExternalKey) auth.refundRun(req.user, kind);
-    if (usesSharedVertexKey) auth.refundVertexRun(req.user);
+    refundDailyBudgets(req.user, charge.charged);
     history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
     console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
   });

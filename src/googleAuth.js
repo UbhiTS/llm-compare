@@ -14,6 +14,9 @@
 // ---------------------------------------------------------------------------
 
 const crypto = require('crypto');
+// Internal admins: ADMIN_EMAILS (env, bootstrap, can't be removed in the UI) plus
+// the admins added in Settings. Shared with auth.js, which re-checks it per request.
+const appSettings = require('./appSettings');
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
@@ -23,8 +26,6 @@ const RAW_DOMAINS = (process.env.ALLOWED_EMAIL_DOMAINS || 'google.com,ubhi.altos
 const ALLOWED_DOMAINS = RAW_DOMAINS.includes('google.com') && !RAW_DOMAINS.includes('ubhi.altostrat.com')
   ? [...RAW_DOMAINS, 'ubhi.altostrat.com']
   : RAW_DOMAINS;
-const ADMIN_EMAILS = new Set((process.env.ADMIN_EMAILS || 'ubhi@google.com,admin@ubhi.altostrat.com')
-  .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean));
 
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
@@ -117,7 +118,7 @@ async function handleCallback(req, code, state) {
 
   return {
     username: email,
-    role: ADMIN_EMAILS.has(email) ? 'admin' : 'user',
+    role: appSettings.isAdminEmail(email) ? 'admin' : 'user',
     external: true,
     name: claims.name || email,
   };

@@ -21,6 +21,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+// Admin-editable daily run limits + internal (Google sign-in) admin list.
+const appSettings = require('./appSettings');
 
 const DATA_DIR = process.env.AUTH_DATA_DIR || path.join(__dirname, '..', '.auth');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
@@ -37,9 +39,9 @@ const MAX_OPENAI_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_RUNS_P
 const MAX_RUNS_PER_DAY = MAX_OPENAI_RUNS_PER_DAY;
 // Separate daily budget for re-running a SINGLE OpenAI model (the per-column "Run again").
 const MAX_SINGLE_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_OPENAI_SINGLE_RUNS_PER_DAY) || 3));
-// Per-user daily Vertex AI run cap for external accounts (protects shared GCP project quota/billing).
-// @google.com accounts and admins are exempt.
-const MAX_EXTERNAL_VERTEX_RUNS_PER_DAY = Math.max(0, Number(process.env.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY) === 0 ? 0 : (Number(process.env.MAX_EXTERNAL_VERTEX_RUNS_PER_DAY) || 25));
+// Legacy name kept for older call sites: the DEFAULT per-user daily Vertex AI budget. Since
+// v1.0.40 it applies to every user (not just external accounts) and is editable in Settings.
+const MAX_EXTERNAL_VERTEX_RUNS_PER_DAY = appSettings.DEFAULT_LIMITS.vertex;
 const RATE_EXEMPT_ADMINS = process.env.RATE_LIMIT_EXEMPT_ADMINS !== '0';
 
 // scrypt cost params. N=2^15 ⇒ ~32MB per hash; bump maxmem so it doesn't throw.
@@ -456,6 +458,9 @@ function getSessionByToken(token) {
     s.dailyVertexLimit = (typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit)) ? u.dailyVertexLimit : null;
   } else {
     s.mustChangePassword = false;                    // never applies to Google OIDC sessions
+    // Internal admins are editable in Settings: re-evaluate on every request so adding or
+    // removing an admin takes effect immediately, without a sign-out.
+    s.role = appSettings.isAdminEmail(s.username) ? 'admin' : 'user';
   }
   s.expiresAt = Date.now() + SESSION_TTL_MS;         // sliding expiry on activity
   return s;
@@ -535,95 +540,104 @@ function verifySetupCode(code) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-// ---------- per-user daily run quotas (abuse guardrail) ----------
-// Two independent daily buckets so retrying one model can't eat the budget for
-// full comparisons (and vice versa):
-//   'compare' — a full side-by-side run           (MAX_RUNS_PER_DAY)
-//   'single'  — re-running ONE model on its own   (MAX_SINGLE_RUNS_PER_DAY)
-// Admins are exempt from both unless RATE_LIMIT_EXEMPT_ADMINS=0.
-const runCounts = new Map(); // `${kind}|${username}|${utcDay}` -> count
+// ---------- per-user daily run budgets on the GLOBAL keys (abuse + cost guardrail) ----------
+// One budget per provider (openai, anthropic, moonshot, vertex), counted in RUNS: one Run
+// click in either arena = 1 run per budget it touches, however many models/slots it
+// compares. A single-model re-run, a crash fix or a Blind Judge call is a run too.
+// Limits come from the admin Settings (src/appSettings.js; defaults openai 3, anthropic 3,
+// moonshot 3, vertex 10) and apply to EVERY user, @google.com and external alike. Admins are
+// exempt unless RATE_LIMIT_EXEMPT_ADMINS=0. An external account may carry its own Vertex
+// override (`dailyVertexLimit`, set in Manage external users). Runs on the user's own key
+// never reach here (strict BYOK, src/byok.js). A limit of 0 turns that global key off.
+//
+// Counters persist to run-budgets.json when AUTH_DATA_DIR is set (Cloud Run: the GCS
+// bucket) so a redeploy doesn't hand everyone a fresh day; otherwise in memory only.
+const BUDGET_PROVIDERS = appSettings.PROVIDERS;
+const BUDGETS_FILE = path.join(DATA_DIR, 'run-budgets.json');
+const PERSIST_BUDGETS = !!process.env.AUTH_DATA_DIR;
+const runCounts = new Map(); // `${provider}|${username}|${utcDay}` -> count
 function utcDay() { return new Date().toISOString().slice(0, 10); }
 function nextUtcMidnightISO() {
   const d = new Date();
   d.setUTCHours(24, 0, 0, 0);
   return d.toISOString();
 }
-function limitFor(kind) { return kind === 'single' ? MAX_SINGLE_RUNS_PER_DAY : MAX_RUNS_PER_DAY; }
-function exemptFromQuota(user, kind) {
-  return !limitFor(kind) || (RATE_EXEMPT_ADMINS && user && user.role === 'admin');
-}
-const qKey = (user, kind) => (kind === 'single' ? 'single' : 'compare') + '|' + user.username + '|' + utcDay();
-
-// Peek at the caller's remaining quota without consuming it.
-function runQuota(user, kind) {
-  const limit = limitFor(kind);
-  if (exemptFromQuota(user, kind)) return { limited: false, limit, remaining: Infinity };
-  const used = runCounts.get(qKey(user, kind)) || 0;
-  return { limited: true, limit, used, remaining: Math.max(0, limit - used), resetAt: nextUtcMidnightISO() };
-}
-// Consume one run of `kind`; returns {ok:false,...} when that daily limit is reached.
-function consumeRun(user, kind) {
-  const limit = limitFor(kind);
-  if (exemptFromQuota(user, kind)) return { ok: true, limited: false, remaining: Infinity };
-  const key = qKey(user, kind);
-  const used = runCounts.get(key) || 0;
-  if (used >= limit) return { ok: false, limited: true, kind: kind === 'single' ? 'single' : 'compare', limit, used, remaining: 0, resetAt: nextUtcMidnightISO() };
-  runCounts.set(key, used + 1);
-  return { ok: true, limited: true, limit, used: used + 1, remaining: limit - (used + 1), resetAt: nextUtcMidnightISO() };
-}
-
-// Give a run back. Used when the client abandons a run before it finishes (the
-// per-slot "Run again" restart): the work was thrown away, so charging for it
-// would burn the day's small allowance on nothing.
-function refundRun(user, kind) {
-  if (exemptFromQuota(user, kind)) return;
-  const key = qKey(user, kind);
-  const used = runCounts.get(key) || 0;
-  if (used > 0) runCounts.set(key, used - 1);
+(function loadBudgets() {
+  if (!PERSIST_BUDGETS) return;
+  try {
+    const obj = JSON.parse(fs.readFileSync(BUDGETS_FILE, 'utf8'));
+    const today = utcDay();
+    if (obj && obj.day === today && obj.counts && typeof obj.counts === 'object') {
+      for (const [k, v] of Object.entries(obj.counts)) {
+        if (typeof k === 'string' && k.endsWith('|' + today) && Number.isFinite(v) && v > 0) runCounts.set(k, Math.floor(v));
+      }
+    }
+  } catch (_) { /* no file yet */ }
+})();
+function saveBudgets() {
+  if (!PERSIST_BUDGETS) return;
+  const today = utcDay();
+  const counts = {};
+  for (const [k, v] of runCounts) if (k.endsWith('|' + today)) counts[k] = v;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(BUDGETS_FILE, JSON.stringify({ day: today, counts }));
+  } catch (e) {
+    console.warn('[auth] could not persist run budgets:', e && e.message);
+  }
 }
 
-// Per-user daily Vertex AI run quota for external accounts.
-// @google.com accounts (`user.external === true` or `@google.com` email) and admins are exempt.
-function vertexLimitForUser(user) {
-  if (!user) return MAX_EXTERNAL_VERTEX_RUNS_PER_DAY;
-  const u = ownUser(normalize(user.username));
-  if (u && typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit) && u.dailyVertexLimit >= 0) {
-    return Math.floor(u.dailyVertexLimit);
+function exemptFromBudgets(user) { return !!(RATE_EXEMPT_ADMINS && user && user.role === 'admin'); }
+function dailyLimitFor(user, provider) {
+  if (provider === 'vertex' && user) {
+    const u = ownUser(normalize(user.username));
+    if (u && typeof u.dailyVertexLimit === 'number' && Number.isFinite(u.dailyVertexLimit) && u.dailyVertexLimit >= 0) {
+      return Math.floor(u.dailyVertexLimit);
+    }
   }
-  if (typeof user.dailyVertexLimit === 'number' && Number.isFinite(user.dailyVertexLimit) && user.dailyVertexLimit >= 0) {
-    return Math.floor(user.dailyVertexLimit);
-  }
-  return MAX_EXTERNAL_VERTEX_RUNS_PER_DAY;
+  return appSettings.limitFor(provider);
 }
-function exemptFromVertexQuota(user) {
-  if (!user || !isExternalAccount(user)) return true;
-  if (RATE_EXEMPT_ADMINS && user.role === 'admin') return true;
-  return false;
+const bKey = (user, provider) => provider + '|' + normalize(user.username) + '|' + utcDay();
+
+// Peek at one budget without consuming it.
+function providerQuota(user, provider) {
+  const limit = dailyLimitFor(user, provider);
+  if (!user || exemptFromBudgets(user)) return { limited: false, provider, limit, used: 0, remaining: Infinity };
+  const used = runCounts.get(bKey(user, provider)) || 0;
+  return { limited: true, provider, limit, used, remaining: Math.max(0, limit - used), resetAt: nextUtcMidnightISO() };
 }
-const vqKey = (user) => 'vertex|' + normalize(user.username) + '|' + utcDay();
-function vertexRunQuota(user) {
-  const limit = vertexLimitForUser(user);
-  if (exemptFromVertexQuota(user)) return { limited: false, limit: null, used: 0, remaining: Infinity };
-  const used = runCounts.get(vqKey(user)) || 0;
-  return { limited: true, limit, used, remaining: Math.max(0, limit - used), resetAt: nextUtcMidnightISO() };
+// Consume one run of a budget; { ok:false, ... } when that daily limit is reached.
+function consumeProviderRun(user, provider) {
+  const q = providerQuota(user, provider);
+  if (!q.limited) return { ok: true, ...q };
+  if (q.used >= q.limit) return { ok: false, ...q, remaining: 0 };
+  runCounts.set(bKey(user, provider), q.used + 1);
+  saveBudgets();
+  return { ok: true, ...q, used: q.used + 1, remaining: Math.max(0, q.limit - q.used - 1) };
 }
-function consumeVertexRun(user) {
-  const limit = vertexLimitForUser(user);
-  if (exemptFromVertexQuota(user)) return { ok: true, limited: false, limit: null, used: 0, remaining: Infinity };
-  const key = vqKey(user);
+// Give a run back (the client abandoned it before it finished, or a later budget in
+// the same run was exhausted), so a discarded run doesn't burn the day's allowance.
+function refundProviderRun(user, provider) {
+  if (!user || exemptFromBudgets(user)) return;
+  const key = bKey(user, provider);
   const used = runCounts.get(key) || 0;
-  if (used >= limit) {
-    return { ok: false, limited: true, kind: 'vertex', limit, used, remaining: 0, resetAt: nextUtcMidnightISO() };
-  }
-  runCounts.set(key, used + 1);
-  return { ok: true, limited: true, kind: 'vertex', limit, used: used + 1, remaining: Math.max(0, limit - (used + 1)), resetAt: nextUtcMidnightISO() };
+  if (used > 0) { runCounts.set(key, used - 1); saveBudgets(); }
 }
-function refundVertexRun(user) {
-  if (exemptFromVertexQuota(user)) return;
-  const key = vqKey(user);
-  const used = runCounts.get(key) || 0;
-  if (used > 0) runCounts.set(key, used - 1);
+// Every budget for this user (shown in both arenas' badges).
+function quotaSnapshot(user) {
+  const out = {};
+  for (const p of BUDGET_PROVIDERS) out[p] = providerQuota(user, p);
+  return out;
 }
+
+// Back-compat wrappers for older call sites/tests: the OpenAI and Vertex budgets.
+// (`kind` is ignored: a single-model re-run is a run like any other.)
+function runQuota(user, _kind) { return providerQuota(user, 'openai'); }
+function consumeRun(user, _kind) { return consumeProviderRun(user, 'openai'); }
+function refundRun(user, _kind) { return refundProviderRun(user, 'openai'); }
+function vertexRunQuota(user) { return providerQuota(user, 'vertex'); }
+function consumeVertexRun(user) { return consumeProviderRun(user, 'vertex'); }
+function refundVertexRun(user) { return refundProviderRun(user, 'vertex'); }
 
 // ---------- periodic cleanup (bounds memory; never blocks shutdown) ----------
 setInterval(() => {
@@ -647,9 +661,10 @@ module.exports = {
   cookieParser, setSessionCookie, clearSessionCookie,
   // brute force
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
-  // per-user daily run quota
+  // per-user daily run budgets on the global keys (one per provider; limits from Settings)
   runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, MAX_OPENAI_RUNS_PER_DAY,
   vertexRunQuota, consumeVertexRun, refundVertexRun, MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
+  providerQuota, consumeProviderRun, refundProviderRun, quotaSnapshot, BUDGET_PROVIDERS,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)
