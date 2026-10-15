@@ -820,12 +820,23 @@ a.ud-item[hidden] { display: none; }
 .users-table th { text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; padding: 0 8px 8px; border-bottom: 1px solid var(--border); font-weight: 600; }
 .users-table td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .users-table .u-name { font-weight: 600; }
-.users-table .u-act { text-align: right; }
+.users-table .u-act { text-align: right; white-space: nowrap; }
+.u-act-btns { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 .u-role { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
 .u-role.is-admin { color: var(--accent); border-color: rgba(94,139,255,.4); }
+.u-status { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 8px; border: 1px solid var(--border); color: var(--muted); }
+.u-status.ok { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--border)); background: color-mix(in srgb, var(--good) 8%, transparent); }
+.u-status.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--border)); background: color-mix(in srgb, var(--warn) 10%, transparent); font-weight: 600; }
 .u-tag { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .08em; }
+.u-btn { background: transparent; border: 1px solid var(--border); color: var(--text); cursor: pointer; font-size: 12px; padding: 4px 10px; font-family: inherit; transition: border-color .15s ease, color .15s ease, background .15s ease; }
+.u-btn:hover { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.u-btn.warn:hover { border-color: var(--warn); color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .u-del { background: transparent; border: 1px solid var(--border); color: var(--muted); cursor: pointer; font-size: 12px; padding: 4px 10px; font-family: inherit; }
 .u-del:hover { color: var(--bad); border-color: var(--bad); }
+.u-reset-row td { background: var(--well); padding: 10px 12px; }
+.u-reset-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.u-reset-box input[type="password"], .u-reset-box input[type="text"] { flex: 1 1 220px; min-width: 180px; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; font-size: 13px; font-family: inherit; outline: none; }
+.u-reset-box input:focus { border-color: var(--accent); }
 .add-user-form { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
 /* scope banner: makes "this browser only" vs "shared by everyone" unmissable */
 .key-scope { border: 1px solid var(--border-hi); padding: 13px 15px; margin-bottom: 14px; }

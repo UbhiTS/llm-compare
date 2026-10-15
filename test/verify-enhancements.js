@@ -373,8 +373,58 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.34', 'package.json must be at version 1.0.34');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.34</span>'), 'index.html must display v1.0.34 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.35', 'package.json must be at version 1.0.35');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.35</span>'), 'index.html must display v1.0.35 in footer');
+
+  // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
+  const tempCustomerUser = `cust_${Date.now()}`;
+  const createdCustomer = await auth.createUser(tempCustomerUser, 'TempPass#2026!', 'user', { mustChangePassword: true });
+  assert.strictEqual(createdCustomer.mustChangePassword, true, 'External user created with mustChangePassword:true has flag set');
+  const authCustomer = await auth.authenticate(tempCustomerUser, 'TempPass#2026!');
+  assert.strictEqual(authCustomer && authCustomer.mustChangePassword, true, 'authenticate() returns mustChangePassword:true for temporary password user');
+  const custToken = auth.createSession(authCustomer);
+  const custSess = auth.getSession({ cookies: { [auth.COOKIE_NAME]: custToken } });
+  assert.strictEqual(custSess && custSess.mustChangePassword, true, 'Session carries mustChangePassword:true for external user');
+
+  // Reject reusing the same temporary password
+  await assert.rejects(
+    () => auth.changePassword(tempCustomerUser, 'TempPass#2026!', 'TempPass#2026!'),
+    /New password must be different from your current password/,
+    'changePassword() rejects reusing the current temporary password'
+  );
+
+  // Changing to a new valid password clears mustChangePassword
+  const changedCustomer = await auth.changePassword(tempCustomerUser, 'TempPass#2026!', 'NewCustomer#2026!');
+  assert.strictEqual(changedCustomer.mustChangePassword, false, 'changePassword() clears mustChangePassword flag');
+  assert.ok(changedCustomer.passwordChangedAt, 'changePassword() records passwordChangedAt timestamp');
+
+  // Admin can force password change anytime (even while user has an active session)
+  const activeToken = auth.createSession(changedCustomer);
+  assert.strictEqual(auth.getSession({ cookies: { [auth.COOKIE_NAME]: activeToken } }).mustChangePassword, false);
+  const forcedAgain = auth.setMustChangePassword(tempCustomerUser, true);
+  assert.strictEqual(forcedAgain.mustChangePassword, true, 'Admin setMustChangePassword(user, true) flags user');
+  assert.strictEqual(
+    auth.getSession({ cookies: { [auth.COOKIE_NAME]: activeToken } }).mustChangePassword,
+    true,
+    'Admin setMustChangePassword(user, true) immediately updates live active session'
+  );
+
+  // Admin can reset temporary password & force change on login
+  const resetUser = await auth.adminResetPassword(tempCustomerUser, 'ResetTemp#2026!', true);
+  assert.strictEqual(resetUser.mustChangePassword, true, 'adminResetPassword sets mustChangePassword:true');
+  assert.strictEqual(auth.getSession({ cookies: { [auth.COOKIE_NAME]: activeToken } }), null, 'adminResetPassword revokes existing sessions');
+  const reAuth = await auth.authenticate(tempCustomerUser, 'ResetTemp#2026!');
+  assert.ok(reAuth && reAuth.mustChangePassword === true, 'User can sign in with admin-assigned temporary password');
+
+  // Google OIDC (external: true) sessions are never subject to mustChangePassword
+  const googleToken = auth.createSession({ username: 'colleague@google.com', role: 'user', external: true, mustChangePassword: true });
+  assert.strictEqual(
+    auth.getSession({ cookies: { [auth.COOKIE_NAME]: googleToken } }).mustChangePassword,
+    false,
+    'Google OIDC sessions (external: true) never have mustChangePassword enabled'
+  );
+  auth.deleteUser(tempCustomerUser, 'admin');
+  console.log('✓ External user Force Password Change on login, Anytime Admin Force, and Temp Password Reset verified');
 
   // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');

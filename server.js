@@ -232,7 +232,7 @@ app.get('/api/auth/status', (req, res) => {
   res.json({
     setupRequired: auth.setupRequired(),
     authenticated: !!s,
-    user: s ? { username: s.username, role: s.role } : null,
+    user: s ? { username: s.username, role: s.role, external: !!s.external, mustChangePassword: !!(s && !s.external && s.mustChangePassword) } : null,
     googleAuth: googleAuth.googleAuthEnabled(),
     allowedDomains: googleAuth.allowedDomains(),
   });
@@ -279,7 +279,11 @@ app.post('/api/auth/login', async (req, res) => {
   auth.recordSuccess(ukey);
   auth.recordSuccess(ipkey);
   auth.setSessionCookie(req, res, auth.createSession(user));
-  res.json({ ok: true, user: { username: user.username, role: user.role } });
+  res.json({
+    ok: true,
+    mustChangePassword: !!user.mustChangePassword,
+    user: { username: user.username, role: user.role, mustChangePassword: !!user.mustChangePassword },
+  });
 });
 
 // Sign in with Google (OIDC), restricted to the allowed Workspace domain(s).
@@ -333,7 +337,30 @@ app.get('/terms', (_req, res) => {
 // ===========================================================================
 app.use((req, res, next) => {
   const s = auth.getSession(req);
-  if (s) { req.user = { username: s.username, role: s.role }; return next(); }
+  if (s) {
+    req.user = {
+      username: s.username,
+      role: s.role,
+      external: !!s.external,
+      mustChangePassword: !s.external && !!s.mustChangePassword,
+    };
+    if (req.user.mustChangePassword && req.path.startsWith('/api/')) {
+      const allowedDuringForceChange =
+        req.path === '/api/auth/password' ||
+        req.path === '/api/auth/logout' ||
+        req.path === '/api/auth/status' ||
+        req.path === '/api/config' ||
+        req.path === '/api/health';
+      if (!allowedDuringForceChange) {
+        return res.status(403).json({
+          ok: false,
+          code: 'PASSWORD_CHANGE_REQUIRED',
+          error: 'You must change your temporary password before continuing.',
+        });
+      }
+    }
+    return next();
+  }
   // Local workstation / Antigravity Sidecar auto-auth for Tarun (never active on Cloud Run K_SERVICE)
   // SECURITY: the Host header and X-Forwarded-For are client-controlled, so neither
   // may grant access on its own. Auto-auth now requires the TCP peer to really be
@@ -389,12 +416,13 @@ app.post('/api/auth/logout', (req, res) => {
 
 app.post('/api/auth/password', async (req, res) => {
   try {
-    await auth.changePassword(
+    const updatedUser = await auth.changePassword(
       req.user.username,
       String((req.body && req.body.currentPassword) || ''),
       String((req.body && req.body.newPassword) || ''),
     );
-    res.json({ ok: true });
+    auth.setSessionCookie(req, res, auth.createSession(updatedUser));
+    res.json({ ok: true, mustChangePassword: false, user: updatedUser });
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
@@ -406,10 +434,32 @@ app.get('/api/auth/users', requireAdmin, (req, res) => {
 });
 
 app.post('/api/auth/users', requireAdmin, async (req, res) => {
-  const { username, password, role } = req.body || {};
+  const { username, password, role, mustChangePassword } = req.body || {};
+  const wantForce = mustChangePassword !== undefined ? Boolean(mustChangePassword) : true;
   try {
-    await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user');
-    res.json({ ok: true, users: auth.listUsers() });
+    const user = await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user', { mustChangePassword: wantForce });
+    res.json({ ok: true, user, users: auth.listUsers() });
+  } catch (e) {
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.post('/api/auth/users/:username/force-password-change', requireAdmin, (req, res) => {
+  try {
+    const mustChange = req.body && req.body.mustChangePassword !== undefined ? Boolean(req.body.mustChangePassword) : true;
+    const user = auth.setMustChangePassword(req.params.username, mustChange);
+    res.json({ ok: true, user, users: auth.listUsers() });
+  } catch (e) {
+    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+app.post('/api/auth/users/:username/reset-password', requireAdmin, async (req, res) => {
+  try {
+    const { password, mustChangePassword } = req.body || {};
+    const wantForce = mustChangePassword !== undefined ? Boolean(mustChangePassword) : true;
+    const user = await auth.adminResetPassword(req.params.username, String(password || ''), wantForce);
+    res.json({ ok: true, user, users: auth.listUsers() });
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
@@ -589,6 +639,8 @@ app.get('/api/config', (req, res) => {
     me: {
       username: req.user.username,
       role: req.user.role,
+      external: !!req.user.external,
+      mustChangePassword: !!req.user.mustChangePassword,
       quota: auth.runQuota(req.user, 'compare'),
       singleQuota: auth.runQuota(req.user, 'single'),
       lastModels: history.lastModels(req.user.username),

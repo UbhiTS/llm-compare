@@ -294,6 +294,86 @@ async function waitUp() {
   r = await req('GET', '/games/zzzz/');
   check('GET /games/<bad id>/ -> 404', r.status === 404, { status: r.status });
 
+  // ---- External User Forced Password Change Workflow (v1.0.35) ----
+  r = await req('POST', '/api/auth/users', {
+    body: { username: 'customer_poc', password: 'temp-password-123', role: 'user' },
+  });
+  check(
+    'POST /api/auth/users defaults mustChangePassword=true',
+    r.status === 200 && r.json && r.json.ok && r.json.user && r.json.user.mustChangePassword === true,
+    { status: r.status }
+  );
+
+  const loginRes = await req('POST', '/api/auth/login', {
+    body: { username: 'customer_poc', password: 'temp-password-123' },
+  });
+  const extCookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+  check(
+    'POST /api/auth/login returns mustChangePassword=true for temp-pw user',
+    loginRes.status === 200 && loginRes.json && loginRes.json.ok && loginRes.json.mustChangePassword === true && /^sid=/.test(extCookie),
+    { status: loginRes.status }
+  );
+
+  r = await req('GET', '/api/history', { headers: { Cookie: extCookie } });
+  check(
+    'GET /api/history blocked with 403 PASSWORD_CHANGE_REQUIRED while mustChangePassword=true',
+    r.status === 403 && r.json && r.json.code === 'PASSWORD_CHANGE_REQUIRED',
+    { status: r.status }
+  );
+
+  r = await req('POST', '/api/auth/password', {
+    headers: { Cookie: extCookie },
+    body: { currentPassword: 'temp-password-123', newPassword: 'temp-password-123' },
+  });
+  check(
+    'POST /api/auth/password rejects reusing temporary password -> 400',
+    r.status === 400 && r.json && /different/.test(r.json.error || ''),
+    { status: r.status }
+  );
+
+  const pwRes = await req('POST', '/api/auth/password', {
+    headers: { Cookie: extCookie },
+    body: { currentPassword: 'temp-password-123', newPassword: 'new-customer-pass-456' },
+  });
+  const rotatedCookie = (pwRes.headers.get('set-cookie') || '').split(';')[0];
+  check(
+    'POST /api/auth/password clears mustChangePassword & rotates session cookie',
+    pwRes.status === 200 && pwRes.json && pwRes.json.ok && pwRes.json.mustChangePassword === false && /^sid=/.test(rotatedCookie),
+    { status: pwRes.status }
+  );
+
+  r = await req('GET', '/api/history', { headers: { Cookie: rotatedCookie } });
+  check(
+    'GET /api/history succeeds after changing password -> 200',
+    r.status === 200 && r.json && Array.isArray(r.json.runs),
+    { status: r.status }
+  );
+
+  r = await req('POST', '/api/auth/users/customer_poc/force-password-change', {
+    body: { mustChangePassword: true },
+  });
+  check(
+    'POST /api/auth/users/:username/force-password-change flags active user anytime',
+    r.status === 200 && r.json && r.json.ok && r.json.user && r.json.user.mustChangePassword === true,
+    { status: r.status }
+  );
+
+  r = await req('GET', '/api/history', { headers: { Cookie: rotatedCookie } });
+  check(
+    'Active user session immediately gated with 403 PASSWORD_CHANGE_REQUIRED after admin force',
+    r.status === 403 && r.json && r.json.code === 'PASSWORD_CHANGE_REQUIRED',
+    { status: r.status }
+  );
+
+  r = await req('POST', '/api/auth/users/customer_poc/reset-password', {
+    body: { password: 'admin-reset-temp-789', mustChangePassword: true },
+  });
+  check(
+    'POST /api/auth/users/:username/reset-password sets new temp PW + mustChangePassword=true',
+    r.status === 200 && r.json && r.json.ok && r.json.user && r.json.user.mustChangePassword === true,
+    { status: r.status }
+  );
+
   // ---------------- LIVE (optional, costs a few cents) ----------------
   if (LIVE) {
     const run = await req('POST', '/api/run', { body: { taskId: 'custom', customPrompt: 'Reply with exactly: OK', models: [{ slot: 'A', catalogId: 'gemini-3.5-flash' }] } });

@@ -531,6 +531,9 @@ async function init() {
   SAVED_PRESETS = Array.isArray(CONFIG.me && CONFIG.me.savedPresets) ? CONFIG.me.savedPresets : [];
   await restoreLocalLibraryBackupIfNeeded();
   initUserMenu(CONFIG.me);
+  if (CONFIG.me && !CONFIG.me.external && CONFIG.me.mustChangePassword) {
+    openChangePwModal({ forced: true });
+  }
   // Seed the drag-and-drop slots from the server's default selection, then let
   // MODELS be derived from the slots from here on.
   seedSlots();
@@ -670,6 +673,7 @@ function initUserMenu(me) {
   $('#userChip').title = ME.username + ' · ' + ME.role;
   $('#manageUsersBtn').hidden = ME.role !== 'admin';
   { const gk = $('#globalKeysBtn'); if (gk) gk.hidden = ME.role !== 'admin'; }
+  { const cp = $('#changePwBtn'); if (cp) cp.hidden = !!(ME.external || isGoogleUser); }
 
   const chip = $('#userChip');
   const dd = $('#userDropdown');
@@ -858,9 +862,18 @@ function ensureAuthModal() {
   m.querySelector('.md-modal-close').addEventListener('click', closeAuthModal);
   return m;
 }
-function closeAuthModal() { const m = $('#authModal'); if (m) m.classList.add('hidden'); }
+function closeAuthModal(opts) {
+  const m = $('#authModal');
+  if (!m) return;
+  if (m.dataset.locked === '1' && !(opts && opts.force)) return;
+  m.classList.add('hidden');
+}
 function openAuthModal(title, opts) {
   const m = ensureAuthModal();
+  const locked = !!(opts && opts.locked);
+  m.dataset.locked = locked ? '1' : '0';
+  const closeBtn = m.querySelector('.md-modal-close');
+  if (closeBtn) closeBtn.hidden = locked;
   $('#authModalTitle').textContent = title;
   const panel = m.querySelector('.auth-panel');
   if (panel) panel.classList.toggle('wide', !!(opts && opts.wide));
@@ -869,7 +882,7 @@ function openAuthModal(title, opts) {
 }
 
 async function openUsersModal() {
-  const body = openAuthModal('Manage users');
+  const body = openAuthModal('Manage external users', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   let data;
   try {
@@ -884,17 +897,43 @@ async function openUsersModal() {
 function renderUsersModal(body, data) {
   const rows = (data.users || []).map((u) => {
     const isMe = u.username === data.me;
-    const del = (u.username === data.me)
+    const statusBadge = u.mustChangePassword
+      ? '<span class="u-status warn" title="User will be forced to set a new password on next sign-in (or immediately if signed in)">⚠️ Must change on login</span>'
+      : '<span class="u-status ok" title="Password active">✓ Active</span>';
+    const forceBtn = u.mustChangePassword
+      ? `<button class="u-btn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="0" title="Clear forced password change requirement">Clear force</button>`
+      : `<button class="u-btn warn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="1" title="Force this user to change their password on next login (or immediately if signed in)">Force PW change</button>`;
+    const resetBtn = `<button class="u-btn u-reset-pw" type="button" data-user="${esc(u.username)}" title="Assign a new temporary password and require change on next login">Set temp PW</button>`;
+    const del = isMe
       ? '<span class="u-tag">you</span>'
       : `<button class="u-del" type="button" data-user="${esc(u.username)}" title="Delete user">Remove</button>`;
-    return `<tr><td class="u-name">${esc(u.username)}</td><td><span class="u-role ${u.role === 'admin' ? 'is-admin' : ''}">${esc(u.role)}</span></td><td class="u-act">${del}</td></tr>`;
+    return `<tr>
+      <td class="u-name">${esc(u.username)}</td>
+      <td><span class="u-role ${u.role === 'admin' ? 'is-admin' : ''}">${esc(u.role)}</span></td>
+      <td>${statusBadge}</td>
+      <td class="u-act"><div class="u-act-btns">${forceBtn}${resetBtn}${del}</div></td>
+    </tr>
+    <tr class="u-reset-row hidden" data-reset-row="${esc(u.username)}">
+      <td colspan="4">
+        <div class="u-reset-box">
+          <span style="font-size:12px;color:var(--muted)">New temp password for <b>${esc(u.username)}</b>:</span>
+          <input type="password" class="u-reset-input" data-user="${esc(u.username)}" autocomplete="new-password" placeholder="Min 10 characters…" />
+          <label class="auth-check" style="margin:0;font-size:12px"><input type="checkbox" class="u-reset-force-chk" data-user="${esc(u.username)}" checked /> Force change on login</label>
+          <button class="submit-btn u-reset-save" type="button" data-user="${esc(u.username)}" style="margin:0;padding:6px 12px;font-size:12px">Save temp PW</button>
+          <button class="u-btn u-reset-cancel" type="button" data-user="${esc(u.username)}">Cancel</button>
+        </div>
+        <div class="auth-msg u-reset-msg" data-user="${esc(u.username)}" style="margin-top:6px"></div>
+      </td>
+    </tr>`;
   }).join('');
   body.innerHTML =
-    '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login or force a password change for any external user at any time.</p>' +
+    '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '<form class="add-user-form" id="addUserForm">' +
-      '<h4>Add a user</h4>' +
+      '<h4>Add an external user</h4>' +
       '<div class="auth-field"><label>Username</label><input id="nuUser" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="3–32 chars: a–z 0–9 . _ -" /></div>' +
-      '<div class="auth-field"><label>Password</label><input id="nuPass" type="password" autocomplete="new-password" placeholder="min length enforced server-side" /></div>' +
+      '<div class="auth-field"><label>Temporary / Initial password</label><input id="nuPass" type="password" autocomplete="new-password" placeholder="Min 10 chars (user will change on first login)" /></div>' +
+      '<label class="auth-check"><input id="nuForcePw" type="checkbox" checked /> Force user to change password on first sign-in (recommended for customers)</label>' +
       '<label class="auth-check"><input id="nuAdmin" type="checkbox" /> Make this user an admin (can manage users)</label>' +
       '<div class="auth-msg" id="nuMsg"></div>' +
       '<button class="submit-btn" type="submit">+ Add user</button>' +
@@ -902,6 +941,26 @@ function renderUsersModal(body, data) {
     googleAccessHelp();
 
   body.querySelectorAll('.u-del').forEach((b) => b.addEventListener('click', () => deleteUser(b.dataset.user, body)));
+  body.querySelectorAll('.u-toggle-force').forEach((b) => b.addEventListener('click', () => toggleForcePasswordChange(b.dataset.user, b.dataset.force === '1', body)));
+  body.querySelectorAll('.u-reset-pw').forEach((b) => b.addEventListener('click', () => {
+    const uname = b.dataset.user;
+    const row = body.querySelector(`.u-reset-row[data-reset-row="${CSS.escape(uname)}"]`);
+    if (!row) return;
+    row.classList.toggle('hidden');
+    if (!row.classList.contains('hidden')) {
+      const inp = row.querySelector('.u-reset-input');
+      if (inp) inp.focus();
+    }
+  }));
+  body.querySelectorAll('.u-reset-cancel').forEach((b) => b.addEventListener('click', () => {
+    const uname = b.dataset.user;
+    const row = body.querySelector(`.u-reset-row[data-reset-row="${CSS.escape(uname)}"]`);
+    if (row) row.classList.add('hidden');
+  }));
+  body.querySelectorAll('.u-reset-save').forEach((b) => b.addEventListener('click', () => saveUserTempPassword(b.dataset.user, body)));
+  body.querySelectorAll('.u-reset-input').forEach((inp) => inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveUserTempPassword(inp.dataset.user, body); }
+  }));
   body.querySelector('#addUserForm').addEventListener('submit', (e) => { e.preventDefault(); addUser(body); });
 }
 
@@ -1008,13 +1067,15 @@ async function addUser(body) {
   const username = body.querySelector('#nuUser').value.trim();
   const password = body.querySelector('#nuPass').value;
   const role = body.querySelector('#nuAdmin').checked ? 'admin' : 'user';
+  const forceChk = body.querySelector('#nuForcePw');
+  const mustChangePassword = forceChk ? !!forceChk.checked : true;
   const btn = body.querySelector('#addUserForm .submit-btn');
   btn.disabled = true;
   try {
     const r = await fetch('/api/auth/users', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, role }),
+      body: JSON.stringify({ username, password, role, mustChangePassword }),
     });
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
@@ -1022,6 +1083,50 @@ async function addUser(body) {
     renderUsersModal(body, { users: j.users, me: (ME && ME.username) }); // refresh list
   } catch (e) {
     msg.className = 'auth-msg err'; msg.textContent = e.message; btn.disabled = false;
+  }
+}
+
+async function toggleForcePasswordChange(username, mustChangePassword, body) {
+  try {
+    const r = await fetch('/api/auth/users/' + encodeURIComponent(username) + '/force-password-change', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mustChangePassword: !!mustChangePassword }),
+    });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'Could not update password policy.');
+    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+  } catch (e) { window.alert(e.message); }
+}
+
+async function saveUserTempPassword(username, body) {
+  const escUser = CSS.escape(username);
+  const inp = body.querySelector(`.u-reset-input[data-user="${escUser}"]`);
+  const chk = body.querySelector(`.u-reset-force-chk[data-user="${escUser}"]`);
+  const msg = body.querySelector(`.u-reset-msg[data-user="${escUser}"]`);
+  const btn = body.querySelector(`.u-reset-save[data-user="${escUser}"]`);
+  const password = inp ? inp.value : '';
+  const mustChangePassword = chk ? !!chk.checked : true;
+  if (msg) { msg.className = 'auth-msg u-reset-msg'; msg.textContent = ''; }
+  if (!password) {
+    if (msg) { msg.className = 'auth-msg err u-reset-msg'; msg.textContent = 'Enter a temporary password first.'; }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/auth/users/' + encodeURIComponent(username) + '/reset-password', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, mustChangePassword }),
+    });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'Could not reset password.');
+    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+  } catch (e) {
+    if (msg) { msg.className = 'auth-msg err u-reset-msg'; msg.textContent = e.message; }
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1036,16 +1141,29 @@ async function deleteUser(username, body) {
   } catch (e) { window.alert(e.message); }
 }
 
-function openChangePwModal() {
-  const body = openAuthModal('Change my password');
+function openChangePwModal(opts) {
+  const forced = !!(opts && opts.forced);
+  const body = openAuthModal(forced ? 'Password change required' : 'Change my password', { locked: forced });
+  const forcedBanner = forced
+    ? '<div class="key-scope global" style="margin-bottom:14px">' +
+        '<div class="ks-head">⚠️ Password update required</div>' +
+        '<p style="margin:0;font-size:12.5px;color:var(--muted);line-height:1.5">Your administrator requires you to replace your temporary password with a new password (min 10 characters) before using LLM Compare.</p>' +
+      '</div>'
+    : '';
+  const signOutBtn = forced
+    ? '<button class="u-del" type="button" id="cpLogoutBtn">Sign out</button>'
+    : '';
   body.innerHTML =
-    '<form class="add-user-form" id="changePwForm">' +
-      '<div class="auth-field"><label>Current password</label><input id="cpCur" type="password" autocomplete="current-password" /></div>' +
-      '<div class="auth-field"><label>New password</label><input id="cpNew" type="password" autocomplete="new-password" /></div>' +
+    forcedBanner +
+    '<form class="add-user-form" id="changePwForm" style="' + (forced ? 'margin-top:0;padding-top:0;border-top:none' : '') + '">' +
+      '<div class="auth-field"><label>' + (forced ? 'Current / temporary password' : 'Current password') + '</label><input id="cpCur" type="password" autocomplete="current-password" /></div>' +
+      '<div class="auth-field"><label>New password</label><input id="cpNew" type="password" autocomplete="new-password" placeholder="Min 10 characters" /></div>' +
       '<div class="auth-field"><label>Confirm new password</label><input id="cpConf" type="password" autocomplete="new-password" /></div>' +
       '<div class="auth-msg" id="cpMsg"></div>' +
-      '<button class="submit-btn" type="submit">Update password</button>' +
+      '<div class="keys-actions"><button class="submit-btn" type="submit">Update password</button>' + signOutBtn + '</div>' +
     '</form>';
+  const loBtn = body.querySelector('#cpLogoutBtn');
+  if (loBtn) loBtn.addEventListener('click', logout);
   body.querySelector('#changePwForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const msg = body.querySelector('#cpMsg'); msg.className = 'auth-msg'; msg.textContent = '';
@@ -1053,6 +1171,7 @@ function openChangePwModal() {
     const nw = body.querySelector('#cpNew').value;
     const conf = body.querySelector('#cpConf').value;
     if (nw !== conf) { msg.className = 'auth-msg err'; msg.textContent = 'New passwords do not match.'; return; }
+    if (nw === cur) { msg.className = 'auth-msg err'; msg.textContent = 'New password must be different from your current password.'; return; }
     const btn = body.querySelector('.submit-btn'); btn.disabled = true;
     try {
       const r = await fetch('/api/auth/password', {
@@ -1063,9 +1182,20 @@ function openChangePwModal() {
       if (r.status === 401) { window.location.replace('/login'); return; }
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || 'Could not update password.');
+      if (ME) ME.mustChangePassword = false;
+      if (CONFIG && CONFIG.me) CONFIG.me.mustChangePassword = false;
+      const m = $('#authModal');
+      if (m) {
+        m.dataset.locked = '0';
+        const cb = m.querySelector('.md-modal-close');
+        if (cb) cb.hidden = false;
+      }
       msg.className = 'auth-msg ok'; msg.textContent = 'Password updated.';
       btn.disabled = false;
       body.querySelector('#cpCur').value = body.querySelector('#cpNew').value = body.querySelector('#cpConf').value = '';
+      if (forced) {
+        setTimeout(() => closeAuthModal({ force: true }), 500);
+      }
     } catch (e2) { msg.className = 'auth-msg err'; msg.textContent = e2.message; btn.disabled = false; }
   });
 }
@@ -3798,6 +3928,13 @@ async function streamRun(payload, results, signal, own, retried) {
     signal,
   });
   if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
+  if (resp.status === 403) {
+    const j = await resp.json().catch(() => ({}));
+    if (j && j.code === 'PASSWORD_CHANGE_REQUIRED') {
+      openChangePwModal({ forced: true });
+      throw new Error((j && j.error) || 'Password change required before running comparisons.');
+    }
+  }
   if (resp.status === 409) {                                                     // cached attachment expired server-side
     const j = await resp.json().catch(() => ({}));
     if (j && j.code === 'ATTACHMENT_EXPIRED' && !retried && markAttachmentsExpired(j)) {
@@ -6949,6 +7086,12 @@ async function runImageArenaComparisonClick() {
         if (resp.status === 401) {
           window.location.replace('/login');
           return null;
+        }
+        if (resp.status === 403) {
+          const j403 = await resp.clone().json().catch(() => ({}));
+          if (j403 && j403.code === 'PASSWORD_CHANGE_REQUIRED') {
+            openChangePwModal({ forced: true });
+          }
         }
         const rawText = await resp.text();
         let data = null;

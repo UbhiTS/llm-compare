@@ -77,11 +77,16 @@
       <label for="username">Username</label>
       <input id="username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="none" value="admin" />
 
+      <div id="currentPwRow" class="hide">
+        <label for="currentPassword">Current / temporary password</label>
+        <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" />
+      </div>
+
       <label for="password" id="pwLabel">Password</label>
       <input id="password" name="password" type="password" autocomplete="current-password" />
 
       <div id="confirmRow" class="hide">
-        <label for="confirm">Confirm password</label>
+        <label for="confirm">Confirm new password</label>
         <input id="confirm" name="confirm" type="password" autocomplete="new-password" />
       </div>
 
@@ -96,7 +101,8 @@
 
   <script nonce="__NONCE__">
     (function () {
-      var mode = 'login'; // 'login' | 'setup'
+      var mode = 'login'; // 'login' | 'setup' | 'force-change'
+      var tempCurrentPassword = '';
       var $ = function (id) { return document.getElementById(id); };
       var msg = $('msg');
       function setMsg(t, kind) { msg.textContent = t || ''; msg.className = 'msg' + (kind ? ' ' + kind : ''); }
@@ -109,23 +115,45 @@
 
       function render() {
         var setup = mode === 'setup';
+        var forceChange = mode === 'force-change';
         $('setupCodeRow').classList.toggle('hide', !setup);
-        $('confirmRow').classList.toggle('hide', !setup);
+        $('confirmRow').classList.toggle('hide', !(setup || forceChange));
+        $('currentPwRow').classList.toggle('hide', !(forceChange && !tempCurrentPassword));
+        if (forceChange) $('googleBox').classList.add('hide');
         $('sub').textContent = setup
           ? 'Welcome! No account exists yet. Create a password for the "admin" account to secure this instance.'
-          : 'Sign in to continue.';
-        $('pwLabel').textContent = setup ? 'Create password' : 'Password';
-        $('username').readOnly = setup;            // first account is always "admin"
-        $('password').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
-        $('submit').textContent = setup ? 'Set password & sign in' : 'Sign in';
-        var focusEl = setup ? $('code') : $('password');
+          : forceChange
+            ? 'For your security, please choose a new password (min 10 characters) to replace your temporary password before continuing.'
+            : 'Sign in to continue.';
+        $('pwLabel').textContent = setup ? 'Create password' : forceChange ? 'New password' : 'Password';
+        $('username').readOnly = setup || forceChange;
+        $('password').setAttribute('autocomplete', (setup || forceChange) ? 'new-password' : 'current-password');
+        $('submit').textContent = setup
+          ? 'Set password & sign in'
+          : forceChange
+            ? 'Update password & continue'
+            : 'Sign in';
+        var focusEl = setup
+          ? $('code')
+          : (forceChange && !tempCurrentPassword)
+            ? $('currentPassword')
+            : $('password');
         if (focusEl) setTimeout(function () { focusEl.focus(); }, 30);
       }
 
       fetch('/api/auth/status', { credentials: 'same-origin' })
         .then(function (r) { return r.json(); })
         .then(function (s) {
-          if (s && s.authenticated) { window.location.replace('/'); return; }
+          if (s && s.authenticated) {
+            if (s.user && s.user.mustChangePassword) {
+              $('username').value = s.user.username || '';
+              mode = 'force-change';
+              render();
+              return;
+            }
+            window.location.replace('/');
+            return;
+          }
           var googleOn = !!(s && s.googleAuth);
           if (googleOn) {
             $('googleBox').classList.remove('hide');
@@ -151,6 +179,14 @@
           if (password !== confirm) { setMsg('Passwords do not match.', 'err'); return; }
           url = '/api/auth/setup';
           body = { code: $('code').value, password: password };
+        } else if (mode === 'force-change') {
+          var confirmNew = $('confirm').value;
+          var curPw = tempCurrentPassword || $('currentPassword').value;
+          if (!curPw) { setMsg('Please enter your current temporary password.', 'err'); return; }
+          if (password !== confirmNew) { setMsg('New passwords do not match.', 'err'); return; }
+          if (password === curPw) { setMsg('New password must be different from your temporary password.', 'err'); return; }
+          url = '/api/auth/password';
+          body = { currentPassword: curPw, newPassword: password };
         } else {
           url = '/api/auth/login';
           body = { username: $('username').value, password: password };
@@ -167,7 +203,20 @@
         }).then(function (r) {
           return r.json().then(function (j) { return { ok: r.ok, status: r.status, j: j }; });
         }).then(function (res) {
-          if (res.ok && res.j && res.j.ok) { window.location.replace('/'); return; }
+          if (res.ok && res.j && res.j.ok) {
+            if (mode === 'login' && (res.j.mustChangePassword || (res.j.user && res.j.user.mustChangePassword))) {
+              tempCurrentPassword = password;
+              $('password').value = '';
+              $('confirm').value = '';
+              mode = 'force-change';
+              btn.disabled = false;
+              render();
+              setMsg('Signed in with temporary password. Please set your new password below.', 'ok');
+              return;
+            }
+            window.location.replace('/');
+            return;
+          }
           setMsg((res.j && res.j.error) || 'Something went wrong. Please try again.', 'err');
           btn.disabled = false; btn.textContent = orig;
         }).catch(function () {

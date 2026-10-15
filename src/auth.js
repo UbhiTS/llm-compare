@@ -84,7 +84,14 @@ function loadUsers() {
     for (const k of Object.keys(obj)) {
       const v = obj[k];
       if (USERNAME_RE.test(k) && !RESERVED_USERNAMES.has(k) && v && typeof v.hash === 'string') {
-        clean[k] = { username: k, role: v.role === 'admin' ? 'admin' : 'user', hash: v.hash, createdAt: v.createdAt || new Date().toISOString() };
+        clean[k] = {
+          username: k,
+          role: v.role === 'admin' ? 'admin' : 'user',
+          hash: v.hash,
+          createdAt: v.createdAt || new Date().toISOString(),
+          mustChangePassword: !!v.mustChangePassword,
+          passwordChangedAt: v.passwordChangedAt || null,
+        };
       }
     }
     return clean;
@@ -169,6 +176,8 @@ async function verifyHash(password, stored) {
           users[uname] = {
             username: uname, role: 'admin', hash: freshHash,
             createdAt: existing.createdAt || new Date().toISOString(),
+            mustChangePassword: false,
+            passwordChangedAt: existing.passwordChangedAt || null,
           };
         }
       }).catch(() => {});
@@ -178,6 +187,8 @@ async function verifyHash(password, stored) {
     users[uname] = {
       username: uname, role: 'admin', hash: hashPasswordSync(String(pw)),
       createdAt: (existing && existing.createdAt) || new Date().toISOString(),
+      mustChangePassword: false,
+      passwordChangedAt: null,
     };
     console.log(`[auth] break-glass admin "${uname}" ensured from ADMIN_BOOTSTRAP_PASSWORD.`);
   } catch (e) {
@@ -206,13 +217,21 @@ function validatePassword(password, username) {
 function setupRequired() { return Object.keys(users).length === 0; }
 function userExists(username) { return !!ownUser(normalize(username)); }
 
-async function createUser(username, password, role) {
+async function createUser(username, password, role, opts = {}) {
   const uname = normalize(username);
   const uErr = validateUsername(uname); if (uErr) throw new Error(uErr);
   const pErr = validatePassword(password, uname); if (pErr) throw new Error(pErr);
   if (ownUser(uname)) throw new Error('That username already exists.');
   const hash = await hashPassword(password);
-  users[uname] = { username: uname, role: role === 'admin' ? 'admin' : 'user', hash, createdAt: new Date().toISOString() };
+  const mustChangePassword = Boolean(opts && opts.mustChangePassword);
+  users[uname] = {
+    username: uname,
+    role: role === 'admin' ? 'admin' : 'user',
+    hash,
+    createdAt: new Date().toISOString(),
+    mustChangePassword,
+    passwordChangedAt: null,
+  };
   saveUsers();
   return publicUser(users[uname]);
 }
@@ -226,7 +245,14 @@ async function setupAdmin(password) {
   setupInProgress = true;
   try {
     const hash = await hashPassword(password);
-    users[ADMIN_USERNAME] = { username: ADMIN_USERNAME, role: 'admin', hash, createdAt: new Date().toISOString() };
+    users[ADMIN_USERNAME] = {
+      username: ADMIN_USERNAME,
+      role: 'admin',
+      hash,
+      createdAt: new Date().toISOString(),
+      mustChangePassword: false,
+      passwordChangedAt: null,
+    };
     saveUsers();
     SETUP_CODE = null; // burn the one-time code
     return publicUser(users[ADMIN_USERNAME]);
@@ -247,11 +273,44 @@ async function changePassword(username, currentPassword, newPassword) {
   if (!u) throw new Error('User not found.');
   const ok = await verifyHash(String(currentPassword || ''), u.hash);
   if (!ok) throw new Error('Current password is incorrect.');
+  if (String(newPassword || '') === String(currentPassword || '')) {
+    throw new Error('New password must be different from your current password.');
+  }
   const pErr = validatePassword(newPassword, u.username); if (pErr) throw new Error(pErr);
   u.hash = await hashPassword(newPassword);
+  u.mustChangePassword = false;
+  u.passwordChangedAt = new Date().toISOString();
   saveUsers();
   destroyUserSessions(u.username); // a password change revokes every existing session (incl. any stolen one)
-  return true;
+  return publicUser(u);
+}
+
+function setMustChangePassword(target, mustChange = true) {
+  const t = normalize(target);
+  const tu = ownUser(t);
+  if (!tu) throw new Error('User not found.');
+  tu.mustChangePassword = !!mustChange;
+  saveUsers();
+  for (const [, s] of sessions) {
+    if (!s.external && s.username === t) {
+      s.mustChangePassword = !!tu.mustChangePassword;
+    }
+  }
+  return publicUser(tu);
+}
+
+async function adminResetPassword(target, newTempPassword, mustChange = true) {
+  const t = normalize(target);
+  const tu = ownUser(t);
+  if (!tu) throw new Error('User not found.');
+  const pErr = validatePassword(newTempPassword, tu.username);
+  if (pErr) throw new Error(pErr);
+  tu.hash = await hashPassword(newTempPassword);
+  tu.mustChangePassword = mustChange !== false;
+  tu.passwordChangedAt = new Date().toISOString();
+  saveUsers();
+  destroyUserSessions(t); // revoke existing sessions so user must sign in with the temp password
+  return publicUser(tu);
 }
 
 function deleteUser(target, actorUsername) {
@@ -267,7 +326,15 @@ function deleteUser(target, actorUsername) {
   return true;
 }
 
-function publicUser(u) { return { username: u.username, role: u.role, createdAt: u.createdAt }; }
+function publicUser(u) {
+  return {
+    username: u.username,
+    role: u.role,
+    createdAt: u.createdAt,
+    mustChangePassword: !!u.mustChangePassword,
+    passwordChangedAt: u.passwordChangedAt || null,
+  };
+}
 function listUsers() {
   return Object.values(users)
     .map(publicUser)
@@ -280,7 +347,16 @@ function createSession(user) {
   const now = Date.now();
   // `external` sessions are for OAuth (Google) users who have no local users.json
   // record — the session carries their identity + role directly.
-  sessions.set(token, { username: user.username, role: user.role, external: !!user.external, name: user.name || null, createdAt: now, expiresAt: now + SESSION_TTL_MS });
+  const isExternal = !!user.external;
+  sessions.set(token, {
+    username: user.username,
+    role: user.role,
+    external: isExternal,
+    mustChangePassword: !isExternal && !!user.mustChangePassword,
+    name: user.name || null,
+    createdAt: now,
+    expiresAt: now + SESSION_TTL_MS,
+  });
   // Cap concurrent sessions per user (bounds memory + limits stale-token blast radius): evict oldest.
   const mine = [];
   for (const [t, s] of sessions) if (s.username === user.username) mine.push([t, s.createdAt]);
@@ -300,7 +376,10 @@ function getSessionByToken(token) {
     const u = ownUser(s.username);
     if (!u) { sessions.delete(token); return null; } // local user was deleted
     s.role = u.role;                                 // reflect current role
-  } // OAuth sessions have no local record; trust the role captured at login
+    s.mustChangePassword = !!u.mustChangePassword;   // reflect forced password change flag
+  } else {
+    s.mustChangePassword = false;                    // never applies to Google OIDC sessions
+  }
   s.expiresAt = Date.now() + SESSION_TTL_MS;         // sliding expiry on activity
   return s;
 }
@@ -440,7 +519,7 @@ setInterval(() => {
 module.exports = {
   COOKIE_NAME, ADMIN_USERNAME, MIN_PASSWORD_LEN,
   // users
-  setupRequired, userExists, createUser, setupAdmin, authenticate, changePassword, deleteUser, listUsers,
+  setupRequired, userExists, createUser, setupAdmin, authenticate, changePassword, setMustChangePassword, adminResetPassword, deleteUser, listUsers,
   // sessions
   createSession, getSession, destroySession, destroyUserSessions,
   // cookies + middleware
