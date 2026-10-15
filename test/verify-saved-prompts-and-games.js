@@ -233,18 +233,35 @@ async function runTests() {
     'sanitizeForPygbag is idempotent regarding the preamble'
   );
 
-  // 3. Pygbag index.html Patching Verification (Full-Viewport + Same-Origin Isolation + No False Fix-It)
+  // 3. Pygbag index.html Patching Verification (Full-Viewport + #canvas3d Hidden + Same-Origin Isolation + No False Fix-It)
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ullm-patch-test-'));
   const idxPath = path.join(tmpDir, 'index.html');
   fs.writeFileSync(
     idxPath,
-    '<!doctype html><html><head><title>pygbag</title></head><body><canvas id="canvas"></canvas><div id="pyconsole"><div id="terminal"></div></div></body></html>',
+    '<!doctype html><html><head><title>pygbag</title></head><body><canvas class="emscripten" id="canvas"></canvas><canvas class="emscripten" id="canvas3d" hidden></canvas><iframe src="https://pygame-web.github.io/cdn/0.9.3/empty.html"></iframe><div id="pyconsole"><div id="terminal"></div></div></body></html>',
     'utf8'
   );
   patchIndexHtml(idxPath);
   const patchedHtml = fs.readFileSync(idxPath, 'utf8');
 
   assert.ok(patchedHtml.includes('id="ullm-game-css"'), 'Injects full-viewport canvas CSS');
+  assert.ok(
+    !patchedHtml.includes('canvas.emscripten,#canvas{'),
+    'Does not match canvas.emscripten (which unhides #canvas3d on top of #canvas and makes 2D games blank black)'
+  );
+  assert.ok(
+    patchedHtml.includes('#canvas{position:fixed!important;') &&
+    patchedHtml.includes('#canvas3d{display:none!important;'),
+    'Targets #canvas for full-viewport and explicitly hides #canvas3d'
+  );
+  assert.ok(
+    patchedHtml.includes('src="about:blank"') && !patchedHtml.includes('empty.html'),
+    'Rewrites cross-origin empty.html iframe src to about:blank to avoid COEP error'
+  );
+  assert.ok(
+    patchedHtml.includes('function focusCanvas()') && patchedHtml.includes('addEventListener("pointerdown",focusCanvas,true)'),
+    'Focuses #canvas on boot and pointerdown so keyboard input works immediately'
+  );
   assert.ok(
     patchedHtml.includes('#pyconsole,#dlg,#box,#terminal,#system,#transfer,#status,#infobox{display:none!important;'),
     'Permanently hides pygbag code/terminal overlays so screen never splits half-code/half-game'
@@ -264,6 +281,21 @@ async function runTests() {
   assert.ok(
     patchedHtml.includes('__ullm:"game-booted"'),
     'Posts game-booted to parent when canvas initializes'
+  );
+
+  // Verify idempotent in-place upgrade of legacy cached builds that had `canvas.emscripten,#canvas{`
+  const legacyHtml = patchedHtml.replace(
+    /#canvas\{position:fixed!important;[^}]+\}#canvas3d\{[^}]+\}/,
+    'canvas.emscripten,#canvas{position:fixed!important;display:block!important;background:#000!important;}'
+  );
+  assert.ok(legacyHtml.includes('canvas.emscripten,#canvas{'), 'Legacy fixture setup check');
+  fs.writeFileSync(idxPath, legacyHtml, 'utf8');
+  patchIndexHtml(idxPath);
+  const upgradedHtml = fs.readFileSync(idxPath, 'utf8');
+  assert.ok(
+    !upgradedHtml.includes('canvas.emscripten,#canvas{') &&
+    upgradedHtml.includes('#canvas3d{display:none!important;'),
+    'patchIndexHtml upgrades legacy cached index.html in place to hide #canvas3d'
   );
   fs.rmSync(tmpDir, { recursive: true, force: true });
 

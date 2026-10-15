@@ -154,6 +154,7 @@ async function buildWebGame(code) {
   const id = idFor(code);
   const webDir = webDirFor(id);
   if (isBuilt(webDir)) {
+    patchIndexHtml(path.join(webDir, 'index.html'));
     games.set(id, { dir: webDir, builtAt: Date.now() });
     return { id, cached: true };
   }
@@ -203,15 +204,28 @@ function patchIndexHtml(idxPath) {
       /https:\/\/pygame-web\.github\.io\/cdn\/[0-9.]+\/+browserfs\.min\.js/g,
       'https://cdn.jsdelivr.net/npm/browserfs@1.4.3/dist/browserfs.min.js',
     );
+    html = html.replace(
+      /https:\/\/pygame-web\.github\.io\/cdn\/[0-9.]+\/+empty\.html/g,
+      'about:blank',
+    );
     html = html.replace(/ume_block\s*:\s*1/g, 'ume_block : 0');
+
+    const gameCss = [
+      '<style id="ullm-game-css">',
+      'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:#000!important;}',
+      '#canvas{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;object-fit:contain!important;display:block!important;margin:auto!important;z-index:10!important;background:#000!important;outline:none!important;}',
+      '#canvas3d{display:none!important;visibility:hidden!important;width:0!important;height:0!important;pointer-events:none!important;z-index:-1!important;}',
+      '#pyconsole,#dlg,#box,#terminal,#system,#transfer,#status,#infobox{display:none!important;visibility:hidden!important;height:0!important;max-height:0!important;overflow:hidden!important;pointer-events:none!important;z-index:-1!important;}',
+      '</style>',
+    ].join('');
+
+    if (html.indexOf('<style id="ullm-game-css">') >= 0) {
+      html = html.replace(/<style id="ullm-game-css">[\s\S]*?<\/style>/, gameCss);
+    }
 
     if (html.indexOf('<script id="ullm-cdn-fix">') < 0) {
       const headPatch = [
-        '<style id="ullm-game-css">',
-        'html,body{margin:0!important;padding:0!important;width:100%!important;height:100%!important;overflow:hidden!important;background:#000!important;}',
-        'canvas.emscripten,#canvas{position:fixed!important;inset:0!important;width:100%!important;height:100%!important;object-fit:contain!important;display:block!important;margin:auto!important;z-index:10!important;background:#000!important;}',
-        '#pyconsole,#dlg,#box,#terminal,#system,#transfer,#status,#infobox{display:none!important;visibility:hidden!important;height:0!important;max-height:0!important;overflow:hidden!important;pointer-events:none!important;z-index:-1!important;}',
-        '</style>',
+        gameCss,
         '<script id="ullm-cdn-fix">(function(){',
         // Capture parent postMessage before shadowing window.parent/top
         'var rawParent=(window.parent&&window.parent!==window)?window.parent:null;',
@@ -249,39 +263,45 @@ function patchIndexHtml(idxPath) {
       html = html.replace(/<head>/i, '<head>' + headPatch);
     }
 
-    if (html.indexOf('<script id="ullm-diag">') < 0) {
-      const diag = [
-        '<script id="ullm-diag">(function(){',
-        'var seen={},booted=false;',
-        'function post(obj){if(typeof window.__ullmPost==="function")window.__ullmPost(obj);}',
-        'function markBooted(){if(booted)return;booted=true;post({__ullm:"game-booted"});}',
-        'function report(kind,text){text=String(text||"").slice(0,2000);var k=kind+"|"+text;',
-        'if(seen[k])return;seen[k]=1;',
-        'post({__ullm:"game-error",kind:kind,message:text});}',
-        'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0||s.indexOf("NotAllowedError")>=0||s.indexOf("AudioContext")>=0||s.indexOf("play()")>=0||s.indexOf("ResizeObserver")>=0||s.indexOf("Blocked by sandbox")>=0;}',
-        'window.addEventListener("error",function(e){if(booted)return;var src=(e&&e.filename)||"";var m=(e&&e.message)||String(e);',
-        'if(noise(src)||noise(m))return;if(/SyntaxError|ReferenceError|RangeError|WebAssembly|RuntimeError/i.test(m))report("js",m+(src?(" @ "+src):""));});',
-        'window.addEventListener("unhandledrejection",function(e){if(booted)return;var r=e&&e.reason;var m=(r&&r.message)||String(r||"");',
-        'if(noise(m))return;if(/WebAssembly|RuntimeError|BadGzipFile/i.test(m))report("js","Unhandled rejection: "+m);});',
-        'function scanPy(){',
-        'var c=document.getElementById("canvas");if(c&&c.width>1&&c.height>1)markBooted();',
-        'var pc=document.getElementById("pyconsole");if(!pc)return;',
-        'var t=pc.value||pc.textContent||"";',
-        'if(t.indexOf("___ULLM_GAME_BOOTED___")>=0)markBooted();',
-        'var f=t.lastIndexOf("___ULLM_FATAL_PYTHON_CRASH___");',
-        'if(f>=0){var sub=t.slice(f+"___ULLM_FATAL_PYTHON_CRASH___".length).trim();report("python",sub||"Unhandled Python exception in game.");return;}',
-        'if(!booted){var tb=t.lastIndexOf("Traceback (most recent call last)");',
-        'if(tb>=0&&/SyntaxError:|IndentationError:|ImportError:|ModuleNotFoundError:|NameError:/.test(t.slice(tb))){report("python",t.slice(tb));}}',
-        '}',
-        'setInterval(scanPy,1500);',
-        'setTimeout(function(){scanPy();if(!booted){var c=document.getElementById("canvas");if(!c||c.width<=1){',
-        'var pc=document.getElementById("pyconsole");var t=(pc&&(pc.value||pc.textContent))||"";var i=t.lastIndexOf("Traceback (most recent call last)");',
-        'if(i>=0)report("python",t.slice(i));',
-        'else report("nostart","The game never started: after 45 seconds its canvas had still not been initialised.");}}},45000);',
-        '})();</script>',
-      ].join('');
-      if (html.indexOf('</body>') >= 0) html = html.replace('</body>', diag + '\n</body>');
-      else html += diag;
+    const diag = [
+      '<script id="ullm-diag">(function(){',
+      'var seen={},booted=false;',
+      'function post(obj){if(typeof window.__ullmPost==="function")window.__ullmPost(obj);}',
+      'function focusCanvas(){try{var c=document.getElementById("canvas");if(c&&c.focus)c.focus();}catch(e){}}',
+      'window.addEventListener("pointerdown",focusCanvas,true);',
+      'function markBooted(){if(booted)return;booted=true;focusCanvas();post({__ullm:"game-booted"});}',
+      'function report(kind,text){text=String(text||"").slice(0,2000);var k=kind+"|"+text;',
+      'if(seen[k])return;seen[k]=1;',
+      'post({__ullm:"game-error",kind:kind,message:text});}',
+      'function noise(s){s=String(s||"");return s.indexOf("share-modal")>=0||s.indexOf("Could not establish connection")>=0||s.indexOf("Receiving end does not exist")>=0||s.indexOf("NotAllowedError")>=0||s.indexOf("AudioContext")>=0||s.indexOf("play()")>=0||s.indexOf("ResizeObserver")>=0||s.indexOf("Blocked by sandbox")>=0;}',
+      'window.addEventListener("error",function(e){if(booted)return;var src=(e&&e.filename)||"";var m=(e&&e.message)||String(e);',
+      'if(noise(src)||noise(m))return;if(/SyntaxError|ReferenceError|RangeError|WebAssembly|RuntimeError/i.test(m))report("js",m+(src?(" @ "+src):""));});',
+      'window.addEventListener("unhandledrejection",function(e){if(booted)return;var r=e&&e.reason;var m=(r&&r.message)||String(r||"");',
+      'if(noise(m))return;if(/WebAssembly|RuntimeError|BadGzipFile/i.test(m))report("js","Unhandled rejection: "+m);});',
+      'function scanPy(){',
+      'var c=document.getElementById("canvas");if(c&&c.width>1&&c.height>1)markBooted();',
+      'var pc=document.getElementById("pyconsole");if(!pc)return;',
+      'var t=pc.value||pc.textContent||"";',
+      'if(t.indexOf("___ULLM_GAME_BOOTED___")>=0)markBooted();',
+      'var f=t.lastIndexOf("___ULLM_FATAL_PYTHON_CRASH___");',
+      'if(f>=0){var sub=t.slice(f+"___ULLM_FATAL_PYTHON_CRASH___".length).trim();report("python",sub||"Unhandled Python exception in game.");return;}',
+      'if(!booted){var tb=t.lastIndexOf("Traceback (most recent call last)");',
+      'if(tb>=0&&/SyntaxError:|IndentationError:|ImportError:|ModuleNotFoundError:|NameError:/.test(t.slice(tb))){report("python",t.slice(tb));}}',
+      '}',
+      'setInterval(scanPy,1500);',
+      'setTimeout(function(){scanPy();if(!booted){var c=document.getElementById("canvas");if(!c||c.width<=1){',
+      'var pc=document.getElementById("pyconsole");var t=(pc&&(pc.value||pc.textContent))||"";var i=t.lastIndexOf("Traceback (most recent call last)");',
+      'if(i>=0)report("python",t.slice(i));',
+      'else report("nostart","The game never started: after 45 seconds its canvas had still not been initialised.");}}},45000);',
+      '})();</script>',
+    ].join('');
+
+    if (html.indexOf('<script id="ullm-diag">') >= 0) {
+      html = html.replace(/<script id="ullm-diag">[\s\S]*?<\/script>/, diag);
+    } else if (html.indexOf('</body>') >= 0) {
+      html = html.replace('</body>', diag + '\n</body>');
+    } else {
+      html += diag;
     }
     fs.writeFileSync(idxPath, html, 'utf8');
   } catch (e) { /* non-fatal: leave the file as-is */ }
@@ -325,6 +345,7 @@ function gameDir(id) {
   // survive a server restart: re-adopt a build that's still on disk
   const dir = webDirFor(id);
   if (isBuilt(dir)) {
+    patchIndexHtml(path.join(dir, 'index.html'));
     games.set(id, { dir, builtAt: Date.now() });
     pruneOldGames();
     return dir;
