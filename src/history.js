@@ -41,7 +41,15 @@ const norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
 function userKey(username) {
   return crypto.createHash('sha256').update(norm(username)).digest('hex').slice(0, 40);
 }
-function safeId(id) { return /^[a-z0-9-]{1,80}$/.test(String(id || '')) ? String(id) : null; }
+function safeId(id) { return /^[a-z0-9_-]{1,80}$/i.test(String(id || '')) ? String(id) : null; }
+function isImageRunMeta(m) {
+  if (!m || typeof m !== 'object') return false;
+  if (m.arena === 'image' || String(m.id || '').startsWith('img_')) return true;
+  if (Array.isArray(m.summary) && m.summary.some((s) => s && (s.hasImage !== undefined || s.imageOutputTokens !== undefined || s.imageVaultRef !== undefined))) {
+    return true;
+  }
+  return false;
+}
 function newId() { return `${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`; }
 
 // Paths for persistent snapshot on /data (GCS FUSE) and fast local SQLite in /tmp
@@ -745,6 +753,15 @@ function initSqlite() {
       const rows = stmts.all.all();
       for (const r of rows) {
         const m = rowToMeta(r);
+        if (isImageRunMeta(m)) {
+          const imgMeta = imageRecordToMeta({ ...m, arena: 'image' });
+          imageMetaById.set(r.id, imgMeta);
+          if (!archivedImageMetaById.has(r.id)) {
+            upsertArchivedImageRunInternal(imgMeta);
+            needsPersistFlush = true;
+          }
+          continue;
+        }
         metaById.set(r.id, m);
         if (!archivedMetaById.has(r.id)) {
           upsertArchivedRunInternal(m);
@@ -2146,6 +2163,7 @@ function listRuns(username) {
   ensureOwnerLoadedSync(key);
   const out = [];
   for (const m of metaById.values()) {
+    if (isImageRunMeta(m)) continue;
     if (m.userKey === key && (!m.user || norm(m.user) === u)) out.push(listItem(m));
   }
   out.sort((a, b) => b.at - a.at);
@@ -2157,6 +2175,7 @@ function listAllRuns() {
   maybePruneExpiredRuns();
   const all = [];
   for (const m of metaById.values()) {
+    if (isImageRunMeta(m)) continue;
     all.push(listItem(m));
   }
   all.sort((a, b) => b.at - a.at);

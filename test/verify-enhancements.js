@@ -373,8 +373,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.35', 'package.json must be at version 1.0.35');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.35</span>'), 'index.html must display v1.0.35 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.36', 'package.json must be at version 1.0.36');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.36</span>'), 'index.html must display v1.0.36 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;
@@ -492,7 +492,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   const sampleDataUrl = `data:image/jpeg;base64,${SAMPLE_REFERENCE_ASSETS.storybookFox.data}`;
   const savedImgRun = await historyMod.saveImageRun({
-    id: 'test-img-run-v1030',
+    id: 'img_1792000000_v1036',
     at: Date.now(),
     user: 'ubhi@google.com',
     userName: 'ubhi',
@@ -512,15 +512,19 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
       imageDataUrl: sampleDataUrl,
     }],
   });
-  assert(savedImgRun && savedImgRun.id === 'test-img-run-v1030', 'saveImageRun must persist image run metadata');
+  assert(savedImgRun && savedImgRun.id === 'img_1792000000_v1036', 'saveImageRun must preserve client-generated img_<ts>_<rand> IDs containing underscores');
   assert.strictEqual(savedImgRun.starred, false, 'New image run must default to starred: false');
+  assert(
+    !historyMod.listAllRuns().some((r) => r.id === 'img_1792000000_v1036' || r.arena === 'image'),
+    'listAllRuns() (Text Arena history) must never include Image Arena runs'
+  );
 
   // Star and unstar image run
-  const starredRes = historyMod.setImageRunStarred('test-img-run-v1030', true, { username: 'ubhi@google.com', isAdmin: true });
+  const starredRes = historyMod.setImageRunStarred('img_1792000000_v1036', true, { username: 'ubhi@google.com', isAdmin: true });
   assert(starredRes && starredRes.starred === true, 'setImageRunStarred(true) must mark image run as starred');
   const imgUsage = historyMod.imageUsageSummary();
   assert(imgUsage && imgUsage.totals && imgUsage.totals.totalRuns >= 1 && imgUsage.totals.totalStarredRuns >= 1 && Array.isArray(imgUsage.users), 'imageUsageSummary() must return user breakdown and totalStarredRuns');
-  const hydratedImgRun = historyMod.getImageRun('test-img-run-v1030', { username: 'ubhi@google.com', isAdmin: true });
+  const hydratedImgRun = historyMod.getImageRun('img_1792000000_v1036', { username: 'ubhi@google.com', isAdmin: true });
   assert(hydratedImgRun && hydratedImgRun.starred === true && hydratedImgRun.results[0] && hydratedImgRun.results[0].imageDataUrl === sampleDataUrl, 'getImageRun() must preserve starred: true and hydrate full-res image from binary vault');
 
   // Test 7-day auto-pruning: an 8-day-old unstarred run is pruned + its orphaned vault binary is garbage-collected, while an 8-day-old starred run is preserved!
@@ -572,7 +576,19 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   historyMod.deleteImageRun('test-img-expired-unstarred', { username: 'prune-test-user@google.com', isAdmin: true });
   historyMod.deleteImageRun('test-img-expired-starred', { username: 'prune-test-user@google.com', isAdmin: true });
-  historyMod.deleteImageRun('test-img-run-v1030', { username: 'ubhi@google.com', isAdmin: true });
+  historyMod.deleteImageRun('img_1792000000_v1036', { username: 'ubhi@google.com', isAdmin: true });
+
+  assert(
+    appJs.includes("$('#historyBtn').addEventListener('click', () => openHistoryModal({ arenaTab: 'text' }));") &&
+    appJs.includes("imgHistBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));") &&
+    !appJs.includes('class="hist-arena-tabs"'),
+    'Text Arena (#historyBtn) must open only Text history and Image Arena (#imgHistoryBtn) must open only Image history without cross-arena tabs'
+  );
+  assert(
+    appJs.includes('let _imgConfigPromise = null;') &&
+    appJs.includes('if (_imgConfigPromise) return _imgConfigPromise;'),
+    'ensureImageArenaLoaded() must deduplicate in-flight config fetches via _imgConfigPromise to prevent race conditions during restore'
+  );
 
   const histTitleRule = stylesCss.match(/\.hist-title\s*\{([^}]+)\}/);
   const histWhenRule = stylesCss.match(/\.hist-when\s*\{([^}]+)\}/);

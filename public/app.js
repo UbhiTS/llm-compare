@@ -653,7 +653,7 @@ async function init() {
     setMetricView(b.dataset.view);
     renderMetricGrid(_lastScored.scored, _lastScored.isCustom);
   }); }
-  $('#historyBtn').addEventListener('click', openHistoryModal);
+  $('#historyBtn').addEventListener('click', () => openHistoryModal({ arenaTab: 'text' }));
   updateQuotaBadge();
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeAuthModal(); } });
 }
@@ -4884,69 +4884,94 @@ async function openHistoryModal(opts = {}) {
   } else {
     historyArenaTab = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === 'image') ? 'image' : 'text';
   }
-  const body = openAuthModal('Run history', { wide: true });
+  const modalTitle = historyArenaTab === 'image'
+    ? '🎨 Image & GenMedia Run History'
+    : '⚡ Text, Code & Agent Run History';
+  const body = openAuthModal(modalTitle, { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
-    const [histResp, usage, srvImgResp, srvImgUsage, localImgRuns] = await Promise.all([
-      fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
-      isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
-      fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : { runs: [] })).catch(() => ({ runs: [] })),
-      isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
-      typeof listImageArenaRunsFromHistory === 'function' ? listImageArenaRunsFromHistory().catch(() => []) : Promise.resolve([]),
-      ensureImageArenaLoaded().catch(() => null), // image catalog, to hide runs from retired models
-    ]);
-    if (histResp.status === 401) { window.location.replace('/login'); return; }
-    const data = await histResp.json();
-    if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
-
-    let serverImgRuns = (srvImgResp && Array.isArray(srvImgResp.runs)) ? srvImgResp.runs : [];
-    let imgUsage = srvImgUsage || null;
-
-    // One-time sync of any local IndexedDB runs into the server so admin usage & cross-device history include them
-    const didSync = await syncLocalImageRunsToServer(localImgRuns, serverImgRuns);
-    if (didSync) {
-      const [refetchedHist, refetchedUsage] = await Promise.all([
-        fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : { runs: serverImgRuns })).catch(() => ({ runs: serverImgRuns })),
-        isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : imgUsage)).catch(() => imgUsage) : Promise.resolve(null),
+    if (historyArenaTab === 'image') {
+      const [srvImgResp, srvImgUsage, localImgRuns] = await Promise.all([
+        fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }),
+        isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+        typeof listImageArenaRunsFromHistory === 'function' ? listImageArenaRunsFromHistory().catch(() => []) : Promise.resolve([]),
+        ensureImageArenaLoaded().catch(() => null), // image catalog, to hide runs from retired models
       ]);
-      serverImgRuns = (refetchedHist && Array.isArray(refetchedHist.runs)) ? refetchedHist.runs : serverImgRuns;
-      if (refetchedUsage) imgUsage = refetchedUsage;
-    }
+      if (srvImgResp.status === 401) { window.location.replace('/login'); return; }
+      const srvImgData = await srvImgResp.json().catch(() => ({ runs: [] }));
+      if (!srvImgResp.ok) throw new Error(srvImgData.error || 'Failed to load image history.');
 
-    // Merge local IndexedDB thumbnails/data into server runs by id so any local run has instant thumbnail access
-    const byId = new Map();
-    for (const sr of serverImgRuns) {
-      if (sr && sr.id) byId.set(sr.id, { ...sr, starred: Boolean(sr.starred) });
-    }
-    for (const lr of (localImgRuns || [])) {
-      if (!lr || !lr.id) continue;
-      if (!byId.has(lr.id)) {
-        byId.set(lr.id, {
-          ...lr,
-          starred: Boolean(lr.starred),
-          user: lr.user || (ME && ME.username) || '',
-          userName: lr.userName || lr.user || (ME && ME.username) || '',
-          title: lr.title || lr.scenarioTitle || lr.prompt || 'Image Arena Comparison',
-          summary: lr.summary || lr.results || [],
-        });
-      } else {
-        const cur = byId.get(lr.id);
-        if (lr.starred && !cur.starred) cur.starred = true;
+      let serverImgRuns = (srvImgData && Array.isArray(srvImgData.runs)) ? srvImgData.runs : [];
+      let imgUsage = srvImgUsage || null;
+
+      // One-time sync of any local IndexedDB runs into the server so admin usage & cross-device history include them
+      const didSync = await syncLocalImageRunsToServer(localImgRuns, serverImgRuns);
+      if (didSync) {
+        const [refetchedHist, refetchedUsage] = await Promise.all([
+          fetch('/api/image-arena/history?scope=' + historyScope, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : { runs: serverImgRuns })).catch(() => ({ runs: serverImgRuns })),
+          isAdmin ? fetch('/api/image-arena/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : imgUsage)).catch(() => imgUsage) : Promise.resolve(null),
+        ]);
+        serverImgRuns = (refetchedHist && Array.isArray(refetchedHist.runs)) ? refetchedHist.runs : serverImgRuns;
+        if (refetchedUsage) imgUsage = refetchedUsage;
       }
-    }
-    const mergedImgRuns = Array.from(byId.values())
-      .filter(isVisibleImageRun)
-      .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
 
-    _histState = {
-      body,
-      runs: data.runs || [],
-      imgRuns: mergedImgRuns,
-      usage,
-      imgUsage,
-      isAdmin,
-      retentionDays: Number(data.retentionDays || (srvImgResp && srvImgResp.retentionDays)) || 7,
-    };
+      // Merge local IndexedDB thumbnails/data into server runs by id so any local run has instant thumbnail access
+      const byId = new Map();
+      for (const sr of serverImgRuns) {
+        if (sr && sr.id) byId.set(sr.id, { ...sr, starred: Boolean(sr.starred) });
+      }
+      for (const lr of (localImgRuns || [])) {
+        if (!lr || !lr.id) continue;
+        if (!byId.has(lr.id)) {
+          byId.set(lr.id, {
+            ...lr,
+            starred: Boolean(lr.starred),
+            user: lr.user || (ME && ME.username) || '',
+            userName: lr.userName || lr.user || (ME && ME.username) || '',
+            title: lr.title || lr.scenarioTitle || lr.prompt || 'Image Arena Comparison',
+            summary: lr.summary || lr.results || [],
+          });
+        } else {
+          const cur = byId.get(lr.id);
+          if (lr.starred && !cur.starred) cur.starred = true;
+        }
+      }
+      const mergedImgRuns = Array.from(byId.values())
+        .filter(isVisibleImageRun)
+        .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+
+      _histState = {
+        body,
+        runs: [],
+        imgRuns: mergedImgRuns,
+        usage: null,
+        imgUsage,
+        isAdmin,
+        retentionDays: Number(srvImgData && srvImgData.retentionDays) || 7,
+      };
+    } else {
+      const [histResp, usage] = await Promise.all([
+        fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
+        isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+      ]);
+      if (histResp.status === 401) { window.location.replace('/login'); return; }
+      const data = await histResp.json();
+      if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
+
+      const textRuns = (data.runs || []).filter(
+        (r) => !(r && (r.arena === 'image' || String(r.id || '').startsWith('img_')))
+      );
+
+      _histState = {
+        body,
+        runs: textRuns,
+        imgRuns: [],
+        usage,
+        imgUsage: null,
+        isAdmin,
+        retentionDays: Number(data.retentionDays) || 7,
+      };
+    }
     historyPage = 0; usersPage = 0; historyUserFilter = null; historyStarredOnly = false;   // fresh view on (re)open
     paintHistoryModal();
   } catch (e) {
@@ -5025,11 +5050,6 @@ function paintHistoryModal() {
   const { body, runs, imgRuns = [], usage, imgUsage, isAdmin } = _histState;
   if (!body) return;
 
-  const arenaTabsHtml = `<div class="hist-arena-tabs">
-    <button type="button" class="hist-arena-tab${historyArenaTab === 'text' ? ' active' : ''}" data-hist-tab="text">⚡ Text, Code &amp; Agent Runs (${fmtInt((runs || []).length)})</button>
-    <button type="button" class="hist-arena-tab${historyArenaTab === 'image' ? ' active' : ''}" data-hist-tab="image">🎨 Image &amp; GenMedia Runs (${fmtInt((imgRuns || []).length)})</button>
-  </div>`;
-
   if (historyArenaTab === 'image') {
     const usagePanel = (isAdmin && imgUsage) ? renderImageUsagePanel(imgUsage) : '';
     const activeName = historyUserFilter
@@ -5063,15 +5083,7 @@ function paintHistoryModal() {
               ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred Image &amp; GenMedia payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
               : '<p class="auth-loading">No Image &amp; GenMedia runs yet — click <b>Generate &amp; Compare Images ▸</b> in the Image Arena and your runs will automatically appear here for 1-click restore.</p>'));
     const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
-    body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${imgRows}</div>` + pager;
-    body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
-      historyArenaTab = btn.dataset.histTab || 'text';
-      historyPage = 0;
-      usersPage = 0;
-      historyUserFilter = null;
-      historyStarredOnly = false;
-      paintHistoryModal();
-    }));
+    body.innerHTML = usagePanel + filterChip + sortToolbar + `<div class="hist-list">${imgRows}</div>` + pager;
     body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
       const key = th.dataset.sort;
       const defDir = th.dataset.defaultDir || 'desc';
@@ -5163,15 +5175,7 @@ function paintHistoryModal() {
             ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred run payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
             : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>'));
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
-  body.innerHTML = arenaTabsHtml + usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
-  body.querySelectorAll('.hist-arena-tab').forEach((btn) => btn.addEventListener('click', () => {
-    historyArenaTab = btn.dataset.histTab || 'text';
-    historyPage = 0;
-    usersPage = 0;
-    historyUserFilter = null;
-    historyStarredOnly = false;
-    paintHistoryModal();
-  }));
+  body.innerHTML = usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
   // click a column header in the admin usage table → sort users by that column
   body.querySelectorAll('.usage-table th.sortable').forEach((th) => th.addEventListener('click', () => {
     const key = th.dataset.sort;
@@ -5404,6 +5408,9 @@ async function restoreHistory(id) {
     if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
     const snap = j.run;
     closeAuthModal();
+    if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== 'text') {
+      switchArenaMode('text');
+    }
     selectTaskById(snap.taskId);
     if (isCustomTaskId(snap.taskId) && snap.prompt && $('#customPrompt')) {
       $('#customPrompt').value = snap.prompt;
@@ -5780,29 +5787,36 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
   }
 }
 
+let _imgConfigPromise = null;
 async function ensureImageArenaLoaded() {
   if (IMG_CONFIG) return IMG_CONFIG;
-  try {
-    const resp = await fetch('/api/image-arena/config', { credentials: 'same-origin' });
-    if (resp.status === 401) return null;
-    const data = await resp.json();
-    if (!data || !data.ok) return null;
-    IMG_CONFIG = data;
-    if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
-      IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
+  if (_imgConfigPromise) return _imgConfigPromise;
+  _imgConfigPromise = (async () => {
+    try {
+      const resp = await fetch('/api/image-arena/config', { credentials: 'same-origin' });
+      if (resp.status === 401) return null;
+      const data = await resp.json();
+      if (!data || !data.ok) return null;
+      IMG_CONFIG = data;
+      if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
+        IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
+      }
+      renderImageSizeAndAspectPills();
+      renderImageSlotsConfigurator();
+      populateImagePacksAndScenarios();
+      renderImageArenaPlaceholderCards();
+      renderImageMetricComparison();
+      renderImageEconomicsModeler();
+      updateImageHistoryButton();
+      return IMG_CONFIG;
+    } catch (e) {
+      console.warn('[imageArena] failed to load config:', e);
+      return null;
+    } finally {
+      _imgConfigPromise = null;
     }
-    renderImageSizeAndAspectPills();
-    renderImageSlotsConfigurator();
-    populateImagePacksAndScenarios();
-    renderImageArenaPlaceholderCards();
-    renderImageMetricComparison();
-    renderImageEconomicsModeler();
-    updateImageHistoryButton();
-    return IMG_CONFIG;
-  } catch (e) {
-    console.warn('[imageArena] failed to load config:', e);
-    return null;
-  }
+  })();
+  return _imgConfigPromise;
 }
 
 function getImgCatalogItem(id) {
@@ -6888,24 +6902,45 @@ async function updateImageHistoryButton() {
 }
 
 async function restoreImageArenaRun(runId) {
+  await ensureImageArenaLoaded();
+  if (ACTIVE_ARENA_MODE !== 'image') {
+    switchArenaMode('image');
+  }
+
   const runs = await listImageArenaRunsFromHistory();
-  let rec = runs.find((r) => r && r.id === runId) || null;
+  const localRec = runs.find((r) => r && r.id === runId) || null;
+  let rec = localRec;
   const needsServerHydration = !rec
     || !Array.isArray(rec.results)
-    || rec.results.some((r) => r && !r.error && !r.imageDataUrl);
+    || rec.results.some((r) => r && !r.error && !r.imageDataUrl)
+    || (!Array.isArray(rec.attachments) || rec.attachments.some((a) => a && !a.data));
   if (needsServerHydration) {
     try {
       const resp = await fetch('/api/image-arena/history/' + encodeURIComponent(runId), { credentials: 'same-origin' });
       if (resp.ok) {
         const j = await resp.json();
         if (j && j.run) {
-          rec = {
-            ...j.run,
-            results: (j.run.results || j.run.summary || []).map((r) => ({
+          const srv = j.run;
+          const srvResults = (srv.results || srv.summary || []).map((r) => {
+            const locMatch = (localRec && Array.isArray(localRec.results))
+              ? localRec.results.find((lr) => lr && lr.slot === r.slot && lr.catalogId === r.catalogId)
+              : null;
+            return {
+              ...(locMatch || {}),
               ...r,
+              imageDataUrl: r.imageDataUrl || (locMatch && locMatch.imageDataUrl) || r.thumbDataUrl || '',
+              thumbDataUrl: r.thumbDataUrl || (locMatch && locMatch.thumbDataUrl) || '',
               ok: Boolean(r.ok != null ? r.ok : !r.error),
               standardPayGoCostUsd: r.standardPayGoCostUsd != null ? r.standardPayGoCostUsd : r.costUsd,
-            })),
+            };
+          });
+          rec = {
+            ...(localRec || {}),
+            ...srv,
+            attachments: (Array.isArray(srv.attachments) && srv.attachments.length)
+              ? srv.attachments
+              : ((localRec && Array.isArray(localRec.attachments)) ? localRec.attachments : []),
+            results: srvResults,
           };
         }
       }
@@ -6913,15 +6948,52 @@ async function restoreImageArenaRun(runId) {
   }
   if (!rec) return;
 
-  if (ACTIVE_ARENA_MODE !== 'image') {
-    switchArenaMode('image');
+  // Sync pack & scenario dropdowns + banner without calling applyImageScenario() (which resets state)
+  const packs = (IMG_CONFIG && Array.isArray(IMG_CONFIG.packs)) ? IMG_CONFIG.packs : [];
+  const packSel = $('#imgPackSelect');
+  const scSel = $('#imgScenarioSelect');
+  const badgeEl = $('#imgScenarioBadge');
+  const whyEl = $('#imgWhyBanner');
+  let matchedPack = (rec.packId && packs.find((p) => p.id === rec.packId)) || null;
+  let matchedScenario = null;
+  if (!matchedPack && rec.scenarioId) {
+    for (const p of packs) {
+      const found = (p.scenarios || []).find((s) => s.id === rec.scenarioId);
+      if (found) { matchedPack = p; matchedScenario = found; break; }
+    }
+  } else if (matchedPack && rec.scenarioId) {
+    matchedScenario = (matchedPack.scenarios || []).find((s) => s.id === rec.scenarioId) || null;
   }
-  await ensureImageArenaLoaded();
+  if (matchedPack && packSel) {
+    packSel.value = matchedPack.id;
+    if (scSel) {
+      scSel.innerHTML = '';
+      (matchedPack.scenarios || []).forEach((s) => {
+        const o = el('option');
+        o.value = s.id;
+        o.textContent = s.title;
+        scSel.appendChild(o);
+      });
+      if (matchedScenario) scSel.value = matchedScenario.id;
+    }
+  }
+  if (badgeEl) {
+    badgeEl.textContent = (matchedScenario && matchedScenario.badge)
+      || (matchedPack && matchedPack.badge)
+      || 'Restored Run';
+  }
+  if (whyEl) {
+    if (matchedScenario && matchedScenario.whyItMatters) {
+      whyEl.innerHTML = `<strong>Why this scenario matters:</strong> ${esc(matchedScenario.whyItMatters)}`;
+      whyEl.classList.remove('hidden');
+    } else {
+      whyEl.classList.add('hidden');
+    }
+  }
+  if (matchedScenario && Array.isArray(matchedScenario.attachments)) {
+    IMG_CURRENT_SCENARIO_REFS = matchedScenario.attachments.map((a) => ({ ...a }));
+  }
 
-  if (rec.packId) {
-    const packSel = $('#imgPackSelect');
-    if (packSel) packSel.value = rec.packId;
-  }
   if (rec.imageSize && ['1K', '2K', '4K'].includes(rec.imageSize)) {
     IMG_SELECTED_SIZE = rec.imageSize;
   }
@@ -6930,7 +7002,10 @@ async function restoreImageArenaRun(runId) {
   }
   // Skip slots from retired models and re-letter the rest so results still map to cards.
   let slotMap = null; // saved slot letter -> restored slot letter
-  const keptSlots = (Array.isArray(rec.slots) ? rec.slots : []).filter((s) => s && isCurrentImageModel(s.catalogId));
+  const rawSlots = (Array.isArray(rec.slots) && rec.slots.length)
+    ? rec.slots
+    : (Array.isArray(rec.results) ? rec.results.map((r, i) => ({ slot: r.slot || String.fromCharCode(65 + i), catalogId: r.catalogId })) : []);
+  const keptSlots = rawSlots.filter((s) => s && isCurrentImageModel(s.catalogId));
   if (keptSlots.length) {
     slotMap = {};
     IMG_SLOTS = keptSlots.map((s, i) => {
@@ -6940,10 +7015,12 @@ async function restoreImageArenaRun(runId) {
     });
   }
   const promptEl = $('#imgPromptInput');
-  if (promptEl && rec.prompt) promptEl.value = rec.prompt;
+  if (promptEl && rec.prompt != null) promptEl.value = rec.prompt;
 
   if (Array.isArray(rec.attachments)) {
     IMG_REF_ATTACHMENTS = rec.attachments.map((a) => ({ ...a }));
+  } else {
+    IMG_REF_ATTACHMENTS = [];
   }
 
   renderImageReferenceAttachments();
@@ -7005,6 +7082,10 @@ async function restoreImageArenaRun(runId) {
   const timerBadge = $('#imgStatusTimer');
   if (timerBadge) {
     timerBadge.textContent = `Restored ${IMG_LAST_RESULTS.length} models (${rec.imageSize || IMG_SELECTED_SIZE})`;
+  }
+  const gridEl = $('#imgArenaGrid');
+  if (gridEl && typeof gridEl.scrollIntoView === 'function') {
+    gridEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
 
