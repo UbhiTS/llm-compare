@@ -1965,7 +1965,7 @@ function addSlot() {
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5',
+    'gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
     'grok-4.20-reasoning', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
@@ -2014,7 +2014,7 @@ function builtinPresetSlots(presetName) {
       : 'grok-4.20-non-reasoning';
     target = [
       { id: 'gemini-3.8-flash',    effort: null },
-      { id: 'claude-sonnet-5',     effort: null },
+      { id: 'claude-sonnet-5-5',   effort: null },
       { id: fastThird,             effort: null },
     ];
   } else if (presetName === 'same-model-thinking') {
@@ -4488,7 +4488,7 @@ async function run() {
           `${m}\n\nReplace the OpenAI / external slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison now? It will count against your Vertex AI budget instead.`
         );
         if (switchToVertex) {
-          const vertexFallbacks = ['claude-opus-5-5', 'gemini-3.8-flash', 'claude-sonnet-5', 'gemini-3.1-pro', 'claude-haiku-4-5'];
+          const vertexFallbacks = ['claude-opus-5-5', 'gemini-3.8-flash', 'claude-sonnet-5-5', 'gemini-3.1-pro', 'claude-haiku-4-5'];
           const k = loadKeys();
           const usedIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]).filter(Boolean));
           MODELS.forEach((mod) => {

@@ -21,9 +21,11 @@
 //   • Gemini 3.5 Flash Lite — $0.30 in / $2.50 out  (Vertex, cheapest 3.5 option)
 //   • Gemini 3.1 Pro        — $2.00 in / $12.00 out (Vertex, ≤200K context)
 //   • Gemini 3.1 Flash Lite — $0.25 in / $1.50 out  (Vertex, 1M context)
-//   • Claude Opus 5.5       — $4.00 in / $20.00 out (Vertex Agent Platform; 1M context,
-//       also available as `claude-opus-5-5-fast` low-latency endpoint at $4.00 / $20.00)
-//   • Claude Sonnet 5.5     — $2.00 in / $10.00 out (Vertex Agent Platform; launched 2026-09-29)
+//   • Claude Opus 5.5       — $4.00 in / $20.00 out (Agent Platform GA 2026-09-23, also in the
+//       Gemini Enterprise app from 2026-10-15; 1M context / 128K output, adaptive thinking
+//       always on. Also `claude-opus-5-5-fast` low-latency endpoint at $4.00 / $20.00)
+//   • Claude Sonnet 5.5     — $2.00 in / $10.00 out (Agent Platform GA 2026-09-28, also in the
+//       Gemini Enterprise app from 2026-10-15; 1M context / 128K output)
 //   • Claude Haiku 5.5      — $0.10 in / $0.50 out  (Vertex Agent Platform; 200K context)
 //   • Claude Fable 5        — $10.00 in / $50.00 out (Anthropic list price; launched 2026-06-09)
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
