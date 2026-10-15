@@ -380,8 +380,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.45', 'package.json must be at version 1.0.45');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.45</span>'), 'index.html must display v1.0.45 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.46', 'package.json must be at version 1.0.46');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.46</span>'), 'index.html must display v1.0.46 in footer');
+  assert(indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.46</span>'), 'index.html must display v1.0.46 next to top-left title');
+  assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"'), 'index.html must display last updated date and time stamp in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;

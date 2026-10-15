@@ -113,10 +113,20 @@ body::before {
   box-shadow: 0 10px 28px -8px rgba(94,139,255,.6), inset 0 1px 0 rgba(255,255,255,.35);
 }
 h1, h2 { font-family: "Space Grotesk", Inter, sans-serif; letter-spacing: -.02em; margin: 0; }
+.wordmark-row { display: flex; align-items: baseline; gap: 8px; }
 .wordmark {
   font-size: 25px; font-weight: 700; line-height: 1.05;
   background: linear-gradient(100deg, #cfe0ff 0%, #5e8bff 30%, #b388ff 55%, #2fd9a6 100%);
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+}
+.head-version {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  opacity: 0.85;
+  letter-spacing: 0.02em;
+  line-height: 1;
 }
 .tagline { margin: 4px 0 0; color: var(--muted); font-size: 13px; letter-spacing: .01em; }
 
@@ -723,6 +733,7 @@ tr.champ td:first-child::after { content: "P1"; margin-left: 9px; font-size: 9.5
 
 .foot { max-width: var(--maxw); margin: 32px auto 0; color: var(--faint); font-size: 12.5px; text-align: center; }
 .foot-version { font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--muted); opacity: 0.85; margin-left: 3px; font-weight: 500; letter-spacing: 0.02em; }
+.foot-updated { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--muted); opacity: 0.88; font-weight: 500; letter-spacing: 0.01em; }
 .foot-credit[hidden] { display: none !important; }
 .foot-heart { color: #e25555; display: inline-block; vertical-align: -1px; }
 .foot-credit a { color: var(--muted); text-decoration: none; font-weight: 500; transition: color .15s ease; }

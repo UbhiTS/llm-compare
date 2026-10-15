@@ -509,6 +509,24 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     if (e && e.persisted) window.location.reload();
   });
 }
+function formatLastUpdatedStamp(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return String(isoStr);
+  try {
+    return 'Last updated ' + d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+    });
+  } catch (_) {
+    return 'Last updated ' + d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  }
+}
+
 init();
 async function init() {
   initTheme();
@@ -519,6 +537,7 @@ async function init() {
   CONFIG = await cfgResp.json();
   if (CONFIG && CONFIG.version) {
     const vEl = $('#appVersion');
+    const hvEl = $('#headerAppVersion');
     const htmlVer = vEl ? String(vEl.textContent || '').trim().replace(/^v/i, '') : '';
     const srvVer = String(CONFIG.version).replace(/^v/i, '');
     if (htmlVer && srvVer && htmlVer !== srvVer) {
@@ -532,6 +551,16 @@ async function init() {
       } catch (_) {}
     }
     if (vEl) vEl.textContent = 'v' + srvVer;
+    if (hvEl) hvEl.textContent = 'v' + srvVer;
+  }
+  {
+    const luEl = $('#appLastUpdated');
+    const iso = (CONFIG && CONFIG.lastUpdated) || (luEl && luEl.dataset && luEl.dataset.iso) || '';
+    if (luEl && iso) {
+      luEl.dataset.iso = iso;
+      luEl.textContent = formatLastUpdatedStamp(iso);
+      luEl.title = 'Release timestamp: ' + iso;
+    }
   }
   myQuota = CONFIG.me && CONFIG.me.quota;             // seed the daily-runs counters
   mySingleQuota = CONFIG.me && CONFIG.me.singleQuota;

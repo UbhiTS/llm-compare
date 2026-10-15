@@ -25,6 +25,14 @@ const zlib = require('zlib');
 const crypto = require('crypto');
 const express = require('express');
 const pkg = require('./package.json');
+const LAST_UPDATED_ISO = (() => {
+  if (pkg.lastUpdated) return String(pkg.lastUpdated);
+  try {
+    return fs.statSync(path.join(__dirname, 'package.json')).mtime.toISOString();
+  } catch (_) {
+    return new Date().toISOString();
+  }
+})();
 
 const { runComparison } = require('./src/orchestrator');
 const { thinkingProfile, thinkingOptions } = require('./src/providers');
@@ -728,6 +736,7 @@ app.get('/api/config', (req, res) => {
   const prefs = history.getUserPreferences(req.user.username);
   res.json({
     version: pkg.version,
+    lastUpdated: LAST_UPDATED_ISO,
     models: DEFAULT_MODELS,
     catalog: CATALOG_CONFIG,
     tasks: TASKS.map((t) => ({

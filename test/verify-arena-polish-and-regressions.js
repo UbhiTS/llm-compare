@@ -32,8 +32,12 @@ const { TASKS } = require('../src/tasks');
   const webGameJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'webGame.js'), 'utf8');
 
   // ---------------------------------------------------------------------------
-  // 1. Text vs Image Arena UI Parity & Removal of Numbers
+  // 1. Text vs Image Arena UI Parity & Removal of Numbers + Header/Footer Version & Timestamp
   // ---------------------------------------------------------------------------
+  assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.46</span>'), 'index.html must render #headerAppVersion next to LLM Compare title on top-left');
+  assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"') && indexHtml.includes('Last updated '), 'index.html footer must render #appLastUpdated with "Last updated" timestamp');
+  assert(serverJs.includes('lastUpdated: LAST_UPDATED_ISO'), 'server.js /api/config must expose lastUpdated timestamp');
+  assert(appJs.includes('function formatLastUpdatedStamp(isoStr)'), 'app.js must format lastUpdated timestamp');
   assert(!indexHtml.includes('+ Add model (3/6)'), 'index.html #addSlotBtn must not show (3/6) count');
   assert(!indexHtml.includes('+ Add model (2/4)'), 'index.html #imgAddSlotBtn must not show (2/4) count');
   assert(indexHtml.includes('id="addSlotBtn"') && indexHtml.includes('>+ Add model</button>'), 'index.html #addSlotBtn must say "+ Add model"');
