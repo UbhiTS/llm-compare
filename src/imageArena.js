@@ -764,7 +764,7 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'lowres-to-4k-upscale',
-        title: '1. Low-Res Thumbnail → 4K Print Upscaling (100% Exact Framing & Details)',
+        title: 'Low-Res Thumbnail → 4K Print Upscaling (100% Exact Framing & Details)',
         badge: '160×120 Input → Native 4K (4:3 Exact Match)',
         recommendedSize: '4K',
         recommendedAspectRatio: '4:3',
@@ -774,7 +774,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'aspect-ratio-resampling',
-        title: '2. Aspect-Ratio Resampling & Generative Outpainting (1:1 Square → 16:9 Panoramic Spread)',
+        title: 'Aspect-Ratio Resampling & Generative Outpainting (1:1 Square → 16:9 Panoramic Spread)',
         badge: '1:1 Input → 16:9 Panoramic Outpaint',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -784,7 +784,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'dpi-canvas-resampling',
-        title: '3. 300-DPI Large-Format Canvas & Metal Print Texture Resampling (4K)',
+        title: '300-DPI Large-Format Canvas & Metal Print Texture Resampling (4K)',
         badge: 'Native 4K · 5504×3072 (16.9 MP)',
         recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
@@ -794,7 +794,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'portrait-color-science-4k-upscale',
-        title: '4. Low-Res Portrait → 4K Skin-Tone, Iris & Fabric Super-Resolution',
+        title: 'Low-Res Portrait → 4K Skin-Tone, Iris & Fabric Super-Resolution',
         badge: '180×180 Input → Native 4K Portrait',
         recommendedSize: '4K',
         recommendedAspectRatio: '1:1',
@@ -811,7 +811,7 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'smart-erase-conversational',
-        title: '1. Smart Erase — Photobomber, Trash Bin & Power-Line Removal (Mask-Free)',
+        title: 'Smart Erase — Photobomber, Trash Bin & Power-Line Removal (Mask-Free)',
         badge: '1-Click Built-In Reference Photo',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -821,7 +821,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'vintage-photo-restoration',
-        title: '2. Vintage Heirloom Restoration — Crease, Scratch, Dust & Sepia Repair',
+        title: 'Vintage Heirloom Restoration — Crease, Scratch, Dust & Sepia Repair',
         badge: 'Crease & Dust Repair + Colorization',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
@@ -831,7 +831,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'glare-shadow-cleanup',
-        title: '3. Eyeglass Flash Glare, Harsh Shadow & Indoor Color-Cast Cleaning',
+        title: 'Eyeglass Flash Glare, Harsh Shadow & Indoor Color-Cast Cleaning',
         badge: 'Glare Removal & White-Balance Cleanup',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
@@ -841,7 +841,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'cluttered-desk-cleanup',
-        title: '4. Background Clutter Cleaning & Studio Tabletop Isolation',
+        title: 'Background Clutter Cleaning & Studio Tabletop Isolation',
         badge: 'Object Isolation & Mess Removal',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -858,7 +858,7 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'pattern-colorway-recoloring',
-        title: '1. Surface Pattern & Wallpaper Colorway Recoloring (Navy/Gold → Terracotta & Sage)',
+        title: 'Surface Pattern & Wallpaper Colorway Recoloring (Navy/Gold → Terracotta & Sage)',
         badge: 'Textile & Wallpaper Colorway Studio',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
@@ -868,7 +868,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'sku-colorway-swap',
-        title: '2. Home Goods & Apparel SKU Colorway Swap (Crimson Red → Forest Emerald & Gold)',
+        title: 'Home Goods & Apparel SKU Colorway Swap (Crimson Red → Forest Emerald & Gold)',
         badge: 'Zero-Reshoot SKU Recoloring',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -878,7 +878,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'seasonal-relighting',
-        title: '3. Seasonal & Time-of-Day Recoloring (Summer Midday → Autumn Golden Hour)',
+        title: 'Seasonal & Time-of-Day Recoloring (Summer Midday → Autumn Golden Hour)',
         badge: 'Palette & Lighting Transformation',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -888,7 +888,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'winter-wonderland-bg-swap',
-        title: '4. Background Replacement — Winter Wonderland (100% Pixel-Locked People, Pets & Clothes)',
+        title: 'Background Replacement — Winter Wonderland (100% Pixel-Locked People, Pets & Clothes)',
         badge: 'Pixel-Locked Foreground Mask',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
@@ -905,7 +905,7 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'holiday-card-typography',
-        title: '1. Holiday Card Template Year Modernization ("2025" → "2026") & Multilingual Typography',
+        title: 'Holiday Card Template Year Modernization ("2025" → "2026") & Multilingual Typography',
         badge: '2025 Template Input → 2026 Refresh',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
@@ -915,7 +915,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'print-4k-upscale',
-        title: '2. 4K (16.9 MP) Fine-Art Wall Canvas Creation',
+        title: '4K (16.9 MP) Fine-Art Wall Canvas Creation',
         badge: 'Native 4K · 5504×3072 (16.9 MP)',
         recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
@@ -925,7 +925,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'multi-image-storybook',
-        title: '3. Multi-Image Character & Style Consistency (3 Built-In Reference Inputs)',
+        title: 'Multi-Image Character & Style Consistency (3 Built-In Reference Inputs)',
         badge: '3 Built-In Reference Images Loaded',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -935,7 +935,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'wedding-invitation-suite',
-        title: '4. Bespoke Wedding Invitation Suite with Gold-Foil & Letterpress Typography',
+        title: 'Bespoke Wedding Invitation Suite with Gold-Foil & Letterpress Typography',
         badge: 'Stationery & Letterpress Creation',
         recommendedSize: '2K',
         recommendedAspectRatio: '3:4',
@@ -945,7 +945,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'persistent-custom-stickers',
-        title: '5. Persistent Custom Stickers & Die-Cut Scrapbook Embellishments (From Character Reference)',
+        title: 'Persistent Custom Stickers & Die-Cut Scrapbook Embellishments (From Character Reference)',
         badge: 'Character-Locked Sticker Sheet',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
@@ -962,7 +962,7 @@ const IMAGE_USE_CASE_PACKS = [
     scenarios: [
       {
         id: 'retail-lifestyle-staging',
-        title: '1. Virtual Lifestyle Staging & Promotional Badge Creation',
+        title: 'Virtual Lifestyle Staging & Promotional Badge Creation',
         badge: 'Product Input → Lifestyle Staging',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -972,7 +972,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'retail-packaging-mockup',
-        title: '2. 4K Botanical Serum Packaging & Micro-Typography Proofing',
+        title: '4K Botanical Serum Packaging & Micro-Typography Proofing',
         badge: '4K Label Proofing',
         recommendedSize: '4K',
         recommendedAspectRatio: '1:1',
@@ -982,7 +982,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'media-key-art',
-        title: '3. Cinematic Key Art Poster with Multi-Line Title Credits',
+        title: 'Cinematic Key Art Poster with Multi-Line Title Credits',
         badge: 'Key Art & Credits',
         recommendedSize: '2K',
         recommendedAspectRatio: '3:4',
@@ -992,7 +992,7 @@ const IMAGE_USE_CASE_PACKS = [
       },
       {
         id: 'personalized-plaque-lifestyle',
-        title: '4. Personalized Desktop Plaque & Home-Decor Lifestyle Staging (Multi-Cohort Campaign)',
+        title: 'Personalized Desktop Plaque & Home-Decor Lifestyle Staging (Multi-Cohort Campaign)',
         badge: 'Home Decor & Gift Staging',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
@@ -1004,7 +1004,7 @@ const IMAGE_USE_CASE_PACKS = [
   },
   {
     id: 'custom-image-prompt',
-    title: '✏️ Custom Prompt & Reference Image Upload (Up to 13 Images)',
+    title: '✏️ Custom Prompt & Reference Image Upload',
     badge: 'Freeform Studio',
     scenarios: [
       {

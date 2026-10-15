@@ -1877,7 +1877,8 @@ a.ud-item[hidden] { display: none; }
 }
 
 .mc-preset-btn.is-active,
-.mc-user-preset-btn.is-active {
+.mc-user-preset-btn.is-active,
+.img-preset-btn.is-active {
   color: var(--text);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 16%, var(--well));

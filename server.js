@@ -738,7 +738,7 @@ app.get('/api/config', (req, res) => {
       testCount: t.testCases.length,
       category: t.category || (t.testCases.length ? 'coding' : 'general'),
       language: t.language || null,
-      executable: !!t.executable && (codeExecOn || (!!t.gui && webGameOn)),
+      executable: Boolean(t.executable || t.visualizer) && (codeExecOn || (!!t.gui && webGameOn)),
       visualizer: t.visualizer || null,
       gui: !!t.gui,
     })),
@@ -960,7 +960,7 @@ app.post('/api/history/:id/star', (req, res) => {
 
 // Admin at-a-glance usage: who's active, runs today, totals.
 app.get('/api/usage', requireAdmin, (req, res) => {
-  res.json(history.usageSummary());
+  res.json(history.usageSummary({ registeredUsers: auth.listUsers() }));
 });
 
 // Admin 90-day security & compliance audit trail (input prompts + input attachments).
@@ -1020,7 +1020,7 @@ app.get('/api/image-arena/history', (req, res) => {
 });
 
 app.get('/api/image-arena/usage', requireAdmin, (_req, res) => {
-  res.json(history.imageUsageSummary());
+  res.json(history.imageUsageSummary({ registeredUsers: auth.listUsers() }));
 });
 
 app.post('/api/image-arena/history', async (req, res) => {
@@ -1228,7 +1228,20 @@ app.post('/api/image-arena/reserve', (req, res) => {
 });
 
 app.post('/api/image-arena/run', async (req, res) => {
-  const { slots, prompt, aspectRatio, imageSize, attachments, keys: rawKeys, ticket: ticketId } = req.body || {};
+  const {
+    slots,
+    allSlots,
+    runId: clientRunId,
+    packId,
+    scenarioId,
+    scenarioTitle,
+    prompt,
+    aspectRatio,
+    imageSize,
+    attachments,
+    keys: rawKeys,
+    ticket: ticketId,
+  } = req.body || {};
   const keys = sanitizeImageKeys(rawKeys);
   const resolvedSlotEntries = resolveImageSlotEntries(slots);
   // Per-run charging: a slot that presents its run's ticket was already paid for at reserve...
@@ -1247,6 +1260,7 @@ app.post('/api/image-arena/run', async (req, res) => {
   const isExt = auth.isExternalAccount(req.user);
   const auditUser = { username: req.user.username, isExternal: isExt };
   const runId = history.newId();
+  const sharedRunId = history.safeId(clientRunId) || (ticket && ticket.id ? `img_tkt_${ticket.id}` : runId);
   await history.recordPreExecutionAudit({
     id: runId,
     user: req.user.username,
@@ -1255,8 +1269,8 @@ app.post('/api/image-arena/run', async (req, res) => {
     ip: isExt ? req.ip : null,
     userAgent: isExt ? req.headers['user-agent'] : null,
     arena: 'image',
-    taskId: 'image-arena',
-    title: 'Image Arena Run',
+    taskId: scenarioId || packId || 'image-arena',
+    title: scenarioTitle || 'Image Arena Run',
     prompt: String(prompt || ''),
     models: resolvedSlotEntries.map((s) => ({ slot: s.slot, id: s.id, label: s.label, provider: s.provider })),
     attachments: Array.isArray(attachments) ? attachments : [],
@@ -1294,7 +1308,7 @@ app.post('/api/image-arena/run', async (req, res) => {
     for (const r of (out && out.results) || []) {
       if (r && r.ok) spendLedger.recordModelCost({ provider: r.provider, publisher: r.publisher }, keys, r.standardPayGoCostUsd);
     }
-    out.runId = runId;
+    out.runId = sharedRunId;
     out.vertexQuota = auth.vertexRunQuota(req.user);
     out.quotas = auth.quotaSnapshot(req.user);
     history.finalizeAuditRun(runId, { status: 'completed' }).catch(() => {});
@@ -1325,6 +1339,39 @@ app.post('/api/image-arena/run', async (req, res) => {
             });
             if (tPtr && (tPtr.vaultRef || tPtr.sha256)) r.thoughtVaultRef = tPtr.vaultRef || tPtr.sha256;
           }
+        });
+      }
+      // Server-authoritative history persistence: immediately record/merge every completed
+      // Image Arena slot into SQLite + disk history under `sharedRunId` so runs from any user
+      // (including external users or tabs closed before all slots finish) are immediately visible
+      // in History and Admin Usage without depending solely on a follow-up client POST.
+      if (uName && out && Array.isArray(out.results) && out.results.some((r) => r && r.ok)) {
+        const allResolvedSlots = Array.isArray(allSlots) && allSlots.length
+          ? resolveImageSlotEntries(allSlots)
+          : resolvedSlotEntries;
+        await history.saveImageRun({
+          id: sharedRunId,
+          mergeSlots: true,
+          user: uName,
+          userName: (req.user && req.user.name) || uName,
+          packId: packId || 'custom',
+          scenarioId: scenarioId || 'custom',
+          title: scenarioTitle || String(prompt || '').slice(0, 72) || 'Image Arena Run',
+          prompt: String(prompt || ''),
+          imageSize: imageSize || '2K',
+          aspectRatio: aspectRatio || '16:9',
+          slots: allResolvedSlots.map((s) => ({
+            slot: s.slot,
+            catalogId: s.id || s.catalogId,
+            label: s.label,
+          })),
+          results: out.results.map((r) => ({
+            ...r,
+            costUsd: r.costUsd != null ? r.costUsd : r.standardPayGoCostUsd,
+            imageDataUrl: null, // already stored in vault via r.imageVaultRef above
+            thoughtImageDataUrl: null,
+          })),
+          attachments: Array.isArray(attachments) ? attachments : [],
         });
       }
     } catch (_) {}

@@ -134,7 +134,7 @@ function updateCategoryCustomOptionCount() {
   const opt = cs.querySelector('option[value="custom"]');
   if (!opt) return;
   opt.textContent = SAVED_PROMPTS.length > 0
-    ? `✏️ Custom & Saved Prompts (${SAVED_PROMPTS.length})`
+    ? '✏️ Custom & Saved Prompts'
     : '✏️ Custom Prompt';
 }
 
@@ -558,7 +558,7 @@ async function init() {
       if (cat === 'custom') {
         const o = el('option');
         o.value = 'custom';
-        o.textContent = SAVED_PROMPTS.length > 0 ? `✏️ Custom & Saved Prompts (${SAVED_PROMPTS.length})` : label;
+        o.textContent = SAVED_PROMPTS.length > 0 ? '✏️ Custom & Saved Prompts' : label;
         cs.appendChild(o);
         return;
       }
@@ -566,7 +566,7 @@ async function init() {
       if (!inCat.length) return;
       const o = el('option');
       o.value = cat;
-      o.textContent = `${label} (${inCat.length})`;
+      o.textContent = label;
       cs.appendChild(o);
     });
   }
@@ -1827,19 +1827,20 @@ function saveUserPreferencesImmediate() {
   } catch (_) {}
 }
 
+// Map retired / zero-quota / 404 model IDs to verified active catalog models,
+// while never overwriting valid saved models (such as gemini-3.7-flash or claude-opus-4-7).
+const RETIRED_MODEL_MAP = {
+  'claude-opus-5-5-fast': 'claude-opus-5-5', // not enabled in the project's Model Garden (404, 2026-10-15)
+  'claude-fable-5-1': 'claude-sonnet-5',
+  'claude-fable-5': 'claude-sonnet-5',
+  'claude-mythos-5': 'claude-opus-5-5',
+  'claude-opus-4-5': 'claude-opus-4-7',
+  'claude-sonnet-4-5': 'claude-sonnet-4-6',
+  'grok-4.6': 'grok-4.20-reasoning',
+  'gpt-6-terra': 'gpt-5.6-terra',
+};
+
 function seedSlots() {
-  // Map retired / zero-quota / 404 model IDs to verified active catalog models,
-  // while never overwriting valid saved models (such as gemini-3.7-flash or claude-opus-4-7).
-  const RETIRED_MODEL_MAP = {
-    'claude-opus-5-5-fast': 'claude-opus-5-5', // not enabled in the project's Model Garden (404, 2026-10-15)
-    'claude-fable-5-1': 'claude-sonnet-5',
-    'claude-fable-5': 'claude-sonnet-5',
-    'claude-mythos-5': 'claude-opus-5-5',
-    'claude-opus-4-5': 'claude-opus-4-7',
-    'claude-sonnet-4-5': 'claude-sonnet-4-6',
-    'grok-4.6': 'grok-4.20-reasoning',
-    'gpt-6-terra': 'gpt-5.6-terra',
-  };
 
   const me = CONFIG && CONFIG.me;
   const userSlots = (me && me.preferences && me.preferences.slots)
@@ -3358,7 +3359,7 @@ function providerBadgeHtml(c) {
 // (Model selection happens in Step 2 above, keeping Arena output cards uncluttered)
 function buildInlineCardCascader(m, isRestore) {
   const slot = m.slot;
-  const cid = SLOT_ASSIGN[slot] || m.catalogId || m.id;
+  const cid = isRestore ? (m.catalogId || m.id || SLOT_ASSIGN[slot]) : (SLOT_ASSIGN[slot] || m.catalogId || m.id);
   const c = catalog().find((x) => x.id === cid) || m;
   const ctxVal = (m && m.context) || (c && c.context) || 128000;
   const ctxStr = ctxVal >= 1000000 ? `${(ctxVal / 1000000).toFixed(0)}M ctx` : `${Math.round(ctxVal / 1000)}K ctx`;
@@ -3444,7 +3445,7 @@ function renderModelEditors() {
   const addBtn = $('#addSlotBtn');
   if (addBtn) {
     addBtn.disabled = SLOT_IDS.length >= MAX_SLOTS;
-    addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? `Max ${MAX_SLOTS} models` : `+ Add model (${SLOT_IDS.length}/${MAX_SLOTS})`;
+    addBtn.textContent = SLOT_IDS.length >= MAX_SLOTS ? `Max ${MAX_SLOTS} models` : '+ Add model';
   }
 
   const grid = $('#slotConfiguratorGrid');
@@ -3929,7 +3930,10 @@ async function execSlotCode(slot) {
   const tryHanoiViz = (rawStdout, footText) => {
     if (task.visualizer === 'hanoi' && viz) {
       let moves = parseHanoiMoves(rawStdout || '');
-      if (!moves.length) moves = parseHanoiMoves(code);
+      if (!moves.length && code && !code.includes('def ') && !code.includes('import ')) {
+        const fromCode = parseHanoiMoves(code);
+        if (fromCode.length >= 7) moves = fromCode;
+      }
       if (!moves.length) {
         const nMatch = code.match(/hanoi\s*\(\s*(\d+)/i) || code.match(/n\s*=\s*(\d+)/i);
         const disks = nMatch ? Math.min(8, Math.max(3, parseInt(nMatch[1], 10))) : 8;
@@ -4050,12 +4054,14 @@ function formatTestResult(r) {
 function parseHanoiMoves(stdout) {
   const moves = [];
   (stdout || '').split(/\r?\n/).forEach((line) => {
-    const m = /(?:move\s+)?disk\s+(\d+)(?:\s*:|\s+from)?\s+(?:peg\s+)?([A-Za-z0-9]+)\s+(?:to|->)\s+(?:peg\s+)?([A-Za-z0-9]+)/i.exec(line);
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return;
+    const m = /(?:move\s+)?disk\s+(\d+)(?:\s*:|\s+from)?\s+(?:peg\s+)?([A-Za-z0-9]+)\s+(?:to|->)\s+(?:peg\s+)?([A-Za-z0-9]+)/i.exec(trimmed);
     if (m) {
       moves.push({ disk: +m[1], from: m[2].trim(), to: m[3].trim() });
       return;
     }
-    const m2 = /move\s+disk\s+(\d+)\s+from\s+([A-Za-z0-9]+)\s+to\s+([A-Za-z0-9]+)/i.exec(line);
+    const m2 = /move\s+disk\s+(\d+)\s+from\s+([A-Za-z0-9]+)\s+to\s+([A-Za-z0-9]+)/i.exec(trimmed);
     if (m2) moves.push({ disk: +m2[1], from: m2[2].trim(), to: m2[3].trim() });
   });
   return moves;
@@ -5454,8 +5460,8 @@ function imgHistRowHtml(r) {
   const isStarred = Boolean(r && r.starred);
   const rawList = (Array.isArray(r.summary) && r.summary.length) ? r.summary : (Array.isArray(r.results) ? r.results : []);
   const slotList = rawList.filter((x) => x && isCurrentImageModel(x.catalogId));
-  const thumbs = slotList.filter((x) => !x.error && (x.thumbDataUrl || x.imageDataUrl)).slice(0, 4).map((x) => {
-    const src = x.thumbDataUrl || x.imageDataUrl || '';
+  const thumbs = slotList.filter((x) => !x.error && (x.thumbDataUrl || x.imageDataUrl || x.imageVaultRef)).slice(0, 4).map((x) => {
+    const src = x.thumbDataUrl || x.imageDataUrl || (x.imageVaultRef ? '/api/me/vault/' + encodeURIComponent(x.imageVaultRef) : '');
     if (!src) return '';
     return `<img src="${src}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:4px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : (x.imageSize || r.imageSize || '2K'))})"/>`;
   }).join('');
@@ -5882,12 +5888,55 @@ async function deleteHistoryRun(id) {
 
 // Wipe the current run from the UI → clean slate: clears results, scorecard, this
 // task's saved snapshot and any in-flight wall timer, then rebuilds empty columns.
-// Repaint the arena + scorecard from a saved snapshot (used by History → Restore).
+// Repaint the arena + scorecard + Step 2 model selectors from a saved snapshot (used by History → Restore).
 function renderSavedRun(snap) {
   _lastRunId = snap.id || null;
   _currentRunId = snap.id || null;
   _judgeScored = snap.judge || null;
   { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
+
+  // Sync Step 2 model selectors (`SLOT_IDS`, `SLOT_ASSIGN`, `SLOT_EFFORT`, `MODELS`)
+  // so restoring a historical run also restores the same models into Step 2.
+  if (Array.isArray(snap.models) && snap.models.length > 0) {
+    const cat = catalog();
+    const newSlotIds = [];
+    const newAssign = {};
+    const newEffort = {};
+    snap.models.slice(0, MAX_SLOTS).forEach((m, i) => {
+      const slot = (m && m.slot) ? String(m.slot) : String.fromCharCode(65 + i);
+      const rawId = (m && (m.catalogId || m.id)) || '';
+      const mappedId = RETIRED_MODEL_MAP[rawId] || rawId;
+      let catEntry = cat.find((x) => x.id === mappedId)
+        || (m && m.model ? cat.find((x) => x.model === m.model && x.provider === m.provider) : null)
+        || (m && m.label ? cat.find((x) => x.label === m.label) : null);
+      const cid = catEntry ? catEntry.id : (mappedId || (cat[0] && cat[0].id) || 'gemini-3.8-flash');
+      newSlotIds.push(slot);
+      newAssign[slot] = cid;
+      let eff = (m && m.effortOverride) || null;
+      if (!eff && m && m.thinking && m.thinking.value && catEntry && catEntry.thinkingOptions) {
+        const opts = catEntry.thinkingOptions.options || [];
+        const defVal = catEntry.thinkingOptions.defaultValue;
+        const valStr = String(m.thinking.value);
+        if (opts.some((o) => String(o.value) === valStr) && valStr !== String(defVal)) {
+          eff = valStr;
+        }
+      }
+      newEffort[slot] = eff;
+    });
+    SLOT_IDS = newSlotIds;
+    ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
+    newSlotIds.forEach((s) => {
+      SLOT_ASSIGN[s] = newAssign[s] || null;
+      SLOT_EFFORT[s] = newEffort[s] || null;
+    });
+    syncModelsFromSlots();
+    renderModelEditors();
+    updateQuotaBadge();
+    updateRunButton();
+    renderContextMeter();
+    saveUserPreferencesDebounced();
+  }
+
   buildArena(snap.models);
   const resultsMap = {};
   snap.slots.forEach(({ slot, data }) => {
@@ -6523,8 +6572,40 @@ function renderImageSlotsConfigurator() {
 
   if (badge) badge.textContent = `${IMG_SLOTS.length} of ${maxActiveSlots} active`;
   if (addBtn) {
-    addBtn.textContent = `+ Add model (${IMG_SLOTS.length}/${maxActiveSlots})`;
+    addBtn.textContent = IMG_SLOTS.length >= maxActiveSlots ? `Max ${maxActiveSlots} models` : '+ Add model';
     addBtn.disabled = IMG_SLOTS.length >= maxActiveSlots;
+  }
+
+  // Highlight active Image Arena lineup preset button (`nb2-vs-21`, `lite-2-21`, `all-four`)
+  const currentIdsSig = IMG_SLOTS.map((s) => s.catalogId).join(',');
+  const presetMap = {
+    'nb2-vs-21': 'gemini-3.1-flash-image,gemini-nano-banana-2.1',
+    'lite-2-21': 'gemini-3.1-flash-lite-image,gemini-3.1-flash-image,gemini-nano-banana-2.1',
+    'all-four': 'gemini-3.1-flash-lite-image,gemini-3.1-flash-image,gemini-nano-banana-2.1,gemini-3-pro-image',
+  };
+  document.querySelectorAll('.img-preset-btn').forEach((btn) => {
+    const p = btn.dataset.imgPreset;
+    btn.classList.toggle('is-active', Boolean(presetMap[p] && presetMap[p] === currentIdsSig));
+  });
+
+  // Dynamically update #imgEndpointPill if OpenAI GPT Image models are in the lineup
+  const epPill = $('#imgEndpointPill');
+  if (epPill) {
+    const hasOpenAi = IMG_SLOTS.some((s) => {
+      const e = getImgCatalogItem(s.catalogId);
+      return e && e.provider === 'openai';
+    });
+    const hasVertex = IMG_SLOTS.some((s) => {
+      const e = getImgCatalogItem(s.catalogId);
+      return !e || e.provider !== 'openai';
+    });
+    if (hasOpenAi && hasVertex) {
+      epPill.innerHTML = '☁️ Vertex AI <code>/locations/global</code> + OpenAI Images API · Up to 13 Reference Images';
+    } else if (hasOpenAi) {
+      epPill.innerHTML = '🔑 OpenAI Images API (<code>/v1/images</code>) · Up to 13 Reference Images';
+    } else {
+      epPill.innerHTML = '☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images';
+    }
   }
 
   grid.innerHTML = '';
@@ -6879,7 +6960,7 @@ function renderImageArenaPlaceholderCards() {
     col.innerHTML = `
       <header class="col-head">
         <div class="col-title-row">
-          <span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66">${esc(slotObj.slot)}</span>
+          <span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66">Slot ${esc(slotObj.slot)}</span>
           ${modelIconSvg(entry)}
           <div>
             <h3 class="col-title" title="${esc(entry.label)}">${esc(entry.label)}</h3>
@@ -7324,24 +7405,11 @@ async function clearAllImageArenaHistory() {
   });
 }
 
-// The 🗂 History button shows how many image runs are saved.
+// The 🗂 History button opens Image Arena run history (no count badge, matching Text Arena).
 async function updateImageHistoryButton() {
   const histBtn = $('#imgHistoryBtn');
   if (!histBtn) return;
-  const localRuns = (await listImageArenaRunsFromHistory()).filter(isVisibleImageRun);
-  let serverRuns = [];
-  try {
-    const scope = (ME && ME.role === 'admin') ? 'all' : 'me';
-    const r = await fetch('/api/image-arena/history?scope=' + scope, { credentials: 'same-origin' });
-    if (r.ok) {
-      const j = await r.json();
-      if (j && Array.isArray(j.runs)) serverRuns = j.runs.filter(isVisibleImageRun);
-    }
-  } catch (_) {}
-  const ids = new Set();
-  localRuns.forEach((x) => { if (x && x.id) ids.add(x.id); });
-  serverRuns.forEach((x) => { if (x && x.id) ids.add(x.id); });
-  histBtn.textContent = ids.size > 0 ? `🗂 History (${ids.size})` : '🗂 History';
+  histBtn.textContent = '🗂 History';
 }
 
 async function restoreImageArenaRun(runId) {
@@ -7447,7 +7515,9 @@ async function restoreImageArenaRun(runId) {
   let slotMap = null; // saved slot letter -> restored slot letter
   const rawSlots = (Array.isArray(rec.slots) && rec.slots.length)
     ? rec.slots
-    : (Array.isArray(rec.results) ? rec.results.map((r, i) => ({ slot: r.slot || String.fromCharCode(65 + i), catalogId: r.catalogId })) : []);
+    : (Array.isArray(rec.results) && rec.results.length
+      ? rec.results.map((r, i) => ({ slot: r.slot || String.fromCharCode(65 + i), catalogId: r.catalogId }))
+      : (Array.isArray(rec.summary) ? rec.summary.map((r, i) => ({ slot: r.slot || String.fromCharCode(65 + i), catalogId: r.catalogId })) : []));
   const keptSlots = rawSlots.filter((s) => s && isCurrentImageModel(s.catalogId));
   if (keptSlots.length) {
     slotMap = {};
@@ -7469,6 +7539,7 @@ async function restoreImageArenaRun(runId) {
   renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
+  updateQuotaBadge();
   renderImageArenaPlaceholderCards();
 
   IMG_LAST_RESULTS = currentModelImageResults(rec)
@@ -7579,7 +7650,7 @@ async function runImageArenaComparisonClick() {
   }
   const finishEarly = () => {
     IMG_RUNNING = false;
-    if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = 'Generate &amp; Compare Images ▸'; }
+    if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = 'Generate &amp; Compare Images ▸ <kbd class="run-kbd">⌘↵</kbd>'; }
   };
 
   // One run = one Run click (same rule as the text arena): reserve it ONCE, so it counts once
@@ -7662,7 +7733,17 @@ async function runImageArenaComparisonClick() {
   try {
     // Dispatch 1 independent parallel HTTP request per slot so multi-slot 4K PNGs
     // never exceed Cloud Run's 32 MiB single-response limit and each card renders
-    // progressively the instant its model finishes.
+    // progressively the instant its model finishes. Pass a shared `clientRunId` + `allSlots`
+    // so the server immediately records and merges each completed slot in history.
+    const clientRunId = `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const packSel = $('#imgPackSelect');
+    const scSel = $('#imgScenarioSelect');
+    const scTitle = scSel && scSel.options[scSel.selectedIndex]
+      ? scSel.options[scSel.selectedIndex].textContent
+      : prompt.slice(0, 60);
+    const packIdVal = packSel ? packSel.value : '';
+    const scenarioIdVal = scSel ? scSel.value : '';
+
     const slotPromises = activeSlotsSnapshot.map(async (slotObj) => {
       try {
         const resp = await fetch('/api/image-arena/run', {
@@ -7670,7 +7751,12 @@ async function runImageArenaComparisonClick() {
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            runId: clientRunId,
             slots: [slotObj],
+            allSlots: activeSlotsSnapshot,
+            packId: packIdVal,
+            scenarioId: scenarioIdVal,
+            scenarioTitle: scTitle,
             prompt,
             aspectRatio: reqAspect,
             imageSize: reqSize,
@@ -7742,16 +7828,11 @@ async function runImageArenaComparisonClick() {
     }
 
     if (okCount > 0) {
-      const packSel = $('#imgPackSelect');
-      const scSel = $('#imgScenarioSelect');
-      const scTitle = scSel && scSel.options[scSel.selectedIndex]
-        ? scSel.options[scSel.selectedIndex].textContent
-        : prompt.slice(0, 60);
       await saveImageArenaRunToHistory({
-        id: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id: clientRunId,
         at: Date.now(),
-        packId: packSel ? packSel.value : '',
-        scenarioId: scSel ? scSel.value : '',
+        packId: packIdVal,
+        scenarioId: scenarioIdVal,
         scenarioTitle: scTitle,
         prompt,
         imageSize: reqSize,
@@ -7770,7 +7851,7 @@ async function runImageArenaComparisonClick() {
     IMG_RUNNING = false;
     if (runBtn) {
       runBtn.disabled = false;
-      runBtn.innerHTML = 'Generate &amp; Compare Images ▸';
+      runBtn.innerHTML = 'Generate &amp; Compare Images ▸ <kbd class="run-kbd">⌘↵</kbd>';
     }
   }
 }
@@ -7919,8 +8000,10 @@ function highlightImageWinnerTiles(results) {
 // ---------- Image Model Comparison Bars & Scale Scorecard (Matches Text Arena) ----------
 function renderImageMetricComparison() {
   const scSec = $('#imgScorecard');
+  const jumpBtn = $('#imgJumpScorecardBtn');
   if (!IMG_CONFIG || !hasLiveImageResults()) {
     if (scSec) scSec.classList.add('hidden');
+    if (jumpBtn) jumpBtn.classList.add('hidden');
     return;
   }
   const legendEl = $('#imgModelLegend');
@@ -7963,9 +8046,11 @@ function renderImageMetricComparison() {
 
   if (!scored.length) {
     if (scSec) scSec.classList.add('hidden');
+    if (jumpBtn) jumpBtn.classList.add('hidden');
     return;
   }
   if (scSec) scSec.classList.remove('hidden');
+  if (jumpBtn) jumpBtn.classList.remove('hidden');
 
   if (subEl) {
     subEl.textContent = `Live measured Vertex AI telemetry at ${IMG_SELECTED_SIZE} (${IMG_SELECTED_ASPECT}) — each panel has its own scale; the green zone marks the better end.`;
@@ -8155,7 +8240,7 @@ function renderImageEconomicsModeler() {
       : '';
     const tr = el('tr');
     tr.innerHTML = `
-      <td><span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66;margin-right:6px">${esc(r.slot)}</span><strong>${esc(c.label)}</strong><br/><span style="font-size:11px;color:var(--muted)"><code>${esc(c.model)}</code></span></td>
+      <td><span class="slot-pill" style="background:${color}22;color:${color};border-color:${color}66;margin-right:6px">Slot ${esc(r.slot)}</span><strong>${esc(c.label)}</strong><br/><span style="font-size:11px;color:var(--muted)"><code>${esc(c.model)}</code></span></td>
       <td>${esc(c.slaBadge)}<br/><span style="font-size:11px;color:var(--muted)">${esc(c.endpointBadge)}</span></td>
       <td>${esc(r.resCap)}</td>
       <td style="font-family:'JetBrains Mono',monospace">${esc(r.tokEst)}</td>
@@ -8184,6 +8269,39 @@ function initImageArenaBindings() {
   const imgHistBtn = $('#imgHistoryBtn');
   if (imgHistBtn) {
     imgHistBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));
+  }
+
+  const imgCopyBtn = $('#imgCopyPromptBtn');
+  if (imgCopyBtn) {
+    imgCopyBtn.addEventListener('click', () => {
+      const promptEl = $('#imgPromptInput');
+      const txt = (promptEl && promptEl.value) || '';
+      const lbl = $('#imgCopyPromptLabel');
+      copyTextToClipboard(txt).then(() => {
+        if (lbl) lbl.textContent = '✓ Copied';
+        setTimeout(() => { if (lbl) lbl.textContent = 'Copy prompt'; }, 1400);
+      });
+    });
+  }
+
+  const imgJumpBtn = $('#imgJumpScorecardBtn');
+  if (imgJumpBtn) {
+    imgJumpBtn.addEventListener('click', () => {
+      const sc = $('#imgScorecard');
+      if (sc && typeof sc.scrollIntoView === 'function') {
+        sc.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
+  }
+
+  const imgPromptInput = $('#imgPromptInput');
+  if (imgPromptInput) {
+    imgPromptInput.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        runImageArenaComparisonClick();
+      }
+    });
   }
 
   const lbModal = $('#imgLightboxModal');

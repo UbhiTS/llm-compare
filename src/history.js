@@ -972,6 +972,10 @@ function initSqlite() {
         if (imgRows.length > 0) hadPersistedIndexOnBoot = true;
       } catch (_) {}
 
+      if (deduplicateImageRunsInternal()) {
+        needsPersistFlush = true;
+      }
+
       // Insert any pruned runs recovered from unvacuumed SQLite B-tree pages
       let recoveredTextCount = 0;
       for (const recRun of recoveredFromBinary.textRuns || []) {
@@ -1302,6 +1306,59 @@ function upsertImageMetaInternal(meta, persistDisk = true) {
   if (persistDisk) flushSnapshotSync();
 }
 
+// Collapse legacy duplicate `mv...` Image Arena rows that were created when `safeId()`
+// stripped underscores from `img_...` IDs during client->server sync. Two rows with the
+// exact same `(userKey, at)` (> 0) and `title` where one has a canonical `img_...` ID
+// and the other has a generated `mv...` ID are merged into the canonical row.
+function deduplicateImageRunsInternal() {
+  let changed = false;
+  try {
+    const byKeyAt = new Map();
+    for (const m of imageMetaById.values()) {
+      if (!m || !m.id || !(Number(m.at) > 0)) continue;
+      const sig = `${m.userKey || userKey(m.user)}|${m.at}|${m.title || ''}`;
+      const list = byKeyAt.get(sig) || [];
+      list.push(m);
+      byKeyAt.set(sig, list);
+    }
+    for (const group of byKeyAt.values()) {
+      if (group.length < 2) continue;
+      group.sort((a, b) => {
+        const aCanon = String(a.id).startsWith('img_') ? 1 : 0;
+        const bCanon = String(b.id).startsWith('img_') ? 1 : 0;
+        if (bCanon !== aCanon) return bCanon - aCanon;
+        return String(a.id).localeCompare(String(b.id));
+      });
+      const keep = group[0];
+      for (let i = 1; i < group.length; i++) {
+        const dup = group[i];
+        if (!dup || dup.id === keep.id) continue;
+        if (dup.starred && !keep.starred) {
+          keep.starred = true;
+          if (stmts && stmts.setImageStarred) {
+            try { stmts.setImageStarred.run(1, keep.id); } catch (_) {}
+          }
+        }
+        imageMetaById.delete(dup.id);
+        archivedImageMetaById.delete(dup.id);
+        fullPayloadCache.delete(dup.id);
+        if (stmts && stmts.delImage) {
+          try { stmts.delImage.run(dup.id); } catch (_) {}
+        }
+        if (stmts && stmts.delArchivedImageRun) {
+          try { stmts.delArchivedImageRun.run(dup.id); } catch (_) {}
+        }
+        try {
+          const fp = path.join(BASE_DIR, dup.userKey || userKey(dup.user), `${dup.id}.json`);
+          if (fs.existsSync(fp)) fs.unlinkSync(fp);
+        } catch (_) {}
+        changed = true;
+      }
+    }
+  } catch (_) {}
+  return changed;
+}
+
 // Synchronously checkpoint WAL and flush `/tmp` SQLite DB to `/data/history/history.sqlite`.
 // Uses Buffer write + atomic rename with direct writeFileSync fallback (GCS FUSE safe).
 // Executed BEFORE HTTP responses return on every mutation so Cloud Run CPU throttling or
@@ -1414,6 +1471,7 @@ function syncFromPersistSqliteIfNewer(force = false) {
             }
           }
         } catch (_) {}
+        deduplicateImageRunsInternal();
 
         // 2. Merge user_saved_prompts & user_saved_presets
         const extPromptsByUser = new Map();
@@ -2867,7 +2925,7 @@ function setRunStarred(id, starred, { username, isAdmin }) {
 // `runsToday`, `totalRuns`, or `costUsd`.
 // Includes per-user and global counts of saved custom prompts (`savedPrompts`) and saved model presets (`savedPresets`)
 // while keeping the actual prompt text and file contents strictly private to each user.
-function usageSummary() {
+function usageSummary(opts = {}) {
   syncFromPersistSqliteIfNewer(false);
   maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
@@ -2987,6 +3045,47 @@ function usageSummary() {
     byUser.set(uKeyName, u);
   }
 
+  // 4. Also merge real platform users from Image Arena runs, 90-day audit runs, and registered accounts
+  // so Admin Usage rosters are 100% consistent across both Text and Image arenas.
+  const ensurePlatformUser = (rawUser, rawName, ts) => {
+    const uKeyName = norm(rawUser);
+    if (!uKeyName || SYNTHETIC_TEST_USER_RE.test(uKeyName)) return;
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: rawName || rawUser || uKeyName,
+      runs: 0,
+      activeRuns: 0,
+      runsToday: 0,
+      starredRuns: 0,
+      lastAt: 0,
+      costUsd: 0,
+      savedPrompts: 0,
+      savedPresets: 0,
+    };
+    const numTs = Number(ts) || 0;
+    if (numTs > u.lastAt) {
+      u.lastAt = numTs;
+      if (rawName) u.userName = rawName;
+    }
+    byUser.set(uKeyName, u);
+  };
+  for (const im of imageMetaById.values()) {
+    if (im && im.user) ensurePlatformUser(im.user, im.userName, im.at);
+  }
+  for (const aim of archivedImageMetaById.values()) {
+    if (aim && aim.user) ensurePlatformUser(aim.user, aim.userName, aim.at);
+  }
+  for (const aud of auditMetaById.values()) {
+    if (aud && aud.user) ensurePlatformUser(aud.user, aud.userName, aud.at);
+  }
+  if (Array.isArray(opts && opts.registeredUsers)) {
+    for (const ru of opts.registeredUsers) {
+      if (!ru || !ru.username) continue;
+      const createdMs = ru.createdAt ? (Date.parse(ru.createdAt) || 0) : 0;
+      ensurePlatformUser(ru.username, ru.name || ru.username, createdMs);
+    }
+  }
+
   const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
   return {
     generatedAt: Date.now(),
@@ -3072,20 +3171,36 @@ function summarizeImageResults(slots, results, imageSize, aspectRatio, attachmen
     .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
   return resList.map((r, idx) => {
     const slotCfg = (Array.isArray(slots) && slots[idx]) || {};
+    const costVal = typeof r.costUsd === 'number'
+      ? r.costUsd
+      : (typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : 0);
     const out = {
       slot: r.slot || slotCfg.slot || String.fromCharCode(65 + idx),
       catalogId: r.catalogId || slotCfg.catalogId || 'nano-banana-2.1',
       label: r.label || slotCfg.label || 'Nano Banana',
+      shortLabel: r.shortLabel || r.label || slotCfg.label || 'Nano Banana',
       model: r.model || slotCfg.model || '',
       thinkingLevel: r.thinkingLevel || slotCfg.thinkingLevel || 'minimal',
-      imageSize: r.imageSize || slotCfg.imageSize || imageSize || '1K',
+      imageSize: r.imageSize || r.requestedSize || slotCfg.imageSize || imageSize || '1K',
+      requestedSize: r.requestedSize || r.imageSize || slotCfg.imageSize || imageSize || '1K',
       aspectRatio: r.aspectRatio || slotCfg.aspectRatio || aspectRatio || '16:9',
+      width: Number(r.width) || null,
+      height: Number(r.height) || null,
+      megapixels: Number(r.megapixels) || null,
+      slaBadge: r.slaBadge || null,
+      savingsVsNanoBanana2Pct: Number(r.savingsVsNanoBanana2Pct) || 0,
+      ok: Boolean(r.ok != null ? r.ok : !r.error),
       error: r.error || null,
       latencyMs: Number(r.latencyMs) || 0,
-      costUsd: typeof r.costUsd === 'number' ? r.costUsd : 0,
+      costUsd: costVal,
+      standardPayGoCostUsd: typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : costVal,
+      standardPayGoPer1kUsd: Number(r.standardPayGoPer1kUsd) || null,
+      offPeakSupported: Boolean(r.offPeakSupported),
+      offPeakPayGoCostUsd: typeof r.offPeakPayGoCostUsd === 'number' ? r.offPeakPayGoCostUsd : null,
       promptTokens: Number(r.promptTokens) || 0,
       imageOutputTokens: Number(r.imageOutputTokens) || 0,
-      thoughtsTokens: Number(r.thoughtsTokens) || 0,
+      thoughtsTokens: Number(r.thoughtsTokens || r.reasoningTokens) || 0,
+      reasoningTokens: Number(r.reasoningTokens || r.thoughtsTokens) || 0,
       completionTokens: Number(r.completionTokens) || 0,
       mimeType: r.mimeType || 'image/png',
       hasImage: Boolean(r.hasImage || r.imageDataUrl || r.imageVaultRef || r.thumbDataUrl),
@@ -3121,6 +3236,8 @@ function imageListItem(meta) {
 }
 
 // Persist one completed Image & GenMedia Arena run (server-authoritative, SQLite + binary vault).
+// Supports incremental per-slot merging (`mergeSlots` / existing record with the same `id`) so
+// server-side `/api/image-arena/run` and client-side `/api/image-arena/history` converge into a single record.
 async function saveImageRun({
   id: passedId,
   at: passedAt,
@@ -3140,17 +3257,30 @@ async function saveImageRun({
   try {
     maybePruneExpiredRuns();
     const id = safeId(passedId) || newId();
-    const at = Number(passedAt) > 0 ? Number(passedAt) : Date.now();
     const u = norm(user);
     if (!u) return null;
     const uKey = userKey(u);
     const existingMeta = imageMetaById.get(id);
-    const isStarred = starred != null ? Boolean(starred) : Boolean(existingMeta && existingMeta.starred);
-    const promptText = String(prompt || '').trim();
-    const runTitle = String(title || promptText.slice(0, 72) || 'Image Arena Run').trim().slice(0, 160);
+    let existingRecord = fullPayloadCache.get(id) || null;
+    if (!existingRecord && existingMeta && existingMeta.userKey === uKey) {
+      try {
+        const fp = path.join(BASE_DIR, uKey, `${id}.json`);
+        if (fs.existsSync(fp)) existingRecord = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      } catch (_) {}
+    }
+    const at = Number(passedAt) > 0
+      ? Number(passedAt)
+      : ((existingMeta && existingMeta.at) || (existingRecord && existingRecord.at) || Date.now());
+    const isStarred = starred != null ? Boolean(starred) : Boolean((existingMeta && existingMeta.starred) || (existingRecord && existingRecord.starred));
+    const promptText = String(prompt || (existingRecord && existingRecord.prompt) || (existingMeta && existingMeta.prompt) || '').trim();
+    const rawTitle = title || (existingRecord && existingRecord.title) || (existingMeta && existingMeta.title) || promptText.slice(0, 72) || 'Image Arena Run';
+    const runTitle = String(rawTitle).trim().slice(0, 160);
 
-    // Store reference input attachments in the user's binary vault
-    const attachments = (Array.isArray(rawAttachments) ? rawAttachments : []).map((a) => {
+    // Store reference input attachments in the user's binary vault (or preserve existing attachments)
+    const incomingAtts = Array.isArray(rawAttachments) && rawAttachments.length
+      ? rawAttachments
+      : ((existingRecord && Array.isArray(existingRecord.attachments)) ? existingRecord.attachments : []);
+    const attachments = incomingAtts.map((a) => {
       if (!a || typeof a !== 'object') return null;
       const ptr = vault.storeAttachmentInVaultSync(uKey, a);
       return ptr || {
@@ -3163,13 +3293,22 @@ async function saveImageRun({
       };
     }).filter(Boolean);
 
+    const prevResultsBySlot = new Map();
+    const prevList = (existingRecord && Array.isArray(existingRecord.results))
+      ? existingRecord.results
+      : ((existingMeta && Array.isArray(existingMeta.summary)) ? existingMeta.summary : []);
+    for (const pr of prevList) {
+      if (pr && pr.slot) prevResultsBySlot.set(String(pr.slot), pr);
+    }
+
     // Offload generated full-resolution images & thought images to the user's binary vault
     // so `/data/history/<uKey>/<id>.json` stays compact and fast while full images restore on click!
-    const storedResults = (Array.isArray(results) ? results : []).map((r, idx) => {
+    const incomingStoredResults = (Array.isArray(results) ? results : []).map((r, idx) => {
       if (!r || typeof r !== 'object') return null;
       const slotName = r.slot || String.fromCharCode(65 + idx);
-      let imageVaultRef = r.imageVaultRef || null;
-      let mimeType = r.mimeType || 'image/png';
+      const prev = prevResultsBySlot.get(String(slotName)) || {};
+      let imageVaultRef = r.imageVaultRef || prev.imageVaultRef || null;
+      let mimeType = r.mimeType || prev.mimeType || 'image/png';
       if (!imageVaultRef && typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:')) {
         const m = r.imageDataUrl.match(/^data:([^;]+);base64,/i);
         if (m) mimeType = m[1];
@@ -3182,7 +3321,7 @@ async function saveImageRun({
         if (ptr && (ptr.vaultRef || ptr.sha256)) imageVaultRef = ptr.vaultRef || ptr.sha256;
       }
 
-      let thoughtVaultRef = r.thoughtVaultRef || null;
+      let thoughtVaultRef = r.thoughtVaultRef || prev.thoughtVaultRef || null;
       if (!thoughtVaultRef && typeof r.thoughtImageDataUrl === 'string' && r.thoughtImageDataUrl.startsWith('data:')) {
         const tm = r.thoughtImageDataUrl.match(/^data:([^;]+);base64,/i);
         const tMime = tm ? tm[1] : 'image/png';
@@ -3195,39 +3334,80 @@ async function saveImageRun({
         if (tPtr && (tPtr.vaultRef || tPtr.sha256)) thoughtVaultRef = tPtr.vaultRef || tPtr.sha256;
       }
 
+      const costVal = typeof r.costUsd === 'number'
+        ? r.costUsd
+        : (typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : (typeof prev.costUsd === 'number' ? prev.costUsd : 0));
+      const thumbDataUrl = (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000)
+        ? r.thumbDataUrl
+        : ((typeof prev.thumbDataUrl === 'string' && prev.thumbDataUrl.length <= 45000) ? prev.thumbDataUrl : null);
+
       return {
         slot: slotName,
-        catalogId: r.catalogId || 'nano-banana-2.1',
-        label: r.label || 'Nano Banana',
-        model: r.model || '',
-        thinkingLevel: r.thinkingLevel || 'minimal',
-        imageSize: r.imageSize || imageSize || '1K',
-        aspectRatio: r.aspectRatio || aspectRatio || '16:9',
+        catalogId: r.catalogId || prev.catalogId || 'nano-banana-2.1',
+        label: r.label || prev.label || 'Nano Banana',
+        shortLabel: r.shortLabel || prev.shortLabel || r.label || prev.label || 'Nano Banana',
+        model: r.model || prev.model || '',
+        thinkingLevel: r.thinkingLevel || prev.thinkingLevel || 'minimal',
+        imageSize: r.imageSize || r.requestedSize || prev.imageSize || imageSize || '1K',
+        requestedSize: r.requestedSize || r.imageSize || prev.requestedSize || imageSize || '1K',
+        aspectRatio: r.aspectRatio || prev.aspectRatio || aspectRatio || '16:9',
+        width: Number(r.width || prev.width) || null,
+        height: Number(r.height || prev.height) || null,
+        megapixels: Number(r.megapixels || prev.megapixels) || null,
+        slaBadge: r.slaBadge || prev.slaBadge || null,
+        savingsVsNanoBanana2Pct: Number(r.savingsVsNanoBanana2Pct != null ? r.savingsVsNanoBanana2Pct : prev.savingsVsNanoBanana2Pct) || 0,
+        ok: Boolean(r.ok != null ? r.ok : !r.error),
         error: r.error || null,
-        latencyMs: Number(r.latencyMs) || 0,
-        costUsd: typeof r.costUsd === 'number' ? r.costUsd : 0,
-        promptTokens: Number(r.promptTokens) || 0,
-        imageOutputTokens: Number(r.imageOutputTokens) || 0,
-        thoughtsTokens: Number(r.thoughtsTokens) || 0,
-        completionTokens: Number(r.completionTokens) || 0,
-        text: typeof r.text === 'string' ? r.text : '',
-        reasoning: typeof r.reasoning === 'string' ? r.reasoning : '',
+        latencyMs: Number(r.latencyMs || prev.latencyMs) || 0,
+        costUsd: costVal,
+        standardPayGoCostUsd: typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : costVal,
+        standardPayGoPer1kUsd: Number(r.standardPayGoPer1kUsd || prev.standardPayGoPer1kUsd) || null,
+        offPeakSupported: Boolean(r.offPeakSupported != null ? r.offPeakSupported : prev.offPeakSupported),
+        offPeakPayGoCostUsd: typeof r.offPeakPayGoCostUsd === 'number' ? r.offPeakPayGoCostUsd : (typeof prev.offPeakPayGoCostUsd === 'number' ? prev.offPeakPayGoCostUsd : null),
+        promptTokens: Number(r.promptTokens || prev.promptTokens) || 0,
+        imageOutputTokens: Number(r.imageOutputTokens || prev.imageOutputTokens) || 0,
+        thoughtsTokens: Number(r.thoughtsTokens || r.reasoningTokens || prev.thoughtsTokens) || 0,
+        reasoningTokens: Number(r.reasoningTokens || r.thoughtsTokens || prev.reasoningTokens) || 0,
+        completionTokens: Number(r.completionTokens || prev.completionTokens) || 0,
+        text: typeof r.text === 'string' ? r.text : (prev.text || ''),
+        reasoning: typeof r.reasoning === 'string' ? r.reasoning : (prev.reasoning || ''),
         mimeType,
-        hasImage: Boolean(r.hasImage || imageVaultRef || r.imageDataUrl || r.thumbDataUrl),
+        hasImage: Boolean(r.hasImage || imageVaultRef || r.imageDataUrl || thumbDataUrl || prev.hasImage),
         imageVaultRef,
         thoughtVaultRef,
-        thumbDataUrl: (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000) ? r.thumbDataUrl : null,
+        thumbDataUrl,
       };
     }).filter(Boolean);
 
-    const cleanSlots = (Array.isArray(slots) && slots.length ? slots : storedResults).map((s, idx) => ({
-      slot: s.slot || String.fromCharCode(65 + idx),
-      catalogId: s.catalogId || 'nano-banana-2.1',
-      label: s.label || s.catalogId || 'Nano Banana',
-      thinkingLevel: s.thinkingLevel || 'minimal',
-      imageSize: s.imageSize || imageSize || '1K',
-      aspectRatio: s.aspectRatio || aspectRatio || '16:9',
-    }));
+    // Merge with any previously saved slots for this same `id` (e.g. parallel per-slot requests)
+    const mergedResultsMap = new Map(prevResultsBySlot);
+    for (const sr of incomingStoredResults) {
+      if (sr && sr.slot) mergedResultsMap.set(String(sr.slot), sr);
+    }
+    const storedResults = Array.from(mergedResultsMap.values()).sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+
+    const prevSlotsBySlot = new Map();
+    const prevSlots = (existingRecord && Array.isArray(existingRecord.slots))
+      ? existingRecord.slots
+      : ((existingMeta && Array.isArray(existingMeta.slots)) ? existingMeta.slots : []);
+    for (const ps of prevSlots) {
+      if (ps && ps.slot) prevSlotsBySlot.set(String(ps.slot), ps);
+    }
+    const rawSlotsList = (Array.isArray(slots) && slots.length) ? slots : storedResults;
+    for (let idx = 0; idx < rawSlotsList.length; idx++) {
+      const s = rawSlotsList[idx];
+      if (!s) continue;
+      const sName = s.slot || String.fromCharCode(65 + idx);
+      prevSlotsBySlot.set(String(sName), {
+        slot: sName,
+        catalogId: s.catalogId || s.id || 'nano-banana-2.1',
+        label: s.label || s.catalogId || s.id || 'Nano Banana',
+        thinkingLevel: s.thinkingLevel || 'minimal',
+        imageSize: s.imageSize || imageSize || '1K',
+        aspectRatio: s.aspectRatio || aspectRatio || '16:9',
+      });
+    }
+    const cleanSlots = Array.from(prevSlotsBySlot.values()).sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
 
     const summary = summarizeImageResults(cleanSlots, storedResults, imageSize, aspectRatio, attachments);
     const record = {
@@ -3571,7 +3751,7 @@ function setImageRunStarred(id, starred, { username, isAdmin }) {
   return { ok: true, id: sid, starred: nextStarred };
 }
 
-function imageUsageSummary() {
+function imageUsageSummary(opts = {}) {
   syncFromPersistSqliteIfNewer(false);
   maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
@@ -3659,6 +3839,77 @@ function imageUsageSummary() {
       totalCostUsd += arch.costUsd;
     }
     byUser.set(uKeyName, u);
+  }
+
+  // 3. Merge all known platform users (from `user_prefs`, Text Arena runs, archived runs,
+  // 90-day audit runs, and registered users) so Admins see the exact same complete user roster
+  // in the Image Arena History modal as in the Text Arena History modal.
+  const ensurePlatformUser = (rawUser, rawName, ts, allowAll = false) => {
+    const uKeyName = norm(rawUser);
+    if (!uKeyName || (!allowAll && SYNTHETIC_TEST_USER_RE.test(uKeyName))) return;
+    const u = byUser.get(uKeyName) || {
+      user: uKeyName,
+      userName: rawName || rawUser || uKeyName,
+      runs: 0,
+      activeRuns: 0,
+      runsToday: 0,
+      starredRuns: 0,
+      imagesGenerated: 0,
+      lastAt: 0,
+      costUsd: 0,
+    };
+    const numTs = Number(ts) || 0;
+    if (numTs > u.lastAt) {
+      u.lastAt = numTs;
+      if (rawName) u.userName = rawName;
+    }
+    byUser.set(uKeyName, u);
+  };
+  for (const p of prefsByUserKey.values()) {
+    if (!p || !p.user) continue;
+    const uKeyName = norm(p.user);
+    const spCount = Array.isArray(p.savedPrompts) ? p.savedPrompts.length : 0;
+    const mpCount = Array.isArray(p.savedPresets) ? p.savedPresets.length : 0;
+    const hasWorkspaceActivity = Boolean(
+      !SYNTHETIC_TEST_USER_RE.test(uKeyName) &&
+      (Number(p.updatedAt) > 0 || (Array.isArray(p.slots) && p.slots.length > 0))
+    );
+    if (spCount > 0 || mpCount > 0 || hasWorkspaceActivity) {
+      ensurePlatformUser(p.user, p.user, p.updatedAt, true);
+    }
+  }
+  for (const r of metaById.values()) {
+    if (r && r.user) ensurePlatformUser(r.user, r.userName, r.at, true);
+  }
+  for (const ar of archivedMetaById.values()) {
+    if (ar && ar.user) ensurePlatformUser(ar.user, ar.userName, ar.at, true);
+  }
+  for (const aud of auditMetaById.values()) {
+    if (aud && aud.user) {
+      ensurePlatformUser(aud.user, aud.userName, aud.at);
+      // If an Image Arena run was recorded in the 90-day audit ledger (e.g. before server-side
+      // saveImageRun existed or after 7-day output pruning), reflect its run count if not already counted.
+      if (aud.arena === 'image' && aud.id && !countedRunIds.has(aud.id) && aud.status === 'completed') {
+        const uKeyName = norm(aud.user);
+        const u = byUser.get(uKeyName);
+        if (u && u.runs === 0) {
+          countedRunIds.add(aud.id);
+          u.runs++;
+          totalRuns++;
+          if (aud.at >= startOfDay) {
+            u.runsToday++;
+            runsToday++;
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(opts && opts.registeredUsers)) {
+    for (const ru of opts.registeredUsers) {
+      if (!ru || !ru.username) continue;
+      const createdMs = ru.createdAt ? (Date.parse(ru.createdAt) || 0) : 0;
+      ensurePlatformUser(ru.username, ru.name || ru.username, createdMs);
+    }
   }
 
   const users = Array.from(byUser.values()).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
@@ -3932,6 +4183,7 @@ module.exports = {
   saveImageRun,
   attachJudgeToLatestRun,
   newId,
+  safeId,
   listRuns,
   listAllRuns,
   getRun,
