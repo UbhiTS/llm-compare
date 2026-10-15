@@ -367,7 +367,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     imageArenaJs.includes("const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';"),
     'imageArena.js must default DEFAULT_IMAGE_PROJECT_NUMBER to 419460847694 when AGENT_PLATFORM_PROJECT_NUMBER is unset (never letting GCP_PROJECT_ID override 419460847694)'
   );
-  const idx419 = imageArenaJs.indexOf("process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',\n    '419460847694'");
+  // Shared-key candidates (strict BYOK nests them under the !ownVertexKey branch, so match whitespace-tolerantly).
+  const idx419 = imageArenaJs.search(/process\.env\.AGENT_PLATFORM_PROJECT_NUMBER \|\| '',\s*\n\s*'419460847694'/);
   const idxGcpProject = imageArenaJs.indexOf("process.env.GCP_PROJECT_ID || ''");
   assert(
     idx419 !== -1 && idxGcpProject !== -1 && idx419 < idxGcpProject,
@@ -379,8 +380,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.38', 'package.json must be at version 1.0.38');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.38</span>'), 'index.html must display v1.0.38 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.39', 'package.json must be at version 1.0.39');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.39</span>'), 'index.html must display v1.0.39 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;

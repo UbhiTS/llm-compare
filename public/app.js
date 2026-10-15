@@ -64,6 +64,14 @@ const ICON_PDF = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="
 const ICON_TRASH = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
 const ICON_STAR_OFF = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
 const ICON_STAR_ON = '<svg class="hist-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
+// Manage external users: compact action icons (stroke = currentColor, sized by .u-icon-btn svg).
+const U_ICON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
+// lock inside a circular arrow = "force a password reset on next sign-in"
+const ICON_LOCK_RESET = U_ICON_SVG + '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><rect x="8.5" y="11.5" width="7" height="6" rx="1.2"/><path d="M10 11.5V10a2 2 0 0 1 4 0v1.5"/></svg>';
+// key = "set a temporary password"
+const ICON_KEY = U_ICON_SVG + '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="m16 7 3 3"/><path d="m19 4 2 2"/></svg>';
+// gauge = "daily Vertex AI cap & account expiry"
+const ICON_GAUGE = U_ICON_SVG + '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>';
 // A compact, distinct name for tight spaces — drops the family prefix so the two
 // Geminis read as "3.5 Flash" / "3.1 Pro" instead of both truncating to "Ge…".
 function shortLabel(label) {
@@ -709,15 +717,18 @@ function saveKeys(k) {
 function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gemini || k.openai || k.anthropic || k.claudeBearerToken || k.moonshot); }
 
 // Which credential each selected model will actually run on. Mirrors
-// modelUsesOwnKey() in server.js — the quota is only skipped when EVERY model in
-// the run uses the caller's own key, so this is what decides "unlimited".
+// credentialFamily()/modelUsesOwnKey() in src/byok.js - the quota is only
+// skipped when EVERY model in the run uses the caller's own key, so this is what
+// decides "unlimited". Strict BYOK: a model covered by the user's own key runs
+// ONLY on that key (never the shared one, not even as a fallback).
 function keySourceFor(m, k) {
   const pub = m.publisher || 'google';
-  if (m.provider === 'agentplatform' && pub === 'anthropic') {
-    // Vertex Claude authenticates with the server's service account — no key to bring.
+  if (m.provider === 'agentplatform' && (pub === 'anthropic' || m.endpointType === 'openai-maas')) {
+    // Claude and partner MaaS models (Grok, Qwen, DeepSeek, Llama, GLM, GPT-OSS,
+    // Kimi on Vertex) authenticate with an OAuth token - a Gemini API key does not cover them.
     return k.claudeBearerToken
-      ? { group: 'Claude (Vertex)', state: 'own' }
-      : { group: 'Claude (Vertex)', state: 'service', present: true };
+      ? { group: 'Claude & partner models (Vertex)', state: 'own' }
+      : { group: 'Claude & partner models (Vertex)', state: 'service', present: true };
   }
   if (m.provider === 'agentplatform' || m.provider === 'gemini') {
     const own = !!(k.agentplatform || k.gemini);
@@ -810,28 +821,37 @@ function openKeysModal() {
   const body = openAuthModal('Your API keys');
   const k = loadKeys();
   const limit = (CONFIG && (CONFIG.maxOpenAiRunsPerDay || CONFIG.maxRunsPerDay)) || 3;
+  const vLimited = Boolean(myVertexQuota && myVertexQuota.limited);
+  const vLimit = (vLimited && typeof myVertexQuota.limit === 'number')
+    ? myVertexQuota.limit
+    : ((CONFIG && CONFIG.maxExternalVertexRunsPerDay) || 25);
   body.innerHTML =
     '<div class="key-scope personal">' +
       '<div class="ks-head">🔒 Personal keys — this browser only</div>' +
       '<ul class="ks-facts">' +
         '<li><b>Stored only in this browser</b> (localStorage). They are never written to the server\'s database, disk or logs, and no other user — not even an admin — can see them.</li>' +
         '<li><b>Sent with each of your runs</b> over HTTPS, because the server has to hold the key to call the provider. It is used in memory for that run and then discarded.</li>' +
+        '<li><b>Your key only.</b> Every request for the models a key covers uses only your key (and your GCP project) — never the shared keys, not even as a fallback. If your key is wrong or out of quota, that slot fails with the provider\'s error.</li>' +
         '<li>Clearing your browser data — or pressing <b>Clear all</b> below — removes them completely.</li>' +
       '</ul>' +
     '</div>' +
-    '<p class="keys-intro"><b>Gemini &amp; Claude (Google Vertex AI) are UNLIMITED</b> for all users (sponsored by the GCP org). ' +
-    'Shared <b>OpenAI</b> models are capped at <b>' + limit + ' runs/day</b> to protect personal API key billing — add your own OpenAI key below for unlimited OpenAI runs' +
-    ((ME && ME.role === 'admin') ? ' (shared keys are managed under <b>Global API keys</b>).' : '.') + '</p>' +
+    '<p class="keys-intro">Runs on the <b>shared keys</b> have daily caps: shared <b>OpenAI</b> models are capped at <b>' + limit + ' runs/day</b>' +
+    (vLimited
+      ? ' and <b>Vertex AI</b> (Gemini, Claude &amp; partner models) at <b>' + vLimit + ' runs/day</b> for your account'
+      : ', and <b>Vertex AI</b> (Gemini, Claude &amp; partner models) is unlimited for your account') +
+    '. <b>Runs on your own keys are never capped.</b>' +
+    ((ME && ME.role === 'admin') ? ' Shared keys are managed under <b>Global API keys</b>.' : '') + '</p>' +
     '<form class="add-user-form" id="keysForm">' +
-      '<div class="auth-field"><label>Gemini / Agent Platform API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
+      '<div class="auth-field"><label>Gemini / Vertex AI API key</label><input id="k-gem" type="password" autocomplete="off" spellcheck="false" placeholder="used for the Gemini slots (text &amp; image)" value="' + esc(k.agentplatform || k.gemini || '') + '" /></div>' +
+      '<div class="auth-field"><label>Your GCP project ID <span class="u-tag">for Gemini 4 &amp; the OAuth token</span></label><input id="k-proj" type="text" autocomplete="off" spellcheck="false" placeholder="e.g. my-gcp-project (the project your own key / token belongs to)" value="' + esc(k.gcpProject || '') + '" /></div>' +
       '<h4 style="margin:18px 0 10px">External models</h4>' +
-      '<p class="keys-intro" style="margin-bottom:12px">These are <b>not</b> on Vertex, so they need their own key and the prompt leaves Google infrastructure when you run them.</p>' +
-      '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT-5.4 / GPT-5.6 Luna</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
+      '<p class="keys-intro" style="margin-bottom:12px">These are <b>not</b> on Vertex, so the prompt leaves Google infrastructure when you run them.</p>' +
+      '<div class="auth-field"><label>OpenAI API key <span class="u-tag">GPT text &amp; GPT Image</span></label><input id="k-openai" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" value="' + esc(k.openai || '') + '" /></div>' +
       '<div class="auth-field"><label>Moonshot API key <span class="u-tag">Kimi K3</span></label><input id="k-moonshot" type="password" autocomplete="off" spellcheck="false" placeholder="sk-… (platform.moonshot.ai)" value="' + esc(k.moonshot || '') + '" /></div>' +
       '<div class="auth-field"><label>Anthropic API key</label><input id="k-anthropic" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-… (for a direct Anthropic slot)" value="' + esc(k.anthropic || '') + '" /></div>' +
-      '<details class="keys-adv"><summary>Advanced — Claude via Google Vertex</summary>' +
-        '<div class="auth-field"><label>Claude Vertex bearer token</label><input id="k-claude" type="password" autocomplete="off" spellcheck="false" value="' + esc(k.claudeBearerToken || '') + '" /></div>' +
-        '<div class="auth-field"><label>GCP project ID</label><input id="k-proj" type="text" autocomplete="off" spellcheck="false" value="' + esc(k.gcpProject || '') + '" /></div>' +
+      '<details class="keys-adv"' + (k.claudeBearerToken ? ' open' : '') + '><summary>Advanced — Claude &amp; partner models via Google Vertex</summary>' +
+        '<p class="keys-intro" style="margin:8px 0 10px">Claude and partner models on Vertex (Grok, Qwen, DeepSeek, Llama, GLM, GPT-OSS, Kimi) use an OAuth token, not an API key. Add your token <b>and</b> your GCP project ID above to run them on your own project.</p>' +
+        '<div class="auth-field"><label>Vertex OAuth bearer token</label><input id="k-claude" type="password" autocomplete="off" spellcheck="false" placeholder="ya29.… (gcloud auth print-access-token)" value="' + esc(k.claudeBearerToken || '') + '" /></div>' +
       '</details>' +
       '<div class="auth-msg" id="keysMsg"></div>' +
       '<div class="keys-actions"><button class="submit-btn" type="submit">Save keys</button><button class="u-del" type="button" id="clearKeysBtn">Clear all</button></div>' +
@@ -844,8 +864,14 @@ function openKeysModal() {
     const set = (id, key) => { const v = body.querySelector(id).value.trim(); if (v) nk[key] = v; };
     set('#k-openai', 'openai'); set('#k-moonshot', 'moonshot'); set('#k-anthropic', 'anthropic');
     set('#k-claude', 'claudeBearerToken'); set('#k-proj', 'gcpProject');
+    const m = body.querySelector('#keysMsg');
+    if (nk.claudeBearerToken && !nk.gcpProject) {
+      m.className = 'auth-msg err';
+      m.textContent = 'Add your GCP project ID too — your own OAuth token only ever runs on your own project.';
+      return;
+    }
     saveKeys(nk);
-    const m = body.querySelector('#keysMsg'); m.className = 'auth-msg ok'; m.textContent = 'Saved to this browser.';
+    m.className = 'auth-msg ok'; m.textContent = 'Saved to this browser.';
     updateQuotaBadge();
   });
   body.querySelector('#clearKeysBtn').addEventListener('click', () => { saveKeys({}); updateQuotaBadge(); openKeysModal(); });
@@ -970,28 +996,33 @@ function renderUsersModal(body, data) {
     const statusBadge = u.mustChangePassword
       ? '<span class="u-status warn" title="User will be forced to set a new password on next sign-in (or immediately if signed in)">⚠️ Must change on login</span>'
       : '<span class="u-status ok" title="Password active">✓ Active</span>';
+    // expiresAt arrives as a full ISO timestamp (end of day, UTC); <input type="date"> only
+    // accepts YYYY-MM-DD - a raw ISO value renders blank and "Save limits" would wipe the expiry.
+    const expDate = u.expiresAt ? String(u.expiresAt).slice(0, 10) : '';
     const expiryBadge = u.expired
-      ? `<span class="u-status warn" title="External account has expired">⛔ Expired (${esc(u.expiresAt || '')})</span>`
-      : (u.expiresAt
-        ? `<span class="u-tag" title="External account expiration date">Expires ${esc(u.expiresAt)}</span>`
+      ? `<span class="u-status warn" title="External account has expired">⛔ Expired (${esc(expDate)})</span>`
+      : (expDate
+        ? `<span class="u-tag" title="External account expiration date">Expires ${esc(expDate)}</span>`
         : '<span class="u-tag" title="No account expiration date">No expiry</span>');
     const vertexCapVal = u.dailyVertexLimit || defaultVertexCap;
     const vertexBadge = u.role === 'admin'
       ? '<span class="u-tag" title="Admins have unlimited Vertex AI runs">Unlimited Vertex</span>'
-      : `<span class="u-tag" title="Daily Vertex AI run cap for this external account">${esc(String(vertexCapVal))}/day Vertex</span>`;
+      : `<span class="u-tag" title="Daily Vertex AI run cap on the shared key for this external account (runs on the user's own key are never capped)">${esc(String(vertexCapVal))}/day Vertex</span>`;
+    const uAttr = esc(u.username);
+    // Four compact square icon actions (title + aria-label carry the full meaning).
     const forceBtn = u.mustChangePassword
-      ? `<button class="u-btn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="0" title="Clear forced password change requirement">Clear force</button>`
-      : `<button class="u-btn warn u-toggle-force" type="button" data-user="${esc(u.username)}" data-force="1" title="Force this user to change their password on next login (or immediately if signed in)">Force PW change</button>`;
-    const resetBtn = `<button class="u-btn u-reset-pw" type="button" data-user="${esc(u.username)}" title="Assign a new temporary password and require change on next login">Set temp PW</button>`;
-    const limitsBtn = `<button class="u-btn u-edit-limits" type="button" data-user="${esc(u.username)}" title="Configure optional account expiration date and daily Vertex AI run cap">Limits</button>`;
+      ? `<button class="u-icon-btn is-active u-toggle-force" type="button" data-user="${uAttr}" data-force="0" title="Password change required on next sign-in. Click to clear the requirement" aria-label="Clear forced password change for ${uAttr}" aria-pressed="true">${ICON_LOCK_RESET}</button>`
+      : `<button class="u-icon-btn warn u-toggle-force" type="button" data-user="${uAttr}" data-force="1" title="Force a password change on next sign-in (immediately if signed in)" aria-label="Force password change for ${uAttr}" aria-pressed="false">${ICON_LOCK_RESET}</button>`;
+    const resetBtn = `<button class="u-icon-btn u-reset-pw" type="button" data-user="${uAttr}" title="Set a temporary password (and require a change on next sign-in)" aria-label="Set temporary password for ${uAttr}" aria-expanded="false">${ICON_KEY}</button>`;
+    const limitsBtn = `<button class="u-icon-btn u-edit-limits" type="button" data-user="${uAttr}" title="Daily Vertex AI cap &amp; account expiration date" aria-label="Edit limits for ${uAttr}" aria-expanded="false">${ICON_GAUGE}</button>`;
     const del = isMe
-      ? '<span class="u-tag">you</span>'
-      : `<button class="u-del" type="button" data-user="${esc(u.username)}" title="Delete user">Remove</button>`;
+      ? '<span class="u-you" title="This is you. You can\'t remove your own account">you</span>'
+      : `<button class="u-icon-btn danger u-del" type="button" data-user="${uAttr}" title="Remove user" aria-label="Remove ${uAttr}">${ICON_TRASH}</button>`;
     return `<tr>
       <td class="u-name">${esc(u.username)}</td>
       <td><span class="u-role ${u.role === 'admin' ? 'is-admin' : ''}">${esc(u.role)}</span></td>
       <td>${statusBadge}</td>
-      <td><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">${vertexBadge}${expiryBadge}</div></td>
+      <td><div class="u-limit-tags">${vertexBadge}${expiryBadge}</div></td>
       <td class="u-act"><div class="u-act-btns">${forceBtn}${resetBtn}${limitsBtn}${del}</div></td>
     </tr>
     <tr class="u-reset-row hidden" data-reset-row="${esc(u.username)}">
@@ -1013,8 +1044,8 @@ function renderUsersModal(body, data) {
           <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px">Daily Vertex cap:
             <input type="number" min="1" max="1000" class="u-limits-vertex" data-user="${esc(u.username)}" value="${esc(String(vertexCapVal))}" style="width:78px;padding:5px 8px" />
           </label>
-          <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px">Expires on (optional):
-            <input type="date" class="u-limits-expires" data-user="${esc(u.username)}" value="${esc(u.expiresAt || '')}" style="padding:5px 8px" />
+          <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px" title="Optional account expiration date">Expires:
+            <input type="date" class="u-limits-expires" data-user="${esc(u.username)}" value="${esc(expDate)}" style="padding:5px 8px" />
           </label>
           <button class="submit-btn u-limits-save" type="button" data-user="${esc(u.username)}" style="margin:0;padding:6px 12px;font-size:12px">Save limits</button>
           <button class="u-btn u-limits-clear-exp" type="button" data-user="${esc(u.username)}" title="Clear expiration date">Clear expiry</button>
@@ -1025,7 +1056,7 @@ function renderUsersModal(body, data) {
     </tr>`;
   }).join('');
   body.innerHTML =
-    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login, set a daily Vertex AI run cap, or configure an optional account expiration date for any external account at any time.</p>' +
+    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login, set a daily Vertex AI run cap, or configure an optional account expiration date for any external account at any time. Daily caps only apply to runs on the <b>shared keys</b>: when a user adds their own keys, those runs use only their keys and aren\'t capped. The expiration date always applies.</p>' +
     '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th>Vertex Cap &amp; Expiry</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '<form class="add-user-form" id="addUserForm">' +
       '<h4>Add an external user</h4>' +
@@ -1044,12 +1075,20 @@ function renderUsersModal(body, data) {
 
   body.querySelectorAll('.u-del').forEach((b) => b.addEventListener('click', () => deleteUser(b.dataset.user, body)));
   body.querySelectorAll('.u-toggle-force').forEach((b) => b.addEventListener('click', () => toggleForcePasswordChange(b.dataset.user, b.dataset.force === '1', body)));
+  // Inline editors (temp password / limits): keep the opener's aria-expanded in sync so the
+  // icon shows as "open" while its row is visible.
+  const syncExpanded = (selector, uname, open) => {
+    const btn = body.querySelector(`${selector}[data-user="${CSS.escape(uname)}"]`);
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
   body.querySelectorAll('.u-reset-pw').forEach((b) => b.addEventListener('click', () => {
     const uname = b.dataset.user;
     const row = body.querySelector(`.u-reset-row[data-reset-row="${CSS.escape(uname)}"]`);
     if (!row) return;
     row.classList.toggle('hidden');
-    if (!row.classList.contains('hidden')) {
+    const open = !row.classList.contains('hidden');
+    syncExpanded('.u-reset-pw', uname, open);
+    if (open) {
       const inp = row.querySelector('.u-reset-input');
       if (inp) inp.focus();
     }
@@ -1058,6 +1097,7 @@ function renderUsersModal(body, data) {
     const uname = b.dataset.user;
     const row = body.querySelector(`.u-reset-row[data-reset-row="${CSS.escape(uname)}"]`);
     if (row) row.classList.add('hidden');
+    syncExpanded('.u-reset-pw', uname, false);
   }));
   body.querySelectorAll('.u-reset-save').forEach((b) => b.addEventListener('click', () => saveUserTempPassword(b.dataset.user, body)));
   body.querySelectorAll('.u-reset-input').forEach((inp) => inp.addEventListener('keydown', (e) => {
@@ -1066,12 +1106,15 @@ function renderUsersModal(body, data) {
   body.querySelectorAll('.u-edit-limits').forEach((b) => b.addEventListener('click', () => {
     const uname = b.dataset.user;
     const row = body.querySelector(`.u-limits-row[data-limits-row="${CSS.escape(uname)}"]`);
-    if (row) row.classList.toggle('hidden');
+    if (!row) return;
+    row.classList.toggle('hidden');
+    syncExpanded('.u-edit-limits', uname, !row.classList.contains('hidden'));
   }));
   body.querySelectorAll('.u-limits-cancel').forEach((b) => b.addEventListener('click', () => {
     const uname = b.dataset.user;
     const row = body.querySelector(`.u-limits-row[data-limits-row="${CSS.escape(uname)}"]`);
     if (row) row.classList.add('hidden');
+    syncExpanded('.u-edit-limits', uname, false);
   }));
   body.querySelectorAll('.u-limits-clear-exp').forEach((b) => b.addEventListener('click', () => {
     const uname = b.dataset.user;

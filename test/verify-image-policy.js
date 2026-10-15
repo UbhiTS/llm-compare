@@ -117,7 +117,9 @@ const claudeOkStream = () => sseResp([
   'data: ' + JSON.stringify({ type: 'message_delta', usage: { output_tokens: 9 } }),
 ]);
 
-const KEYS = { claudeBearerToken: 'test-bearer' };
+// Strict BYOK (src/byok.js): a user's own OAuth token only ever runs on the
+// user's own project, so the token is paired with an explicit gcpProject here.
+const KEYS = { claudeBearerToken: 'test-bearer', gcpProject: 'llm-compare-ubhits' };
 const callFor = (id, a, extra = {}) => {
   const c = modelFromCatalog('A', id);
   return complete({

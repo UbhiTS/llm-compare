@@ -15,6 +15,8 @@
 const zlib = require('zlib');
 const { providerFetch } = require('./providerFetch');
 const globalKeys = require('./globalKeys');
+// Strict BYOK: a user's own key is used exclusively (never a shared key or shared project).
+const byok = require('./byok');
 const { scrubError } = require('./secrets');
 const { imageDimensionsFromBase64 } = require('./imageInfo');
 
@@ -1217,7 +1219,10 @@ async function readJsonBodyWithRetry(sendFn, signal, maxBodyRetries = 1) {
 async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser }) {
   const { buildUpstreamAttribution } = require('./providers');
   const attr = buildUpstreamAttribution(auditUser);
-  let oaKey = (keys && keys.openai)
+  // Strict BYOK: the user's own OpenAI key (when supplied) is the ONLY key used
+  // for this slot - the shared key is never a default, retry or fallback.
+  const ownOpenAIKey = byok.userCredential('openai', keys);
+  let oaKey = ownOpenAIKey
     || globalKeys.get('OPENAI_API_KEY')
     || process.env.OPENAI_API_KEY;
   if (!oaKey && typeof globalKeys.refreshAll === 'function') {
@@ -1381,7 +1386,11 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const { buildUpstreamAttribution } = require('./providers');
   const attr = buildUpstreamAttribution(auditUser);
 
-  let key = (keys && (keys.agentplatform || keys.gemini))
+  // Strict BYOK: the user's own Vertex key (when supplied) is the ONLY key used
+  // and is only ever paired with the user's own project (or the projectless
+  // alias, which bills the key's own project) - never a shared key/project.
+  const ownVertexKey = byok.userCredential('vertexKey', keys);
+  let key = ownVertexKey
     || globalKeys.get('AGENT_PLATFORM_API_KEY')
     || globalKeys.get('GEMINI_API_KEY')
     || process.env.AGENT_PLATFORM_API_KEY
@@ -1394,12 +1403,13 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env) or Settings.');
   }
 
-  const candidateProjects = Array.from(new Set([
-    (keys && keys.gcpProject) || '',
-    process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',
-    '419460847694',
-    process.env.GCP_PROJECT_ID || '',
-  ].filter(Boolean)));
+  const candidateProjects = ownVertexKey
+    ? [byok.userProject(keys)].filter(Boolean)
+    : Array.from(new Set([
+      process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',
+      '419460847694',
+      process.env.GCP_PROJECT_ID || '',
+    ].filter(Boolean)));
 
   const userParts = [];
   const safeAtts = Array.isArray(attachments) ? attachments : [];
@@ -1441,7 +1451,10 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const payloadStr = buildPayload(effectiveSize);
   const t0 = Date.now();
 
-  let usedUrl = buildGlobalProjectUrl(candidateProjects[0] || DEFAULT_IMAGE_PROJECT_NUMBER);
+  // Own key without an own project -> straight to the projectless alias.
+  let usedUrl = candidateProjects.length
+    ? buildGlobalProjectUrl(candidateProjects[0])
+    : (ownVertexKey ? shortPublisherUrl : buildGlobalProjectUrl(DEFAULT_IMAGE_PROJECT_NUMBER));
   let { r, j } = await readJsonBodyWithRetry(() => providerFetch(usedUrl, {
     method: 'POST',
     headers,
@@ -1469,7 +1482,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
 
   // If a custom BYOK key belongs to a different project number (403/404 on project path),
   // fall back automatically to the projectless publisher path.
-  if (r.status === 403 || r.status === 404) {
+  if ((r.status === 403 || r.status === 404) && usedUrl !== shortPublisherUrl) {
     const fb = await readJsonBodyWithRetry(() => providerFetch(shortPublisherUrl, {
       method: 'POST',
       headers,

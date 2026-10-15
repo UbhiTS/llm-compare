@@ -19,6 +19,10 @@ const { scrubError } = require('./secrets');
 // Shared keys an admin can set at runtime (Secret Manager), falling back to the
 // deploy-time env vars. A user's own key always wins over these.
 const globalKeys = require('./globalKeys');
+// Strict BYOK: when a user supplies the credential for a model, ONLY that
+// credential (and the user's own GCP project) is used - never a shared key or
+// shared project, not even as a retry/fallback. See src/byok.js.
+const byok = require('./byok');
 const {
   toGeminiParts,
   toClaudeContent,
@@ -454,7 +458,7 @@ function statusError(message, status, model) {
 const docNote = (model, what) => `${what} sent to ${model} as extracted text (the provider rejected the native file)`;
 
 async function gemini({ model, system, messages, keys, signal }) {
-  const key = (keys && keys.gemini) || globalKeys.get('GEMINI_API_KEY');
+  const key = byok.userCredential('gemini', keys) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
 
   const buildBody = (inlineDocs = true) => {
@@ -532,7 +536,7 @@ const OPENAI_COMPAT = {
 };
 
 function compatKey(cfg, keys) {
-  const key = (keys && keys[cfg.keyField]) || globalKeys.get(cfg.env);
+  const key = byok.userCredential(cfg.keyField, keys) || globalKeys.get(cfg.env);
   if (!key) throw new Error(`Missing ${cfg.env} — add it under "Your API keys" or set it on the server.`);
   return key;
 }
@@ -823,7 +827,7 @@ const openai = (args) => openaiCompat(OPENAI_COMPAT.openai, args);
 const moonshot = (args) => openaiCompat(OPENAI_COMPAT.moonshot, args);
 
 async function anthropic({ model, system, messages, keys, signal }) {
-  const key = (keys && keys.anthropic) || process.env.ANTHROPIC_API_KEY;
+  const key = byok.userCredential('anthropic', keys) || process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('Missing ANTHROPIC_API_KEY in environment (.env)');
 
   const sendReq = (allowPdfDocument = true) => providerFetch('https://api.anthropic.com/v1/messages', {
@@ -887,21 +891,49 @@ async function anthropic({ model, system, messages, keys, signal }) {
 // Vertex AI path rather than the projectless `/v1/publishers/google` alias
 // (which routes to us-central1 and returns 404 for global-only models).
 // Because `AGENT_PLATFORM_API_KEY` belongs to project 419460847694 while
-// `GCP_PROJECT_ID` is used for Claude OAuth (`llm-compare-ubhits`), default to
-// `AGENT_PLATFORM_PROJECT_NUMBER` (`419460847694`) unless the user supplied a
-// custom `gcpProject` override alongside their own API key.
+// `GCP_PROJECT_ID` is used for Claude OAuth (`llm-compare-ubhits`), the shared
+// key defaults to `AGENT_PLATFORM_PROJECT_NUMBER` (`419460847694`).
+// Strict BYOK: a user's own key is only ever paired with the user's own
+// `gcpProject` (or the projectless alias, which bills the key's own project) -
+// never with the shared project - and a user-supplied `gcpProject` is never
+// paired with the shared key.
 function vertexGeminiBaseUrl(model, keys, region) {
   const needsGlobalProjectPath = region === 'global' || geminiVersion(model) >= 4;
-  if (!needsGlobalProjectPath) {
+  const ownKey = !!byok.userCredential('vertexKey', keys);
+  const proj = ownKey
+    ? byok.userProject(keys)
+    : (process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694').trim();
+  if (!needsGlobalProjectPath || !proj) {
     return `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}`;
   }
-  const proj = ((keys && keys.gcpProject) || process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694').trim();
   const loc = (region || 'global').trim();
   return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${encodeURIComponent(model)}`;
 }
 
+// Extra hint on a Vertex Gemini error when the user's own key was used without
+// their own project (global-only models need the project-scoped path).
+function ownVertexKeyHint(keys, status) {
+  if (!byok.userCredential('vertexKey', keys) || byok.userProject(keys)) return '';
+  if (status !== 403 && status !== 404) return '';
+  return ' (Your own Vertex AI key was used - shared keys are never used with it. Global-only models such as Gemini 4 also need your GCP project ID under "Your API keys".)';
+}
+
+// GCP project for Claude / partner MaaS models (OAuth). A user's own OAuth token
+// runs ONLY on the user's own project; the shared service-account token runs
+// only on the shared project (a user-supplied project is ignored there).
+function vertexOAuthProject(keys, catalogProject) {
+  if (byok.userCredential('vertexOAuth', keys)) {
+    const own = byok.userProject(keys);
+    if (!own) {
+      throw byok.byokError('Your own Vertex AI OAuth token needs your own GCP project ID - add it under "Your API keys" (shared projects and keys are never used with your own credentials).');
+    }
+    return own;
+  }
+  return catalogProject || process.env.GCP_PROJECT_ID || '';
+}
+
 async function agentPlatformGemini({ model, system, messages, keys, signal, effort, region, auditUser }) {
-  const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
+  const key = byok.userCredential('vertexKey', keys) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
   const attr = buildUpstreamAttribution(auditUser);
 
@@ -945,7 +977,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   }
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
+  if (!r.ok) throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}${ownVertexKeyHint(keys, r.status)}`, r.status, model);
 
   const parts = j.candidates?.[0]?.content?.parts || [];
   const text = parts.filter((x) => x.thought !== true).map((x) => x.text || '').join('');
@@ -966,8 +998,8 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
 }
 
 async function agentPlatformClaude({ model, system, messages, project, keys, signal, effort, auditUser }) {
-  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
-  const userToken = keys && keys.claudeBearerToken; // if the user brought their own token, use it (no minting)
+  const proj = vertexOAuthProject(keys, project); // strict BYOK: own token -> own project only
+  const userToken = byok.userCredential('vertexOAuth', keys); // if the user brought their own token, use it (no minting)
   const attr = buildUpstreamAttribution(auditUser);
 
   const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
@@ -1072,7 +1104,7 @@ async function readSSE(response, onEvent) {
 }
 
 async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region, auditUser }) {
-  const key = (keys && (keys.agentplatform || keys.gemini)) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
+  const key = byok.userCredential('vertexKey', keys) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
   const attr = buildUpstreamAttribution(auditUser);
 
@@ -1103,7 +1135,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(false)), signal });
     if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
-  if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`, r.status, model); }
+  if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}${ownVertexKeyHint(keys, r.status)}`, r.status, model); }
 
   let answer = '', reasoning = '', usage = {};
   await readSSE(r, (obj) => {
@@ -1132,8 +1164,8 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
 }
 
 async function agentPlatformClaudeStream({ model, system, messages, project, onDelta, keys, signal, effort, auditUser }) {
-  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
-  const userToken = keys && keys.claudeBearerToken;
+  const proj = vertexOAuthProject(keys, project); // strict BYOK: own token -> own project only
+  const userToken = byok.userCredential('vertexOAuth', keys);
   const attr = buildUpstreamAttribution(auditUser);
   const makePayload = (omitDisplay, targetModel = model, allowPdfDocument = true) => {
     const b = {
@@ -1258,11 +1290,11 @@ const maasMaxTokens = (model) => MAX_OUTPUT_TOKENS
   : (MAAS_MAX_OUTPUT[model] || 0);
 
 async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys, signal, effort, region, thinkingMode }) {
-  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
+  const proj = vertexOAuthProject(keys, project); // strict BYOK: own token -> own project only
   const reg = region || 'global';
   const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
   const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
-  const userToken = keys && keys.claudeBearerToken;
+  const userToken = byok.userCredential('vertexOAuth', keys);
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
   const send = (token, withEffort) => {
@@ -1315,11 +1347,11 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
 }
 
 async function agentPlatformOpenAIMaaSStream({ model, system, messages, project, onDelta, keys, signal, effort, region, thinkingMode }) {
-  const proj = (keys && keys.gcpProject) || project || process.env.GCP_PROJECT_ID || '';
+  const proj = vertexOAuthProject(keys, project); // strict BYOK: own token -> own project only
   const reg = region || 'global';
   const host = reg === 'global' ? 'aiplatform.googleapis.com' : `${reg}-aiplatform.googleapis.com`;
   const url = `https://${host}/v1beta1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(reg)}/endpoints/openapi/chat/completions`;
-  const userToken = keys && keys.claudeBearerToken;
+  const userToken = byok.userCredential('vertexOAuth', keys);
   const eff = thinkingMode === 'configurable-effort' ? (validateEffort({ provider: 'agentplatform', endpointType: 'openai-maas', thinkingMode, model }, effort) || openaiDefaultEffort()) : null;
 
   const send = (token, withEffort, withUsageOpt = true) => {

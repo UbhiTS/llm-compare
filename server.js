@@ -38,6 +38,9 @@ const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
+// Strict BYOK: single source of truth for "does this model run on the user's own
+// credential" - own-key models never touch shared keys and never count toward caps.
+const { modelUsesOwnKey } = require('./src/byok');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
@@ -998,9 +1001,11 @@ app.post('/api/image-arena/run', async (req, res) => {
     const requested = s && s.catalogId ? String(s.catalogId).slice(0, 100) : '';
     const catId = requested || IMAGE_MODEL_CATALOG[idx % IMAGE_MODEL_CATALOG.length].id;
     const entry = IMAGE_MODEL_CATALOG.find((m) => m.id === catId || m.model === catId) || null;
-    return { slot: slotId, id: catId, label: entry ? entry.label : catId, provider: entry ? entry.provider : 'agentplatform' };
+    return { slot: slotId, id: catId, label: entry ? entry.label : catId, provider: entry ? entry.provider : 'agentplatform', publisher: entry ? entry.publisher : 'google' };
   });
-  const usesSharedVertexKey = resolvedSlotEntries.some((m) => m.provider === 'agentplatform' && !(keys.agentplatform || keys.gemini));
+  // Only slots on the SHARED Vertex key count toward the external-account daily Vertex cap;
+  // a slot on the user's own key runs only on that key (strict BYOK) and is never capped.
+  const usesSharedVertexKey = resolvedSlotEntries.some((m) => m.provider === 'agentplatform' && !modelUsesOwnKey(m, keys));
   if (usesSharedVertexKey) {
     const vQuota = auth.consumeVertexRun(req.user);
     if (!vQuota.ok) {
@@ -1269,18 +1274,10 @@ app.get('/games/:id/*', (req, res) => {
 app.get('/games/:id', (req, res) => res.redirect(301, `/games/${req.params.id}/`)); // bare id -> trailing slash
 
 // Does this model run on a user-supplied credential (vs. the server's)? Used to
-// decide whether a run counts against the per-user daily quota.
-function modelUsesOwnKey(m, keys) {
-  const prov = m && m.provider;
-  if (prov === 'agentplatform') {
-    return (m.publisher || 'google') === 'anthropic' ? !!keys.claudeBearerToken : !!(keys.agentplatform || keys.gemini);
-  }
-  if (prov === 'gemini') return !!keys.gemini;
-  if (prov === 'openai') return !!keys.openai;
-  if (prov === 'anthropic') return !!keys.anthropic;
-  if (prov === 'moonshot') return !!keys.moonshot;
-  return false;
-}
+// decide whether a run counts against the per-user daily quota. Defined in
+// src/byok.js (imported above) so the provider adapters, the image arena and the
+// quota checks all agree: Claude AND partner MaaS models on Vertex need the
+// user's OAuth token; a Gemini/Vertex API key does not cover them.
 
 // Lightweight attachment inspection & server-side SHA-1 LRU + per-user binary vault caching endpoint.
 // Called immediately when the user drops/picks files so the UI shows exact server-extracted
