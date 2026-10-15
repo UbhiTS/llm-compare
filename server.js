@@ -45,6 +45,10 @@ const { modelUsesOwnKey } = require('./src/byok');
 const appSettings = require('./src/appSettings');
 // Image Arena per-run quota tickets (one charge per Run click, not per slot).
 const runTickets = require('./src/runTickets');
+// Month-to-date spend on the global keys: app-tracked ledger + provider-reported numbers.
+const spendLedger = require('./src/spendLedger');
+const providerBilling = require('./src/providerBilling');
+const { priceFor } = require('./src/pricing');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
@@ -523,18 +527,40 @@ app.post('/api/admin/settings', requireAdmin, (req, res) => {
     }
     const before = appSettings.get();
     const after = appSettings.update(
-      { limits: body.limits, adminEmails: body.adminEmails },
+      { limits: body.limits, budgets: body.budgets, adminEmails: body.adminEmails },
       { actor: req.user.username, allowedDomains: googleAuth.allowedDomains() }
     );
-    // Paper trail for who changed limits / admins, and from what to what.
+    // Paper trail for who changed limits / budgets / admins, and from what to what.
     log.event('NOTICE', `[settings] updated by ${req.user.username}`, {
       by: req.user.username, limitsBefore: before.limits, limitsAfter: after.limits,
+      budgetsBefore: before.budgets, budgetsAfter: after.budgets,
       adminsBefore: before.adminEmails, adminsAfter: after.adminEmails,
     });
     res.json(settingsPayload());
   } catch (e) {
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
+});
+
+// ---------- Settings (admin): this month's spend on the global keys vs monthly budgets ----------
+// App-tracked spend (src/spendLedger.js) for every provider, plus provider-reported
+// numbers where an API exists (src/providerBilling.js). "Remaining" uses the provider's
+// own month-to-date spend when it has one (it also counts other apps on the same org),
+// else the app-tracked spend. ?refresh=1 re-queries the providers (max once a minute).
+app.get('/api/admin/spend', requireAdmin, async (req, res) => {
+  const force = req.query && (req.query.refresh === '1' || req.query.refresh === 'true');
+  const tracked = spendLedger.monthToDate();
+  const budgets = appSettings.get().budgets;
+  const views = await Promise.all(appSettings.PROVIDERS.map((p) => providerBilling.providerView(p, { force })));
+  const providers = appSettings.PROVIDERS.map((p, i) => providerBilling.summarize({
+    id: p,
+    label: appSettings.PROVIDER_LABELS[p],
+    app: tracked.providers[p],
+    view: views[i],
+    budgetUsd: budgets[p],
+    globalKey: globalKeyConfigured(p),
+  }));
+  res.json({ ok: true, month: tracked.month, trackingSince: tracked.since, generatedAt: new Date().toISOString(), providers });
 });
 
 app.post('/api/auth/users/:username/force-password-change', requireAdmin, (req, res) => {
@@ -972,6 +998,7 @@ app.put('/api/global-keys', requireAdmin, async (req, res) => {
     const keys = await globalKeys.set(String(name || ''), String(value || ''));
     // Audit trail: a shared key change affects every user's runs and spend.
     console.log(`[globalKeys] ${req.user.username} updated ${name}`);
+    providerBilling.invalidate(); // a new (admin) key should show up in Settings > spend right away
     res.json({ ok: true, keys });
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
@@ -1059,12 +1086,7 @@ app.post('/api/image-arena/history/:id/star', (req, res) => {
 // Moonshot 3, Vertex AI 10) for every user; admins are exempt. Models on the user's own key
 // never count: strict BYOK means they never touch the global keys.
 function budgetBucket(m) {
-  switch (m && m.provider) {
-    case 'openai': return 'openai';
-    case 'anthropic': return 'anthropic';
-    case 'moonshot': return 'moonshot';
-    default: return 'vertex'; // agentplatform: Gemini, Claude, partner MaaS, Nano Banana (+ Gemini direct)
-  }
+  return appSettings.budgetBucket(m); // agentplatform (Gemini, Claude, partner MaaS, Nano Banana) + gemini -> vertex
 }
 function budgetsNeeded(models, keys) {
   const need = new Set();
@@ -1207,6 +1229,10 @@ app.post('/api/image-arena/run', async (req, res) => {
     });
     finished = true;
     if (claimed) runTickets.settleSlot(ticket, slotId, { abandoned: false });
+    // App-tracked spend: each image generated on a global key adds its PayGo cost to this month.
+    for (const r of (out && out.results) || []) {
+      if (r && r.ok) spendLedger.recordModelCost({ provider: r.provider, publisher: r.publisher }, keys, r.standardPayGoCostUsd);
+    }
     out.runId = runId;
     out.vertexQuota = auth.vertexRunQuota(req.user);
     out.quotas = auth.quotaSnapshot(req.user);
@@ -1362,6 +1388,13 @@ app.post('/api/judge', async (req, res) => {
 
   try {
     const verdict = await judgeOutputs({ task, entries: clean, judge, keys, auditUser });
+    // App-tracked spend for the judge call (tokens x catalog price), if it ran on a global key.
+    {
+      const jp = priceFor(judge);
+      const ju = verdict.usage || {};
+      const judgeCost = ((Number(ju.promptTokens) || 0) * (jp.input || 0) + (Number(ju.completionTokens) || 0) * (jp.output || 0)) / 1e6;
+      spendLedger.recordModelCost(judge, keys, judgeCost);
+    }
     history.finalizeAuditRun(judgeAuditId, { status: 'completed' }).catch(() => {});
     await history.attachJudgeToLatestRun(req.user.username, task.id, verdict, req.body && req.body.runId);
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
@@ -1622,8 +1655,15 @@ app.post('/api/run', async (req, res) => {
   });
 
   let results = null;
+  // App-tracked spend: every finished model call that ran on a global key adds its
+  // cost to this month's ledger for that provider (own-key calls are skipped).
+  const slotModels = new Map(chosenModels.map((m) => [m.slot, m]));
+  const meteredEmit = (obj) => {
+    if (obj && obj.type === 'done' && obj.result) spendLedger.recordModelCost(slotModels.get(obj.slot), keys, obj.result.costUsd);
+    emit(obj);
+  };
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit, keys, signal: ac.signal, repair, runId, auditUser });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit: meteredEmit, keys, signal: ac.signal, repair, runId, auditUser });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   } finally {

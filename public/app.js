@@ -1194,6 +1194,10 @@ function renderSettingsModal(body, data) {
     '<table class="users-table st-table"><thead><tr><th>Provider</th><th>Runs / user / day</th><th></th><th>Global key</th></tr></thead><tbody>' + limitRows + '</tbody></table>' +
     '<div class="st-actions"><button class="submit-btn" type="button" id="stSaveLimits">Save limits</button><span class="auth-msg" id="stLimitsMsg"></span></div>' +
     '<p class="st-note">External accounts can also get a custom Vertex AI limit in <b>Manage users</b>. ' + updated + '</p>' +
+    '<h4 class="st-h">Spend on the global keys this month</h4>' +
+    '<p class="keys-intro">App spend counts every model call this app ran on a global key (own-key calls excluded). Provider numbers come straight from the provider where it has an API. ' +
+      '<b>Remaining</b> = your monthly budget minus the provider\'s own month-to-date spend, or minus the app spend when the provider has no spend API.</p>' +
+    '<div id="stSpend"><p class="auth-loading">Loading spend…</p></div>' +
     '<h4 class="st-h">Internal admins</h4>' +
     '<p class="keys-intro">Google sign-in accounts (' + esc(domains || 'your Workspace domain') + ') that can manage users, keys, settings and the audit log. Changes apply right away, no sign-out needed.</p>' +
     '<table class="users-table st-table"><thead><tr><th>Account</th><th>Role</th><th>Source</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + bootRows + addedRows + '</tbody></table>' +
@@ -1250,6 +1254,104 @@ function renderSettingsModal(body, data) {
     if (!window.confirm(`Remove admin access for ${email}?`)) return;
     post({ adminEmails: added.filter((x) => x !== email) }, 'stAdminMsg', `Removed admin access for ${email}.`);
   }));
+  loadSettingsSpend(body, false);
+}
+
+// ---------- Settings: spend on the global keys vs monthly budgets ----------
+// Up to 4 decimals under $1 so a handful of cheap calls never reads as "$0.00".
+const usdFmt = (n) => {
+  if (n == null || !Number.isFinite(Number(n))) return '';
+  const v = Number(n);
+  const small = v !== 0 && Math.abs(v) < 1;
+  return v.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: small ? 4 : 2 });
+};
+
+async function loadSettingsSpend(body, refresh, msg) {
+  const box = body.querySelector('#stSpend');
+  if (!box) return;
+  try {
+    const r = await fetch('/api/admin/spend' + (refresh ? '?refresh=1' : ''), { credentials: 'same-origin' });
+    if (r.status === 401) { window.location.replace('/login'); return; }
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || 'Could not load spend.');
+    if (!body.querySelector('#stSpend')) return; // modal closed or re-rendered meanwhile
+    renderSettingsSpend(body, data, msg);
+  } catch (e) {
+    box.innerHTML = '<p class="auth-err"></p>';
+    box.querySelector('p').textContent = e.message;
+  }
+}
+
+function renderSettingsSpend(body, data, msg) {
+  const box = body.querySelector('#stSpend');
+  const [yy, mm] = String(data.month || '').split('-').map(Number);
+  const monthLabel = yy ? new Date(Date.UTC(yy, (mm || 1) - 1, 1)).toLocaleString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' }) : 'This month';
+  const providerCell = (p) => {
+    const v = p.provider || {};
+    const what = v.kind === 'balance' ? 'balance left' : 'org spend';
+    if (v.ok) return `<b>${usdFmt(v.usd)}</b> ${what}<div class="st-hint">${esc(v.source || '')}</div>`;
+    if (v.error) return `<span class="st-err">Couldn't read it: ${esc(v.error)}</span>`;
+    return `<span class="st-hint">${esc(v.note || 'No provider API')}</span>`;
+  };
+  const rows = (data.providers || []).map((p) => {
+    const calls = (p.app && p.app.calls) || 0;
+    const appCell = `<b>${usdFmt(p.app && p.app.usd)}</b><div class="st-hint">${calls} call${calls === 1 ? '' : 's'}${p.globalKey ? '' : ' · no global key'}</div>`;
+    const budgetCell = `<input type="number" class="st-budget" data-provider="${esc(p.id)}" min="0" step="1" placeholder="none" value="${p.budgetUsd == null ? '' : esc(String(p.budgetUsd))}" aria-label="${esc(p.label)} monthly budget in US dollars" />`;
+    let remainCell = '<span class="st-hint">Set a budget</span>';
+    if (p.budgetUsd != null) {
+      const used = Number(p.usedPct) || 0;
+      const cls = (p.remainingUsd < 0 || used >= 100) ? 'over' : used >= 80 ? 'warn' : 'ok';
+      const headline = p.remainingUsd < 0
+        ? `<b>${usdFmt(-p.remainingUsd)}</b> over budget · ${used}% used`
+        : `<b>${usdFmt(p.remainingUsd)}</b> left · ${used}% used`;
+      remainCell = `<div class="st-remain ${cls}">${headline}</div>`
+        + `<div class="st-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, used)}"><span class="${cls}" style="width:${Math.max(0, Math.min(100, used))}%"></span></div>`
+        + `<div class="st-hint">vs ${p.basis === 'provider' ? esc(p.label) + '-reported' : 'app-tracked'} spend</div>`;
+    }
+    return `<tr><td class="u-name">${esc(p.label)}</td><td>${appCell}</td><td>${providerCell(p)}</td><td>${budgetCell}</td><td>${remainCell}</td></tr>`;
+  }).join('');
+  const since = data.trackingSince ? new Date(data.trackingSince).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+  const asOf = (data.providers || []).map((p) => p.provider && p.provider.asOf).filter(Boolean).sort().pop();
+  box.innerHTML =
+    '<table class="users-table st-table st-spend-table"><thead><tr><th>' + esc(monthLabel) + '</th><th>Spent via this app</th><th>Provider says</th><th>Monthly budget ($)</th><th>Remaining</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '<div class="st-actions"><button class="submit-btn" type="button" id="stSaveBudgets">Save budgets</button>' +
+      '<button class="u-btn" type="button" id="stRefreshSpend" title="Re-read provider numbers (at most once a minute)">↻ Refresh</button>' +
+      '<span class="auth-msg" id="stBudgetMsg"></span></div>' +
+    '<p class="st-note">' + (since ? `App spend tracked since ${esc(since)} (it started with this release, so earlier usage this month isn't in it). ` : 'No global-key calls tracked yet this month. ') +
+      (asOf ? `Provider numbers as of ${esc(new Date(asOf).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }))}.` : '') + '</p>';
+  if (msg) { const m = box.querySelector('#stBudgetMsg'); m.className = 'auth-msg ' + (msg.ok ? 'ok' : 'err'); m.textContent = msg.text; }
+
+  box.querySelector('#stRefreshSpend').addEventListener('click', () => {
+    const m = box.querySelector('#stBudgetMsg'); m.className = 'auth-msg'; m.textContent = 'Refreshing…';
+    loadSettingsSpend(body, true);
+  });
+  box.querySelector('#stSaveBudgets').addEventListener('click', async () => {
+    const m = box.querySelector('#stBudgetMsg');
+    const budgets = {};
+    let bad = '';
+    box.querySelectorAll('.st-budget').forEach((inp) => {
+      const v = inp.value.trim();
+      if (v === '') { budgets[inp.dataset.provider] = null; return; }
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) bad = bad || 'Budgets are dollar amounts of 0 or more, or blank for none.';
+      budgets[inp.dataset.provider] = n;
+    });
+    if (bad) { m.className = 'auth-msg err'; m.textContent = bad; return; }
+    m.className = 'auth-msg'; m.textContent = 'Saving…';
+    try {
+      const r = await fetch('/api/admin/settings', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budgets }),
+      });
+      if (r.status === 401) { window.location.replace('/login'); return; }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || 'Could not save budgets.');
+      loadSettingsSpend(body, false, { ok: true, text: 'Budgets saved.' });
+    } catch (e) {
+      m.className = 'auth-msg err'; m.textContent = e.message;
+    }
+  });
 }
 
 // ---------- global (shared) API keys — admin only ----------

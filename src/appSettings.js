@@ -27,8 +27,18 @@ const PROVIDERS = Object.freeze(['openai', 'anthropic', 'moonshot', 'vertex']);
 const PROVIDER_LABELS = Object.freeze({ openai: 'OpenAI', anthropic: 'Anthropic', moonshot: 'Moonshot', vertex: 'Vertex AI' });
 const DEFAULT_LIMITS = Object.freeze({ openai: 3, anthropic: 3, moonshot: 3, vertex: 10 });
 const MAX_LIMIT = 10000;
+// Optional monthly budget (USD, calendar month UTC) per global key, for the
+// "remaining of budget" view in Settings. null = no budget set.
+const EMPTY_BUDGETS = Object.freeze({ openai: null, anthropic: null, moonshot: null, vertex: null });
+const MAX_BUDGET = 1000000;
 const MAX_ADMIN_EMAILS = 200;
 const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+
+// Which daily budget / spend bucket a model belongs to (by its provider).
+function budgetBucket(m) {
+  const p = m && m.provider;
+  return (p === 'openai' || p === 'anthropic' || p === 'moonshot') ? p : 'vertex'; // agentplatform, gemini -> vertex
+}
 
 const BOOTSTRAP_ADMIN_EMAILS = Object.freeze(Array.from(new Set(
   String(process.env.ADMIN_EMAILS || 'ubhi@google.com,admin@ubhi.altostrat.com')
@@ -50,18 +60,32 @@ function sanitizeLimits(raw) {
   return out;
 }
 
+function sanitizeBudgets(raw) {
+  const out = { ...EMPTY_BUDGETS };
+  if (raw && typeof raw === 'object') {
+    for (const p of PROVIDERS) {
+      const n = Number(raw[p]);
+      if (raw[p] !== undefined && raw[p] !== null && raw[p] !== '' && Number.isFinite(n) && n >= 0 && n <= MAX_BUDGET) {
+        out[p] = Math.round(n * 100) / 100;
+      }
+    }
+  }
+  return out;
+}
+
 function load() {
   try {
     const obj = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
     const admins = Array.isArray(obj && obj.adminEmails) ? obj.adminEmails.map(normEmail).filter((e) => EMAIL_RE.test(e)) : [];
     return {
       limits: sanitizeLimits(obj && obj.limits),
+      budgets: sanitizeBudgets(obj && obj.budgets),
       adminEmails: Array.from(new Set(admins)).slice(0, MAX_ADMIN_EMAILS),
       updatedAt: (obj && obj.updatedAt) || null,
       updatedBy: (obj && obj.updatedBy) || null,
     };
   } catch (_) {
-    return { limits: { ...DEFAULT_LIMITS }, adminEmails: [], updatedAt: null, updatedBy: null };
+    return { limits: { ...DEFAULT_LIMITS }, budgets: { ...EMPTY_BUDGETS }, adminEmails: [], updatedAt: null, updatedBy: null };
   }
 }
 
@@ -85,6 +109,7 @@ function save() {
 function get() {
   return {
     limits: { ...settings.limits },
+    budgets: { ...settings.budgets },
     adminEmails: settings.adminEmails.slice(),
     updatedAt: settings.updatedAt,
     updatedBy: settings.updatedBy,
@@ -102,11 +127,23 @@ function isAdminEmail(email) {
   return !!e && (BOOTSTRAP_ADMIN_EMAILS.includes(e) || settings.adminEmails.includes(e));
 }
 
-// Validate + persist an admin edit. `limits` and/or `adminEmails` may be omitted
-// (left unchanged). `allowedDomains` (Google sign-in domains) restricts which
+// Validate + persist an admin edit. `limits`, `budgets` and/or `adminEmails` may be
+// omitted (left unchanged). `allowedDomains` (Google sign-in domains) restricts which
 // emails can be made admins; `actor` is recorded for the audit trail.
-function update({ limits, adminEmails } = {}, { actor = null, allowedDomains = [] } = {}) {
+function update({ limits, budgets, adminEmails } = {}, { actor = null, allowedDomains = [] } = {}) {
   const next = get();
+  if (budgets !== undefined) {
+    if (!budgets || typeof budgets !== 'object') throw new Error('Budgets must be an object.');
+    for (const p of PROVIDERS) {
+      if (budgets[p] === undefined) continue;
+      if (budgets[p] === null || budgets[p] === '') { next.budgets[p] = null; continue; }
+      const n = Number(budgets[p]);
+      if (!Number.isFinite(n) || n < 0 || n > MAX_BUDGET) {
+        throw new Error(`${PROVIDER_LABELS[p]} monthly budget must be a dollar amount from 0 to ${MAX_BUDGET}, or blank for none.`);
+      }
+      next.budgets[p] = Math.round(n * 100) / 100;
+    }
+  }
   if (limits !== undefined) {
     if (!limits || typeof limits !== 'object') throw new Error('Limits must be an object.');
     for (const p of PROVIDERS) {
@@ -143,6 +180,6 @@ function update({ limits, adminEmails } = {}, { actor = null, allowedDomains = [
 }
 
 module.exports = {
-  PROVIDERS, PROVIDER_LABELS, DEFAULT_LIMITS, MAX_LIMIT, BOOTSTRAP_ADMIN_EMAILS,
-  get, limitFor, update, isAdminEmail, isBootstrapAdmin, SETTINGS_FILE,
+  PROVIDERS, PROVIDER_LABELS, DEFAULT_LIMITS, MAX_LIMIT, MAX_BUDGET, BOOTSTRAP_ADMIN_EMAILS,
+  get, limitFor, update, isAdminEmail, isBootstrapAdmin, budgetBucket, SETTINGS_FILE,
 };

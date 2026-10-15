@@ -24,10 +24,14 @@ const { getClaudeToken } = require('./gcloudToken');
 
 // The shared keys an admin may manage. Vertex-Claude isn't here: it authenticates
 // with the runtime service account itself, so there is no key to store.
+// The two *_ADMIN_KEY entries never run models: they only read month-to-date org
+// spend for Settings (src/providerBilling.js). Create the OpenAI one as Read only.
 const MANAGED = [
   { name: 'AGENT_PLATFORM_API_KEY', label: 'Gemini / Agent Platform', hint: 'Gemini models on Vertex' },
-  { name: 'OPENAI_API_KEY',         label: 'OpenAI',                  hint: 'GPT-5.6 models (external)' },
-  { name: 'MOONSHOT_API_KEY',       label: 'Moonshot',                hint: 'Kimi K3 (external)' },
+  { name: 'OPENAI_API_KEY',         label: 'OpenAI',                  hint: 'GPT text models + GPT Image (external)' },
+  { name: 'MOONSHOT_API_KEY',       label: 'Moonshot',                hint: 'Direct Kimi models (external)' },
+  { name: 'OPENAI_ADMIN_KEY',       label: 'OpenAI admin key',        hint: 'Spend only: shows OpenAI org spend in Settings. Create it Read only (sk-admin-…)' },
+  { name: 'ANTHROPIC_ADMIN_KEY',    label: 'Anthropic admin key',     hint: 'Spend only: shows Anthropic org spend in Settings (sk-ant-admin…, full org admin rights)' },
 ];
 const MANAGED_NAMES = new Set(MANAGED.map((m) => m.name));
 
