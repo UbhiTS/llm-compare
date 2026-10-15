@@ -380,8 +380,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.42', 'package.json must be at version 1.0.42');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.42</span>'), 'index.html must display v1.0.42 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.43', 'package.json must be at version 1.0.43');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.43</span>'), 'index.html must display v1.0.43 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;
@@ -448,7 +448,6 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   for (const [id, expectedIn, expectedOut] of [
     ['claude-opus-5-5', 4.00, 20.00],
-    ['claude-opus-5-5-fast', 4.00, 20.00],
     ['claude-sonnet-5-5', 2.00, 10.00],
     ['claude-haiku-5-5', 0.10, 0.50],
     ['gpt-6.1-sol', 2.00, 10.00],
@@ -476,7 +475,12 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     RETIRED_CATALOG.some((m) => m.id === 'claude-fable-5-5') && RETIRED_CATALOG.some((m) => m.id === 'claude-mythos-5-5'),
     'RETIRED_CATALOG must include claude-fable-5-5 and claude-mythos-5-5'
   );
-  const opusFastItem = MODEL_CATALOG.find((m) => m.id === 'claude-opus-5-5-fast');
+  // Opus 5.5 Fast 404'd on the project (not enabled in Model Garden, 2026-10-15): hidden from the
+  // picker, kept resolvable, and saved picks of it run Opus 5.5.
+  assert(!MODEL_CATALOG.some((m) => m.id === 'claude-opus-5-5-fast'), 'claude-opus-5-5-fast must not be selectable until enabled');
+  assert.strictEqual(RETIRED_REPLACEMENT['claude-opus-5-5-fast'], 'claude-opus-5-5', 'claude-opus-5-5-fast must map to claude-opus-5-5');
+  const opusFastItem = RETIRED_CATALOG.find((m) => m.id === 'claude-opus-5-5-fast');
+  assert(opusFastItem, 'RETIRED_CATALOG must keep claude-opus-5-5-fast');
   assert.deepStrictEqual(
     providersMod.thinkingOptions(opusFastItem).options.map((o) => o.value),
     ['low', 'medium', 'high', 'xhigh', 'max'],

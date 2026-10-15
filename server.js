@@ -48,7 +48,7 @@ const runTickets = require('./src/runTickets');
 // Month-to-date spend on the global keys: app-tracked ledger + provider-reported numbers.
 const spendLedger = require('./src/spendLedger');
 const providerBilling = require('./src/providerBilling');
-const { priceFor } = require('./src/pricing');
+const { callCostUsd } = require('./src/pricing');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
@@ -544,9 +544,10 @@ app.post('/api/admin/settings', requireAdmin, (req, res) => {
 
 // ---------- Settings (admin): this month's spend on the global keys vs monthly budgets ----------
 // App-tracked spend (src/spendLedger.js) for every provider, plus provider-reported
-// numbers where an API exists (src/providerBilling.js). "Remaining" uses the provider's
-// own month-to-date spend when it has one (it also counts other apps on the same org),
-// else the app-tracked spend. ?refresh=1 re-queries the providers (max once a minute).
+// numbers where an API exists (src/providerBilling.js). "Remaining" uses the larger of the
+// provider's own month-to-date spend (where it has one; it also counts other apps on the
+// same org) and the app-tracked spend: the same number the monthly budget check enforces
+// (see monthlyBudgetOver). ?refresh=1 re-queries the providers (max once a minute).
 app.get('/api/admin/spend', requireAdmin, async (req, res) => {
   const force = req.query && (req.query.refresh === '1' || req.query.refresh === 'true');
   const tracked = spendLedger.monthToDate();
@@ -1115,10 +1116,70 @@ function quotaExhaustedBody(user, provider, q, arena) {
     quotas: auth.quotaSnapshot(user),
   };
 }
+// ---------- monthly budgets on the GLOBAL keys (Settings > Spend), enforced ----------
+// A provider's monthly budget (USD, calendar month UTC; null = no budget) caps spend on ITS
+// global key: once this month's spend reaches the budget, every run that needs that global
+// key is rejected up front (before any daily run is charged or any model is called) until
+// next month or until an admin raises or clears the budget. A $0 budget blocks the key.
+// Spend = the larger of the app-tracked ledger and the provider's own month-to-date number
+// (providerBilling.spentFor, the same basis Settings shows as Remaining); the provider number
+// only counts while its cached view is under an hour old (providerBilling.peek), so no
+// provider API is ever called on the request path. Own-key models never count
+// (budgetsNeeded); admins are exempt exactly like the daily limits.
+function monthlyBudgetOver(user, models, keys, skipList) {
+  if (!user || auth.exemptFromBudgets(user)) return null;
+  const budgets = appSettings.get().budgets;
+  let tracked = null;
+  for (const p of budgetsNeeded(models, keys)) {
+    if (skipList.includes(p) || budgets[p] == null) continue;
+    if (!tracked) tracked = spendLedger.monthToDate();
+    const app = tracked.providers[p];
+    const spentUsd = providerBilling.spentFor(providerBilling.peek(p), app && app.usd);
+    if (spentUsd >= budgets[p]) return { provider: p, budgetUsd: budgets[p], spentUsd };
+  }
+  return null;
+}
+const usd2 = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Same shape as a daily-limit rejection (provider + the *QuotaExhausted flags + quotas), so
+// the UI reacts the same way (e.g. offers to swap external slots to Vertex AI), plus
+// monthlyBudgetExhausted / budgetUsd / spentUsd.
+function monthlyBudgetExhaustedBody(user, { provider, budgetUsd, spentUsd }) {
+  const label = appSettings.PROVIDER_LABELS[provider] || provider;
+  const ownKey = provider === 'vertex' ? 'your own Vertex AI key or token' : `your own ${label} key`;
+  const what = budgetUsd > 0
+    ? `The shared ${label} key has used this month's budget (${usd2(spentUsd)} of ${usd2(budgetUsd)}).`
+    : `The shared ${label} key has a $0 monthly budget, so runs on it are turned off.`;
+  return {
+    type: 'error',
+    quotaExhausted: true,
+    monthlyBudgetExhausted: true,
+    provider,
+    openaiQuotaExhausted: provider === 'openai',
+    externalQuotaExhausted: provider !== 'vertex',
+    vertexQuotaExhausted: provider === 'vertex',
+    budgetUsd,
+    spentUsd: Math.round(spentUsd * 1e6) / 1e6,
+    error: `${what} Add ${ownKey} under Your API keys to keep going, or ask an admin to raise the budget in Settings.`,
+    quota: auth.providerQuota(user, provider),
+    vertexQuota: auth.providerQuota(user, 'vertex'),
+    quotas: auth.quotaSnapshot(user),
+  };
+}
 // Charge every budget a run needs, all-or-nothing. `skip` = budgets this run was already
 // charged for (Image Arena top-ups). -> { ok, charged:[...], quotas } | { ok:false, body }
+// The monthly budgets are checked first, so a used-up one rejects the run before anything
+// is charged; budgets in `skip` were approved at reserve and aren't re-checked (only a
+// top-up budget is).
 function chargeDailyBudgets(user, models, keys, { arena = 'text', skip = [] } = {}) {
   const skipList = Array.isArray(skip) ? skip : [];
+  const over = monthlyBudgetOver(user, models, keys, skipList);
+  if (over) {
+    const label = appSettings.PROVIDER_LABELS[over.provider] || over.provider;
+    log.event('NOTICE', `[budget] blocked a ${arena} run for ${user.username}: the ${label} monthly budget is used up (${usd2(over.spentUsd)} of ${usd2(over.budgetUsd)})`, {
+      user: user.username, provider: over.provider, budgetUsd: over.budgetUsd, spentUsd: over.spentUsd, arena,
+    });
+    return { ok: false, body: monthlyBudgetExhaustedBody(user, over) };
+  }
   const charged = [];
   for (const p of budgetsNeeded(models, keys)) {
     if (skipList.includes(p)) continue;
@@ -1388,11 +1449,12 @@ app.post('/api/judge', async (req, res) => {
 
   try {
     const verdict = await judgeOutputs({ task, entries: clean, judge, keys, auditUser });
-    // App-tracked spend for the judge call (tokens x catalog price), if it ran on a global key.
+    // App-tracked spend for the judge call(s), if it ran on a global key: tokens x catalog
+    // price, each provider call priced for its own prompt size (callCostUsd, tiered models).
     {
-      const jp = priceFor(judge);
       const ju = verdict.usage || {};
-      const judgeCost = ((Number(ju.promptTokens) || 0) * (jp.input || 0) + (Number(ju.completionTokens) || 0) * (jp.output || 0)) / 1e6;
+      const judgeCalls = Array.isArray(ju.calls) && ju.calls.length ? ju.calls : [ju];
+      const judgeCost = judgeCalls.reduce((sum, c) => sum + callCostUsd(judge, Number(c.promptTokens) || 0, Number(c.completionTokens) || 0), 0);
       spendLedger.recordModelCost(judge, keys, judgeCost);
     }
     history.finalizeAuditRun(judgeAuditId, { status: 'completed' }).catch(() => {});

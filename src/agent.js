@@ -6,10 +6,10 @@
 // from. We accumulate tokens, latency and cost across the whole loop.
 // ---------------------------------------------------------------------------
 
-const { complete, thinkingProfile } = require('./providers');
+const { complete, thinkingProfile, estimateTokens } = require('./providers');
 const { withRetryListener } = require('./providerFetch');
 const { runTests } = require('./runner');
-const { priceFor } = require('./pricing');
+const { priceFor, priceForPrompt, callCostUsd } = require('./pricing');
 const { budgetAttachmentsForModel } = require('./attachments');
 
 const SYSTEM_PROMPT =
@@ -134,9 +134,13 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
   const history = []; // [{ iteration, passed, total }]
   const attachmentNotes = []; // provider-specific attachment handling shown in the slot
 
-  const price = priceFor(modelConfig);
-  const runningCost = () =>
-    (price.input * totals.promptTokens) / 1e6 + (price.output * totals.completionTokens) / 1e6;
+  const price = priceFor(modelConfig); // base price (reported on the result)
+  // Cost accrues per provider call, each priced for ITS OWN prompt size (callCostUsd):
+  // a tiered model (Claude Haiku 5.5) bills a call with a 100K+ token prompt at the higher
+  // rate for both its input and output, so a multi-round task adds up its calls' costs
+  // instead of pricing the summed tokens at one flat rate.
+  let costSoFar = 0;
+  const runningCost = () => costSoFar;
 
   const wallStart = Date.now();
 
@@ -144,12 +148,15 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     iterations = i + 1;
 
     emit({ type: 'status', slot, phase: 'thinking', iteration: iterations });
+    // Our own estimate of this call's prompt size: only picks the live price tier until the
+    // provider reports the real prompt-token count mid-stream (see the live cost below).
+    const estPromptTokens = estimateTokens(messages, system);
     let lastDelta = 0;
     let sentAnswer = '';
     let sentReasoning = '';
     const samples = []; // [{ms, charsLen}] rolling window for live tok/s
     const WINDOW_MS = 1000; // 1 second
-    const onDelta = ({ answer, reasoning, runningOut, runningThink }) => {
+    const onDelta = ({ answer, reasoning, runningOut, runningThink, runningIn }) => {
       const now = Date.now();
       if (now - lastDelta < 60) return; // throttle delta emissions to ~16 fps
       lastDelta = now;
@@ -176,11 +183,14 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
         runningOut != null ? Math.max(0, runningOut - (runningThink || 0)) : 0,
         Math.ceil(curAns.length / 4)
       );
-      // Live cost = prior rounds' cost + this round's streaming output so far (output
-      // tokens incl. thinking are billed at price.output). Input cost for the current
-      // round lands when the round's usage arrives on the metrics event.
-      const liveOut = totals.completionTokens + answerNow + thinkNow;
-      const liveCostUsd = +(((price.input * totals.promptTokens) + (price.output * liveOut)) / 1e6).toFixed(6);
+      // Live cost = prior calls' cost + this call so far. This call is priced for its own
+      // prompt size (priceForPrompt): the provider's prompt-token count once the stream has
+      // reported it (its input cost is then included), else our estimate above, used only to
+      // pick the tier (input cost then lands when the call's usage arrives on the metrics
+      // event). Streaming output tokens (incl. thinking) are billed at that tier's output rate.
+      const callIn = Number(runningIn) > 0 ? Number(runningIn) : null;
+      const callPrice = priceForPrompt(modelConfig, callIn != null ? callIn : estPromptTokens);
+      const liveCostUsd = +(costSoFar + ((callIn != null ? callPrice.input * callIn : 0) + callPrice.output * (answerNow + thinkNow)) / 1e6).toFixed(6);
 
       // Compute O(1) incremental deltas so we don't re-serialize & secret-scrub
       // the entire cumulative text on every 60ms tick.
@@ -248,6 +258,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     totals.completionTokens += resp.completionTokens;
     totals.reasoningTokens += resp.reasoningTokens || 0;
     totals.apiLatencyMs += resp.latencyMs;
+    costSoFar += callCostUsd(modelConfig, resp.promptTokens, resp.completionTokens); // this call at its own prompt tier
     // Coding tasks (have a `language`) return a fenced code block → extract it.
     // Prose/general tasks (no language) keep the raw text.
     code = task.language ? extractCode(resp.text) : resp.text.trim();

@@ -18,6 +18,7 @@ const { scrubError } = require('./secrets');
 
 const CACHE_MS = 10 * 60 * 1000;
 const MIN_REFRESH_MS = 60 * 1000;
+const PEEK_MAX_AGE_MS = 60 * 60 * 1000; // peek(): cached views the budget check may still use
 const TIMEOUT_MS = 15000;
 const MAX_PAGES = 6;
 const KIND = Object.freeze({ openai: 'spend', anthropic: 'spend', moonshot: 'balance', vertex: 'none' });
@@ -138,13 +139,39 @@ function invalidate(provider) {
   if (provider) cache.delete(provider); else cache.clear();
 }
 
+// Sync, no network: the cached provider view while it is under an hour old, else null.
+// The monthly budget check (server.js) runs on the request path, so it never waits on a
+// provider API; the cache is filled whenever an admin opens Settings > Spend.
+function peek(provider) {
+  const c = cache.get(provider);
+  if (!c || Date.now() - c.at >= PEEK_MAX_AGE_MS) return null;
+  return { kind: KIND[provider] || 'none', ...c.value, asOf: new Date(c.at).toISOString(), cached: true };
+}
+
+// The provider's own month-to-date spend from a view, or null (no spend API, no admin
+// key, an error, or a Moonshot balance, which is never treated as spend).
+function providerSpendUsd(view) {
+  return view && view.kind === 'spend' && view.ok ? (Number(view.usd) || 0) : null;
+}
+
+// Month-to-date spend counted against a monthly budget: the larger of the app-tracked
+// spend and the provider-reported month-to-date spend (when its spend API answered).
+// Shared by Settings (summarize) and the budget check, so the two always agree.
+function spentFor(view, appUsd) {
+  const app = Number(appUsd) || 0;
+  const prov = providerSpendUsd(view);
+  return prov != null && prov > app ? prov : app;
+}
+
 // One Settings row: app-tracked spend + provider view + budget -> remaining.
-// "Remaining" uses the provider's own month-to-date spend when it has a spend API
-// (it also counts other apps on the same org), else the app-tracked spend.
+// "Remaining" uses spentFor(): the larger of the provider's own month-to-date spend (where
+// it has a spend API; it also counts other apps on the same org) and the app-tracked spend.
+// basis = 'provider' when the provider number is the larger one, else 'app'.
 function summarize({ id, label, app, view, budgetUsd, globalKey }) {
   const appSpend = app || { usd: 0, calls: 0 };
-  const basis = view && view.kind === 'spend' && view.ok ? 'provider' : 'app';
-  const spentUsd = basis === 'provider' ? Number(view.usd) || 0 : Number(appSpend.usd) || 0;
+  const spentUsd = spentFor(view, appSpend.usd);
+  const prov = providerSpendUsd(view);
+  const basis = prov != null && prov > (Number(appSpend.usd) || 0) ? 'provider' : 'app';
   const budget = (budgetUsd == null || budgetUsd === '') ? null : Number(budgetUsd);
   // A $0 budget is used up by any spend at all (no divide by zero).
   let usedPct = null;
@@ -160,7 +187,10 @@ function summarize({ id, label, app, view, budgetUsd, globalKey }) {
     basis,
     remainingUsd: budget == null ? null : Math.round((budget - spentUsd) * 100) / 100,
     usedPct,
+    // Enforced: runs on this provider's global key are blocked (admins exempt) once spend
+    // reaches the budget; a $0 budget blocks the key outright. Same test as server.js.
+    budgetUsedUp: budget != null && spentUsd >= budget,
   };
 }
 
-module.exports = { providerView, invalidate, summarize, openaiMonthToDate, anthropicMonthToDate, moonshotBalance, KIND };
+module.exports = { providerView, invalidate, peek, spentFor, summarize, openaiMonthToDate, anthropicMonthToDate, moonshotBalance, KIND };

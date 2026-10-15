@@ -1196,7 +1196,9 @@ function renderSettingsModal(body, data) {
     '<p class="st-note">External accounts can also get a custom Vertex AI limit in <b>Manage users</b>. ' + updated + '</p>' +
     '<h4 class="st-h">Spend on the global keys this month</h4>' +
     '<p class="keys-intro">App spend counts every model call this app ran on a global key (own-key calls excluded). Provider numbers come straight from the provider where it has an API. ' +
-      '<b>Remaining</b> = your monthly budget minus the provider\'s own month-to-date spend, or minus the app spend when the provider has no spend API.</p>' +
+      '<b>Remaining</b> = your monthly budget minus the larger of the app spend and the provider\'s own month-to-date spend (where it has a spend API). ' +
+      '<b>Budgets are enforced:</b> once a provider\'s budget is used up, runs on its global key are blocked' + (data.adminsExempt ? ' (admins aren\'t limited)' : '') +
+      ' until next month or until the budget is raised; users with their own key keep going. <b>0</b> blocks that global key; blank means no budget.</p>' +
     '<div id="stSpend"><p class="auth-loading">Loading spend…</p></div>' +
     '<h4 class="st-h">Internal admins</h4>' +
     '<p class="keys-intro">Google sign-in accounts (' + esc(domains || 'your Workspace domain') + ') that can manage users, keys, settings and the audit log. Changes apply right away, no sign-out needed.</p>' +
@@ -1306,6 +1308,9 @@ function renderSettingsSpend(body, data, msg) {
         : `<b>${usdFmt(p.remainingUsd)}</b> left · ${used}% used`;
       remainCell = `<div class="st-remain ${cls}">${headline}</div>`
         + `<div class="st-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, used)}"><span class="${cls}" style="width:${Math.max(0, Math.min(100, used))}%"></span></div>`
+        + (p.budgetUsedUp
+          ? `<div class="st-err" title="Runs that need the global ${esc(p.label)} key are rejected until next month or until this budget is raised. Runs on users' own keys aren't affected.">${Number(p.budgetUsd) > 0 ? 'Budget used up' : '$0 budget'}, global-key runs blocked</div>`
+          : '')
         + `<div class="st-hint">vs ${p.basis === 'provider' ? esc(p.label) + '-reported' : 'app-tracked'} spend</div>`;
     }
     return `<tr><td class="u-name">${esc(p.label)}</td><td>${appCell}</td><td>${providerCell(p)}</td><td>${budgetCell}</td><td>${remainCell}</td></tr>`;
@@ -1826,6 +1831,7 @@ function seedSlots() {
   // Map retired / zero-quota / 404 model IDs to verified active catalog models,
   // while never overwriting valid saved models (such as gemini-3.7-flash or claude-opus-4-7).
   const RETIRED_MODEL_MAP = {
+    'claude-opus-5-5-fast': 'claude-opus-5-5', // not enabled in the project's Model Garden (404, 2026-10-15)
     'claude-fable-5-1': 'claude-sonnet-5',
     'claude-fable-5': 'claude-sonnet-5',
     'claude-mythos-5': 'claude-opus-5-5',
@@ -1917,6 +1923,7 @@ function modelFromCatalogId(slot, id, duplicateCatalogIds) {
     region: c.region || null,
     model: c.model,
     price: { input: c.price.input, output: c.price.output },
+    ...(Array.isArray(c.priceTiers) && c.priceTiers.length ? { priceTiers: c.priceTiers } : {}),
     external: !!c.external,
     thinking: effectiveThinking,
     thinkingOptions: c.thinkingOptions || null,
@@ -3289,7 +3296,21 @@ function renderTaskPrompt() {
   renderContextMeter();
 }
 
-function priceTag(c) { return `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`; }
+// Tiered models (e.g. Claude Haiku 5.5) bill a whole request at a higher rate once its
+// prompt reaches a size: the tag shows the base rate with a small "*", the tiers in a tooltip.
+function priceTierNote(c) {
+  let tiers = c && Array.isArray(c.priceTiers) ? c.priceTiers : null;
+  if (!tiers && c) { const cat = catalog().find((x) => x.id === (c.catalogId || c.id)); tiers = cat && cat.priceTiers; }
+  if (!Array.isArray(tiers) || !tiers.length) return '';
+  const k = (n) => (n >= 1000000 ? `${+(n / 1000000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
+  return tiers.map((t) => `Prompts of ${k(+t.minPromptTokens)}+ tokens: $${(+t.input).toFixed(2)} / $${(+t.output).toFixed(2)}`).join('; ')
+    + ' per 1M (input and output of that request)';
+}
+function priceTag(c) {
+  const base = `$${(+c.price.input).toFixed(2)} / $${(+c.price.output).toFixed(2)}`;
+  const note = priceTierNote(c);
+  return note ? `<span class="price-tiered" title="${esc(note)}">${base}*</span>` : base;
+}
 
 function thinkTag(t) {
   if (!t || !t.label) return '';
@@ -7578,7 +7599,7 @@ async function runImageArenaComparisonClick() {
     if (rr.status === 403 && rj && rj.code === 'PASSWORD_CHANGE_REQUIRED') { openChangePwModal({ forced: true }); finishEarly(); return; }
     if (rr.status === 429) {
       const m = (rj && rj.error) || 'Daily run limit reached.';
-      if (timerBadge) timerBadge.textContent = 'Daily limit reached';
+      if (timerBadge) timerBadge.textContent = rj && rj.monthlyBudgetExhausted ? 'Monthly budget used up' : 'Daily limit reached';
       finishEarly();
       if (rj && (rj.externalQuotaExhausted || rj.openaiQuotaExhausted) && swapSharedExternalImageSlotsToVertex(true)) {
         if (window.confirm(`${m}\n\nReplace the GPT Image slot(s) with Gemini (Nano Banana) models and run now? It will count against your Vertex AI budget instead.`)) {

@@ -665,6 +665,8 @@ module.exports = {
   runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, MAX_OPENAI_RUNS_PER_DAY,
   vertexRunQuota, consumeVertexRun, refundVertexRun, MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
   providerQuota, consumeProviderRun, refundProviderRun, quotaSnapshot, BUDGET_PROVIDERS,
+  // admins skip the daily limits AND the monthly budgets (unless RATE_LIMIT_EXEMPT_ADMINS=0)
+  exemptFromBudgets,
   // setup code
   ensureSetupCode, getSetupCode, verifySetupCode,
   // validation (exposed for reuse/tests)

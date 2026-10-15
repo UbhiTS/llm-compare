@@ -347,6 +347,7 @@ select option { color: var(--text); background: var(--bg); }
 .col-head[draggable="true"]:active { cursor: grabbing; }
 .col-id { min-width: 0; }
 .col-price { color: var(--faint); }
+.price-tiered { cursor: help; } /* tiered model (e.g. Claude Haiku 5.5): the tooltip lists the higher-tier rate */
 .col-remove { flex: 0 0 auto; background: transparent; border: 1px solid var(--border); color: var(--muted);
   width: 26px; height: 26px; line-height: 1; font-size: 15px; cursor: pointer; font-family: inherit;
   transition: color .15s ease, border-color .15s ease; }

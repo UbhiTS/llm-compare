@@ -709,7 +709,7 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
       const estThink = Math.max(uThink, reasoning ? estimateTokens([{ content: reasoning }]) : 0);
       const estAns = text ? estimateTokens([{ content: text }]) : 0;
       const runOut = usage?.output_tokens || (estAns + estThink);
-      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: estThink });
+      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: estThink, runningIn: usage?.input_tokens ?? null });
     }
   });
 
@@ -803,7 +803,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
       const uThink = usage?.completion_tokens_details?.reasoning_tokens || 0;
       const runThink = Math.max(uThink, reasoning ? estimateTokens([{ content: reasoning }]) : 0);
       const runOut = usage?.completion_tokens || (estimateTokens([{ content: text }]) + runThink);
-      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: runThink });
+      onDelta({ answer: text, reasoning, runningOut: runOut, runningThink: runThink, runningIn: usage?.prompt_tokens ?? null });
     }
   });
   const latencyMs = Date.now() - t0;
@@ -1148,7 +1148,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     if (onDelta && (parts.length || obj.usageMetadata)) {
       const think = usage.thoughtsTokenCount || 0;
       const runningOut = usage.candidatesTokenCount != null ? usage.candidatesTokenCount + think : null;
-      onDelta({ answer, reasoning, runningOut, runningThink: think });
+      onDelta({ answer, reasoning, runningOut, runningThink: think, runningIn: usage.promptTokenCount ?? null });
     }
   });
   const latencyMs = Date.now() - t0;
@@ -1225,7 +1225,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
         const estAns = answer ? estimateTokens([{ content: answer }]) : 0;
         const curThink = thinkTok || estThink;
         const curOut = outTok ? Math.max(outTok, estAns + curThink) : (estAns + curThink);
-        onDelta({ answer, reasoning, runningOut: curOut, runningThink: curThink });
+        onDelta({ answer, reasoning, runningOut: curOut, runningThink: curThink, runningIn: inTok || null });
       }
     } else if (ev.type === 'message_delta') {
       if (ev.delta?.stop_reason) stopReason = ev.delta.stop_reason;
@@ -1240,7 +1240,7 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
           const impliedThink = outTok > ansEst ? (outTok - ansEst) : 0;
           thinkTok = reasonEst > 0 ? Math.min(outTok, Math.max(reasonEst, impliedThink)) : impliedThink;
         }
-        if (onDelta) onDelta({ answer, reasoning, runningOut: outTok, runningThink: thinkTok });
+        if (onDelta) onDelta({ answer, reasoning, runningOut: outTok, runningThink: thinkTok, runningIn: inTok || null });
       }
     }
   });
@@ -1399,7 +1399,7 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
       const uThink = usage?.completion_tokens_details?.reasoning_tokens || 0;
       const runThink = Math.max(uThink, sp.reasoning ? estimateTokens([{ content: sp.reasoning }]) : 0);
       const runOut = usage?.completion_tokens || (estimateTokens([{ content: sp.text }]) + runThink);
-      onDelta({ answer: sp.text, reasoning: sp.reasoning, runningOut: runOut, runningThink: runThink });
+      onDelta({ answer: sp.text, reasoning: sp.reasoning, runningOut: runOut, runningThink: runThink, runningIn: usage?.prompt_tokens ?? null });
     }
   });
   const latencyMs = Date.now() - t0;

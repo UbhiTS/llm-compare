@@ -23,10 +23,14 @@
 //   • Gemini 3.1 Flash Lite — $0.25 in / $1.50 out  (Vertex, 1M context)
 //   • Claude Opus 5.5       — $4.00 in / $20.00 out (Agent Platform GA 2026-09-23, also in the
 //       Gemini Enterprise app from 2026-10-15; 1M context / 128K output, adaptive thinking
-//       always on. Also `claude-opus-5-5-fast` low-latency endpoint at $4.00 / $20.00)
+//       always on. The low-latency `claude-opus-5-5-fast` endpoint ($4.00 / $20.00) is
+//       retired here until it's enabled in the project's Model Garden: it 404'd on 2026-10-15)
 //   • Claude Sonnet 5.5     — $2.00 in / $10.00 out (Agent Platform GA 2026-09-28, also in the
 //       Gemini Enterprise app from 2026-10-15; 1M context / 128K output)
-//   • Claude Haiku 5.5      — $0.10 in / $0.50 out  (Vertex Agent Platform; 200K context)
+//   • Claude Haiku 5.5      - $0.10 in / $0.50 out for prompts under 100K tokens, $0.50 in /
+//       $2.50 out for prompts of 100K+ tokens (per request: a 100K+ prompt bills that request's
+//       input AND output at the higher rate, see `priceTiers`). Agent Platform, 1M context GA /
+//       128K output (go/claude-faq, Anthropic Claude Models on Agent Platform FAQ)
 //   • Claude Fable 5        — $10.00 in / $50.00 out (Anthropic list price; launched 2026-06-09)
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8       — $5.00 in / $25.00 out (Anthropic list price)
@@ -63,7 +67,6 @@ const MODEL_CATALOG = [
 
   // --- 2. Anthropic (Claude — Vertex AI Partner, verified live quota) ---
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 4.00, output: 20.00 }, context: 1000000 },
-  { id: 'claude-opus-5-5-fast', label: 'Claude Opus 5.5 Fast', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5-fast', price: { input: 4.00, output: 20.00 }, context: 1000000 },
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5-5', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'claude-opus-5', label: 'Claude Opus 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-sonnet-5', label: 'Claude Sonnet 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5', price: { input: 3.00, output: 15.00 }, context: 1000000 },
@@ -71,7 +74,7 @@ const MODEL_CATALOG = [
   { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-7', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-6', price: { input: 5.00, output: 25.00 }, context: 1000000 },
   { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-4-6', price: { input: 3.00, output: 15.00 }, context: 1000000 },
-  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-5-5', price: { input: 0.10, output: 0.50 }, context: 200000 },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-5-5', price: { input: 0.10, output: 0.50 }, priceTiers: [{ minPromptTokens: 100000, input: 0.50, output: 2.50 }], context: 1000000 },
   { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-haiku-4-5', price: { input: 1.00, output: 5.00 }, context: 200000 },
 
   // --- 3. xAI (Grok — Vertex AI Model Garden Global MaaS) ---
@@ -126,6 +129,9 @@ const MODEL_CATALOG = [
 // probes (`modelFromCatalog('C', 'claude-fable-5-1')`) can still resolve their
 // metadata while `MODEL_CATALOG` and `/api/config` never expose them in the UI.
 const RETIRED_CATALOG = [
+  // Low-latency Opus 5.5 endpoint: 404 (not enabled in Model Garden for llm-compare-ubhits) on
+  // 2026-10-15, so it's hidden from the picker and saved picks run Opus 5.5 until it's enabled.
+  { id: 'claude-opus-5-5-fast', label: 'Claude Opus 5.5 Fast', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5-fast', price: { input: 4.00, output: 20.00 }, context: 1000000 },
   { id: 'claude-fable-5-5', label: 'Claude Fable 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-mythos-5-5', label: 'Claude Mythos 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-1', price: { input: 10.00, output: 50.00 }, context: 1000000 },
@@ -140,6 +146,7 @@ const RETIRED_CATALOG = [
 ];
 
 const RETIRED_REPLACEMENT = {
+  'claude-opus-5-5-fast': 'claude-opus-5-5',
   'claude-fable-5-5': 'claude-sonnet-5-5',
   'claude-mythos-5-5': 'claude-opus-5-5',
   'claude-fable-5-1': 'claude-sonnet-5',
@@ -180,6 +187,8 @@ function modelFromCatalog(slot, id) {
     thinkingMode: c.thinkingMode || null,
     model: c.model,
     price: { input: c.price.input, output: c.price.output },
+    // Prompt-size price tiers (e.g. Claude Haiku 5.5 at 100K+ tokens); only on tiered models.
+    ...(Array.isArray(c.priceTiers) && c.priceTiers.length ? { priceTiers: c.priceTiers.map((t) => ({ ...t })) } : {}),
     external: !!c.external,
     blocked: c.blocked || null,
     context: c.context || null,
@@ -238,4 +247,29 @@ function priceFor(cfg) {
   return PRICING[cfg && cfg.provider] || { input: 0, output: 0 };
 }
 
-module.exports = { PRICING, MODEL_CATALOG, DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT, modelFromCatalog, resolveModels, priceFor };
+// The price for ONE provider request, given that request's own prompt size. Models with
+// `priceTiers` (e.g. Claude Haiku 5.5: $0.50 / $2.50 once a prompt reaches 100K tokens)
+// bill BOTH that request's input and output at the highest tier whose `minPromptTokens`
+// the prompt reaches; every other model (and a prompt below every tier) gets the base
+// price, exactly like priceFor().
+function priceForPrompt(cfg, promptTokens) {
+  const base = priceFor(cfg);
+  const tiers = cfg && Array.isArray(cfg.priceTiers) ? cfg.priceTiers : null;
+  if (!tiers || !tiers.length) return base;
+  const n = Number(promptTokens) || 0;
+  let best = null;
+  for (const t of tiers) {
+    const min = Number(t && t.minPromptTokens);
+    if (!Number.isFinite(min) || n < min) continue;
+    if (!best || min > Number(best.minPromptTokens)) best = t;
+  }
+  return best ? { input: best.input, output: best.output } : base;
+}
+
+// USD cost of one provider request (tokens x the per-1M price for its prompt size).
+function callCostUsd(cfg, promptTokens, completionTokens) {
+  const p = priceForPrompt(cfg, promptTokens);
+  return ((Number(p.input) || 0) * (Number(promptTokens) || 0) + (Number(p.output) || 0) * (Number(completionTokens) || 0)) / 1e6;
+}
+
+module.exports = { PRICING, MODEL_CATALOG, DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT, modelFromCatalog, resolveModels, priceFor, priceForPrompt, callCostUsd };

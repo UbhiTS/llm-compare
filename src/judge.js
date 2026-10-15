@@ -332,6 +332,9 @@ async function judgeOutputs({ task, entries, judge, keys, signal, auditUser }) {
   });
 
   let resp = await runJudgeCall(promptText);
+  // Per-call token usage, so the caller can price each provider call at its own prompt
+  // size (tiered models) even when a safety retry adds a second call.
+  const calls = [{ promptTokens: resp.promptTokens || 0, completionTokens: resp.completionTokens || 0 }];
   let parsed = null;
   let firstErr = null;
   if (resp.stopReason !== 'refusal' && String(resp.text || '').trim()) {
@@ -348,6 +351,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal, auditUser }) {
     // cyber refusal) can grade the structural/analytical quality of the outputs.
     const retryPromptText = buildPrompt(task, blinded, { redactedForSafetyRetry: true });
     const resp2 = await runJudgeCall(retryPromptText);
+    calls.push({ promptTokens: resp2.promptTokens || 0, completionTokens: resp2.completionTokens || 0 });
     resp = {
       ...resp2,
       promptTokens: (resp.promptTokens || 0) + (resp2.promptTokens || 0),
@@ -419,6 +423,7 @@ async function judgeOutputs({ task, entries, judge, keys, signal, auditUser }) {
       promptTokens: resp.promptTokens,
       completionTokens: resp.completionTokens,
       latencyMs: resp.latencyMs,
+      calls,
     },
   };
 }
