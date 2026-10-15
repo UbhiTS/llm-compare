@@ -211,7 +211,13 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   );
   assert.strictEqual(resolveOpenAIImageSize('1K', '1:1'), '1024x1024', 'OpenAI 1K 1:1 size must map to 1024x1024');
   assert.strictEqual(resolveOpenAIImageSize('2K', '16:9'), '2560x1440', 'OpenAI 2K 16:9 size must map to 2560x1440');
-  assert.strictEqual(resolveOpenAIImageSize('4K', '16:9'), '3840x2160', 'OpenAI 4K 16:9 size must map to 3840x2160');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '1:1'), '2880x2880', 'OpenAI 4K 1:1 size must map to 2880x2880 (8.29 MP budget)');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '4:3'), '3200x2400', 'OpenAI 4K 4:3 size must map to 3200x2400 (7.68 MP budget)');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '3:4'), '2400x3200', 'OpenAI 4K 3:4 size must map to 2400x3200 (7.68 MP budget)');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '16:9'), '3840x2160', 'OpenAI 4K 16:9 size must map to 3840x2160 (8.29 MP budget)');
+  assert.strictEqual(resolveOpenAIImageSize('4K', '9:16'), '2160x3840', 'OpenAI 4K 9:16 size must map to 2160x3840 (8.29 MP budget)');
+  assert(!MODEL_CATALOG.some((m) => m.id === 'kimi-k3' || m.id === 'kimi-k2.6'), 'Unconfigured Moonshot direct models (kimi-k3, kimi-k2.6) must be retired from MODEL_CATALOG');
+  assert(MODEL_CATALOG.some((m) => m.id === 'kimi-k2-thinking-maas'), 'Kimi K2 Thinking (Vertex MaaS) must remain active in MODEL_CATALOG');
   const sunburstEntry = imgCfg.catalog.find((m) => m.id === 'gpt-image-2.5-sunburst');
   assert(sunburstEntry && sunburstEntry.provider === 'openai', 'gpt-image-2.5-sunburst must exist with provider: openai');
   const oaEcon = computeImageSlotEconomics(
@@ -373,8 +379,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.36', 'package.json must be at version 1.0.36');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.36</span>'), 'index.html must display v1.0.36 in footer');
+  assert.strictEqual(pkgJson.version, '1.0.37', 'package.json must be at version 1.0.37');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.37</span>'), 'index.html must display v1.0.37 in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;

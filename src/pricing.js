@@ -111,10 +111,8 @@ const MODEL_CATALOG = [
   { id: 'gpt-oss-120b-maas', label: 'GPT-OSS 120B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-120b-maas', price: { input: 0.09, output: 0.36 }, context: 131072 },
   { id: 'gpt-oss-20b-maas', label: 'GPT-OSS 20B (Vertex MaaS)', provider: 'agentplatform', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'openai/gpt-oss-20b-maas', price: { input: 0.07, output: 0.25 }, context: 131072 },
 
-  // --- 8. Moonshot AI (Kimi — Vertex AI MaaS + Direct) ---
+  // --- 8. Moonshot AI (Kimi — Vertex AI MaaS) ---
   { id: 'kimi-k2-thinking-maas', label: 'Kimi K2 Thinking (Vertex MaaS)', provider: 'agentplatform', publisher: 'moonshotai', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'moonshotai/kimi-k2-thinking-maas', price: { input: 0.60, output: 2.50 }, context: 256000 },
-  { id: 'kimi-k3', label: 'Kimi K3', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k3', price: { input: 3.00, output: 15.00 }, context: 256000, external: true },
-  { id: 'kimi-k2.6', label: 'Kimi K2.6', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k2.6', price: { input: 0.95, output: 4.00 }, context: 256000, external: true },
 
   // --- 9. Z.AI / Zhipu (GLM — Vertex AI Model Garden MaaS) ---
   { id: 'glm-5.2-maas', label: 'GLM-5.2 (Vertex MaaS)', provider: 'agentplatform', publisher: 'zai-org', providerFamily: 'zai', providerLabel: 'Z.AI (GLM)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'zai-org/glm-5.2-maas', price: { input: 0.50, output: 2.00 }, context: 131072 },
@@ -135,6 +133,8 @@ const RETIRED_CATALOG = [
   { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-4-5', price: { input: 3.00, output: 15.00 }, context: 200000 },
   { id: 'grok-4.6', label: 'Grok 4.6', provider: 'agentplatform', publisher: 'xai', providerFamily: 'xai', providerLabel: 'xAI (Grok)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'native', model: 'xai/grok-4.6', price: { input: 5.00, output: 25.00 }, context: 256000 },
   { id: 'gpt-6-terra', label: 'GPT-6 Terra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-terra', price: { input: 2.50, output: 15.00 }, context: 1000000 },
+  { id: 'kimi-k3', label: 'Kimi K3', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k3', price: { input: 3.00, output: 15.00 }, context: 256000, external: true },
+  { id: 'kimi-k2.6', label: 'Kimi K2.6', provider: 'moonshot', publisher: 'moonshot', providerFamily: 'moonshot', providerLabel: 'Moonshot AI (Kimi)', model: 'kimi-k2.6', price: { input: 0.95, output: 4.00 }, context: 256000, external: true },
 ];
 
 const RETIRED_REPLACEMENT = {
@@ -147,6 +147,8 @@ const RETIRED_REPLACEMENT = {
   'claude-sonnet-4-5': 'claude-sonnet-4-6',
   'grok-4.6': 'grok-4.20-reasoning',
   'gpt-6-terra': 'gpt-5.6-terra',
+  'kimi-k3': 'kimi-k2-thinking-maas',
+  'kimi-k2.6': 'kimi-k2-thinking-maas',
 };
 
 function catalogEntry(id, { includeRetired = false } = {}) {

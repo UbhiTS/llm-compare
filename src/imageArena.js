@@ -169,7 +169,7 @@ const IMAGE_MODEL_CATALOG = [
       referenceCostBySize: { '1K': 0.1248, '2K': 0.1872, '4K': 0.3744 },
     },
     purchasingTiers: ['Standard PayGo ($30/1M img output tok)', 'OpenAI Batch API'],
-    architectureGuidance: 'OpenAI flagship image generation & multi-reference editing engine (`gpt-image-2.5-sunburst`) supporting arbitrary 16px-aligned resolutions up to 3840px.',
+    architectureGuidance: 'OpenAI flagship image generation & multi-reference editing engine (`gpt-image-2.5-sunburst`) supporting 16px-aligned resolutions up to 4K UHD (3840x2160 / 2880x2880, 8.29 MP).',
   },
   {
     id: 'gpt-image-2.5-flare',
@@ -1164,7 +1164,8 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   };
 }
 
-// OpenAI GPT Image 2 / 2.5 support arbitrary 16px-aligned dimensions up to 3840px max edge.
+// OpenAI GPT Image 2 / 2.5 support 16px-aligned dimensions within a hard
+// 8,294,400-pixel budget (3840x2160 = 2880x2880 = 8.29 MP).
 const OPENAI_IMAGE_DIMENSIONS = {
   '1K': {
     '1:1': '1024x1024',
@@ -1181,9 +1182,9 @@ const OPENAI_IMAGE_DIMENSIONS = {
     '9:16': '1440x2560',
   },
   '4K': {
-    '1:1': '3840x3840',
-    '4:3': '3840x2880',
-    '3:4': '2880x3840',
+    '1:1': '2880x2880',
+    '4:3': '3200x2400',
+    '3:4': '2400x3200',
     '16:9': '3840x2160',
     '9:16': '2160x3840',
   },
@@ -1194,10 +1195,33 @@ function resolveOpenAIImageSize(sizeId, aspectRatio) {
   return tier[aspectRatio] || tier['16:9'] || '1024x1024';
 }
 
+async function readJsonBodyWithRetry(sendFn, signal, maxBodyRetries = 1) {
+  for (let attempt = 0; ; attempt++) {
+    const r = await sendFn();
+    try {
+      const rawText = await r.text();
+      let j = {};
+      if (rawText && rawText.trim()) {
+        j = JSON.parse(rawText);
+      }
+      return { r, j };
+    } catch (bodyErr) {
+      if (signal && signal.aborted) throw bodyErr;
+      if (!r.ok) return { r, j: {} };
+      if (attempt < maxBodyRetries) continue;
+      throw new Error(`Response stream interrupted while downloading image payload (${(bodyErr && bodyErr.message) || 'truncated JSON'}).`);
+    }
+  }
+}
+
 async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal }) {
-  const oaKey = (keys && keys.openai)
+  let oaKey = (keys && keys.openai)
     || globalKeys.get('OPENAI_API_KEY')
     || process.env.OPENAI_API_KEY;
+  if (!oaKey && typeof globalKeys.refreshAll === 'function') {
+    await globalKeys.refreshAll().catch(() => {});
+    oaKey = globalKeys.get('OPENAI_API_KEY') || process.env.OPENAI_API_KEY;
+  }
   if (!oaKey) {
     throw new Error('Missing OPENAI_API_KEY in environment (.env) or Settings.');
   }
@@ -1255,26 +1279,43 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
   };
 
   const t0 = Date.now();
-  let r = await sendOpenAIRequest(effectiveSize);
+  let { r, j } = await readJsonBodyWithRetry(() => sendOpenAIRequest(effectiveSize), signal, 1);
   if (r.status === 400 && effectiveSize !== '1K') {
-    const retry1K = await sendOpenAIRequest('1K');
-    if (retry1K.ok) {
-      r = retry1K;
-      effectiveSize = '1K';
+    const fallbackOrder = effectiveSize === '4K' ? ['2K', '1K'] : ['1K'];
+    for (const fbTier of fallbackOrder) {
+      const fb = await readJsonBodyWithRetry(() => sendOpenAIRequest(fbTier), signal, 1);
+      if (fb.r.ok) {
+        r = fb.r;
+        j = fb.j;
+        effectiveSize = fbTier;
+        break;
+      }
+      if (fb.r.status !== 400) {
+        r = fb.r;
+        j = fb.j;
+        break;
+      }
     }
   }
 
   const latencyMs = Date.now() - t0;
-  const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const errMsg = (j && j.error && j.error.message) || JSON.stringify(j).slice(0, 320);
     throw new Error(`OpenAI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
   }
 
   const firstItem = (j && Array.isArray(j.data) && j.data[0]) || null;
-  const finalB64 = firstItem && typeof firstItem.b64_json === 'string' ? firstItem.b64_json : '';
+  let finalB64 = firstItem && typeof firstItem.b64_json === 'string' ? firstItem.b64_json : '';
+  if (!finalB64 && firstItem && typeof firstItem.url === 'string' && firstItem.url) {
+    const imgRes = await providerFetch(firstItem.url, { method: 'GET', signal });
+    if (imgRes.ok) {
+      const arrBuf = await imgRes.arrayBuffer();
+      finalB64 = Buffer.from(arrBuf).toString('base64');
+    }
+  }
   if (!finalB64) {
-    throw new Error(`Model "${entry.model}" returned no image data.`);
+    const detail = (j && j.error && j.error.message) || (firstItem && firstItem.revised_prompt) || '';
+    throw new Error(`Model "${entry.model}" returned no image data${detail ? ': ' + scrubError(String(detail)).slice(0, 200) : '.'}`);
   }
 
   const finalMime = (j.output_format === 'jpeg' ? 'image/jpeg' : j.output_format === 'webp' ? 'image/webp' : 'image/png');
@@ -1333,11 +1374,15 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal });
   }
 
-  const key = (keys && (keys.agentplatform || keys.gemini))
+  let key = (keys && (keys.agentplatform || keys.gemini))
     || globalKeys.get('AGENT_PLATFORM_API_KEY')
     || globalKeys.get('GEMINI_API_KEY')
     || process.env.AGENT_PLATFORM_API_KEY
     || process.env.GEMINI_API_KEY;
+  if (!key && typeof globalKeys.refreshAll === 'function') {
+    await globalKeys.refreshAll().catch(() => {});
+    key = globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY') || process.env.AGENT_PLATFORM_API_KEY || process.env.GEMINI_API_KEY;
+  }
   if (!key) {
     throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env) or Settings.');
   }
@@ -1388,25 +1433,26 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const t0 = Date.now();
 
   let usedUrl = buildGlobalProjectUrl(candidateProjects[0] || DEFAULT_IMAGE_PROJECT_NUMBER);
-  let r = await providerFetch(usedUrl, {
+  let { r, j } = await readJsonBodyWithRetry(() => providerFetch(usedUrl, {
     method: 'POST',
     headers,
     body: payloadStr,
     signal,
-  });
+  }), signal, 1);
 
   // If the key belongs to another candidate project (e.g., GCP_PROJECT_ID when a custom key is mounted),
   // try remaining candidate /locations/global project endpoints next.
   for (let i = 1; i < candidateProjects.length && (r.status === 403 || r.status === 404); i++) {
     const altUrl = buildGlobalProjectUrl(candidateProjects[i]);
-    const fbAlt = await providerFetch(altUrl, {
+    const fbAlt = await readJsonBodyWithRetry(() => providerFetch(altUrl, {
       method: 'POST',
       headers,
       body: payloadStr,
       signal,
-    });
-    if (fbAlt.ok || fbAlt.status === 400) {
-      r = fbAlt;
+    }), signal, 1);
+    if (fbAlt.r.ok || fbAlt.r.status === 400) {
+      r = fbAlt.r;
+      j = fbAlt.j;
       usedUrl = altUrl;
       break;
     }
@@ -1415,34 +1461,44 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   // If a custom BYOK key belongs to a different project number (403/404 on project path),
   // fall back automatically to the projectless publisher path.
   if (r.status === 403 || r.status === 404) {
-    const fb = await providerFetch(shortPublisherUrl, {
+    const fb = await readJsonBodyWithRetry(() => providerFetch(shortPublisherUrl, {
       method: 'POST',
       headers,
       body: payloadStr,
       signal,
-    });
-    if (fb.ok || fb.status === 400) {
-      r = fb;
+    }), signal, 1);
+    if (fb.r.ok || fb.r.status === 400) {
+      r = fb.r;
+      j = fb.j;
       usedUrl = shortPublisherUrl;
     }
   }
 
-  // Safety net: if a model rejects 2K/4K with HTTP 400, retry once at 1K.
+  // Safety net: if a model rejects 2K/4K with HTTP 400, cascade down 4K -> 2K -> 1K.
   if (r.status === 400 && effectiveSize !== '1K') {
-    const retry1K = await providerFetch(usedUrl, {
-      method: 'POST',
-      headers,
-      body: buildPayload('1K'),
-      signal,
-    });
-    if (retry1K.ok) {
-      r = retry1K;
-      effectiveSize = '1K';
+    const fallbackOrder = effectiveSize === '4K' ? ['2K', '1K'] : ['1K'];
+    for (const fbTier of fallbackOrder) {
+      const retryFb = await readJsonBodyWithRetry(() => providerFetch(usedUrl, {
+        method: 'POST',
+        headers,
+        body: buildPayload(fbTier),
+        signal,
+      }), signal, 1);
+      if (retryFb.r.ok) {
+        r = retryFb.r;
+        j = retryFb.j;
+        effectiveSize = fbTier;
+        break;
+      }
+      if (retryFb.r.status !== 400) {
+        r = retryFb.r;
+        j = retryFb.j;
+        break;
+      }
     }
   }
 
   const latencyMs = Date.now() - t0;
-  const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     const errMsg = (j && j.error && j.error.message) || JSON.stringify(j).slice(0, 320);
     throw new Error(`Vertex AI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
