@@ -374,6 +374,43 @@ async function waitUp() {
     { status: r.status }
   );
 
+  // ---- Email Address as Username Workflow (v1.0.48) ----
+  const emailUser = 'customer.lead+poc@acme-corp.io';
+  const encEmailUser = encodeURIComponent(emailUser);
+  r = await req('POST', '/api/auth/users', {
+    body: { username: 'Customer.Lead+poc@Acme-Corp.io', password: 'email-temp-password-123', role: 'user', dailyVertexLimit: 4, expiresAt: '2099-12-31' },
+  });
+  check(
+    'POST /api/auth/users accepts email address as username (normalized lowercase)',
+    r.status === 200 && r.json && r.json.ok && r.json.user && r.json.user.username === emailUser && r.json.user.dailyVertexLimit === 4,
+    { status: r.status }
+  );
+
+  const emailLoginRes = await req('POST', '/api/auth/login', {
+    body: { username: emailUser, password: 'email-temp-password-123' },
+  });
+  check(
+    'POST /api/auth/login authenticates email-address username',
+    emailLoginRes.status === 200 && emailLoginRes.json && emailLoginRes.json.ok && emailLoginRes.json.user && emailLoginRes.json.user.username === emailUser,
+    { status: emailLoginRes.status }
+  );
+
+  r = await req('POST', `/api/auth/users/${encEmailUser}/limits`, {
+    body: { dailyVertexLimit: 7, expiresAt: '2099-12-31' },
+  });
+  check(
+    'POST /api/auth/users/:username/limits works with URL-encoded email username',
+    r.status === 200 && r.json && r.json.ok && r.json.user && r.json.user.dailyVertexLimit === 7,
+    { status: r.status }
+  );
+
+  r = await req('DELETE', `/api/auth/users/${encEmailUser}`);
+  check(
+    'DELETE /api/auth/users/:username deletes URL-encoded email username',
+    r.status === 200 && r.json && r.json.ok,
+    { status: r.status }
+  );
+
   // ---------------- LIVE (optional, costs a few cents) ----------------
   if (LIVE) {
     const run = await req('POST', '/api/run', { body: { taskId: 'custom', customPrompt: 'Reply with exactly: OK', models: [{ slot: 'A', catalogId: 'gemini-3.5-flash' }] } });

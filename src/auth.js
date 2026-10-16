@@ -52,7 +52,7 @@ const RL_MAX_FAILS = Math.max(3, Number(process.env.LOGIN_MAX_FAILS) || 5);
 const RL_BASE_LOCK_MS = 30 * 1000;
 const RL_MAX_LOCK_MS = 15 * 60 * 1000;
 
-const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
+const USERNAME_RE = /^(?:[a-z0-9._-]{3,32}|(?=.{3,128}$)[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)$/;
 // Reserved names that would collide with Object internals (prototype pollution).
 const RESERVED_USERNAMES = new Set(['__proto__', 'constructor', 'prototype', 'hasownproperty', 'toString', 'valueof']);
 const COMMON_PASSWORDS = new Set([
@@ -241,7 +241,7 @@ async function verifyHash(password, stored) {
 function validateUsername(username) {
   const u = normalize(username);
   if (!u) return 'Username is required.';
-  if (!USERNAME_RE.test(u)) return 'Username must be 3–32 chars: letters, digits, dot, dash or underscore.';
+  if (!USERNAME_RE.test(u)) return 'Enter a valid email address (up to 128 chars) or a 3-32 char username (letters, digits, dot, dash or underscore).';
   if (RESERVED_USERNAMES.has(u)) return 'That username is reserved. Choose another.';
   return null;
 }

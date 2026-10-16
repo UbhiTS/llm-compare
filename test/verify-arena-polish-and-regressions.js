@@ -34,7 +34,7 @@ const { TASKS } = require('../src/tasks');
   // ---------------------------------------------------------------------------
   // 1. Text vs Image Arena UI Parity & Removal of Numbers + Header/Footer Version & Timestamp
   // ---------------------------------------------------------------------------
-  assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.47</span>'), 'index.html must render #headerAppVersion next to LLM Compare title on top-left');
+  assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.48</span>'), 'index.html must render #headerAppVersion next to LLM Compare title on top-left');
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"') && indexHtml.includes('Last updated '), 'index.html footer must render #appLastUpdated with "Last updated" timestamp');
   assert(serverJs.includes('lastUpdated: LAST_UPDATED_ISO'), 'server.js /api/config must expose lastUpdated timestamp');
   assert(appJs.includes('function formatLastUpdatedStamp(isoStr)'), 'app.js must format lastUpdated timestamp');

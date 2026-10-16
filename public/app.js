@@ -1103,7 +1103,7 @@ function renderUsersModal(body, data) {
     '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th>Vertex Cap &amp; Expiry</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '<form class="add-user-form" id="addUserForm">' +
       '<h4>Add an external user</h4>' +
-      '<div class="auth-field"><label>Username</label><input id="nuUser" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="3–32 chars: a–z 0–9 . _ -" /></div>' +
+      '<div class="auth-field"><label>Username or email</label><input id="nuUser" type="text" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="e.g. alice@company.com or 3-32 chars (a-z 0-9 . _ -)" /></div>' +
       '<div class="auth-field"><label>Temporary / Initial password</label><input id="nuPass" type="password" autocomplete="new-password" placeholder="Min 10 chars (user will change on first login)" /></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
         '<div class="auth-field"><label>Daily Vertex AI runs <span class="u-tag">optional</span></label><input id="nuVertexLimit" type="number" min="0" max="10000" placeholder="' + esc(String(defaultVertexCap)) + ' (default from Settings)" /></div>' +

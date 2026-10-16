@@ -380,9 +380,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.47', 'package.json must be at version 1.0.47');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.47</span>'), 'index.html must display v1.0.47 in footer');
-  assert(indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.47</span>'), 'index.html must display v1.0.47 next to top-left title');
+  assert.strictEqual(pkgJson.version, '1.0.48', 'package.json must be at version 1.0.48');
+  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.48</span>'), 'index.html must display v1.0.48 in footer');
+  assert(indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.48</span>'), 'index.html must display v1.0.48 next to top-left title');
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"'), 'index.html must display last updated date and time stamp in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
@@ -433,7 +433,25 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'Google OIDC sessions (external: true) never have mustChangePassword enabled'
   );
   auth.deleteUser(tempCustomerUser, 'admin');
-  console.log('✓ External user Force Password Change on login, Anytime Admin Force, and Temp Password Reset verified');
+
+  // Verify email address as a username (v1.0.48)
+  assert.strictEqual(auth.validateUsername('alice@company.com'), null, 'Standard email address must be a valid username');
+  assert.strictEqual(auth.validateUsername('First.Last+poc@Sub.Domain.co.uk'), null, 'Email address with + tag and mixed case must be valid');
+  assert.ok(auth.validateUsername('missing-tld@company'), 'Email address without TLD dot must be rejected');
+  const emailUsername = `Customer.Poc+${Date.now()}@Acme.io`;
+  const createdEmailUser = await auth.createUser(emailUsername, 'EmailPass#2026!', 'user', {
+    mustChangePassword: true,
+    dailyVertexLimit: 5,
+    expiresAt: '2099-12-31',
+  });
+  assert.strictEqual(createdEmailUser.username, emailUsername.toLowerCase(), 'Email username must be normalized to lowercase');
+  assert.strictEqual(auth.isExternalAccount(createdEmailUser), true, 'Non-@google.com email username must be treated as an external account');
+  const authEmailRes = await auth.authenticate(emailUsername, 'EmailPass#2026!');
+  assert.ok(authEmailRes && authEmailRes.username === emailUsername.toLowerCase(), 'authenticate() must accept email username case-insensitively');
+  const updatedEmailLimits = auth.updateUserLimits(emailUsername, { dailyVertexLimit: 8, expiresAt: '2099-06-30' });
+  assert.strictEqual(updatedEmailLimits.dailyVertexLimit, 8, 'updateUserLimits() must work with email username');
+  auth.deleteUser(emailUsername, 'admin');
+  console.log('✓ External user Force Password Change on login, Anytime Admin Force, Temp Password Reset, and Email-Address Usernames verified');
 
   // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');
