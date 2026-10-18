@@ -1,7 +1,8 @@
 ---
 id: ent-sap-cloud-migration
-title: Enterprise: SAP S/4HANA Global Cloud Migration & Zero-Downtime Cutover
+title: SAP S/4HANA Cloud Migration & Zero-Downtime Cutover
 category: enterprise
+subcategory: enterprise
 language: null
 functionName: solution
 executable: false

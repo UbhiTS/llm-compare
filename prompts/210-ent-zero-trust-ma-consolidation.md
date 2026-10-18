@@ -1,7 +1,8 @@
 ---
 id: ent-zero-trust-ma-consolidation
-title: Enterprise: Post-M&A Zero-Trust Identity & Cloud Directory Consolidation
+title: Post-M&A Zero-Trust Identity & Directory Consolidation
 category: enterprise
+subcategory: enterprise
 language: null
 functionName: solution
 executable: false

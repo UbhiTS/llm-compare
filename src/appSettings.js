@@ -44,6 +44,13 @@ const BOOTSTRAP_ADMIN_EMAILS = Object.freeze(Array.from(new Set(
   String(process.env.ADMIN_EMAILS || 'ubhi@google.com,admin@ubhi.altostrat.com')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
 )));
+// Say so at boot (3.10): these accounts are admin on every deployment and cannot be removed
+// in Settings, and the built-in default is the author's own addresses.
+if (process.env.ADMIN_EMAILS) {
+  console.warn(`[appSettings] WARNING: bootstrap admins (ADMIN_EMAILS, always admin, not removable in Settings): ${BOOTSTRAP_ADMIN_EMAILS.join(', ') || '(none)'}`);
+} else {
+  console.warn(`[appSettings] WARNING: ADMIN_EMAILS is not set, so the BUILT-IN default bootstrap admins are in effect: ${BOOTSTRAP_ADMIN_EMAILS.join(', ')}. Set ADMIN_EMAILS to your own admin address(es) on any deployment that is not the author's.`);
+}
 
 function normEmail(e) { return String(e == null ? '' : e).trim().toLowerCase(); }
 
@@ -77,10 +84,14 @@ function load() {
   try {
     const obj = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
     const admins = Array.isArray(obj && obj.adminEmails) ? obj.adminEmails.map(normEmail).filter((e) => EMAIL_RE.test(e)) : [];
+    // Legacy "+tag" entries never matched a Google sign-in; drop them so they can't make
+    // every later Settings edit fail the +tag check in update().
+    const tagged = admins.filter((e) => e.split('@')[0].includes('+'));
+    if (tagged.length) console.warn(`[appSettings] ignoring internal admin entries with a "+tag" (they never match Google sign-in): ${tagged.join(', ')}`);
     return {
       limits: sanitizeLimits(obj && obj.limits),
       budgets: sanitizeBudgets(obj && obj.budgets),
-      adminEmails: Array.from(new Set(admins)).slice(0, MAX_ADMIN_EMAILS),
+      adminEmails: Array.from(new Set(admins.filter((e) => !tagged.includes(e)))).slice(0, MAX_ADMIN_EMAILS),
       updatedAt: (obj && obj.updatedAt) || null,
       updatedBy: (obj && obj.updatedBy) || null,
     };
@@ -163,6 +174,12 @@ function update({ limits, budgets, adminEmails } = {}, { actor = null, allowedDo
       const e = normEmail(raw);
       if (!e) continue;
       if (!EMAIL_RE.test(e)) throw new Error(`"${String(raw).slice(0, 80)}" is not a valid email address.`);
+      // Google's ID token carries the canonical address: a "+tag" admin entry would be
+      // stored but never match a real sign-in (3.19), so refuse it instead of silently
+      // granting nothing.
+      if (e.split('@')[0].includes('+')) {
+        throw new Error(`${e} can't be an internal admin: use the account's canonical address without a "+tag" (Google sign-in never reports the tagged form).`);
+      }
       const domain = e.split('@')[1];
       if (domains.length && !domains.includes(domain)) {
         throw new Error(`${e} can't be an internal admin: only ${domains.map((d) => '@' + d).join(', ')} Google sign-in accounts are allowed.`);

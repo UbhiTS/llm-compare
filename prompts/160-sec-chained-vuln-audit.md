@@ -1,7 +1,8 @@
 ---
 id: sec-chained-vuln-audit
-title: Security: Multi-Service Zero-Day Code Audit & Exploit Chain
+title: Multi-Service Zero-Day Code Audit & Exploit Chain
 category: security
+subcategory: sec-operations
 language: null
 functionName: solution
 executable: false

@@ -2419,7 +2419,8 @@ a.ud-item[hidden] { display: none; }
   align-items: center;
   gap: 10px;
 }
-.game-code-toggle {
+.game-code-toggle,
+.game-fullscreen-btn {
   background: transparent;
   border: 1px solid var(--border-hi);
   color: var(--muted);
@@ -2430,9 +2431,14 @@ a.ud-item[hidden] { display: none; }
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease;
 }
-.game-code-toggle:hover {
+.game-code-toggle:hover,
+.game-fullscreen-btn:hover {
   color: var(--text);
   border-color: var(--accent);
+}
+.game-fullscreen-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ===========================================================================
@@ -3419,3 +3425,448 @@ a.ud-item[hidden] { display: none; }
   flex-wrap: wrap;
   margin-top: 6px;
 }
+
+/* ---------- v1.0.49 3D & CAD Engineering Arena ---------- */
+.cad-modify-bar {
+  max-width: var(--maxw);
+  margin: 0 auto 16px;
+  padding: 14px 16px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.08), rgba(15, 23, 42, 0.65));
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cad-modify-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cad-modify-brand,
+.cad-modify-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.cad-modify-badge,
+.cad-studio-pill {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+}
+
+.cad-cam-preset-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cad-target-chip,
+.cad-target-part-badge {
+  font-size: 11.5px;
+  font-family: "JetBrains Mono", monospace;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.cad-target-chip.is-empty {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.cad-chip-clear {
+  background: transparent;
+  border: 0;
+  color: #bae6fd;
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 11px;
+}
+
+.cad-modify-toggles,
+.cad-modify-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cad-sync-btn {
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.cad-sync-btn.is-on {
+  background: rgba(14, 165, 233, 0.22);
+  border-color: rgba(56, 189, 248, 0.65);
+  color: #7dd3fc;
+}
+
+.cad-vision-chk,
+.cad-vision-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--well);
+  cursor: pointer;
+}
+
+.cad-mcp-btn {
+  padding: 5px 11px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid rgba(168, 85, 247, 0.45);
+  background: rgba(168, 85, 247, 0.14);
+  color: #e9d5ff;
+  cursor: pointer;
+}
+
+.cad-mcp-btn:hover {
+  background: rgba(168, 85, 247, 0.24);
+}
+
+.cad-modify-row,
+.cad-modify-composer {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cad-modify-scope {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.cad-modify-input {
+  flex: 1;
+  min-width: 220px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.cad-modify-input:focus {
+  outline: none;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.cad-modify-run-btn,
+.cad-modify-submit {
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(56, 189, 248, 0.6);
+  background: linear-gradient(135deg, #0284c7, #2563eb);
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cad-modify-run-btn:hover:not(:disabled),
+.cad-modify-submit:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.cad-modify-run-btn:disabled,
+.cad-modify-submit:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.cad-mcp-dialog {
+  max-width: 880px !important;
+  max-height: 86vh !important;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cad-mcp-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.cad-mcp-endpoint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.cad-mcp-code-preview {
+  flex: 1;
+  min-height: 280px;
+  max-height: 440px;
+  overflow: auto;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #070a12;
+  color: #e2e8f0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+  margin: 0;
+}
+
+.cad-quick-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cad-quick-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+.cad-QuickChip {
+  padding: 3px 9px;
+  font-size: 11.5px;
+  border-radius: 999px;
+  border: 1px solid var(--border-hi);
+  background: var(--well);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.cad-QuickChip:hover {
+  border-color: #38bdf8;
+  color: var(--text);
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.cad-viz-wrap {
+  width: 100%;
+  height: 430px;
+  background: #090d16;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+
+.cad-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+.cad-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  background: var(--well);
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+
+.cad-rev-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.cad-rev-tag,
+.cad-rev-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.cad-rev-pills {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.cad-rev-btn {
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cad-rev-btn.is-active {
+  background: rgba(56, 189, 248, 0.22);
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
+
+.cad-rev-note {
+  font-size: 11px;
+  color: var(--muted);
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cad-telemetry-strip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 180px;
+}
+
+.cad-badge-ok {
+  color: #34d399;
+  font-weight: 700;
+}
+
+.cad-badge-warn {
+  color: #fbbf24;
+  font-weight: 700;
+}
+
+.cad-badge-err {
+  color: #f87171;
+  font-weight: 700;
+}
+
+.cad-bar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cad-code-toggle,
+.cad-mcp-slot-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cad-mcp-slot-btn {
+  border-color: rgba(168, 85, 247, 0.45);
+  color: #e9d5ff;
+}
+
+.cad-mcp-modal-card {
+  max-width: 780px;
+  width: 94vw;
+}
+
+.cad-mcp-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.cad-mcp-ControlsRow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.cad-mcp-select,
+.cad-mcp-input {
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-hi);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.cad-mcp-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.cad-mcp-status {
+  font-size: 12px;
+  font-family: "JetBrains Mono", monospace;
+  color: #7dd3fc;
+}
+
+.cad-mcp-pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #070a12;
+  color: #e2e8f0;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+}
+

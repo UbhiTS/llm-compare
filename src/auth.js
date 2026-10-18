@@ -7,7 +7,10 @@
 //   • Sessions   : opaque 256-bit random tokens, stored SERVER-SIDE in memory
 //                  (no JWT, no signing secret to leak). Sliding expiry.
 //   • Cookies    : HttpOnly, SameSite=Strict, Secure (when behind HTTPS).
-//   • Brute force: per-IP and per-IP+username lockout with exponential backoff.
+//   • Brute force: per-IP and per-IP+username lockout with exponential backoff, plus a
+//                  per-username lockout that no IP rotation can dodge; scrypt work is
+//                  capped (2 concurrent, bounded queue) so a login flood can't starve
+//                  the threadpool.
 //   • First run  : a one-time SETUP CODE is printed to the server console and
 //                  required to create the first admin — so an attacker who can
 //                  reach the public URL still cannot seize the empty instance.
@@ -157,14 +160,46 @@ function saveUsers() {
 }
 
 // ---------- password hashing (scrypt) ----------
+// Concurrency guard (3.11): one scrypt at N=2^15 pins a libuv threadpool thread for tens of
+// ms and ~32 MB. An unauthenticated login burst (or a loop on /api/auth/password) would
+// otherwise saturate the 4-thread pool and stall every other async fs/crypto call in the
+// process. At most SCRYPT_MAX_CONCURRENT hashes run at once, up to SCRYPT_MAX_QUEUE more
+// wait their turn, and beyond that callers fail fast with a BUSY error (code 'BUSY', which
+// the HTTP layer maps to 503) instead of piling up.
+const SCRYPT_MAX_CONCURRENT = 2;
+const SCRYPT_MAX_QUEUE = 20;
+let scryptActive = 0;
+const scryptWaiters = [];
+function busyError() {
+  const e = new Error('The server is busy verifying passwords right now. Please retry in a moment.');
+  e.code = 'BUSY';
+  e.status = 503;
+  return e;
+}
+function isBusyError(e) { return !!(e && e.code === 'BUSY'); }
+function acquireScryptSlot() {
+  if (scryptActive < SCRYPT_MAX_CONCURRENT) { scryptActive += 1; return Promise.resolve(); }
+  if (scryptWaiters.length >= SCRYPT_MAX_QUEUE) return Promise.reject(busyError());
+  return new Promise((resolve) => scryptWaiters.push(resolve));
+}
+function releaseScryptSlot() {
+  const next = scryptWaiters.shift();
+  if (next) next(); // hand the slot straight to the next waiter (scryptActive unchanged)
+  else scryptActive -= 1;
+}
+async function withScryptSlot(fn) {
+  await acquireScryptSlot();
+  try { return await fn(); } finally { releaseScryptSlot(); }
+}
+
 function scryptSync(password, salt, keylen) {
   return crypto.scryptSync(password, salt, keylen, { N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, maxmem: SCRYPT.maxmem });
 }
 function scryptAsync(password, salt, keylen, params) {
   const p = params || SCRYPT;
-  return new Promise((resolve, reject) => {
+  return withScryptSlot(() => new Promise((resolve, reject) => {
     crypto.scrypt(password, salt, keylen, { N: p.N, r: p.r, p: p.p, maxmem: SCRYPT.maxmem }, (err, dk) => (err ? reject(err) : resolve(dk)));
-  });
+  }));
 }
 function hashPasswordSync(password) {
   const salt = crypto.randomBytes(16);
@@ -185,16 +220,22 @@ async function verifyHash(password, stored) {
     const expected = Buffer.from(hashHex, 'hex');
     const dk = await scryptAsync(password, salt, expected.length, { N: +N, r: +r, p: +p });
     return dk.length === expected.length && crypto.timingSafeEqual(dk, expected);
-  } catch (e) { return false; }
+  } catch (e) {
+    if (isBusyError(e)) throw e; // overload is not "wrong password": let the caller answer 503, not 401
+    return false;
+  }
 }
 
 // ---------- break-glass bootstrap admin ----------
 // If ADMIN_BOOTSTRAP_PASSWORD is set (e.g. injected from Secret Manager on Cloud
-// Run), (re)create a durable admin account on EVERY startup. Because it is
-// re-seeded from the secret each boot, it survives the ephemeral container
-// filesystem — so there is always a username/password way in even if Google
-// sign-in is unavailable or your account is locked out. Dormant (no effect)
-// unless the env var is set, so local dev / the first-run setup flow is unchanged.
+// Run), create a durable admin account when it is MISSING, so there is always a
+// username/password way in even if Google sign-in is unavailable or your account is
+// locked out. The account is persisted (users.json lives on the GCS bucket in the
+// cloud), so a password rotated in-app sticks across restarts (3.20): the secret is
+// only re-applied on top of an existing account when ADMIN_BOOTSTRAP_FORCE=1, and
+// that reseed keeps the account's expiresAt / dailyVertexLimit and is logged.
+// Dormant (no effect) unless the env var is set, so local dev / the first-run setup
+// flow is unchanged.
 (function ensureBootstrapAdmin() {
   const pw = process.env.ADMIN_BOOTSTRAP_PASSWORD;
   if (!pw) return;
@@ -207,31 +248,38 @@ async function verifyHash(password, stored) {
     console.warn(`[auth] ADMIN_BOOTSTRAP_PASSWORD is shorter than ${MIN_PASSWORD_LEN} chars — break-glass admin skipped.`);
     return;
   }
+  const force = process.env.ADMIN_BOOTSTRAP_FORCE === '1';
   try {
     const existing = ownUser(uname);
-    if (existing && existing.role === 'admin' && existing.hash) {
-      // Verify asynchronously so startup is never blocked by a second 32 MB scryptSync
-      verifyHash(String(pw), existing.hash).then(async (match) => {
-        if (!match) {
-          const freshHash = await hashPassword(String(pw));
-          users[uname] = {
-            username: uname, role: 'admin', hash: freshHash,
-            createdAt: existing.createdAt || new Date().toISOString(),
-            mustChangePassword: false,
-            passwordChangedAt: existing.passwordChangedAt || null,
-          };
-        }
-      }).catch(() => {});
-      console.log(`[auth] break-glass admin "${uname}" ensured from ADMIN_BOOTSTRAP_PASSWORD.`);
+    if (existing && existing.hash && !force) {
+      // Leave the stored password alone (it may have been rotated in-app).
+      if (existing.role !== 'admin') {
+        console.warn(`[auth] WARNING: break-glass username "${uname}" exists as a non-admin account; not touching it. Set ADMIN_BOOTSTRAP_FORCE=1 to reseed it as admin.`);
+      } else {
+        console.log(`[auth] break-glass admin "${uname}" present (stored password kept; ADMIN_BOOTSTRAP_FORCE=1 reseeds it from ADMIN_BOOTSTRAP_PASSWORD).`);
+      }
       return;
     }
-    users[uname] = {
-      username: uname, role: 'admin', hash: hashPasswordSync(String(pw)),
-      createdAt: (existing && existing.createdAt) || new Date().toISOString(),
-      mustChangePassword: false,
-      passwordChangedAt: null,
+    const reseed = (hash) => {
+      users[uname] = {
+        username: uname, role: 'admin', hash,
+        createdAt: (existing && existing.createdAt) || new Date().toISOString(),
+        mustChangePassword: false,
+        passwordChangedAt: existing ? new Date().toISOString() : null,
+        expiresAt: (existing && existing.expiresAt) || null,
+        dailyVertexLimit: (existing && typeof existing.dailyVertexLimit === 'number' && Number.isFinite(existing.dailyVertexLimit)) ? existing.dailyVertexLimit : null,
+      };
+      try { saveUsers(); } catch (e) { console.warn('[auth] could not persist the break-glass admin:', (e && e.message) || e); }
     };
-    console.log(`[auth] break-glass admin "${uname}" ensured from ADMIN_BOOTSTRAP_PASSWORD.`);
+    if (existing && existing.hash) {
+      // Forced reseed of an existing account: hash asynchronously so startup is never
+      // blocked by a second 32 MB scrypt; the old password keeps working until it lands.
+      console.warn(`[auth] WARNING: ADMIN_BOOTSTRAP_FORCE=1 - resetting the password of break-glass admin "${uname}" from ADMIN_BOOTSTRAP_PASSWORD (expiresAt / dailyVertexLimit preserved).`);
+      hashPassword(String(pw)).then(reseed).catch((e) => console.warn('[auth] break-glass admin reseed failed:', (e && e.message) || e));
+      return;
+    }
+    reseed(hashPasswordSync(String(pw)));
+    console.warn(`[auth] WARNING: break-glass admin "${uname}" created from ADMIN_BOOTSTRAP_PASSWORD and persisted to users.json.`);
   } catch (e) {
     console.warn('[auth] break-glass admin seeding failed:', (e && e.message) || e);
   }
@@ -258,9 +306,27 @@ function validatePassword(password, username) {
 function setupRequired() { return Object.keys(users).length === 0; }
 function userExists(username) { return !!ownUser(normalize(username)); }
 
+// Domains reserved for Google sign-in. A local password account with such an email would
+// share the identity (history, vault, quota) of the Google-signed-in user and downgrade
+// its audit trail to "internal" (3.14), so createUser refuses them. Same source of truth
+// as the OIDC gate (ALLOWED_EMAIL_DOMAINS, default google.com + the Argolis domain).
+function oidcReservedDomains(extra) {
+  const out = new Set();
+  try { for (const d of require('./googleAuth').allowedDomains()) out.add(String(d).trim().toLowerCase()); } catch (_) { out.add('google.com'); }
+  if (Array.isArray(extra)) for (const d of extra) { const s = String(d || '').trim().toLowerCase(); if (s) out.add(s); }
+  return out;
+}
+
 async function createUser(username, password, role, opts = {}) {
   const uname = normalize(username);
   const uErr = validateUsername(uname); if (uErr) throw new Error(uErr);
+  const at = uname.indexOf('@');
+  if (at > 0) {
+    const domain = uname.slice(at + 1);
+    if (oidcReservedDomains(opts && opts.allowedDomains).has(domain)) {
+      throw new Error(`@${domain} accounts sign in with Google: a password account can't be created for ${uname}. Add the person as a Google sign-in admin or use a non-${domain} address for an external account.`);
+    }
+  }
   const pErr = validatePassword(password, uname); if (pErr) throw new Error(pErr);
   if (ownUser(uname)) throw new Error('That username already exists.');
   const expiresAt = (opts && opts.expiresAt !== undefined) ? normalizeExpiresAt(opts.expiresAt) : null;
@@ -307,10 +373,18 @@ async function setupAdmin(password) {
 }
 
 async function authenticate(username, password, opts = {}) {
-  const u = ownUser(normalize(username));
-  if (!u) { await verifyHash(String(password || ''), DUMMY_HASH); return null; } // equalise timing
+  const uname = normalize(username);
+  // Per-USERNAME lockout, independent of the caller's IP (3.11): a guesser rotating
+  // addresses never trips the per-IP counters, so the account itself has one too. While
+  // locked, the answer is the generic failure with no scrypt work (unknown names are
+  // counted as well, so a fast answer never reveals whether the account exists).
+  const ukey = usernameLockKey(uname);
+  if (isLocked(ukey)) return null;
+  const u = ownUser(uname);
+  if (!u) { await verifyHash(String(password || ''), DUMMY_HASH); recordUsernameFailure(ukey); return null; } // equalise timing
   const ok = await verifyHash(String(password || ''), u.hash);
-  if (!ok) return null;
+  if (!ok) { recordUsernameFailure(ukey); return null; }
+  recordSuccess(ukey);
   if (isAccountExpired(u)) {
     if (opts && opts.includeExpired) return { ...publicUser(u), expired: true };
     return null;
@@ -495,15 +569,26 @@ function isSecureReq(req) {
   // only honored when TRUST_PROXY is enabled — never trusted on direct exposure).
   return !!req.secure;
 }
+// Add a Set-Cookie value without clobbering ones already on the response (the Google
+// callback clears its one-shot oauth_state cookie in the same response that sets `sid`).
+// An earlier value for the SAME cookie name is replaced.
+function setCookieHeader(res, cookie) {
+  const name = cookie.split('=')[0];
+  const prev = typeof res.getHeader === 'function' ? res.getHeader('Set-Cookie') : undefined;
+  const list = (prev == null ? [] : (Array.isArray(prev) ? prev : [prev]))
+    .map(String).filter((c) => c.split('=')[0] !== name);
+  list.push(cookie);
+  res.setHeader('Set-Cookie', list);
+}
 function setSessionCookie(req, res, token) {
   const attrs = [`${COOKIE_NAME}=${token}`, 'HttpOnly', 'Path=/', 'SameSite=Strict', `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`];
   if (isSecureReq(req)) attrs.push('Secure');
-  res.setHeader('Set-Cookie', attrs.join('; '));
+  setCookieHeader(res, attrs.join('; '));
 }
 function clearSessionCookie(req, res) {
   const attrs = [`${COOKIE_NAME}=`, 'HttpOnly', 'Path=/', 'SameSite=Strict', 'Max-Age=0'];
   if (isSecureReq(req)) attrs.push('Secure');
-  res.setHeader('Set-Cookie', attrs.join('; '));
+  setCookieHeader(res, attrs.join('; '));
 }
 
 // ---------- brute-force lockout ----------
@@ -522,7 +607,44 @@ function recordFailure(key) {
     e.lockedUntil = Date.now() + Math.min(RL_MAX_LOCK_MS, RL_BASE_LOCK_MS * Math.pow(2, over));
   }
 }
-function recordSuccess(key) { loginAttempts.delete(key); }
+// A success DECAYS the per-IP and per-username counters by one instead of clearing them:
+// otherwise one valid account (the attacker's own) resets the IP lockout between every
+// burst of guesses against other accounts (3.11). Per-IP+username and setup keys still
+// reset, so a legitimate user who finally gets it right starts clean.
+function recordSuccess(key) {
+  const k = String(key || '');
+  const e = loginAttempts.get(k);
+  if (!e) return;
+  if (k.startsWith('loginip|') || k.startsWith(USERNAME_LOCK_PREFIX)) {
+    e.fails = Math.max(0, e.fails - 1);
+    e.last = Date.now();
+    if (e.fails === 0 && e.lockedUntil <= Date.now()) loginAttempts.delete(k);
+    return;
+  }
+  loginAttempts.delete(k);
+}
+
+// Per-username lockout (independent of IP): USERNAME_LOCK_MAX_FAILS failures within a
+// USERNAME_LOCK_WINDOW_MS window lock that username for USERNAME_LOCK_MS. Applied inside
+// authenticate(); server.js may also consult isUsernameLocked() to answer 429 up front.
+const USERNAME_LOCK_PREFIX = 'loginuser|';
+const USERNAME_LOCK_MAX_FAILS = 20;
+const USERNAME_LOCK_WINDOW_MS = 15 * 60 * 1000;
+const USERNAME_LOCK_MS = 15 * 60 * 1000;
+function usernameLockKey(username) { return USERNAME_LOCK_PREFIX + normalize(username); }
+function recordUsernameFailure(key) {
+  const e = rlEntry(key);
+  const now = Date.now();
+  if (!e.windowStart || now - e.windowStart > USERNAME_LOCK_WINDOW_MS) { e.windowStart = now; e.fails = 0; }
+  e.fails += 1; e.last = now;
+  if (e.fails >= USERNAME_LOCK_MAX_FAILS) {
+    e.lockedUntil = now + USERNAME_LOCK_MS;
+    e.windowStart = now;
+    e.fails = 0;
+  }
+}
+function isUsernameLocked(username) { return isLocked(usernameLockKey(username)); }
+function usernameLockRemainingMs(username) { return lockRemainingMs(usernameLockKey(username)); }
 
 // ---------- first-run setup code ----------
 function ensureSetupCode() {
@@ -534,9 +656,10 @@ function ensureSetupCode() {
 }
 function getSetupCode() { return setupRequired() ? SETUP_CODE : null; }
 function verifySetupCode(code) {
+  if (!SETUP_CODE) ensureSetupCode();
   if (!SETUP_CODE) return false; // setup must always be gated by a code on first run
   const a = Buffer.from(String(code || '').trim().toUpperCase());
-  const b = Buffer.from(SETUP_CODE);
+  const b = Buffer.from(String(SETUP_CODE).trim().toUpperCase());
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
@@ -562,29 +685,87 @@ function nextUtcMidnightISO() {
   d.setUTCHours(24, 0, 0, 0);
   return d.toISOString();
 }
+// Persistence state (7.5): writes are atomic (tmp + rename) and coalesced so a burst of
+// charges/refunds costs one write per BUDGETS_SAVE_DEBOUNCE_MS instead of one sync write
+// to the gcsfuse mount per call. `corrupt` is set when the file on disk could not be
+// parsed at boot (a torn write): we still start from zero in memory, but loudly.
+const BUDGETS_SAVE_DEBOUNCE_MS = 2000;
+const budgetStore = { dirty: false, timer: null, lastWriteAt: 0, corrupt: false, lastError: null };
+// tmp + rename where the filesystem supports it (atomic replace); gcsfuse's rename is a
+// copy+delete that can fail (EXDEV/ENOTSUP/EIO...), so fall back to a direct write there,
+// the same trade-off as saveUsers().
+function writeFileAtomicSync(file, payload) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean up */ }
+    fs.writeFileSync(file, payload);
+  }
+}
 (function loadBudgets() {
   if (!PERSIST_BUDGETS) return;
+  let raw;
   try {
-    const obj = JSON.parse(fs.readFileSync(BUDGETS_FILE, 'utf8'));
+    raw = fs.readFileSync(BUDGETS_FILE, 'utf8');
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return; // no file yet
+    budgetStore.corrupt = true; budgetStore.lastError = (e && e.message) || String(e);
+    console.error(`[auth] ERROR: run-budgets.json could not be read (${budgetStore.lastError}); today's counters start from zero in memory.`);
+    return;
+  }
+  try {
+    const obj = JSON.parse(raw);
     const today = utcDay();
     if (obj && obj.day === today && obj.counts && typeof obj.counts === 'object') {
       for (const [k, v] of Object.entries(obj.counts)) {
         if (typeof k === 'string' && k.endsWith('|' + today) && Number.isFinite(v) && v > 0) runCounts.set(k, Math.floor(v));
       }
     }
-  } catch (_) { /* no file yet */ }
+  } catch (e) {
+    budgetStore.corrupt = true; budgetStore.lastError = (e && e.message) || String(e);
+    console.error(`[auth] ERROR: run-budgets.json is not valid JSON (torn write?): ${budgetStore.lastError}. Today's counters start from zero in memory; the file is rewritten on the next charge.`);
+  }
 })();
-function saveBudgets() {
-  if (!PERSIST_BUDGETS) return;
+function writeBudgetsNow() {
+  budgetStore.dirty = false;
+  budgetStore.lastWriteAt = Date.now(); // rate-limits retries too when the mount is failing
   const today = utcDay();
   const counts = {};
   for (const [k, v] of runCounts) if (k.endsWith('|' + today)) counts[k] = v;
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(BUDGETS_FILE, JSON.stringify({ day: today, counts }));
+    writeFileAtomicSync(BUDGETS_FILE, JSON.stringify({ day: today, counts }));
+    budgetStore.lastError = null;
   } catch (e) {
+    budgetStore.dirty = true; // the next charge/refund retries
+    budgetStore.lastError = (e && e.message) || String(e);
     console.warn('[auth] could not persist run budgets:', e && e.message);
   }
+}
+// Leading edge + trailing coalesce: the first change after a quiet period is written at
+// once (a single run's charge is durable immediately); further changes within the window
+// are folded into ONE trailing write.
+function saveBudgets() {
+  if (!PERSIST_BUDGETS) return;
+  budgetStore.dirty = true;
+  if (budgetStore.timer) return;
+  const wait = BUDGETS_SAVE_DEBOUNCE_MS - (Date.now() - budgetStore.lastWriteAt);
+  if (wait <= 0) { writeBudgetsNow(); return; }
+  budgetStore.timer = setTimeout(() => {
+    budgetStore.timer = null;
+    if (budgetStore.dirty) writeBudgetsNow();
+  }, wait);
+  if (budgetStore.timer.unref) budgetStore.timer.unref();
+}
+// Write any pending counters right now (shutdown hook; also used by tests).
+function flushSync() {
+  if (budgetStore.timer) { clearTimeout(budgetStore.timer); budgetStore.timer = null; }
+  if (PERSIST_BUDGETS && budgetStore.dirty) writeBudgetsNow();
+}
+function budgetStoreStatus() {
+  return { persisted: PERSIST_BUDGETS, file: PERSIST_BUDGETS ? BUDGETS_FILE : null, corrupt: budgetStore.corrupt, dirty: budgetStore.dirty, lastError: budgetStore.lastError };
 }
 
 function exemptFromBudgets(user) { return !!(RATE_EXEMPT_ADMINS && user && user.role === 'admin'); }
@@ -661,10 +842,16 @@ module.exports = {
   cookieParser, setSessionCookie, clearSessionCookie,
   // brute force
   isLocked, lockRemainingMs, recordFailure, recordSuccess,
+  // per-username lockout (independent of IP; enforced inside authenticate, exposed for a 429 up front)
+  isUsernameLocked, usernameLockRemainingMs,
+  // scrypt overload: authenticate / hashPassword reject with an Error whose code is 'BUSY' (answer 503)
+  isBusyError,
   // per-user daily run budgets on the global keys (one per provider; limits from Settings)
   runQuota, consumeRun, refundRun, MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, MAX_OPENAI_RUNS_PER_DAY,
   vertexRunQuota, consumeVertexRun, refundVertexRun, MAX_EXTERNAL_VERTEX_RUNS_PER_DAY,
   providerQuota, consumeProviderRun, refundProviderRun, quotaSnapshot, BUDGET_PROVIDERS,
+  // debounced budget persistence: call flushSync() on shutdown so the last charges land
+  flushSync, budgetStoreStatus,
   // admins skip the daily limits AND the monthly budgets (unless RATE_LIMIT_EXEMPT_ADMINS=0)
   exemptFromBudgets,
   // setup code

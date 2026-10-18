@@ -1,7 +1,8 @@
 ---
 id: travel-japan
-title: Travel planner: 14-day Kansai family trip + budget
+title: 14-Day Kansai Family Itinerary & Budget Plan
 category: general
+subcategory: mission-travel
 language: null
 functionName: solution
 executable: false

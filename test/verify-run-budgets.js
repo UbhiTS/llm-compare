@@ -109,6 +109,7 @@ const ADMIN = { username: 'ubhi@google.com', role: 'admin', external: true };
     assert.strictEqual(auth.vertexRunQuota(u).used, 1);
   });
   await check('counters are persisted (survive a redeploy) when AUTH_DATA_DIR is set', () => {
+    auth.flushSync(); // writes are debounced (one per 2 s); flush the trailing write before reading the file
     const f = path.join(process.env.AUTH_DATA_DIR, 'run-budgets.json');
     const obj = JSON.parse(fs.readFileSync(f, 'utf8'));
     assert.ok(obj.counts[`vertex|someone@google.com|${obj.day}`] >= 9);

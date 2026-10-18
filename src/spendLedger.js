@@ -28,10 +28,24 @@ function emptyMonth() {
   return o;
 }
 
+// `corrupt` (7.5): the file on disk existed but could not be parsed (a torn write), so the
+// month-to-date numbers below are from zero and must not be trusted as "nothing spent".
+const persistState = { corrupt: false, lastError: null, dirty: false, timer: null, lastWriteAt: 0 };
+
 function load() {
   if (!PERSIST) return { since: null, months: {} };
+  let raw;
   try {
-    const obj = JSON.parse(fs.readFileSync(LEDGER_FILE, 'utf8'));
+    raw = fs.readFileSync(LEDGER_FILE, 'utf8');
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      persistState.corrupt = true; persistState.lastError = (e && e.message) || String(e);
+      console.error(`[spend] ERROR: spend-ledger.json could not be read (${persistState.lastError}); month-to-date spend starts from zero in memory.`);
+    }
+    return { since: null, months: {} };
+  }
+  try {
+    const obj = JSON.parse(raw);
     const months = {};
     for (const [m, v] of Object.entries((obj && obj.months) || {})) {
       if (!/^\d{4}-\d{2}$/.test(m) || !v || typeof v !== 'object') continue;
@@ -47,22 +61,61 @@ function load() {
       months[m] = row;
     }
     return { since: (obj && typeof obj.since === 'string') ? obj.since : null, months };
-  } catch (_) {
+  } catch (e) {
+    persistState.corrupt = true; persistState.lastError = (e && e.message) || String(e);
+    console.error(`[spend] ERROR: spend-ledger.json is not valid JSON (torn write?): ${persistState.lastError}. Month-to-date spend starts from zero in memory; the file is rewritten on the next recorded call.`);
     return { since: null, months: {} };
   }
 }
 let ledger = load();
 
-function save() {
-  if (!PERSIST) return;
+// tmp + rename where supported (atomic replace); gcsfuse's rename is a copy+delete that
+// can fail, so fall back to a direct write there (same trade-off as auth.js saveUsers).
+function writeFileAtomicSync(file, payload) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { /* nothing to clean up */ }
+    fs.writeFileSync(file, payload);
+  }
+}
+function writeNow() {
+  persistState.dirty = false;
+  persistState.lastWriteAt = Date.now(); // rate-limits retries too when the mount is failing
   const keys = Object.keys(ledger.months).sort();
   while (keys.length > KEEP_MONTHS) delete ledger.months[keys.shift()];
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(LEDGER_FILE, JSON.stringify(ledger));
+    writeFileAtomicSync(LEDGER_FILE, JSON.stringify(ledger));
+    persistState.lastError = null;
   } catch (e) {
+    persistState.dirty = true; // the next recorded call retries
+    persistState.lastError = (e && e.message) || String(e);
     console.warn('[spend] could not persist the spend ledger:', e && e.message);
   }
+}
+// Debounced (7.5): the first change after a quiet period is written at once, further
+// changes within SAVE_DEBOUNCE_MS are folded into ONE trailing write, so a burst of slot
+// completions is one write to the gcsfuse mount instead of one per model call.
+const SAVE_DEBOUNCE_MS = 2000;
+function save() {
+  if (!PERSIST) return;
+  persistState.dirty = true;
+  if (persistState.timer) return;
+  const wait = SAVE_DEBOUNCE_MS - (Date.now() - persistState.lastWriteAt);
+  if (wait <= 0) { writeNow(); return; }
+  persistState.timer = setTimeout(() => {
+    persistState.timer = null;
+    if (persistState.dirty) writeNow();
+  }, wait);
+  if (persistState.timer.unref) persistState.timer.unref();
+}
+// Write any pending change right now (shutdown hook; also used by tests).
+function flushSync() {
+  if (persistState.timer) { clearTimeout(persistState.timer); persistState.timer = null; }
+  if (PERSIST && persistState.dirty) writeNow();
 }
 
 // Add one model call's cost to its provider's month, if it ran on a global key.
@@ -82,12 +135,13 @@ function recordModelCost(model, keys, usd) {
   return true;
 }
 
-// App-tracked spend for one month (default: the current UTC month).
+// App-tracked spend for one month (default: the current UTC month). `corrupt` is true
+// when the on-disk ledger could not be parsed at boot (numbers restart from zero).
 function monthToDate(month = monthKey()) {
   const row = ledger.months[month] || emptyMonth();
   const providers = {};
   for (const p of appSettings.PROVIDERS) providers[p] = { usd: Math.round(row[p].usd * 1e6) / 1e6, calls: row[p].calls };
-  return { month, since: ledger.since, providers };
+  return { month, since: ledger.since, providers, corrupt: persistState.corrupt };
 }
 
-module.exports = { recordModelCost, monthToDate, monthKey, LEDGER_FILE };
+module.exports = { recordModelCost, monthToDate, monthKey, flushSync, LEDGER_FILE };

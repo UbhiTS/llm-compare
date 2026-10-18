@@ -1,7 +1,8 @@
 ---
 id: streaming-cep-engine
-title: Stream Processing: Complex Event Processing (CEP) & Windowing Engine
+title: Complex Event Processing & Stream Windowing Engine
 category: coding
+subcategory: sys-engineering
 language: javascript
 functionName: processEventStream
 executable: true

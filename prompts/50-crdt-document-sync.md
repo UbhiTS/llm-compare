@@ -1,7 +1,8 @@
 ---
 id: crdt-sync
-title: Distributed Systems: Conflict-Free Replicated Data Type (CRDT) Document Sync Engine
+title: Conflict-Free Replicated Data Type (CRDT) Sync Engine
 category: coding
+subcategory: sys-engineering
 language: javascript
 functionName: syncCrdtDocument
 executable: true

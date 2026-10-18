@@ -1,7 +1,8 @@
 ---
 id: sec-siem-log-hunt
-title: Security: Cloud SIEM, Kubernetes & eBPF Stealth APT Threat Hunt
+title: Cloud SIEM, Kubernetes & eBPF Stealth APT Threat Hunt
 category: security
+subcategory: sec-operations
 language: null
 functionName: solution
 executable: false

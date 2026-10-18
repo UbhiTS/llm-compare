@@ -1,7 +1,8 @@
 ---
 id: fin-fraud-aml-engine
-title: FinTech: Real-Time Payment Fraud & Anti-Money Laundering (AML) Architecture
+title: Real-Time Payment Fraud & AML Detection Engine
 category: finance
+subcategory: finance
 language: null
 functionName: solution
 executable: false

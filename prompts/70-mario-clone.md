@@ -1,7 +1,8 @@
 ---
 id: mario-clone
-title: Super Mario Bros clone (Pygame, polished art + physics)
+title: Super Mario Bros Side-Scrolling Platformer
 category: games
+subcategory: wasm-games
 language: python
 functionName: solution
 executable: true

@@ -9,7 +9,7 @@ const { runAgent } = require('./agent');
 const { thinkingProfile } = require('./providers');
 const { scrubError } = require('./secrets');
 
-async function runComparison({ task, models, maxIterations, emit, keys, signal, repair, runId, auditUser }) {
+async function runComparison({ task, models, maxIterations, emit, keys, signal, repair, cadModify, runId, auditUser }) {
   emit({
     type: 'start',
     task: {
@@ -18,26 +18,64 @@ async function runComparison({ task, models, maxIterations, emit, keys, signal, 
       prompt: task.prompt,
       testCount: task.testCases.length,
       functionName: task.functionName,
+      category: task.category || null,
+      visualizer: task.visualizer || null,
       attachments: Array.isArray(task.attachments)
         ? task.attachments.map((a) => ({ name: a.name, mimeType: a.mimeType, size: a.size, kind: a.kind }))
         : [],
     },
     models: models.map((m) => ({ slot: m.slot, label: m.label, provider: m.provider, model: m.model, price: m.price, thinking: thinkingProfile(m) })),
     maxIterations,
+    cadModify: Boolean(cadModify && (cadModify.modificationPrompt || cadModify.previousCode)),
     startedAt: Date.now(),
   });
 
   const results = await Promise.all(
     models.map(async (m) => {
       try {
-        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys, signal, repair, auditUser });
-        emit({ type: 'done', slot: m.slot, result });
+        let cadModifySlot = null;
+        if (cadModify && typeof cadModify === 'object') {
+          const slotEntry = cadModify.bySlot && cadModify.bySlot[m.slot];
+          if (slotEntry && slotEntry.previousCode) {
+            cadModifySlot = {
+              modificationPrompt: slotEntry.modificationPrompt || cadModify.modificationPrompt || '',
+              targetPart: slotEntry.targetPart || cadModify.targetPart || null,
+              previousCode: slotEntry.previousCode,
+              telemetry: slotEntry.telemetry || null,
+              fourViewDataUrl: slotEntry.fourViewDataUrl || null,
+            };
+          } else if (cadModify.previousCode) {
+            cadModifySlot = {
+              modificationPrompt: cadModify.modificationPrompt || '',
+              targetPart: cadModify.targetPart || null,
+              previousCode: cadModify.previousCode,
+              telemetry: cadModify.telemetry || null,
+              fourViewDataUrl: cadModify.fourViewDataUrl || null,
+            };
+          }
+        }
+        const result = await runAgent({ modelConfig: m, task, maxIterations, emit, keys, signal, repair, cadModifySlot, auditUser });
+        emit({ type: 'done', slot: m.slot, costUsd: result.costUsd, result });
         return result;
       } catch (e) {
         // Never let an upstream URL, header or key (server or BYOK) reach the browser.
         const message = scrubError(String((e && e.message) || e), keys);
-        emit({ type: 'model_error', slot: m.slot, label: m.label, message });
-        return { slot: m.slot, label: m.label, error: message };
+        // Spend already incurred by this slot (completed rounds + the in-flight call's
+        // streamed tokens, see runAgent) travels with the error so the server can
+        // meter it: an aborted or failed slot is not free upstream.
+        const partialCostUsd = Number(e && e.partialCostUsd) > 0 ? +Number(e.partialCostUsd).toFixed(6) : 0;
+        const partialPromptTokens = Number(e && e.partialPromptTokens) > 0 ? Math.round(Number(e.partialPromptTokens)) : 0;
+        const partialCompletionTokens = Number(e && e.partialCompletionTokens) > 0 ? Math.round(Number(e.partialCompletionTokens)) : 0;
+        emit({ type: 'model_error', slot: m.slot, label: m.label, message, costUsd: partialCostUsd, partialCostUsd, promptTokens: partialPromptTokens, completionTokens: partialCompletionTokens });
+        return {
+          slot: m.slot,
+          label: m.label,
+          error: message,
+          partialCostUsd,
+          // Only priced when something was actually spent: a slot rejected up front
+          // (quota, auth, bad request) stays unpriced.
+          ...(partialCostUsd > 0 ? { costUsd: partialCostUsd, promptTokens: partialPromptTokens, completionTokens: partialCompletionTokens } : {}),
+        };
       }
     })
   );

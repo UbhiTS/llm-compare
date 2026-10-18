@@ -47,7 +47,13 @@ const orig = {
 function write(severity, fields, args) {
   const message = redact(util.format(...args)).trim();
   if (!message && !fields) return;
-  const entry = { severity, message, ...(fields || {}) };
+  // Extra fields go through the same redaction as the message (3.17): a stack, URL or
+  // error text passed as a field must not carry a key/token into Cloud Logging verbatim.
+  let extra = {};
+  if (fields) {
+    try { extra = JSON.parse(redact(JSON.stringify(fields))) || {}; } catch (_) { extra = { fieldsError: 'unserializable log fields' }; }
+  }
+  const entry = { severity, message, ...extra };
   const line = JSON.stringify(entry);
   if (severity === 'ERROR' || severity === 'WARNING') process.stderr.write(line + '\n');
   else process.stdout.write(line + '\n');

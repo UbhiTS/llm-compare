@@ -1,7 +1,8 @@
 ---
 id: raft-consensus
-title: Distributed Consensus: Raft Node State Machine & Log Replication Engine
+title: Raft Consensus State Machine & Log Replication Engine
 category: coding
+subcategory: sys-engineering
 language: javascript
 functionName: stepRaftNode
 executable: true

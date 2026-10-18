@@ -116,7 +116,7 @@ gcloud run deploy "$SERVICE" \
   --allow-unauthenticated \
   --min-instances=1 --max-instances=1 \
   --cpu=1 --memory=1Gi --timeout=3600 \
-  --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${PROJECT_ID}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=google.com,${EMAIL_DOMAIN}@@ADMIN_EMAILS=${ACCOUNT_EMAIL}@@MAX_RUNS_PER_DAY=20@@MAX_SINGLE_RUNS_PER_DAY=20@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth" \
+  --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${PROJECT_ID}@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=google.com,${EMAIL_DOMAIN}@@ADMIN_EMAILS=${ACCOUNT_EMAIL}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
   --set-secrets="ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest,AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest" \
   --add-volume="name=appdata,type=cloud-storage,bucket=${DATA_BUCKET}" \
   --add-volume-mount="volume=appdata,mount-path=/data" \

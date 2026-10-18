@@ -1,7 +1,8 @@
 ---
 id: supply-chain-disruption
-title: Supply chain: disruption response playbook
+title: Global Supply Chain Disruption Response Playbook
 category: business
+subcategory: ops-cx
 language: null
 functionName: solution
 executable: false

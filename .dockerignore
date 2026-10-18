@@ -19,3 +19,5 @@ docs
 test
 click-to-deploy
 SECURITY_AUDIT.md
+# Local image-arena test fixtures (photos) are never served by the app.
+public/sfly-test-images

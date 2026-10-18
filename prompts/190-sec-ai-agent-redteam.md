@@ -1,7 +1,8 @@
 ---
 id: sec-ai-agent-redteam
-title: Security: AI Agent Indirect Prompt Injection, MCP Tool Hijack & CaMeL Defense
+title: AI Agent Indirect Prompt Injection & CaMeL Defense
 category: security
+subcategory: sec-operations
 language: null
 functionName: solution
 executable: false

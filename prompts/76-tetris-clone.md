@@ -1,7 +1,8 @@
 ---
 id: tetris-clone
-title: Tetris clone (Pygame, polished art + self-play AI)
+title: Tetris Arcade & Heuristic Self-Play AI
 category: games
+subcategory: wasm-games
 language: python
 functionName: solution
 executable: true

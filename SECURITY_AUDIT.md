@@ -432,3 +432,38 @@ OpenAI accepts the original on both formats, so no size-error handling was neede
 - Happy-eyeballs connect attempt timeout 2500 ms (`PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS`, clamped 250–10000). It fixes our-side ETIMEDOUT under concurrent large bodies.
 
 Full per-model × image-size matrix, doc sources and text-only proofs: [IMAGE_COMPAT.md](IMAGE_COMPAT.md).
+
+## 15. 2026-10-17 adversarial review (10 Claude reviewers + 3 Gemini verifiers, fixes landed 2026-10-18)
+
+Full report: `LLM Compare Adversarial Review.md` (12 pillars, 4 CRITICAL / 20 HIGH). One line per fixed finding; ids match the report.
+
+**Security (Pillar 3)**
+- 3.1 LLM code same-origin: CAD and game iframes lose `allow-same-origin` (opaque origin); runner/kernel/vendor/games served before the auth gate with CORS; no auto-execute on History restore.
+- 3.2 Stored HTML injection: `thumbDataUrl` / vault src allow-listed and escaped in `imgHistRowHtml`; `mimeType`, labels and CAD telemetry escaped or numeric-coerced; server validates what it persists.
+- 3.3 Dev auto-admin by Host header: `LOCAL_AUTO_AUTH_HOSTS` is checked only AFTER the loopback-peer check, `*.googlers.com` wildcards dropped; `/api/execute` is OFF on Cloud Run unless `ENABLE_CODE_EXEC=1` and pinned to `0` in Actions, quickstart and terraform.
+- 3.10 / 3.13 / 3.20 Hidden trust: `ALLOWED_EMAIL_DOMAINS_STRICT=1` disables the implicit extra sign-in domain; gcloud config / ADC token fallbacks are opt-in (`GCLOUD_TOKEN_FALLBACKS=1`); the break-glass admin password is only reseeded with `ADMIN_BOOTSTRAP_FORCE=1`.
+- 3.4 OIDC login CSRF: `startLogin` binds `state` to an HttpOnly `oauth_state` cookie, adds a `nonce` checked against the id_token, one-shot states; callback rejects before any network call.
+- 3.5 Image-run hijack: `saveImageRun` refuses ids owned by another user; `fallbackAnyOwner` admin-only; client `sha256` never trusted; audit rows no longer rewritable from a history POST.
+- 3.6 postMessage trust: CAD viewport handlers identify the slot by `ev.source`, ignore `msg.slot`, validate telemetry numerically; the runner accepts `CAD_RUN_CODE` only from `window.parent`.
+- 3.7 `/api/cad-mcp/push` SSRF: the server never fetches a client-supplied `endpointUrl`; the bridge body is not echoed.
+- 3.8 Case-variant paths and gzip: case-sensitive routing plus lower-cased gate checks; `gzipJson` scrubs the JSON string before compressing.
+- 3.15 / 9.5 Third-party GitHub Actions pinned to full commit SHAs (`# vX.Y.Z` comments kept).
+
+**Robustness, cost, resilience (Pillars 4, 5, 8)**
+- 4.1 `resolveModels` slot de-dupe: slots are unique single letters; duplicates and junk like `<img>` get the next free letter, so cost is booked to the right provider bucket.
+- 4.14 / 8.10 `/api/run` with no runnable model is a 400 before any quota is charged.
+- 8.1 Abort = refund: a run that already streamed output keeps its daily charge and its partial cost reaches the spend ledger; only output-less aborts are refunded.
+- 5.1 Provider streams: idle timeout (`PROVIDER_IDLE_MS`), no retry of non-idempotent generations after a timeout, judge/image calls abort with the client.
+- 8.8 Dead `MAX_*RUNS_PER_DAY` env vars removed from deploy paths; docs now say "0 = shared key off" (never "unlimited").
+
+**Operations, CI/CD, tests (Pillars 9, 12)**
+- 9.1 `test/smoke-http.js` security probes are assertions: a VULNERABLE result fails the build (`SMOKE_BASELINE=1` keeps the informational mode); new SEC-01d/e (Host allow-list vs non-loopback peer) and SEC-02b (`vm` escape through the live `/api/run` grading path).
+- 9.2 Cloud Run: `--concurrency=40`, liveness probe on `/healthz` (503 while draining), startup probe kept.
+- 9.4 CI pins Node 22 via `actions/setup-node`, `engines.node >= 22.13`, Dockerfile uses `npm ci` only (no `npm install` fallback), `APP_DATA_DIR=/tmp/data` default, post-build container smoke (`/api/health`, gated `/api/config`, pygbag import) before the push.
+- 12.1 `test/verify-auth-hardening.js`: hermetic server with `LOCAL_AUTO_AUTH=0` and a real bootstrap-admin login; covers abort/no-refund, case-variant paths, zero-model 400, OIDC cookie binding, `esc()`/`imgHistRowHtml` XSS payloads, image-run hijack, cad-mcp SSRF, gzip scrub, cross-user PDF.
+- 12.2 / 12.8 `verify-enhancements.js` uses a scratch `AUTH_DATA_DIR`, drops env overrides before asserting defaults, `try/finally` around every temp user.
+- 12.3 Version assertions derive from `package.json` instead of a per-release pin.
+- 12.4 Negative non-owner PDF export test; `verify-3d-arena.js` / `verify-pdf-export.js` scrub `K_SERVICE` and `ANTIGRAVITY_SIDECAR_WEB_PORT` from the spawned env.
+- 12.5 / 12.6 `test/run-all.js` runs every suite without stopping at the first failure; `npm run test:all`, `npm run test:auth`; workflow split into `test` (push + pull_request) and `deploy` (main only, `needs: test`, `cancel-in-progress: false`).
+
+Verification: `npm run test:all` and `npm run test:smoke` (logs under `/tmp/impl-tests-*.log` on the dev box, re-run in CI on every push and PR).

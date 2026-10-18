@@ -32,6 +32,13 @@ console.log('✓ Runner catches async Promise return with clear message');
 // listRuns(). Round-trip through a scratch dir instead.
 const os = require('os');
 process.env.APP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ullm-hist-test-'));
+// Hermetic auth store (review 12.2): users.json / settings.json / run-budgets.json live in
+// the scratch dir, never in the developer's real .auth. Must be set before the first
+// require of src/auth, src/appSettings or src/spendLedger (none of the modules loaded
+// above require them). Also drop env overrides so the quota/limit assertions below test
+// the code defaults rather than whatever the developer's shell exports (review 12.8).
+process.env.AUTH_DATA_DIR = path.join(process.env.APP_DATA_DIR, 'auth');
+for (const k of ['MAX_OPENAI_RUNS_PER_DAY', 'MAX_RUNS_PER_DAY', 'MAX_SINGLE_RUNS_PER_DAY', 'MAX_OPENAI_SINGLE_RUNS_PER_DAY', 'RATE_LIMIT_EXEMPT_ADMINS', 'ADMIN_EMAILS', 'ADMIN_BOOTSTRAP_PASSWORD']) delete process.env[k];
 delete require.cache[require.resolve('../src/history')];
 const history = require('../src/history');
 const HUSER = 'verify@example.com';
@@ -171,7 +178,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     assert.strictEqual(capturedEffort, 'medium', 'Anthropic judge should default to medium effort when none is specified');
     assert(secondCallPrompt.includes('[Code/Config Artifact: bash, 7 lines'), 'Retry prompt should neutralize multi-line exploit code blocks');
     assert(!secondCallPrompt.includes('169.254.169.254'), 'Retry prompt should neutralize IMDS IP literals');
-    assert(secondCallPrompt.includes('[Measured Telemetry — Wall time:'), 'Judge prompt should include measured runtime telemetry (wall time, throughput, cost)');
+    assert(secondCallPrompt.includes('[Measured Telemetry (relative to the other responses) - cost rank'), 'Judge prompt should include relative runtime telemetry (cost / wall-time / throughput ranks, never absolute $ or token counts)');
+    assert(!/\$0\.00|Output tokens:|tok\/s/.test(secondCallPrompt), 'Judge prompt must not leak absolute cost or output-token counts (vendor-identifying)');
     assert.strictEqual(verdict.criteria.length, 6, 'Verdict should return all 6 criteria including cost and speed');
     assert.strictEqual(verdict.results.length, 2, 'Retry verdict should return scores for both entries');
     assert(verdict.results.every((r) => r.scores.cost != null && r.scores.speed != null), 'Both entries must have cost and speed scores');
@@ -380,13 +388,16 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  assert.strictEqual(pkgJson.version, '1.0.48', 'package.json must be at version 1.0.48');
-  assert(indexHtml.includes('id="appVersion" class="foot-version">v1.0.48</span>'), 'index.html must display v1.0.48 in footer');
-  assert(indexHtml.includes('id="headerAppVersion" class="head-version">v1.0.48</span>'), 'index.html must display v1.0.48 next to top-left title');
+  // The version is derived from package.json (review 12.3): index.html must show the SAME
+  // version in the header badge and the footer, whatever the current release number is.
+  assert.match(pkgJson.version, /^\d+\.\d+\.\d+$/, 'package.json version must be semver');
+  assert(indexHtml.includes(`id="appVersion" class="foot-version">v${pkgJson.version}</span>`), `index.html must display v${pkgJson.version} in footer`);
+  assert(indexHtml.includes(`id="headerAppVersion" class="head-version">v${pkgJson.version}</span>`), `index.html must display v${pkgJson.version} next to top-left title`);
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"'), 'index.html must display last updated date and time stamp in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
   const tempCustomerUser = `cust_${Date.now()}`;
+  try {
   const createdCustomer = await auth.createUser(tempCustomerUser, 'TempPass#2026!', 'user', { mustChangePassword: true });
   assert.strictEqual(createdCustomer.mustChangePassword, true, 'External user created with mustChangePassword:true has flag set');
   const authCustomer = await auth.authenticate(tempCustomerUser, 'TempPass#2026!');
@@ -432,13 +443,17 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     false,
     'Google OIDC sessions (external: true) never have mustChangePassword enabled'
   );
-  auth.deleteUser(tempCustomerUser, 'admin');
+  } finally {
+    // Always remove the scratch account, even when an assertion above throws (review 12.2).
+    try { auth.deleteUser(tempCustomerUser, 'admin'); } catch (_) { /* already gone */ }
+  }
 
   // Verify email address as a username (v1.0.48)
   assert.strictEqual(auth.validateUsername('alice@company.com'), null, 'Standard email address must be a valid username');
   assert.strictEqual(auth.validateUsername('First.Last+poc@Sub.Domain.co.uk'), null, 'Email address with + tag and mixed case must be valid');
   assert.ok(auth.validateUsername('missing-tld@company'), 'Email address without TLD dot must be rejected');
   const emailUsername = `Customer.Poc+${Date.now()}@Acme.io`;
+  try {
   const createdEmailUser = await auth.createUser(emailUsername, 'EmailPass#2026!', 'user', {
     mustChangePassword: true,
     dailyVertexLimit: 5,
@@ -450,7 +465,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.ok(authEmailRes && authEmailRes.username === emailUsername.toLowerCase(), 'authenticate() must accept email username case-insensitively');
   const updatedEmailLimits = auth.updateUserLimits(emailUsername, { dailyVertexLimit: 8, expiresAt: '2099-06-30' });
   assert.strictEqual(updatedEmailLimits.dailyVertexLimit, 8, 'updateUserLimits() must work with email username');
-  auth.deleteUser(emailUsername, 'admin');
+  } finally {
+    try { auth.deleteUser(emailUsername, 'admin'); } catch (_) { /* already gone */ }
+  }
   console.log('✓ External user Force Password Change on login, Anytime Admin Force, Temp Password Reset, and Email-Address Usernames verified');
 
   // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
@@ -816,6 +833,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     assert.strictEqual(googVertexQ.limit, 10, 'default Vertex AI budget is 10 runs/day');
     assert.strictEqual(authMod.vertexRunQuota({ username: 'ubhi@google.com', role: 'admin' }).limited, false, 'admins are not limited');
     const extTempUser = 'ext_cap_' + Date.now().toString(36);
+    try {
     await authMod.createUser(extTempUser, 'TempPass1234!', 'user', {
       mustChangePassword: true,
       dailyVertexLimit: 2,
@@ -837,7 +855,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     assert.strictEqual(authNormal, null, 'Expired external account must return null on normal authenticate');
     const authInclExp = await authMod.authenticate(extTempUser, 'TempPass1234!', { includeExpired: true });
     assert(authInclExp && authInclExp.expired === true, 'Expired external account must return expired:true with includeExpired:true');
-    authMod.deleteUser(extTempUser, 'admin');
+    } finally {
+      try { authMod.deleteUser(extTempUser, 'admin'); } catch (_) { /* already gone */ }
+    }
 
     console.log('✓ v1.0.38 90-day input prompt/attachment audit retention, 7-day output pruning, soft-delete, pre-execution logging, upstream attribution & external account Vertex cap/expiration verified');
   }

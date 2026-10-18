@@ -1,7 +1,8 @@
 ---
 id: sql-query-engine
-title: Database Systems: In-Memory SQL Relational Engine & Query Optimizer
+title: In-Memory Relational SQL Engine & Query Optimizer
 category: coding
+subcategory: sys-engineering
 language: javascript
 functionName: executeRelationalQuery
 executable: true

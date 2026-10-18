@@ -188,10 +188,14 @@ const ok = (m) => console.log('✓ ' + m);
   setTimeout(() => ac.abort(), 20);
   await assert.rejects(providerFetch(U, { method: 'POST', body: '{}', signal: ac.signal }));
   assert(n === 1, 'O1: client abort is not retried');
-  // header timeout → retried, then ProviderTimeoutError
+  // header timeout → ProviderTimeoutError. A non-idempotent POST (a generation that may
+  // already be running and billed upstream) is NOT retried; an idempotent call is retried up to max.
   process.env.PROVIDER_TIMEOUT_MS_OPENAI = '30';
   n = 0;
   await assert.rejects(providerFetch(U, { method: 'POST', body: '{}' }), (e) => e instanceof ProviderTimeoutError);
+  assert(n === 1, 'O1: header timeout on a non-idempotent POST is not retried');
+  n = 0;
+  await assert.rejects(providerFetch(U, { method: 'POST', body: '{}', idempotent: true }), (e) => e instanceof ProviderTimeoutError);
   assert(n === 3, 'O1: header timeout retried up to max');
   // streaming body is NOT subject to the header timeout
   handler = () => {

@@ -72,6 +72,13 @@ function isImageMimeOrName(mimeType, name, kind) {
   return /^image\/(png|jpeg|jpg|webp|gif)$/i.test(m) || /\.(png|jpe?g|webp|gif)$/i.test(n);
 }
 
+// Thumbnail URLs are ALWAYS derived server-side from the content hash. A client-supplied
+// `thumbnailUrl` (any scheme) is never persisted or echoed back (review finding 7.6 / 3.5).
+function derivedThumbnailUrl(sha256, mimeType, name, kind) {
+  const h = safeHex64(sha256);
+  return (h && isImageMimeOrName(mimeType, name, kind)) ? `/api/me/vault/${h}` : null;
+}
+
 // Per-user in-memory index mirrored with SQLite `user_vault_files`: `${uKey}:${sha256}` -> record
 const metaCache = new Map();
 // Per-user SHA-1 -> SHA-256 alias map: `${uKey}:${sha1}` -> sha256
@@ -99,7 +106,8 @@ function rowToRecord(r) {
     optBadge: r.opt_badge || null,
     estimatedTokens: Number(r.estimated_tokens) || undefined,
     extractedText: r.extracted_text || '',
-    thumbnailUrl: r.thumbnail_url || null,
+    // Legacy rows may still carry a client-chosen thumbnail_url: re-derive from the hash on every load
+    thumbnailUrl: derivedThumbnailUrl(r.sha256, r.mime_type, r.name, r.kind),
     relPath: r.rel_path || `${r.user_key}/${r.sha256}.bin`,
     claudeMimeType: r.claude_mime_type || undefined,
     hasClaudeSidecar: Boolean(r.has_claude_bin),
@@ -333,8 +341,7 @@ function toVaultPointer(meta) {
   if (!meta || typeof meta !== 'object') return null;
   const sha256 = safeHex64(meta.sha256 || meta.vaultRef);
   const sha1 = safeHex40(meta.sha1);
-  const isImg = isImageMimeOrName(meta.mimeType, meta.name, meta.kind);
-  const thumbnailUrl = meta.thumbnailUrl || (isImg && sha256 ? `/api/me/vault/${sha256}` : null);
+  const thumbnailUrl = derivedThumbnailUrl(sha256, meta.mimeType, meta.name, meta.kind);
   return {
     name: String(meta.name || 'file').slice(0, 200),
     mimeType: String(meta.mimeType || 'application/octet-stream').slice(0, 100),
@@ -372,11 +379,18 @@ function extractRawBufferAndMeta(uKey, att) {
     rawBuf = Buffer.from(att.textContent, 'utf8');
   }
 
-  let sha256 = safeHex64(att.sha256 || att.vaultRef);
-  let sha1 = safeHex40(att.sha1);
+  // Content addressing is server-authoritative: whenever bytes are present the SHA-256 / SHA-1 are
+  // ALWAYS computed from those bytes and any client-supplied digest is ignored (a mismatching client
+  // `sha256` previously let a user park arbitrary bytes under another file's hash - review 3.5(d) / 7.6).
+  // Client digests are only used for reference-only pointers that carry no bytes at all.
+  let sha256 = null;
+  let sha1 = null;
   if (rawBuf && rawBuf.length > 0) {
-    if (!sha256) sha256 = crypto.createHash('sha256').update(rawBuf).digest('hex');
-    if (!sha1) sha1 = crypto.createHash('sha1').update(rawBuf).digest('hex');
+    sha256 = crypto.createHash('sha256').update(rawBuf).digest('hex');
+    sha1 = crypto.createHash('sha1').update(rawBuf).digest('hex');
+  } else {
+    sha256 = safeHex64(att.sha256 || att.vaultRef);
+    sha1 = safeHex40(att.sha1);
   }
 
   const textContent = typeof att.textContent === 'string'
@@ -393,7 +407,7 @@ function extractRawBufferAndMeta(uKey, att) {
   const name = String(att.name || 'file').slice(0, 200);
   const mimeType = String(att.mimeType || 'application/octet-stream').slice(0, 100);
   const isImg = isImageMimeOrName(mimeType, name, att.kind);
-  const thumbnailUrl = att.thumbnailUrl || (isImg && sha256 ? `/api/me/vault/${sha256}` : null);
+  const thumbnailUrl = derivedThumbnailUrl(sha256, mimeType, name, att.kind);
   const relPath = (uKey && sha256) ? `${uKey}/${sha256}.bin` : undefined;
 
   const meta = {
@@ -814,12 +828,15 @@ function listUserVaultFiles(usernameOrKey) {
 }
 
 // Remove a vault entry from SQLite `user_vault_files` and unlink its raw binary files synchronously.
+// GCS FUSE friendly: no `existsSync` / `statSync` probes (each one is a network round trip) - every
+// candidate file is unlinked directly and ENOENT is ignored; sidecars are only attempted when the
+// SQLite record says they exist (or when there is no record at all, i.e. a legacy entry).
 function deleteVaultEntrySync(usernameOrKey, sha256, triggerSnapshot = true) {
   const uKey = userKeyFromUsername(usernameOrKey);
   const h64 = safeHex64(sha256);
   if (!uKey || !h64) return { removed: false, bytesFreed: 0 };
   const cacheKey = `${uKey}:${h64}`;
-  const meta = metaCache.get(cacheKey);
+  const meta = getVaultMetaRecordSync(uKey, h64);
   if (meta && meta.sha1) sha1ToSha256.delete(`${uKey}:${meta.sha1}`);
   const hadMeta = metaCache.delete(cacheKey);
   let dbRemoved = false;
@@ -831,18 +848,21 @@ function deleteVaultEntrySync(usernameOrKey, sha256, triggerSnapshot = true) {
     } catch (_) {}
   }
   const dir = getUserVaultDir(uKey);
-  const suffixes = ['.bin', '.claude.bin', '.fit.bin', '.txt', '.meta.json'];
+  const suffixes = ['.bin'];
+  if (!meta || meta.hasClaudeSidecar) suffixes.push('.claude.bin');
+  if (!meta || meta.hasFitSidecar) suffixes.push('.fit.bin');
+  if (!meta) suffixes.push('.txt', '.meta.json');
   let fileRemoved = false;
   let bytesFreed = 0;
   for (const sfx of suffixes) {
     const fp = path.join(dir, `${h64}${sfx}`);
     try {
-      if (fs.existsSync(fp)) {
-        try { bytesFreed += fs.statSync(fp).size || 0; } catch (_) {}
-        fs.unlinkSync(fp);
-        fileRemoved = true;
-      }
-    } catch (_) {}
+      fs.unlinkSync(fp);
+      fileRemoved = true;
+      if (sfx === '.bin') bytesFreed += (meta && Number(meta.size)) || 0;
+    } catch (e) {
+      // ENOENT (already gone) is the normal case for optional sidecars; anything else is best-effort too
+    }
   }
   return { removed: Boolean(hadMeta || dbRemoved || fileRemoved), bytesFreed };
 }
@@ -855,6 +875,8 @@ function deleteVaultEntryAsync(usernameOrKey, sha256) {
 module.exports = {
   normUser,
   userKeyFromUsername,
+  safeHex64,
+  safeHex40,
   getVaultBaseDir,
   getUserVaultDir,
   bindSqlite,

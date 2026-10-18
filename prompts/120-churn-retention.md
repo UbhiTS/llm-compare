@@ -1,7 +1,8 @@
 ---
 id: churn-retention
-title: Customer success: churn analysis + retention program
+title: Customer Churn Root-Cause & Retention Program
 category: business
+subcategory: ops-cx
 language: null
 functionName: solution
 executable: false

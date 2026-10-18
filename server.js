@@ -36,7 +36,7 @@ const LAST_UPDATED_ISO = (() => {
 
 const { runComparison } = require('./src/orchestrator');
 const { thinkingProfile, thinkingOptions } = require('./src/providers');
-const { DEFAULT_MODELS, MODEL_CATALOG, resolveModels } = require('./src/pricing');
+const { DEFAULT_MODELS, MODEL_CATALOG, RETIRED_REPLACEMENT, resolveModels } = require('./src/pricing');
 const { TASKS } = require('./src/tasks');
 const { autoMintEnabled } = require('./src/gcloudToken');
 const { runCode, executionEnabled } = require('./src/codeRunner');
@@ -58,10 +58,30 @@ const spendLedger = require('./src/spendLedger');
 const providerBilling = require('./src/providerBilling');
 const { callCostUsd } = require('./src/pricing');
 const { normalizeAttachmentsAsync, inspectAttachmentsAsync, MAX_ATTACHMENTS } = require('./src/attachments');
+const { isCadTask, wrapTaskForCadArena, transpileToFusion360Python, getCadMcpStatus } = require('./src/cadArena');
 const { parseMultipart } = require('./src/multipart');
 const { scrubError, maskKnown } = require('./src/secrets');
 const { buildComparisonPdf, pdfFilename } = require('./src/pdfReport');
 const { IMAGE_MODEL_CATALOG, DEFAULT_IMAGE_SLOTS, getImageArenaConfig, runImageArenaComparison } = require('./src/imageArena');
+// Per-user / global in-flight caps (capacity protection on the single instance; admins included).
+const inflight = require('./src/inflight');
+
+// Express 4 does not catch a rejected promise from an async handler: the request
+// would hang with no response. Every async route goes through wrap() so a throw
+// reaches the JSON error middleware at the bottom of this file.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+const TOO_MANY_CONCURRENT = 'Too many concurrent requests, wait for the current one to finish.';
+// auth.js throws a BUSY error when its scrypt semaphore is full: answered as 503, never
+// as a wrong password / lockout strike (3.11).
+const isAuthBusy = (e) => typeof auth.isBusyError === 'function' && auth.isBusyError(e);
+const MAX_CONCURRENT_RUNS_PER_USER = 3;        // /api/run NDJSON streams
+const MAX_CONCURRENT_IMAGE_PER_USER = 1;       // /api/image-arena/run requests
+const MAX_CONCURRENT_IMAGE_GLOBAL = 3;
+const MAX_CONCURRENT_WEB_GAME_PER_USER = 1;    // pygbag builds
+const MAX_CONCURRENT_WEB_GAME_GLOBAL = 2;
+const MAX_CONCURRENT_LARGE_UPLOADS_PER_USER = 2; // multipart bodies over 1 MB
+const LARGE_UPLOAD_BYTES = 1024 * 1024;
 
 // Resolve request attachments (PDF/ZIP parsing runs in worker threads). If the
 // request references cached files that have expired, answer 409 with the list
@@ -85,6 +105,10 @@ async function attachmentsOr409(req, res, raw, errorShape) {
 
 const app = express();
 app.disable('x-powered-by');
+// Case-sensitive routing (3.8): without it `/API/run` matched the `/api/run` route
+// while every `req.path.startsWith('/api/')` guard (force-password-change gate,
+// access log, auth gate) missed it. Must be set before the first app.use().
+app.set('case sensitive routing', true);
 // Only trust X-Forwarded-* when explicitly behind a known reverse proxy. Trusting it
 // by default would let a directly-exposed server be fed spoofed X-Forwarded-For headers,
 // defeating per-IP brute-force lockout. Set TRUST_PROXY=1 (hop count) or =true behind
@@ -115,6 +139,7 @@ app.use((req, res, next) => {
     "connect-src 'self' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net",
     "base-uri 'self'",
     "form-action 'self'",
+    "frame-src 'self'",
     isLocal ? "frame-ancestors *" : "frame-ancestors 'none'",
     "object-src 'none'",
   ].join('; '));
@@ -131,12 +156,16 @@ function setNoCacheHeaders(res) {
 // Defense in depth (R6): every /api/* response body — JSON, NDJSON stream,
 // errors — has any configured secret value (server keys + this request's BYOK
 // keys) masked before it leaves the process. Exact-value masking only, so
-// normal model output is never rewritten.
-app.use('/api', (req, res, next) => {
+// normal model output is never rewritten. Matched on the lower-cased path (not an
+// app.use('/api') mount) so a case-variant path can't dodge it.
+app.use((req, res, next) => {
+  if (!req.path.toLowerCase().startsWith('/api/')) return next();
   setNoCacheHeaders(res);
   const origWrite = res.write.bind(res);
   const origEnd = res.end.bind(res);
-  const textual = () => /json|ndjson|text/i.test(String(res.getHeader('Content-Type') || 'application/json'));
+  // Already-compressed bodies (gzipJson scrubs the JSON text BEFORE compressing)
+  // are skipped: masking compressed bytes is meaningless.
+  const textual = () => !res.getHeader('Content-Encoding') && /json|ndjson|text/i.test(String(res.getHeader('Content-Type') || 'application/json'));
   const scrub = (chunk, enc) => {
     if (chunk == null || !textual()) return chunk;
     const byok = (req.body && typeof req.body === 'object' && req.body.keys) || null;
@@ -163,7 +192,8 @@ app.use('/api', (req, res, next) => {
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
-    if (req.path.startsWith('/api/') || (res.statusCode >= 400 && req.path !== '/healthz')) {
+    const lowerPath = req.path.toLowerCase();
+    if (lowerPath.startsWith('/api/') || (res.statusCode >= 400 && lowerPath !== '/healthz')) {
       const dur = Date.now() - start;
       const user = (req.user && req.user.username) || 'anon';
       const sev = res.statusCode >= 500 ? 'ERROR' : res.statusCode >= 400 ? 'WARNING' : 'INFO';
@@ -197,7 +227,7 @@ const jsonBodyError = (err, _req, res, next) => {
 };
 const PUBLIC_JSON_PATHS = new Set(['/api/auth/login', '/api/auth/setup']);
 const publicJson = express.json({ limit: process.env.PUBLIC_JSON_LIMIT || '64kb' });
-app.use((req, res, next) => (PUBLIC_JSON_PATHS.has(req.path) ? publicJson(req, res, next) : next()));
+app.use((req, res, next) => (PUBLIC_JSON_PATHS.has(req.path.toLowerCase()) ? publicJson(req, res, next) : next()));
 app.use(jsonBodyError);
 app.use(auth.cookieParser);
 
@@ -248,17 +278,21 @@ app.get(['/login', '/login.html'], (req, res) => {
 
 app.get('/api/auth/status', (req, res) => {
   const s = auth.getSession(req);
+  const autoLocal = !s && !process.env.K_SERVICE && process.env.LOCAL_AUTO_AUTH !== '0' && isLocalAutoAuthRequest(req)
+    ? { username: 'ubhi@google.com', role: 'admin', external: true, mustChangePassword: false }
+    : null;
+  const eff = s || autoLocal;
   res.json({
-    setupRequired: auth.setupRequired(),
-    authenticated: !!s,
-    user: s ? { username: s.username, role: s.role, external: !!s.external, mustChangePassword: !!(s && !s.external && s.mustChangePassword) } : null,
+    setupRequired: autoLocal ? false : auth.setupRequired(),
+    authenticated: !!eff,
+    user: eff ? { username: eff.username, role: eff.role, external: !!eff.external, mustChangePassword: !!(eff && !eff.external && eff.mustChangePassword) } : null,
     googleAuth: googleAuth.googleAuthEnabled(),
     allowedDomains: googleAuth.allowedDomains(),
   });
 });
 
 // First-run only: create the admin account. Gated by the console setup code.
-app.post('/api/auth/setup', async (req, res) => {
+app.post('/api/auth/setup', wrap(async (req, res) => {
   const ip = req.ip;
   const key = 'setup|' + ip;
   const gkey = 'setup|global'; // also throttle globally so an IP-rotating attacker can't brute the code
@@ -275,11 +309,12 @@ app.post('/api/auth/setup', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.json({ ok: true, user: { username: user.username, role: user.role } });
   } catch (e) {
+    if (isAuthBusy(e)) return res.status(503).json({ error: e.message });
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', wrap(async (req, res) => {
   const ip = req.ip;
   const username = String((req.body && req.body.username) || '').trim().toLowerCase();
   const password = String((req.body && req.body.password) || '');
@@ -289,7 +324,19 @@ app.post('/api/auth/login', async (req, res) => {
     const ms = Math.max(auth.lockRemainingMs(ukey), auth.lockRemainingMs(ipkey));
     return res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(ms / 1000)}s.` });
   }
-  const user = await auth.authenticate(username, password, { includeExpired: true });
+  // Per-username lockout (independent of IP, 3.11): answer up front, before scrypt runs.
+  if (typeof auth.isUsernameLocked === 'function' && username && auth.isUsernameLocked(username)) {
+    const ms = typeof auth.usernameLockRemainingMs === 'function' ? auth.usernameLockRemainingMs(username) : 0;
+    return res.status(429).json({ error: `Too many attempts for this account. Try again in ${Math.max(1, Math.ceil(ms / 1000))}s.` });
+  }
+  let user;
+  try {
+    user = await auth.authenticate(username, password, { includeExpired: true });
+  } catch (e) {
+    // Overload (the scrypt semaphore is full) is not "wrong password": 503, no lockout counter.
+    if (isAuthBusy(e)) return res.status(503).json({ error: e.message });
+    throw e;
+  }
   if (!user) {
     auth.recordFailure(ukey);
     auth.recordFailure(ipkey);
@@ -317,23 +364,25 @@ app.post('/api/auth/login', async (req, res) => {
       dailyVertexLimit: user.dailyVertexLimit || null,
     },
   });
-});
+}));
 
-// Sign in with Google (OIDC), restricted to the allowed Workspace domain(s).
+// Sign in with Google (OIDC), restricted to the allowed Workspace domain(s). startLogin
+// binds state + nonce to this browser with a one-shot cookie that the callback requires (3.4).
 app.get('/auth/google/login', (req, res) => {
   if (!googleAuth.googleAuthEnabled()) return res.redirect('/login?error=' + encodeURIComponent('Google sign-in is not configured.'));
-  res.redirect(googleAuth.authUrl(req));
+  const url = typeof googleAuth.startLogin === 'function' ? googleAuth.startLogin(req, res) : googleAuth.authUrl(req, res);
+  res.redirect(url);
 });
-app.get('/auth/google/callback', async (req, res) => {
+app.get('/auth/google/callback', wrap(async (req, res) => {
   if (!googleAuth.googleAuthEnabled()) return res.redirect('/login');
   try {
-    const user = await googleAuth.handleCallback(req, req.query.code, req.query.state);
+    const user = await googleAuth.handleCallback(req, req.query.code, req.query.state, res);
     auth.setSessionCookie(req, res, auth.createSession(user));
     res.redirect('/');
   } catch (e) {
     res.redirect('/login?error=' + encodeURIComponent(scrubError(String((e && e.message) || e))));
   }
-});
+}));
 
 // Public OAuth Branding compliance pages (/privacy and /terms) so the OAuth consent
 // screen can be published to "In production" without failing URL reachability checks.
@@ -365,6 +414,104 @@ app.get('/terms', (_req, res) => {
   <p><a href="/login">← Back to Sign In</a></p></body></html>`);
 });
 
+// ---------- sandbox documents + their module imports (served BEFORE the auth gate) ----------
+// The CAD runner and the pygbag games are framed WITHOUT allow-same-origin, so they
+// run from an opaque origin: their module imports (/vendor/three/*, /cad-kernel.js)
+// and bundle fetches are cookie-less CORS requests that would otherwise 302 to
+// /login. Nothing here is user data: Three.js, the CAD kernel, the runner page and
+// generated game bundles (unguessable sha256-prefix ids). Every response carries
+// Access-Control-Allow-Origin: * and Cross-Origin-Resource-Policy: cross-origin so
+// the opaque-origin document may load it; the frame-ancestors / X-Frame-Options
+// headers still limit framing to this origin.
+const PUBLIC_DIR = path.join(__dirname, 'public');
+function setSandboxAssetHeaders(res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+}
+
+// Serve Three.js locally from node_modules/three so the 3D & CAD Arena viewport
+// has zero external CDN dependencies and works reliably behind strict CSPs.
+const THREE_VENDOR_DIR = path.join(__dirname, 'node_modules', 'three');
+const threeStaticOpts = {
+  etag: false,
+  lastModified: false,
+  setHeaders: (res) => {
+    setSandboxAssetHeaders(res);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+  },
+};
+app.use('/vendor/three', express.static(THREE_VENDOR_DIR, threeStaticOpts));
+app.use('/vendor/three', express.static(path.join(THREE_VENDOR_DIR, 'build'), threeStaticOpts));
+
+// The CAD kernel is an ES module imported by the runner, and the STEP export worker is
+// started with new Worker('/cad-step-worker.js') from the same opaque origin (no-cache
+// like the other UI code).
+app.get(['/cad-kernel.js', '/cad-step-worker.js'], (req, res) => {
+  const file = req.path === '/cad-step-worker.js' ? 'cad-step-worker.js' : 'cad-kernel.js';
+  setSandboxAssetHeaders(res);
+  setNoCacheHeaders(res);
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.sendFile(path.join(PUBLIC_DIR, file));
+});
+
+// Serve the sandboxed 3D & CAD Studio iframe (/cad-runner.html) with SAMEORIGIN
+// framing and a scoped CSP that permits Three.js ESM importmap + Function evaluation
+// inside the isolated CAD sandbox (which shadows storage/cookies and blocks fetch).
+app.get('/cad-runner.html', (_req, res) => {
+  setSandboxAssetHeaders(res);
+  setNoCacheHeaders(res);
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "connect-src 'none'",
+    "worker-src 'self' blob:",
+    "frame-ancestors 'self'",
+    "form-action 'none'",
+  ].join('; '));
+  res.sendFile(path.join(PUBLIC_DIR, 'cad-runner.html'));
+});
+
+// Serve a built game bundle. The pygbag loader needs a permissive CSP (inline +
+// eval + wasm + its CDN) and must be framable by our own origin — so we override
+// the strict global CSP / X-Frame-Options for just this route. pygbag fetches the
+// bundle assets (.tar.gz / .apk / preloader files) with credentials:'omit', so
+// this route is unauthenticated by design (see the note above).
+app.get('/games/:id/*', (req, res) => {
+  const dir = gameDir(req.params.id);
+  if (!dir) return res.status(404).send('Game not found — rebuild it from the app.');
+  const rel = req.params[0] && req.params[0] !== '' ? req.params[0] : 'index.html';
+  const fp = path.normalize(path.join(dir, rel));
+  if (fp !== dir && !fp.startsWith(dir + path.sep)) return res.status(400).end(); // no path traversal
+  setSandboxAssetHeaders(res);
+  // Cross-origin isolation for the game document itself. Verified: with these
+  // headers the Tetris bundle runs and the page stays responsive; without them
+  // the identical bundle hard-freezes the renderer.
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
+  res.setHeader('Content-Security-Policy', [
+    "default-src 'self' https://pygame-web.github.io https://cdn.jsdelivr.net",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://pygame-web.github.io https://cdn.jsdelivr.net",
+    "style-src 'self' 'unsafe-inline' https://pygame-web.github.io",
+    "img-src 'self' data: blob: https://pygame-web.github.io",
+    // pygame loads sound (e.g. beep.ogg) via blob:/data: URLs; without media-src it
+    // falls back to default-src (no blob:/data:) and the game crashes on audio load.
+    "media-src 'self' data: blob: https://pygame-web.github.io https://cdn.jsdelivr.net",
+    "connect-src 'self' blob: data: https://pygame-web.github.io https://cdn.jsdelivr.net",
+    "worker-src 'self' blob:",
+    "child-src 'self' blob: https://pygame-web.github.io",
+    // pygbag frames its own vt/console from the CDN; without frame-src this is blocked
+    // (surfaces as the share-modal.js 'addEventListener of null' error).
+    "frame-src 'self' blob: https://pygame-web.github.io",
+    "frame-ancestors 'self'",
+    "form-action 'none'",
+  ].join('; '));
+  res.sendFile(fp);
+});
+app.get('/games/:id', (req, res) => res.redirect(301, `/games/${req.params.id}/`)); // bare id -> trailing slash
+
 // ===========================================================================
 // AUTH GATE — everything below requires a valid session
 // ===========================================================================
@@ -377,13 +524,14 @@ app.use((req, res, next) => {
       external: !!s.external,
       mustChangePassword: !s.external && !!s.mustChangePassword,
     };
-    if (req.user.mustChangePassword && req.path.startsWith('/api/')) {
+    const lowerPath = req.path.toLowerCase();
+    if (req.user.mustChangePassword && lowerPath.startsWith('/api/')) {
       const allowedDuringForceChange =
-        req.path === '/api/auth/password' ||
-        req.path === '/api/auth/logout' ||
-        req.path === '/api/auth/status' ||
-        req.path === '/api/config' ||
-        req.path === '/api/health';
+        lowerPath === '/api/auth/password' ||
+        lowerPath === '/api/auth/logout' ||
+        lowerPath === '/api/auth/status' ||
+        lowerPath === '/api/config' ||
+        lowerPath === '/api/health';
       if (!allowedDuringForceChange) {
         return res.status(403).json({
           ok: false,
@@ -396,23 +544,21 @@ app.use((req, res, next) => {
   }
   // Local workstation / Antigravity Sidecar auto-auth for Tarun (never active on Cloud Run K_SERVICE)
   // SECURITY: the Host header and X-Forwarded-For are client-controlled, so neither
-  // may grant access on its own. Auto-auth now requires the TCP peer to really be
-  // loopback AND (outside the Antigravity sidecar) a loopback Host header with no
-  // proxy forwarding headers. This blocks LAN clients spoofing `Host: localhost`,
-  // DNS-rebinding pages (Host = attacker domain) and local tunnels/reverse proxies
-  // (which connect from 127.0.0.1 on behalf of remote users).
+  // may grant access on its own. Auto-auth requires the TCP peer to really be
+  // loopback AND (outside the Antigravity sidecar) a loopback Host header, or an
+  // exact entry from LOCAL_AUTO_AUTH_HOSTS, with no proxy forwarding headers.
+  // This blocks LAN clients spoofing `Host: localhost`, DNS-rebinding pages (Host =
+  // attacker domain), local tunnels/reverse proxies (which connect from 127.0.0.1 on
+  // behalf of remote users) and this server's own bridge calls (X-LLMC-Internal).
+  // Remote browsers on a LAN-exposed dev server must sign in like everyone else.
   const isLoopback = !process.env.K_SERVICE && isLocalAutoAuthRequest(req);
   if (isLoopback && process.env.LOCAL_AUTO_AUTH !== '0') {
     req.user = { username: 'ubhi@google.com', role: 'admin', name: 'Tarun Ubhi' };
     return next();
   }
-  // pygbag fetches a game's bundle assets (.tar.gz / .apk / preloader files) with
-  // credentials:'omit' — no session cookie — so a gated /games/* would redirect
-  // them to /login and the game receives the login HTML instead of the archive
-  // ("BadGzipFile: not a gzip file (b'<!')"). Serve game assets unauthenticated:
-  // ids are unguessable sha256 prefixes and the content is generated game code.
-  if (req.path.startsWith('/games/')) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Authentication required.' });
+  // (/games/*, /cad-runner.html, /cad-kernel.js and /vendor/three/* are routed above
+  // this gate: they are fetched cookie-less from the opaque-origin sandbox frames.)
+  if (req.path.toLowerCase().startsWith('/api/')) return res.status(401).json({ error: 'Authentication required.' });
   return res.redirect('/login');
 });
 
@@ -425,13 +571,16 @@ function isLoopbackAddr(a) {
 }
 
 // True only for a request that genuinely originates on this machine (see auth gate).
+// The TCP peer check comes first: no Host value, allow-listed or not, can grant
+// access to a remote client (3.3). LOCAL_AUTO_AUTH_HOSTS entries are matched exactly.
 function isLocalAutoAuthRequest(req) {
   const peer = req.socket && req.socket.remoteAddress;   // real TCP peer — never req.ip (XFF)
   if (!isLoopbackAddr(peer)) return false;
+  if (req.headers['x-llmc-internal']) return false; // server-originated request (CAD MCP bridge push), never a user
+  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+  const extra = String(process.env.LOCAL_AUTO_AUTH_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
   if (process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) return true; // sidecar proxy: keep prior behaviour
   if (req.headers['x-forwarded-for'] || req.headers.forwarded) return false; // proxied/tunnelled
-  const extra = String(process.env.LOCAL_AUTO_AUTH_HOSTS || '').split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
-  const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || extra.includes(host);
 }
 
@@ -447,7 +596,7 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/auth/password', async (req, res) => {
+app.post('/api/auth/password', wrap(async (req, res) => {
   try {
     const updatedUser = await auth.changePassword(
       req.user.username,
@@ -457,17 +606,89 @@ app.post('/api/auth/password', async (req, res) => {
     auth.setSessionCookie(req, res, auth.createSession(updatedUser));
     res.json({ ok: true, mustChangePassword: false, user: updatedUser });
   } catch (e) {
+    if (isAuthBusy(e)) return res.status(503).json({ error: e.message });
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+  }
+}));
+
+// ---------- user administration (admin only) ----------
+function usersModalPayload(req) {
+  const s = appSettings.get();
+  return {
+    ok: true,
+    users: auth.listUsers(),
+    me: req.user.username,
+    bootstrapAdmins: appSettings.BOOTSTRAP_ADMIN_EMAILS,
+    adminEmails: s.adminEmails || [],
+    allowedDomains: googleAuth.allowedDomains(),
+    knownInternalUsers: knownInternalUsers(),
+  };
+}
+
+app.get('/api/auth/users', requireAdmin, (req, res) => {
+  res.json(usersModalPayload(req));
+});
+
+app.post('/api/auth/google-admins', requireAdmin, (req, res) => {
+  const email = String((req.body && req.body.email) || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ ok: false, error: 'Enter a Google sign-in email (e.g. name@google.com).' });
+  try {
+    const before = appSettings.get();
+    const cur = Array.isArray(before.adminEmails) ? before.adminEmails : [];
+    const nextList = cur.includes(email) ? cur : [...cur, email];
+    const after = appSettings.update(
+      { adminEmails: nextList },
+      { actor: req.user.username, allowedDomains: googleAuth.allowedDomains() }
+    );
+    log.event('NOTICE', `[google-admins] promoted ${email} by ${req.user.username}`, {
+      by: req.user.username, email, adminsBefore: before.adminEmails, adminsAfter: after.adminEmails,
+    });
+    res.json({ ...usersModalPayload(req), googleAdminAdded: email });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
 });
 
-// ---------- user administration (admin only) ----------
-app.get('/api/auth/users', requireAdmin, (req, res) => {
-  res.json({ users: auth.listUsers(), me: req.user.username });
+app.delete('/api/auth/google-admins/:email', requireAdmin, (req, res) => {
+  const target = String(req.params.email || '').trim().toLowerCase();
+  try {
+    if (req.user.external && String(req.user.username || '').toLowerCase() === target && !appSettings.isBootstrapAdmin(target)) {
+      return res.status(400).json({ ok: false, error: "You can't remove your own admin access. Ask another admin to do it." });
+    }
+    const before = appSettings.get();
+    const cur = Array.isArray(before.adminEmails) ? before.adminEmails : [];
+    const nextList = cur.filter((x) => x !== target);
+    const after = appSettings.update(
+      { adminEmails: nextList },
+      { actor: req.user.username, allowedDomains: googleAuth.allowedDomains() }
+    );
+    log.event('NOTICE', `[google-admins] demoted ${target} by ${req.user.username}`, {
+      by: req.user.username, email: target, adminsBefore: before.adminEmails, adminsAfter: after.adminEmails,
+    });
+    res.json({ ...usersModalPayload(req), googleAdminRemoved: target });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
 });
 
-app.post('/api/auth/users', requireAdmin, async (req, res) => {
+app.post('/api/auth/users', requireAdmin, wrap(async (req, res) => {
   const { username, password, role, mustChangePassword, expiresAt, dailyVertexLimit } = req.body || {};
+  const cleanUser = String(username || '').trim().toLowerCase();
+  const domain = cleanUser.includes('@') ? cleanUser.split('@')[1] : '';
+  const allowedDomains = googleAuth.allowedDomains();
+  // If an admin enters an @google.com (or allowed Workspace domain) email without a password
+  // and checks "Make this user an admin", promote them as a Google OAuth admin directly.
+  if (role === 'admin' && !String(password || '').trim() && domain && allowedDomains.includes(domain)) {
+    try {
+      const before = appSettings.get();
+      const cur = Array.isArray(before.adminEmails) ? before.adminEmails : [];
+      const nextList = cur.includes(cleanUser) ? cur : [...cur, cleanUser];
+      appSettings.update({ adminEmails: nextList }, { actor: req.user.username, allowedDomains });
+      return res.json({ ...usersModalPayload(req), googleAdminAdded: cleanUser });
+    } catch (e) {
+      return res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+    }
+  }
   const wantForce = mustChangePassword !== undefined ? Boolean(mustChangePassword) : true;
   try {
     const user = await auth.createUser(username, String(password || ''), role === 'admin' ? 'admin' : 'user', {
@@ -475,11 +696,12 @@ app.post('/api/auth/users', requireAdmin, async (req, res) => {
       expiresAt,
       dailyVertexLimit,
     });
-    res.json({ ok: true, user, users: auth.listUsers() });
+    res.json({ ...usersModalPayload(req), user });
   } catch (e) {
+    if (isAuthBusy(e)) return res.status(503).json({ error: e.message });
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
 app.post('/api/auth/users/:username/limits', requireAdmin, (req, res) => {
   try {
@@ -556,7 +778,7 @@ app.post('/api/admin/settings', requireAdmin, (req, res) => {
 // provider's own month-to-date spend (where it has one; it also counts other apps on the
 // same org) and the app-tracked spend: the same number the monthly budget check enforces
 // (see monthlyBudgetOver). ?refresh=1 re-queries the providers (max once a minute).
-app.get('/api/admin/spend', requireAdmin, async (req, res) => {
+app.get('/api/admin/spend', requireAdmin, wrap(async (req, res) => {
   const force = req.query && (req.query.refresh === '1' || req.query.refresh === 'true');
   const tracked = spendLedger.monthToDate();
   const budgets = appSettings.get().budgets;
@@ -570,7 +792,7 @@ app.get('/api/admin/spend', requireAdmin, async (req, res) => {
     globalKey: globalKeyConfigured(p),
   }));
   res.json({ ok: true, month: tracked.month, trackingSince: tracked.since, generatedAt: new Date().toISOString(), providers });
-});
+}));
 
 app.post('/api/auth/users/:username/force-password-change', requireAdmin, (req, res) => {
   try {
@@ -582,16 +804,17 @@ app.post('/api/auth/users/:username/force-password-change', requireAdmin, (req, 
   }
 });
 
-app.post('/api/auth/users/:username/reset-password', requireAdmin, async (req, res) => {
+app.post('/api/auth/users/:username/reset-password', requireAdmin, wrap(async (req, res) => {
   try {
     const { password, mustChangePassword } = req.body || {};
     const wantForce = mustChangePassword !== undefined ? Boolean(mustChangePassword) : true;
     const user = await auth.adminResetPassword(req.params.username, String(password || ''), wantForce);
     res.json({ ok: true, user, users: auth.listUsers() });
   } catch (e) {
+    if (isAuthBusy(e)) return res.status(503).json({ error: e.message });
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
 app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
   try {
@@ -603,7 +826,7 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
 });
 
 // ---------- fast in-memory static asset cache + gzip compression ----------
-const PUBLIC_DIR = path.join(__dirname, 'public');
+// (PUBLIC_DIR is defined with the pre-gate sandbox routes above.)
 const STATIC_ASSET_MIMES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
@@ -657,15 +880,19 @@ function getCachedStaticAsset(fileRel) {
 // Warm static asset cache on boot (sub-assets first so index.html injects their content hashes)
 ['theme-init.js', 'styles.css', 'app.js', 'index.html'].forEach((f) => getCachedStaticAsset(f));
 
-// Automatically gzip JSON responses > 1 KB when the client accepts gzip
+// Automatically gzip JSON responses > 1 KB when the client accepts gzip. The JSON
+// text is run through the secret scrubber BEFORE compression (3.8): the /api
+// scrub middleware only sees compressed bytes afterwards and skips them.
 app.use((req, res, next) => {
   const origJson = res.json.bind(res);
   res.json = function gzipJson(body) {
     const ae = String(req.headers['accept-encoding'] || '');
     if (!/\bgzip\b/i.test(ae) || res.headersSent) return origJson(body);
     try {
-      const str = JSON.stringify(body);
-      if (!str || str.length < 1024) return origJson(body);
+      const raw = JSON.stringify(body);
+      if (!raw || raw.length < 1024) return origJson(body);
+      const byok = (req.body && typeof req.body === 'object' && req.body.keys) || null;
+      const str = maskKnown(raw, byok);
       const gz = zlib.gzipSync(Buffer.from(str, 'utf8'), { level: 1 });
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.setHeader('Content-Encoding', 'gzip');
@@ -698,6 +925,8 @@ app.use((req, res, next) => {
   res.setHeader('Content-Length', String(entry.raw.length));
   return res.end(req.method === 'HEAD' ? undefined : entry.raw);
 });
+
+// (/vendor/three/*, /cad-kernel.js and /cad-runner.html are served before the auth gate, see above.)
 
 app.use(express.static(PUBLIC_DIR, {
   etag: false,
@@ -746,6 +975,8 @@ app.get('/api/config', (req, res) => {
       functionName: t.functionName,
       testCount: t.testCases.length,
       category: t.category || (t.testCases.length ? 'coding' : 'general'),
+      vertical: t.vertical || null,
+      subcategory: t.subcategory || null,
       language: t.language || null,
       executable: Boolean(t.executable || t.visualizer) && (codeExecOn || (!!t.gui && webGameOn)),
       visualizer: t.visualizer || null,
@@ -761,7 +992,8 @@ app.get('/api/config', (req, res) => {
     },
     codeExec: codeExecOn,
     webGame: webGameOn,
-    gcpProject: process.env.GCP_PROJECT_ID || '',
+    // The hosting project id is only needed by the admin access-help text (3.19).
+    gcpProject: req.user.role === 'admin' ? (process.env.GCP_PROJECT_ID || '') : '',
     allowedDomains: googleAuth.allowedDomains(),
     maxRunsPerDay: appSettings.limitFor('openai'),
     maxSingleRunsPerDay: appSettings.limitFor('openai'),
@@ -909,8 +1141,49 @@ app.get('/api/history/:id/pdf', (req, res) => {
   }
 });
 
+// /api/export-pdf input caps (6.4): the PDF text wrapper re-measures per character,
+// so every free-text field is bounded here before it reaches pdfReport.js.
+const PDF_EXPORT_MAX_JSON = 2 * 1024 * 1024;
+const PDF_EXPORT_MAX_SLOTS = 8;
+const capStr = (v, n) => (typeof v === 'string' ? v.slice(0, n) : v);
+function capPdfSlotFields(x) {
+  if (!x || typeof x !== 'object') return x;
+  const out = { ...x };
+  for (const k of ['label', 'provider', 'model']) if (typeof out[k] === 'string') out[k] = out[k].slice(0, 120);
+  if (typeof out.note === 'string') out.note = out.note.slice(0, 4000);
+  if (typeof out.contextWarning === 'string') out.contextWarning = out.contextWarning.slice(0, 500);
+  if (Array.isArray(out.attachmentNotes)) out.attachmentNotes = out.attachmentNotes.slice(0, 10).map((n) => String(n == null ? '' : n).slice(0, 300));
+  else if (out.attachmentNotes != null) out.attachmentNotes = [];
+  return out;
+}
+function capPdfExportBody(body) {
+  const out = { ...body };
+  out.models = Array.isArray(body.models) ? body.models.slice(0, PDF_EXPORT_MAX_SLOTS).map(capPdfSlotFields) : [];
+  if (Array.isArray(body.results)) {
+    out.results = body.results.slice(0, PDF_EXPORT_MAX_SLOTS).map(capPdfSlotFields);
+  } else if (body.results && typeof body.results === 'object') {
+    out.results = {};
+    for (const k of Object.keys(body.results).slice(0, PDF_EXPORT_MAX_SLOTS)) out.results[k] = capPdfSlotFields(body.results[k]);
+  }
+  if (Array.isArray(body.slots)) out.slots = body.slots.slice(0, PDF_EXPORT_MAX_SLOTS).map(capPdfSlotFields);
+  if (body.judge && typeof body.judge === 'object') {
+    out.judge = { ...body.judge, why: capStr(body.judge.why, 4000) };
+    if (Array.isArray(body.judge.results)) out.judge.results = body.judge.results.slice(0, PDF_EXPORT_MAX_SLOTS).map(capPdfSlotFields);
+    if (body.judge.judge && typeof body.judge.judge === 'object') out.judge.judge = capPdfSlotFields(body.judge.judge);
+  }
+  return out;
+}
+
 app.post('/api/export-pdf', (req, res) => {
-  const body = req.body || {};
+  const declared = Number(req.headers['content-length']);
+  if (declared > PDF_EXPORT_MAX_JSON) return res.status(413).json({ error: 'The report payload is too large to export (2 MB limit).' });
+  const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
+  try {
+    if (JSON.stringify(rawBody).length > PDF_EXPORT_MAX_JSON) return res.status(413).json({ error: 'The report payload is too large to export (2 MB limit).' });
+  } catch (_) {
+    return res.status(400).json({ error: 'Invalid report payload.' });
+  }
+  const body = capPdfExportBody(rawBody);
   const foundTask = TASKS.find((t) => t.id === body.taskId);
   const rawResults = body.results;
   const hasResults = Array.isArray(rawResults)
@@ -1002,7 +1275,7 @@ app.get('/api/global-keys', requireAdmin, (req, res) => {
   res.json({ keys: globalKeys.status(), enabled: globalKeys.enabled() });
 });
 
-app.put('/api/global-keys', requireAdmin, async (req, res) => {
+app.put('/api/global-keys', requireAdmin, wrap(async (req, res) => {
   const { name, value } = req.body || {};
   try {
     const keys = await globalKeys.set(String(name || ''), String(value || ''));
@@ -1013,7 +1286,7 @@ app.put('/api/global-keys', requireAdmin, async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
 // ---------- Image & GenMedia Arena (Nano Banana 2 vs 2.1) ----------
 app.get('/api/image-arena/config', (_req, res) => {
@@ -1032,20 +1305,67 @@ app.get('/api/image-arena/usage', requireAdmin, (_req, res) => {
   res.json(history.imageUsageSummary({ registeredUsers: auth.listUsers() }));
 });
 
-app.post('/api/image-arena/history', async (req, res) => {
+// Client posts to /api/image-arena/history are bounded here (6.1 / 7.1 / 3.2): the
+// server already vaulted every generated image during /api/image-arena/run, so a
+// client may only send compact per-slot metadata plus a small data-URL thumbnail.
+const IMAGE_HISTORY_MAX_BATCH = 20;
+const IMAGE_HISTORY_MAX_RESULTS = 6;
+const IMAGE_HISTORY_MAX_ATTACHMENTS = 13;
+const IMAGE_HISTORY_MAX_TEXT = 20000;
+const IMAGE_THUMB_DATA_URL_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]{1,45000}$/;
+const IMAGE_MIME_RE = /^image\/(png|jpeg|webp|gif)$/i;
+function sanitizeClientImageResult(r) {
+  if (!r || typeof r !== 'object') return null;
+  const out = { ...r };
+  delete out.imageDataUrl;
+  delete out.thoughtDataUrl;
+  delete out.thoughtImageDataUrl;
+  // Only raster image types are ever stored / echoed for a slot (3.2); anything else
+  // falls back to the server-recorded or default type.
+  if (out.mimeType != null && !IMAGE_MIME_RE.test(String(out.mimeType))) delete out.mimeType;
+  if (typeof out.text === 'string') out.text = out.text.slice(0, IMAGE_HISTORY_MAX_TEXT);
+  else if (out.text != null) delete out.text;
+  if (typeof out.reasoning === 'string') out.reasoning = out.reasoning.slice(0, IMAGE_HISTORY_MAX_TEXT);
+  else if (out.reasoning != null) delete out.reasoning;
+  if (out.thumbDataUrl != null && !(typeof out.thumbDataUrl === 'string' && IMAGE_THUMB_DATA_URL_RE.test(out.thumbDataUrl))) delete out.thumbDataUrl;
+  for (const k of ['costUsd', 'standardPayGoCostUsd', 'offPeakPayGoCostUsd']) {
+    if (out[k] == null) continue;
+    const n = Number(out[k]);
+    if (!Number.isFinite(n) || n < 0) delete out[k];
+    else out[k] = n;
+  }
+  return out;
+}
+function sanitizeClientImageHistoryItem(item) {
+  const rawResults = Array.isArray(item.results) ? item.results : (Array.isArray(item.summary) ? item.summary : null);
+  const results = rawResults ? rawResults.slice(0, IMAGE_HISTORY_MAX_RESULTS).map(sanitizeClientImageResult).filter(Boolean) : undefined;
+  const attachments = Array.isArray(item.attachments)
+    ? item.attachments.slice(0, IMAGE_HISTORY_MAX_ATTACHMENTS).map((a) => {
+      if (!a || typeof a !== 'object') return a;
+      if (a.mimeType != null && !IMAGE_MIME_RE.test(String(a.mimeType))) { const { mimeType: _dropped, ...rest } = a; return rest; }
+      return a;
+    })
+    : undefined;
+  const atNum = Number(item.at);
+  const at = Number.isFinite(atNum) && atNum > 0 ? Math.min(atNum, Date.now()) : undefined;
+  return { results, attachments, at };
+}
+
+app.post('/api/image-arena/history', wrap(async (req, res) => {
   try {
     const body = req.body || {};
     const batch = Array.isArray(body.runs) ? body.runs : [body.run || body];
     const saved = [];
-    for (const item of batch.slice(0, 60)) {
+    for (const item of batch.slice(0, IMAGE_HISTORY_MAX_BATCH)) {
       if (!item || typeof item !== 'object') continue;
       // Preserve original run owner only if admin is syncing; otherwise bind to req.user
       const ownerUser = (req.user.role === 'admin' && item.user) ? item.user : req.user.username;
       const ownerName = (req.user.role === 'admin' && item.userName) ? item.userName : (req.user.name || req.user.username);
       const isExt = auth.isExternalAccount(req.user);
+      const bounded = sanitizeClientImageHistoryItem(item);
       const out = await history.saveImageRun({
         id: item.id,
-        at: item.at,
+        at: bounded.at,
         user: ownerUser,
         userName: ownerName,
         packId: item.packId,
@@ -1055,8 +1375,8 @@ app.post('/api/image-arena/history', async (req, res) => {
         imageSize: item.imageSize,
         aspectRatio: item.aspectRatio,
         slots: item.slots,
-        results: item.results || item.summary,
-        attachments: item.attachments,
+        results: bounded.results,
+        attachments: bounded.attachments,
         starred: item.starred,
         ip: isExt ? req.ip : null,
         userAgent: isExt ? req.headers['user-agent'] : null,
@@ -1068,7 +1388,7 @@ app.post('/api/image-arena/history', async (req, res) => {
   } catch (e) {
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
 app.get('/api/image-arena/history/:id', (req, res) => {
   const rec = history.getImageRun(req.params.id, { username: req.user.username, isAdmin: req.user.role === 'admin' });
@@ -1236,7 +1556,43 @@ app.post('/api/image-arena/reserve', (req, res) => {
   res.json({ ok: true, ticket: ticket.id, charged: charge.charged, quotas: charge.quotas });
 });
 
-app.post('/api/image-arena/run', async (req, res) => {
+// Reference images for an image run: at most 13 (the smallest catalog cap), each an
+// allow-listed raster type with at most 12 MB of base64 (6.1). Returns an error
+// string or null; the data URL prefix the client may send is tolerated.
+const IMAGE_RUN_MAX_ATTACHMENTS = 13;
+const IMAGE_RUN_MAX_B64 = 12 * 1024 * 1024;
+function validateImageRunAttachments(attachments) {
+  if (attachments == null) return null;
+  if (!Array.isArray(attachments)) return 'attachments must be a list of reference images.';
+  if (attachments.length > IMAGE_RUN_MAX_ATTACHMENTS) return `At most ${IMAGE_RUN_MAX_ATTACHMENTS} reference images per run.`;
+  for (const att of attachments) {
+    if (!att || typeof att !== 'object') return 'Each reference image must be an object.';
+    const mime = String(att.mimeType || 'image/png');
+    if (!/^image\/(png|jpeg|webp|gif)$/i.test(mime)) return `Unsupported reference image type "${mime.slice(0, 60)}" (PNG, JPEG, WebP or GIF).`;
+    if (att.data != null) {
+      if (typeof att.data !== 'string') return 'Reference image data must be a base64 string.';
+      const b64 = att.data.replace(/^data:[^;]+;base64,/, '');
+      if (b64.length > IMAGE_RUN_MAX_B64) return 'A reference image is too large (12 MB limit).';
+    }
+  }
+  return null;
+}
+
+app.post('/api/image-arena/run', wrap(async (req, res) => {
+  req.setTimeout(0); // long generation: no per-request socket timeout
+  // Capacity, not quota: one image request per user and three in the whole process.
+  const lease = inflight.acquireAll([
+    [`image:${req.user.username}`, MAX_CONCURRENT_IMAGE_PER_USER],
+    ['image:*', MAX_CONCURRENT_IMAGE_GLOBAL],
+  ]);
+  if (!lease.ok) return res.status(429).json({ ok: false, error: TOO_MANY_CONCURRENT });
+  try {
+    await handleImageArenaRun(req, res);
+  } finally {
+    lease.release();
+  }
+}));
+async function handleImageArenaRun(req, res) {
   const {
     slots,
     allSlots,
@@ -1251,6 +1607,8 @@ app.post('/api/image-arena/run', async (req, res) => {
     keys: rawKeys,
     ticket: ticketId,
   } = req.body || {};
+  const attachmentError = validateImageRunAttachments(attachments);
+  if (attachmentError) return res.status(400).json({ ok: false, error: attachmentError });
   const keys = sanitizeImageKeys(rawKeys);
   const resolvedSlotEntries = resolveImageSlotEntries(slots);
   // Per-run charging: a slot that presents its run's ticket was already paid for at reserve...
@@ -1289,14 +1647,11 @@ app.post('/api/image-arena/run', async (req, res) => {
   let finished = false;
   res.on('close', () => {
     if (!finished && !res.writableFinished) {
+      // Client went away: cancel upstream. Settling the ticket slot / refunding waits for
+      // the generation promise below (it resolves right after the abort), so a slot whose
+      // image had already come back is still counted as completed (8.1 / 5.3) and the
+      // slot is settled exactly once.
       ac.abort();
-      // Abandoned: a ticketed run is refunded only once EVERY slot of it was abandoned
-      // (same as an abandoned text run); a stand-alone request refunds its own charge.
-      if (claimed) {
-        if (runTickets.settleSlot(ticket, slotId, { abandoned: true })) refundDailyBudgets(req.user, ticket.charged);
-      } else {
-        refundDailyBudgets(req.user, charge.charged);
-      }
       history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
     }
   });
@@ -1311,12 +1666,26 @@ app.post('/api/image-arena/run', async (req, res) => {
       signal: ac.signal,
       auditUser,
     });
-    finished = true;
-    if (claimed) runTickets.settleSlot(ticket, slotId, { abandoned: false });
-    // App-tracked spend: each image generated on a global key adds its PayGo cost to this month.
+    const producedOk = Boolean(out && Array.isArray(out.results) && out.results.some((r) => r && r.ok));
+    // App-tracked spend: each image generated on a global key adds its PayGo cost to this month
+    // (recorded whether or not the client is still connected: the provider billed it).
     for (const r of (out && out.results) || []) {
       if (r && r.ok) spendLedger.recordModelCost({ provider: r.provider, publisher: r.publisher }, keys, r.standardPayGoCostUsd);
     }
+    if (ac.signal.aborted) {
+      // Abandoned: a ticketed run is refunded only once EVERY slot of it was abandoned
+      // (same as an abandoned text run); a stand-alone request refunds its own charge
+      // only when it produced nothing. Results nobody will see are not persisted (5.3).
+      finished = true;
+      if (claimed) {
+        if (runTickets.settleSlot(ticket, slotId, { abandoned: !producedOk })) refundDailyBudgets(req.user, ticket.charged);
+      } else if (!producedOk) {
+        refundDailyBudgets(req.user, charge.charged);
+      }
+      return;
+    }
+    finished = true;
+    if (claimed) runTickets.settleSlot(ticket, slotId, { abandoned: false });
     out.runId = sharedRunId;
     out.vertexQuota = auth.vertexRunQuota(req.user);
     out.quotas = auth.quotaSnapshot(req.user);
@@ -1406,11 +1775,11 @@ app.post('/api/image-arena/run', async (req, res) => {
     history.finalizeAuditRun(runId, { status: 'error' }).catch(() => {});
     res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
   }
-});
+}
 
 // Execute an LLM-generated solution: python -> run the program; javascript ->
 // run the function against the task's hidden tests. taskId supplies the tests.
-app.post('/api/execute', async (req, res) => {
+app.post('/api/execute', wrap(async (req, res) => {
   const { language, code, taskId, title, posX, posY, index, count, gap } = req.body || {};
   const task = TASKS.find((t) => t.id === taskId);
   try {
@@ -1429,12 +1798,31 @@ app.post('/api/execute', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
+
+// Blind Judge entries may carry CAD telemetry (3.12): keep only finite numbers /
+// a boolean / up to three finite bbox numbers so nothing free-form reaches the prompt.
+function sanitizeCadTelemetry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  for (const k of ['partCount', 'triangleCount', 'volumeCm3']) {
+    if (raw[k] == null) continue;
+    const n = Number(raw[k]);
+    if (Number.isFinite(n)) out[k] = n;
+  }
+  if (typeof raw.watertight === 'boolean') out.watertight = raw.watertight;
+  if (Array.isArray(raw.boundingBoxMm)) {
+    const bb = raw.boundingBoxMm.slice(0, 3).map((v) => Number(v)).filter((v) => Number.isFinite(v));
+    if (bb.length) out.boundingBoxMm = bb;
+  }
+  return Object.keys(out).length ? out : null;
+}
 
 // Score a finished run's outputs with an LLM judge. Only meaningful for the
 // ungraded (business / general) tasks, which have no hidden tests and therefore
 // no quality signal of their own. Blinding and shuffling happen in src/judge.js.
-app.post('/api/judge', async (req, res) => {
+app.post('/api/judge', wrap(async (req, res) => {
+  req.setTimeout(0); // a 1M-token judge prompt can take minutes: no per-request socket timeout
   const { taskId, judge: judgeId, entries, attachments: rawAttachments } = req.body || {};
   const attachments = await attachmentsOr409(req, res, rawAttachments, { ok: false });
   if (!attachments) return;
@@ -1463,6 +1851,10 @@ app.post('/api/judge', async (req, res) => {
       wallMs: e.wallMs != null && isFinite(Number(e.wallMs)) ? Math.max(0, Number(e.wallMs)) : null,
       tokensPerSec: e.tokensPerSec != null && isFinite(Number(e.tokensPerSec)) ? Math.max(0, Number(e.tokensPerSec)) : null,
       completionTokens: e.completionTokens != null && isFinite(Number(e.completionTokens)) ? Math.max(0, Math.round(Number(e.completionTokens))) : null,
+      cadTelemetry: sanitizeCadTelemetry(e.cadTelemetry),
+      fourViewDataUrl: typeof e.fourViewDataUrl === 'string' && e.fourViewDataUrl.startsWith('data:image/')
+        ? e.fourViewDataUrl.slice(0, 6000000)
+        : null,
     }));
   if (clean.length < 2) return res.status(400).json({ error: 'Need at least two model outputs to compare.' });
 
@@ -1503,76 +1895,76 @@ app.post('/api/judge', async (req, res) => {
     attachments: task.attachments || [],
   });
 
+  // Price the judge call(s) on a global key: tokens x catalog price, each provider call
+  // priced for its own prompt size (callCostUsd, tiered models). Used for the verdict's
+  // usage and, on failure, for the partial calls the provider still billed (5.7).
+  const recordJudgeCalls = (calls) => {
+    const list = Array.isArray(calls) ? calls.filter((c) => c && typeof c === 'object') : [];
+    const judgeCost = list.reduce((sum, c) => sum + callCostUsd(judge, Number(c.promptTokens) || 0, Number(c.completionTokens) || 0), 0);
+    spendLedger.recordModelCost(judge, keys, judgeCost);
+  };
+
+  // A closed tab must cancel the (non-streaming, possibly minutes-long) judge call
+  // instead of letting it finish unseen (5.1).
+  const ac = new AbortController();
+  let judgeFinished = false;
+  res.on('close', () => {
+    if (judgeFinished || res.writableFinished) return;
+    ac.abort();
+    history.finalizeAuditRun(judgeAuditId, { status: 'aborted' }).catch(() => {});
+  });
+
   try {
-    const verdict = await judgeOutputs({ task, entries: clean, judge, keys, auditUser });
-    // App-tracked spend for the judge call(s), if it ran on a global key: tokens x catalog
-    // price, each provider call priced for its own prompt size (callCostUsd, tiered models).
+    const verdict = await judgeOutputs({ task, entries: clean, judge, keys, signal: ac.signal, auditUser });
+    judgeFinished = true;
     {
       const ju = verdict.usage || {};
-      const judgeCalls = Array.isArray(ju.calls) && ju.calls.length ? ju.calls : [ju];
-      const judgeCost = judgeCalls.reduce((sum, c) => sum + callCostUsd(judge, Number(c.promptTokens) || 0, Number(c.completionTokens) || 0), 0);
-      spendLedger.recordModelCost(judge, keys, judgeCost);
+      recordJudgeCalls(Array.isArray(ju.calls) && ju.calls.length ? ju.calls : [ju]);
     }
+    // The verdict came back (even if the client left meanwhile): it is paid for, so keep it.
     history.finalizeAuditRun(judgeAuditId, { status: 'completed' }).catch(() => {});
     await history.attachJudgeToLatestRun(req.user.username, task.id, verdict, req.body && req.body.runId);
     console.log(`[judge] ${req.user.username} scored ${clean.length} outputs on "${task.id}" with ${judge.model}`);
+    if (ac.signal.aborted) return; // nobody left to send it to
     res.json({ ok: true, ...verdict });
   } catch (e) {
+    judgeFinished = true;
+    // CONTRACT (src/judge.js): a failed judge attaches e.calls = [{ promptTokens, completionTokens }]
+    // for every provider call it made, so the spend is recorded even though no verdict came back.
+    if (e && Array.isArray(e.calls)) recordJudgeCalls(e.calls);
+    if (ac.signal.aborted) return;
     history.finalizeAuditRun(judgeAuditId, { status: 'error' }).catch(() => {});
     res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
   }
-});
+}));
 
 // Build an LLM-generated Pygame program into a browser-runnable WASM bundle so a
 // GUI task renders in the user's browser (works for remote clients). Returns a URL
 // under /games/<id>/ that the client embeds in an <iframe>.
-app.post('/api/web-game', async (req, res) => {
+app.post('/api/web-game', wrap(async (req, res) => {
+  req.setTimeout(0); // a pygbag build can take a few minutes
   if (!webGameEnabled()) return res.status(400).json({ error: 'Web game building is disabled (ENABLE_WEB_GAME=0).' });
   const code = String((req.body && req.body.code) || '');
   if (!code.trim()) return res.status(400).json({ error: 'No code provided.' });
+  // Capacity, not quota: one build per user and two in the whole process (6.1).
+  const lease = inflight.acquireAll([
+    [`webgame:${req.user.username}`, MAX_CONCURRENT_WEB_GAME_PER_USER],
+    ['webgame:*', MAX_CONCURRENT_WEB_GAME_GLOBAL],
+  ]);
+  if (!lease.ok) return res.status(429).json({ error: TOO_MANY_CONCURRENT });
   try {
-    const { id, cached } = await buildWebGame(code);
+    const { id, cached } = await buildWebGame(code, { username: req.user.username });
     res.json({ ok: true, id, cached, url: `/games/${id}/` });
   } catch (e) {
-    res.status(400).json({ error: scrubError(String((e && e.message) || e)) });
+    // webGame.js tags its own refusals (429 build in progress, 413 program too large).
+    const status = e && (e.status === 429 || e.status === 413) ? e.status : 400;
+    res.status(status).json({ error: scrubError(String((e && e.message) || e)) });
+  } finally {
+    lease.release();
   }
-});
+}));
 
-// Serve a built game bundle. The pygbag loader needs a permissive CSP (inline +
-// eval + wasm + its CDN) and must be framable by our own origin — so we override
-// the strict global CSP / X-Frame-Options for just this route.
-app.get('/games/:id/*', (req, res) => {
-  const dir = gameDir(req.params.id);
-  if (!dir) return res.status(404).send('Game not found — rebuild it from the app.');
-  const rel = req.params[0] && req.params[0] !== '' ? req.params[0] : 'index.html';
-  const fp = path.normalize(path.join(dir, rel));
-  if (fp !== dir && !fp.startsWith(dir + path.sep)) return res.status(400).end(); // no path traversal
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  // Cross-origin isolation for the game document itself. Verified: with these
-  // headers the Tetris bundle runs and the page stays responsive; without them
-  // the identical bundle hard-freezes the renderer.
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  res.setHeader('Content-Security-Policy', [
-    "default-src 'self' https://pygame-web.github.io https://cdn.jsdelivr.net",
-    "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://pygame-web.github.io https://cdn.jsdelivr.net",
-    "style-src 'self' 'unsafe-inline' https://pygame-web.github.io",
-    "img-src 'self' data: blob: https://pygame-web.github.io",
-    // pygame loads sound (e.g. beep.ogg) via blob:/data: URLs; without media-src it
-    // falls back to default-src (no blob:/data:) and the game crashes on audio load.
-    "media-src 'self' data: blob: https://pygame-web.github.io https://cdn.jsdelivr.net",
-    "connect-src 'self' blob: data: https://pygame-web.github.io https://cdn.jsdelivr.net",
-    "worker-src 'self' blob:",
-    "child-src 'self' blob: https://pygame-web.github.io",
-    // pygbag frames its own vt/console from the CDN; without frame-src this is blocked
-    // (surfaces as the share-modal.js 'addEventListener of null' error).
-    "frame-src 'self' blob: https://pygame-web.github.io",
-    "frame-ancestors 'self'",
-  ].join('; '));
-  res.sendFile(fp);
-});
-app.get('/games/:id', (req, res) => res.redirect(301, `/games/${req.params.id}/`)); // bare id -> trailing slash
+// (/games/:id/* and /games/:id are served before the auth gate, see above.)
 
 // Does this model run on a user-supplied credential (vs. the server's)? Used to
 // decide whether a run counts against the per-user daily quota. Defined in
@@ -1583,7 +1975,7 @@ app.get('/games/:id', (req, res) => res.redirect(301, `/games/${req.params.id}/`
 // Lightweight attachment inspection & server-side SHA-1 LRU + per-user binary vault caching endpoint.
 // Called immediately when the user drops/picks files so the UI shows exact server-extracted
 // token counts, PDF page/encryption metadata, and stores the raw file in the user's vault.
-app.post('/api/attachments/inspect', async (req, res) => {
+app.post('/api/attachments/inspect', wrap(async (req, res) => {
   try {
     const rawAttachments = (req.body && req.body.attachments) || [];
     const items = await inspectAttachmentsAsync(rawAttachments, {
@@ -1595,7 +1987,18 @@ app.post('/api/attachments/inspect', async (req, res) => {
     const status = e && e.code === 'ATTACHMENT_EXPIRED' ? 409 : 400;
     res.status(status).json({ ok: false, error: scrubError(e.message || String(e)), code: e && e.code, expired: e && e.expired });
   }
-});
+}));
+
+// Per-user cap on concurrent LARGE uploads (6.1), decided on Content-Length before
+// express.raw buffers the body; the lease is released when the response closes.
+function largeUploadGate(req, res, next) {
+  const declared = Number(req.headers['content-length']);
+  if (!(declared > LARGE_UPLOAD_BYTES)) return next();
+  const lease = inflight.acquire(`upload:${req.user.username}`, MAX_CONCURRENT_LARGE_UPLOADS_PER_USER);
+  if (!lease.ok) return res.status(429).json({ ok: false, error: TOO_MANY_CONCURRENT });
+  res.once('close', lease.release);
+  return next();
+}
 
 // Multipart alternative to the base64-JSON inspect endpoint (same response
 // shape, same caching). Avoids the ~33% base64 overhead for large files:
@@ -1604,8 +2007,9 @@ app.post('/api/attachments/inspect', async (req, res) => {
 //   curl -F files=@photo.png -F "claude_scaled=@small.webp;filename=photo.png;type=image/webp" …
 // Authenticated (mounted after the auth gate); body capped by MULTIPART_LIMIT.
 app.post('/api/attachments/upload',
+  largeUploadGate,
   express.raw({ type: 'multipart/form-data', limit: process.env.MULTIPART_LIMIT || process.env.JSON_BODY_LIMIT || '50mb' }),
-  async (req, res) => {
+  wrap(async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ ok: false, error: 'Expected a multipart/form-data body with one or more files.' });
       // Up to MAX_ATTACHMENTS originals, each optionally followed by a part named
@@ -1634,14 +2038,177 @@ app.post('/api/attachments/upload',
     } catch (e) {
       res.status((e && e.status) || 400).json({ ok: false, error: scrubError((e && e.message) || String(e)) });
     }
-  },
+  }),
   (err, _req, res, next) => {
     if (err && (err.type === 'entity.too.large' || err.status === 413)) return res.status(413).json({ ok: false, error: 'Upload exceeds the server request limit.' });
     return next(err);
   });
 
-app.post('/api/run', async (req, res) => {
-  const { taskId, models, maxIterations, customPrompt, attachments: rawAttachments } = req.body || {};
+// ---------- 3D & CAD Arena: Autodesk Fusion 360 & Headless CAD MCP Bridge ----------
+app.get('/api/cad-mcp/status', (_req, res) => {
+  res.json(getCadMcpStatus());
+});
+
+// The transpiler interpolates these into Python comments / strings (3.9): one
+// capital letter for the slot, no line breaks in the label.
+const cadSlotParam = (v) => (/^[A-Z]$/.test(String(v || '')) ? String(v) : 'A');
+const cadLabelParam = (v, n) => String(v || '').replace(/[\r\n]+/g, ' ').slice(0, n);
+
+app.post(['/api/cad-mcp/transpile', '/api/cad-mcp/fusion360-script'], (req, res) => {
+  try {
+    const body = req.body || {};
+    const fusionScript = transpileToFusion360Python({
+      code: String(body.code || '').slice(0, 200000),
+      params: body.params && typeof body.params === 'object' ? body.params : {},
+      telemetry: body.telemetry && typeof body.telemetry === 'object' ? body.telemetry : null,
+      title: cadLabelParam(body.title || body.taskTitle || 'LLM_Compare_3D_Model', 140),
+      taskTitle: cadLabelParam(body.taskTitle || body.title || 'LLM_Compare_3D_Model', 140),
+      slot: cadSlotParam(body.slot),
+      modelLabel: cadLabelParam(body.modelLabel, 100),
+    });
+    res.json({
+      ok: true,
+      script: fusionScript,
+      fusionScript,
+      mcpStatus: getCadMcpStatus(),
+    });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+});
+
+// Push the generated script to the CAD MCP bridge. SECURITY (3.7): the bridge URL comes
+// ONLY from the server's own CAD_MCP_URL (getCadMcpStatus); a client-supplied
+// endpointUrl is ignored, so this route can never be pointed at this server's
+// loopback (auto-admin) or anything else. The bridge's response body is never
+// echoed back; only ok + HTTP status are reported.
+app.post('/api/cad-mcp/push', wrap(async (req, res) => {
+  try {
+    const body = req.body || {};
+    const slot = cadSlotParam(body.slot);
+    const modelLabel = cadLabelParam(body.modelLabel, 100);
+    const fusionScript = transpileToFusion360Python({
+      code: String(body.code || '').slice(0, 200000),
+      params: body.params && typeof body.params === 'object' ? body.params : {},
+      telemetry: body.telemetry && typeof body.telemetry === 'object' ? body.telemetry : null,
+      taskTitle: cadLabelParam(body.taskTitle || body.title || 'LLM_Compare_3D_Model', 140),
+      slot,
+      modelLabel,
+    });
+    const status = getCadMcpStatus();
+    const configuredUrl = String(process.env.CAD_MCP_URL || '').trim(); // raw (may carry bridge credentials)
+    const displayUrl = status.fusionMcp.endpoint || status.blenderMcp.endpoint || null; // credential-masked
+    let pushed = false;
+    let upstreamStatus = null;
+    let reason = null;
+
+    if (!configuredUrl || !displayUrl || !/^https?:\/\//i.test(configuredUrl)) {
+      reason = 'bridge_not_configured';
+    } else {
+      try {
+        const r = await fetch(configuredUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-LLMC-Internal': '1' },
+          body: JSON.stringify({
+            tool: typeof body.tool === 'string' ? body.tool.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64) || 'fusion360_execute_script' : 'fusion360_execute_script',
+            slot,
+            modelLabel,
+            fusionScript,
+            stepText: typeof body.stepText === 'string' ? body.stepText.slice(0, 2000000) : undefined,
+            telemetry: body.telemetry && typeof body.telemetry === 'object' ? body.telemetry : null,
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        pushed = r.ok;
+        upstreamStatus = r.status;
+        if (!r.ok) reason = 'bridge_rejected';
+        await r.arrayBuffer().catch(() => {}); // drain, never forwarded
+      } catch (bridgeErr) {
+        reason = 'bridge_unreachable';
+        log.event('WARNING', '[cad-mcp] bridge push failed', { user: req.user.username, error: scrubError(String((bridgeErr && bridgeErr.message) || bridgeErr)) });
+      }
+    }
+
+    res.json({
+      ok: true,
+      pushed,
+      reason,
+      // endpointUrl / upstreamStatus are what the UI prints ("Pushed to ... (HTTP ...)").
+      endpointUrl: displayUrl,
+      targetUrl: displayUrl,
+      upstreamStatus,
+      bridgeResponse: pushed
+        ? `Pushed to the configured CAD MCP bridge (HTTP ${upstreamStatus}).`
+        : (reason === 'bridge_not_configured'
+          ? 'No CAD MCP bridge is configured on the server (CAD_MCP_URL). Copy or download the generated Fusion 360 Python API script below.'
+          : `The configured CAD MCP bridge did not accept the script (${reason}${upstreamStatus ? ', HTTP ' + upstreamStatus : ''}). Copy or download the generated Fusion 360 Python API script below.`),
+      fusionScript,
+      mcpStatus: status,
+    });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: scrubError(String((e && e.message) || e)) });
+  }
+}));
+
+function sanitizeCadModifyPayload(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const modificationPrompt = typeof raw.modificationPrompt === 'string'
+    ? raw.modificationPrompt.trim().slice(0, 8000)
+    : '';
+  const targetPart = typeof raw.targetPart === 'string' && raw.targetPart.trim()
+    ? raw.targetPart.trim().slice(0, 120)
+    : null;
+
+  const sanitizeSlotEntry = (entry) => {
+    if (!entry || typeof entry !== 'object') return null;
+    const previousCode = typeof entry.previousCode === 'string' ? entry.previousCode.slice(0, 120000) : '';
+    if (!previousCode.trim()) return null;
+    return {
+      previousCode,
+      modificationPrompt: typeof entry.modificationPrompt === 'string' && entry.modificationPrompt.trim()
+        ? entry.modificationPrompt.trim().slice(0, 8000)
+        : modificationPrompt,
+      targetPart: typeof entry.targetPart === 'string' && entry.targetPart.trim()
+        ? entry.targetPart.trim().slice(0, 120)
+        : targetPart,
+      telemetry: entry.telemetry && typeof entry.telemetry === 'object' ? entry.telemetry : null,
+      fourViewDataUrl: typeof entry.fourViewDataUrl === 'string' && entry.fourViewDataUrl.startsWith('data:image/')
+        ? entry.fourViewDataUrl.slice(0, 6000000)
+        : null,
+    };
+  };
+
+  const bySlot = {};
+  if (raw.bySlot && typeof raw.bySlot === 'object') {
+    for (const [k, v] of Object.entries(raw.bySlot)) {
+      const slotKey = String(k || '').slice(0, 4);
+      const cleanSlot = sanitizeSlotEntry(v);
+      if (slotKey && cleanSlot) bySlot[slotKey] = cleanSlot;
+    }
+  }
+  const topSlot = sanitizeSlotEntry(raw);
+  if (!modificationPrompt && !Object.keys(bySlot).length && !topSlot) return null;
+  return {
+    modificationPrompt,
+    targetPart,
+    ...(topSlot || {}),
+    bySlot,
+  };
+}
+
+app.post('/api/run', wrap(async (req, res) => {
+  req.setTimeout(0); // NDJSON stream with its own heartbeat: no per-request socket timeout
+  // Capacity, not quota (admins and BYOK included): at most 3 live streams per user (8.1 / 9.2).
+  const lease = inflight.acquire(`run:${req.user.username}`, MAX_CONCURRENT_RUNS_PER_USER);
+  if (!lease.ok) return res.status(429).json({ type: 'error', error: TOO_MANY_CONCURRENT });
+  try {
+    await handleRun(req, res);
+  } finally {
+    lease.release();
+  }
+}));
+async function handleRun(req, res) {
+  const { taskId, models, maxIterations, customPrompt, arenaMode, cadModify: rawCadModify, attachments: rawAttachments } = req.body || {};
   // Resolved BEFORE any quota is consumed, so a 409 (expired cache → client
   // re-uploads and retries) never costs the user a run.
   const attachments = await attachmentsOr409(req, res, rawAttachments, { type: 'error' });
@@ -1657,18 +2224,21 @@ app.post('/api/run', async (req, res) => {
   if (isCustomOrSaved) {
     const defaultCustomPrompt = attachments.length
       ? 'Analyze the attached file(s) and provide a detailed response.'
-      : 'Write a short response.';
+      : (arenaMode === '3d' ? 'Design a parametric 3D mechanical part in millimeters.' : 'Write a short response.');
     const explicitTitle = (req.body && typeof req.body.taskTitle === 'string' && req.body.taskTitle.trim())
       ? req.body.taskTitle.trim().slice(0, 120)
       : '';
     const defaultTitle = attachments.length
       ? `Custom prompt (${attachments.length} attachment${attachments.length > 1 ? 's' : ''})`
-      : 'Custom prompt';
+      : (arenaMode === '3d' ? 'Custom 3D & CAD prompt' : 'Custom prompt');
     task = {
       id: 'custom',
       title: explicitTitle || defaultTitle,
       prompt: (customPrompt || '').trim() || defaultCustomPrompt,
-      functionName: 'solution',
+      functionName: arenaMode === '3d' ? 'buildModel' : 'solution',
+      category: arenaMode === '3d' ? 'cad3d' : undefined,
+      language: arenaMode === '3d' ? 'javascript' : null,
+      visualizer: arenaMode === '3d' ? 'cad3d' : null,
       testCases: [], // no hidden tests -> single generation, no self-debug loop
       attachments,
     };
@@ -1676,10 +2246,26 @@ app.post('/api/run', async (req, res) => {
     const baseTask = TASKS.find((t) => t.id === taskId) || TASKS[0];
     task = attachments.length ? { ...baseTask, attachments } : baseTask;
   }
+  task = wrapTaskForCadArena(task, arenaMode);
+  const cadModify = sanitizeCadModifyPayload(rawCadModify);
   // Server-authoritative: rebuild every slot from the fixed catalog. Any
   // client-supplied price / model id / provider is ignored — users can only
   // add/remove catalog models, never modify their settings.
   const chosenModels = resolveModels(models);
+  // Nothing resolvable (stale page, retired ids): say so before anything is charged,
+  // audited or written to history (4.14). resolveModels() falls back to the default
+  // trio when nothing resolves, so that fallback is kept ONLY when `models` is absent
+  // (or not a list): an explicit empty list, or a list naming models that are not in
+  // the catalog, is a 400 instead of silently running three models the user never picked.
+  const requestedModels = Array.isArray(models) ? models.filter((m) => m && typeof m === 'object') : [];
+  const inCatalog = (m) => {
+    const raw = m.catalogId || m.id || m.model;
+    const id = RETIRED_REPLACEMENT[raw] || raw;
+    return MODEL_CATALOG.some((c) => (c.id === id || c.model === id) && !c.blocked);
+  };
+  if (!chosenModels.length || (Array.isArray(models) && !requestedModels.some(inCatalog))) {
+    return res.status(400).json({ type: 'error', error: 'Pick at least one catalog model.' });
+  }
 
   // `kind` only labels the run in logs now: a single-model re-run is a run like any other
   // (one rule for the whole app, see chargeDailyBudgets).
@@ -1758,6 +2344,35 @@ app.post('/api/run', async (req, res) => {
     attachments: task.attachments || [],
   });
 
+  // App-tracked spend: every finished model call that ran on a global key adds its
+  // cost to this month's ledger for that provider (own-key calls are skipped).
+  // Partial spend (8.1): the orchestrator's delta / iteration / model_error / done
+  // events carry a cumulative numeric costUsd per slot (CONTRACT with src/agent.js,
+  // src/orchestrator.js; tolerated when absent). The latest estimate per slot is
+  // kept so an aborted or failed slot still books what the provider already billed.
+  const slotModels = new Map(chosenModels.map((m) => [m.slot, m]));
+  const lastCostBySlot = new Map();   // slot -> latest cumulative cost estimate (USD)
+  const doneSlots = new Set();        // slots whose final cost was already recorded
+  let sawOutput = false;              // any model produced output: the daily charge stands
+  const eventCost = (obj) => {
+    if (!obj || typeof obj !== 'object') return null;
+    const r = obj.result && typeof obj.result === 'object' ? obj.result : null;
+    // A done event's result.costUsd is the final figure; live events carry costUsd and an
+    // abort / provider error may report partialCostUsd instead.
+    for (const c of [r && r.costUsd, obj.costUsd, r && r.partialCostUsd, obj.partialCostUsd]) {
+      const n = Number(c);
+      if (c != null && Number.isFinite(n) && n >= 0) return n;
+    }
+    return null;
+  };
+  const bookPendingSlotCosts = () => {
+    for (const [slot, usd] of lastCostBySlot) {
+      if (doneSlots.has(slot) || !(usd > 0)) continue;
+      doneSlots.add(slot);
+      spendLedger.recordModelCost(slotModels.get(slot), keys, usd);
+    }
+  };
+
   // NOTE: this must be res 'close', NOT req 'close'. The request stream closes as
   // soon as its body has been read, which is long before the run ends — listening
   // there aborts every run the instant it starts. res 'close' fires either when
@@ -1767,25 +2382,43 @@ app.post('/api/run', async (req, res) => {
     if (finished || res.writableFinished) return;
     aborted = true;
     ac.abort();
-    refundDailyBudgets(req.user, charge.charged);
+    // Refund the daily charge ONLY when no model produced anything yet (8.1): once
+    // output has streamed the run is real work (and real provider spend), exactly
+    // like an abandoned image slot. Whatever each still-running slot had cost so far
+    // goes to the monthly ledger now, since no `done` event will follow.
+    const refunded = !sawOutput;
+    if (refunded) refundDailyBudgets(req.user, charge.charged);
+    bookPendingSlotCosts();
     history.finalizeAuditRun(runId, { status: 'aborted' }).catch(() => {});
-    console.log(`[run] ${req.user.username} abandoned a ${kind} run — upstream aborted, quota refunded`);
+    console.log(`[run] ${req.user.username} abandoned a ${kind} run - upstream aborted, ${refunded ? 'quota refunded (nothing had streamed)' : 'quota kept (output had streamed), partial spend recorded'}`);
   });
 
   let results = null;
-  // App-tracked spend: every finished model call that ran on a global key adds its
-  // cost to this month's ledger for that provider (own-key calls are skipped).
-  const slotModels = new Map(chosenModels.map((m) => [m.slot, m]));
   const meteredEmit = (obj) => {
-    if (obj && obj.type === 'done' && obj.result) spendLedger.recordModelCost(slotModels.get(obj.slot), keys, obj.result.costUsd);
+    if (obj && typeof obj === 'object') {
+      const t = obj.type;
+      const slot = obj.slot;
+      if (t === 'delta' || t === 'iteration' || t === 'done' || t === 'model_error') sawOutput = true;
+      const usd = eventCost(obj);
+      if (slot != null && usd != null) lastCostBySlot.set(slot, usd);
+      if ((t === 'done' || t === 'model_error') && slot != null && !doneSlots.has(slot)) {
+        // Final cost for this slot: the event's own figure, else the last live estimate.
+        const finalUsd = usd != null ? usd : lastCostBySlot.get(slot);
+        doneSlots.add(slot);
+        if (finalUsd > 0) spendLedger.recordModelCost(slotModels.get(slot), keys, finalUsd);
+      }
+    }
     emit(obj);
   };
   try {
-    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit: meteredEmit, keys, signal: ac.signal, repair, runId, auditUser });
+    results = await runComparison({ task, models: chosenModels, maxIterations: iters, emit: meteredEmit, keys, signal: ac.signal, repair, cadModify, runId, auditUser });
   } catch (e) {
     if (!aborted) emit({ type: 'error', message: scrubError(String((e && e.message) || e)) });
   } finally {
     clearInterval(heartbeatTimer);
+    // A slot that ended without a done / model_error event (orchestrator threw) still
+    // books its last live estimate.
+    bookPendingSlotCosts();
   }
   finished = true;
   if (aborted) return res.end();   // client disconnected: pre-execution audit record already marked 'aborted'
@@ -1812,6 +2445,20 @@ app.post('/api/run', async (req, res) => {
     history.finalizeAuditRun(runId, { status: 'error' }).catch(() => {});
   }
   res.end();
+}
+
+// Final JSON error handler (5.4): anything a wrap()ped async handler threw, or a
+// body-parser error jsonBodyError did not recognise, ends here as a 500 with a
+// fixed message (details only in the log) instead of a hung request.
+app.use((err, req, res, next) => {
+  log.event('ERROR', `[http] unhandled error on ${req.method} ${req.path}`, {
+    method: req.method,
+    path: req.path,
+    user: (req.user && req.user.username) || 'anon',
+    error: scrubError(String((err && (err.stack || err.message)) || err)),
+  });
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: 'Internal error' });
 });
 
 // ---------------------------------------------------------------------------
@@ -1840,6 +2487,10 @@ globalKeys.start();   // warm the shared keys from Secret Manager + keep them fr
 const server = app.listen(PORT, HOST, () => {
   console.log(`\n  LLM Agent Arena`);
   console.log(`  primary URL     ->  http://localhost:${PORT}`);
+  const setupCode = auth.ensureSetupCode();
+  if (setupCode) {
+    console.log(`  first-run code  ->  ${setupCode}`);
+  }
   // Optional second listener, OFF by default (audit R10: an automatic :3000
   // listener doubled the local attack surface). Opt in with SECONDARY_PORT=<port>,
   // e.g. SECONDARY_PORT=3000. Unset, empty, 0 or anything that isn't a valid
@@ -1853,6 +2504,7 @@ const server = app.listen(PORT, HOST, () => {
     extraServer.on('error', (e) => {
       console.warn(`  secondary listener on :${secondaryPort} not started (${(e && e.code) || 'error'})`);
     });
+    tuneServerTimeouts(extraServer);
   }
   if (HOST === '0.0.0.0' || HOST === '::') {
     const ips = lanAddresses();
@@ -1867,6 +2519,18 @@ const server = app.listen(PORT, HOST, () => {
   }
 });
 
+// Socket timeouts (9.2): slow-header (slowloris-style) connections are cut after
+// 30 s, idle keep-alive sockets after 65 s (above the usual 60 s load-balancer idle
+// timeout so the proxy, not this server, closes first). requestTimeout stays at
+// Node's default; the long-lived streaming routes (/api/run, /api/image-arena/run,
+// /api/judge, /api/web-game) disable the per-request timeout themselves.
+function tuneServerTimeouts(s) {
+  if (!s) return;
+  s.headersTimeout = 30000;
+  s.keepAliveTimeout = 65000;
+}
+tuneServerTimeouts(server);
+
 // ---------------------------------------------------------------------------
 // Graceful shutdown. Cloud Run sends SIGTERM and allows ~10 s before SIGKILL.
 // Stop accepting new connections, flip /healthz to 503, let in-flight requests
@@ -1875,13 +2539,24 @@ const server = app.listen(PORT, HOST, () => {
 // ---------------------------------------------------------------------------
 let extraServer = null;
 const DRAIN_MS = Math.max(0, Number(process.env.SHUTDOWN_DRAIN_MS) || 9000);
+// Debounced stores (daily budgets, spend ledger) land their last write synchronously
+// before the process exits; never throws.
+function flushStoresSync() {
+  try { if (typeof auth.flushSync === 'function') auth.flushSync(); } catch (_) { /* best effort */ }
+  try { if (typeof spendLedger.flushSync === 'function') spendLedger.flushSync(); } catch (_) { /* best effort */ }
+}
 function shutdown(signal) {
   if (draining) { process.exit(0); }
   draining = true;
   log.event('INFO', `[shutdown] ${signal} received — draining for up to ${DRAIN_MS}ms`, { signal, drainMs: DRAIN_MS });
-  const flushPromise = (typeof history.flushSnapshotAsync === 'function')
-    ? history.flushSnapshotAsync().catch(() => {})
+  // Fire-and-forget history writes (saveRun / saveImageRun) are drained first so a
+  // deploy never leaves ghost runs (5.6), then the SQLite snapshot is flushed.
+  const drainPromise = (typeof history.drainPendingWrites === 'function')
+    ? Promise.resolve().then(() => history.drainPendingWrites()).catch(() => {})
     : Promise.resolve();
+  const flushPromise = drainPromise.then(() => ((typeof history.flushSnapshotAsync === 'function')
+    ? history.flushSnapshotAsync().catch(() => {})
+    : undefined)).then(flushStoresSync, flushStoresSync);
   const servers = [server, extraServer].filter(Boolean);
   let open = servers.length;
   const done = () => {
@@ -1902,6 +2577,9 @@ function shutdown(signal) {
     for (const s of servers) if (typeof s.closeIdleConnections === 'function') s.closeIdleConnections();
   }, 250).unref();
   setTimeout(() => {
+    // Hard stop 2 s later even if a history drain is stuck on a slow gcsfuse write;
+    // the synchronous stores are flushed on the way out either way.
+    setTimeout(() => { flushStoresSync(); process.exit(0); }, 2000).unref();
     flushPromise.finally(() => {
       log.event('WARNING', '[shutdown] drain timeout — exiting with requests still open');
       process.exit(0);
@@ -1921,4 +2599,9 @@ process.on('uncaughtException', (err) => {
   log.event('ERROR', '[process] uncaughtException', {
     error: err && (err.stack || err.message || String(err)),
   });
+  // A process that just threw outside any handler is in an unknown state (5.4 / 9.2):
+  // stop taking new work (/healthz -> 503), give in-flight responses 2 s, then exit so
+  // the platform restarts a healthy instance instead of keeping a wedged one alive.
+  draining = true;
+  setTimeout(() => { flushStoresSync(); process.exit(1); }, 2000).unref();
 });

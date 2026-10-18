@@ -1,7 +1,8 @@
 ---
 id: sec-ssrf-hotpatch
-title: Security: Zero-Day SSRF & Path-Traversal Virtual Patch Engine
+title: Zero-Day SSRF & Path-Traversal Virtual Patch Engine
 category: security
+subcategory: sec-patching
 language: javascript
 functionName: evaluateZeroDayPatch
 executable: true

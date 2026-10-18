@@ -1,7 +1,8 @@
 ---
 id: semi-eda-cloud-hpc
-title: Semiconductor: 3nm EDA Cloud HPC Bursting & Tapeout Infrastructure
+title: 3nm EDA Cloud HPC Bursting & Tapeout Architecture
 category: semiconductor
+subcategory: semiconductor
 language: null
 functionName: solution
 executable: false

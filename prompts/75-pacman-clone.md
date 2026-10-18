@@ -1,7 +1,8 @@
 ---
 id: pacman-clone
-title: Pac-Man clone (Pygame, polished art + ghost AI)
+title: Pac-Man Arcade Maze & Ghost AI
 category: games
+subcategory: wasm-games
 language: python
 functionName: solution
 executable: true

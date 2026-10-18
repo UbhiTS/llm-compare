@@ -1,7 +1,8 @@
 ---
 id: compliance-readiness
-title: Governance: SOC 2 + GDPR readiness assessment
+title: SOC 2 Type II & GDPR Compliance Readiness Audit
 category: business
+subcategory: governance-rca
 language: null
 functionName: solution
 executable: false

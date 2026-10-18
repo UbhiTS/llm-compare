@@ -51,7 +51,9 @@ export GITHUB_OWNER="your-github-user-or-org"
 export GITHUB_REPO="llm-compare"
 export ALLOWED_DOMAINS="example.com"          # comma-separated Workspace domain(s)
 export ADMIN_EMAILS="you@example.com"         # comma-separated emails granted admin
-export MAX_RUNS="20"                            # per-user comparisons per day
+# Per-user daily run limits per provider are edited in the app's Settings modal after the
+# first deploy (defaults OpenAI 3 / Anthropic 3 / Moonshot 3 / Vertex AI 10; 0 = that
+# shared key is off for non-admins, not "unlimited").
 ```
 
 ## Step 1 — put the code on GitHub
@@ -206,7 +208,6 @@ gh variable set CLOUD_RUN_SERVICE       -b "$SERVICE"              -R "$GITHUB_O
 gh variable set RUNTIME_SERVICE_ACCOUNT -b "$RUNTIME_SA"           -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set ALLOWED_EMAIL_DOMAINS   -b "$ALLOWED_DOMAINS"      -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set ADMIN_EMAILS            -b "$ADMIN_EMAILS"         -R "$GITHUB_OWNER/$GITHUB_REPO"
-gh variable set MAX_RUNS_PER_DAY        -b "$MAX_RUNS"             -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set APP_DATA_BUCKET         -b "$DATA_BUCKET"          -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set GOOGLE_CLIENT_ID        -b "YOUR_OAUTH_CLIENT_ID"  -R "$GITHUB_OWNER/$GITHUB_REPO"
 gh variable set OAUTH_REDIRECT_BASE     -b "https://YOUR-APP-URL"  -R "$GITHUB_OWNER/$GITHUB_REPO"
@@ -271,27 +272,36 @@ Or without Docker: `npm start` (see `README.md` / `.env.example`).
 | GH var | `GCP_PROJECT_ID`, `GCP_REGION`, `ARTIFACT_REPO`, `CLOUD_RUN_SERVICE` | deploy target |
 | GH var | `RUNTIME_SERVICE_ACCOUNT` | the app's Cloud Run identity (Vertex + secrets) |
 | GH var | `ALLOWED_EMAIL_DOMAINS` | org domain(s) allowed to sign in |
-| GH var | `ADMIN_EMAILS` | emails granted the admin role (exempt from the daily limit) |
-| GH var | `MAX_RUNS_PER_DAY` | per-user comparison-run cap (0 = unlimited) |
+| GH var | `ADMIN_EMAILS` | emails granted the admin role (exempt from the daily limits) |
+| App Settings | daily run limits per provider | edited in the Settings modal, stored in `/data/auth/settings.json`; `0` = that shared key is off for non-admins (not unlimited). The old `MAX_*RUNS_PER_DAY` env vars are ignored |
 | GH var | `APP_DATA_BUCKET` | GCS bucket mounted at `/data` for durable run history |
 | GH var | `GOOGLE_CLIENT_ID`, `OAUTH_REDIRECT_BASE` | Google sign-in config |
 | GH secret | `WIF_PROVIDER`, `DEPLOY_SERVICE_ACCOUNT` | keyless CI auth |
 | Secret Mgr | `AGENT_PLATFORM_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_CLIENT_SECRET`, `ADMIN_BOOTSTRAP_PASSWORD` | runtime secrets (provider keys, OAuth secret, break-glass admin) |
+| env (deploy) | `ENABLE_CODE_EXEC` | `/api/execute` runs model-written Python/JS on the host. On Cloud Run (`K_SERVICE`) it is OFF unless set to `1`; on a workstation it is on unless set to `0`. Every shipped deploy path (Actions, quickstart, terraform) pins `0`; set `0` on any LAN-reachable dev box |
+| env (deploy) | `ALLOWED_EMAIL_DOMAINS_STRICT` | `1` = `ALLOWED_EMAIL_DOMAINS` is authoritative; the implicit `ubhi.altostrat.com` auto-append is disabled. Set it on any deployment that is not the author's own project |
+| env (deploy) | `ADMIN_BOOTSTRAP_FORCE` | the break-glass admin's stored password is normally left alone (an in-app rotation sticks). `1` = re-apply `ADMIN_BOOTSTRAP_PASSWORD` on top of the existing account at boot (logged; `expiresAt` / `dailyVertexLimit` preserved) |
+| env (deploy) | `GCLOUD_TOKEN_FALLBACKS` | `1` = allow the author-specific gcloud config / ADC fallbacks when minting the Vertex Claude token. Default off: a failed mint fails the slot instead of silently billing another identity |
+| env (deploy) | `PROVIDER_IDLE_MS` | cancel a provider stream that sends nothing for this long (default 120000 ms) so a stalled upstream fails the slot instead of hanging the run until the request timeout |
+| env (deploy) | `MAX_CONCURRENT_WEB_GAME_BUILDS` | pygbag builds running at once (default 2); further requests queue instead of competing for the instance's CPU/RAM |
+| env (local) | `LOCAL_AUTO_AUTH`, `LOCAL_AUTO_AUTH_HOSTS` | workstation-only auto sign-in. `LOCAL_AUTO_AUTH_HOSTS` is a comma list of EXACT extra hostnames allowed in the Host header (no wildcards); the TCP peer must still be loopback, so a Host header alone never grants access. Never active on Cloud Run |
 
 All are also documented in `.env.example` for non-container runs.
 
 ## Notes & caveats
 
-- **Single warm instance** (`--min/--max-instances=1`) keeps sessions and the per-user daily
-  counter consistent (they live in memory). Scaling wider would need shared storage
-  (Firestore/Redis) for sessions + counters — fine to add later; unnecessary for a demo.
+- **Single warm instance** (`--min/--max-instances=1`, `--concurrency=40`) keeps sessions and the
+  per-user daily counters consistent (they live in memory / `/data/auth`). Scaling wider would need
+  shared storage (Firestore/Redis) for sessions + counters. The liveness probe on `/healthz` restarts
+  a wedged process (the endpoint answers 503 while draining).
 - **User accounts persist**: the container's own filesystem is ephemeral, so `AUTH_DATA_DIR`
   is pointed at `/data/auth` on the mounted GCS bucket (same volume as run history).
   Username/password accounts therefore survive restarts and deploys. If you ever unset that
   variable it falls back to the image's `/tmp/auth`, where accounts are wiped on every
   restart. Sessions are still in memory, so everyone is logged out by a redeploy.
-- **`/api/execute`** runs LLM-generated Python inside the container; it's isolated per
-  instance and ephemeral, but it is still executing model output. Set `ENABLE_CODE_EXEC=0`
-  to disable if you don't want it.
+- **`/api/execute`** runs LLM-generated Python inside the container. On Cloud Run it is OFF
+  unless `ENABLE_CODE_EXEC=1` is set explicitly, and every shipped deploy path sets
+  `ENABLE_CODE_EXEC=0`; only enable it on a local workstation you control (set `0` there too if
+  the box is reachable from the LAN). Graded coding tasks still run in the in-process `vm` sandbox.
 - **Cost**: one small always-on instance is a few dollars/month; Vertex/Gemini usage is
   billed per token as normal.

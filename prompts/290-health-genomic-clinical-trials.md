@@ -1,7 +1,8 @@
 ---
 id: health-genomic-clinical-trials
-title: Healthcare: Multi-Omics Oncology Platform & Clinical Trial Matching Engine
+title: Multi-Omics Oncology & Clinical Trial Matching Platform
 category: healthcare
+subcategory: healthcare
 language: null
 functionName: solution
 executable: false

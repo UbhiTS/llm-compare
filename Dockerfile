@@ -21,17 +21,22 @@ RUN pip3 install --no-cache-dir --break-system-packages pygbag==0.9.3
 
 WORKDIR /app
 
-# Install production node deps first for better layer caching.
+# Install production node deps first for better layer caching. `npm ci` only: a lockfile
+# that is out of sync with package.json must fail the build (no silent `npm install`
+# fallback that would resolve fresh, unaudited versions).
 COPY package*.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm ci --omit=dev
 
 # App source.
 COPY . .
 
 # Sensible container defaults (override at deploy time via env / --set-env-vars).
+# APP_DATA_DIR defaults to /tmp/data so a plain `docker run` keeps run history on disk
+# (ephemeral, but not in memory); Cloud Run mounts the GCS bucket at /data instead.
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PYTHON_CMD=python3 \
+    APP_DATA_DIR=/tmp/data \
     AUTH_DATA_DIR=/tmp/auth
 
 # Run as the image's built-in non-root user; /tmp is writable for auth data + pygbag builds.

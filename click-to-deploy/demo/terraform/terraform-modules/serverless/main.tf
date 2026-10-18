@@ -178,13 +178,10 @@ resource "google_cloud_run_v2_service" "llm_compare" {
         name  = "ADMIN_EMAILS"
         value = var.admin_email
       }
+      # LLM-generated Python never runs inside the shared container (opt-in, local dev only).
       env {
-        name  = "MAX_RUNS_PER_DAY"
-        value = "20"
-      }
-      env {
-        name  = "MAX_SINGLE_RUNS_PER_DAY"
-        value = "20"
+        name  = "ENABLE_CODE_EXEC"
+        value = "0"
       }
       env {
         name  = "APP_DATA_DIR"

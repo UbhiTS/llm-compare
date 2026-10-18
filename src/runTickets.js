@@ -70,9 +70,14 @@ function claimSlot(t, slot, catalogId) {
 
 // Record how a claimed slot ended. Returns true exactly once: when every reserved
 // slot has settled, none of them completed, so the caller should refund the run.
+// A slot settles ONCE: a second settle (e.g. the request's own "completed" settle
+// running after its close handler already settled it as abandoned) is a no-op and
+// returns false, so it can never flip completedAny after the refund decision (5.3).
 function settleSlot(t, slot, { abandoned } = {}) {
   if (!t) return false;
-  t.settled.add(String(slot));
+  const key = String(slot);
+  if (t.settled.has(key)) return false;
+  t.settled.add(key);
   if (!abandoned) t.completedAny = true;
   if (t.settled.size >= t.slots.size && !t.completedAny && !t.refunded) {
     t.refunded = true;

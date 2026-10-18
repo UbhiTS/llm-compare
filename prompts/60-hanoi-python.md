@@ -1,7 +1,8 @@
 ---
 id: hanoi-python
-title: Towers of Hanoi solver (Python program)
+title: Towers of Hanoi Recursive Solver & Visualizer
 category: coding
+subcategory: algo-viz
 language: python
 functionName: solution
 executable: true

@@ -235,16 +235,20 @@ function decompressPdfStreams(pdfBuf) {
   assert(savedItem && savedItem.id, 'history.saveRun should return saved metadata with id');
   await new Promise((r) => setTimeout(r, 320)); // allow snapshot flush
 
+  const pdfEnv = {
+    ...process.env,
+    PORT: String(PORT),
+    HOST: '127.0.0.1',
+    APP_DATA_DIR: tmp,
+    AUTH_DATA_DIR: path.join(tmp, 'auth'),
+    ENABLE_WEB_GAME: '0',
+  };
+  // Never inherit the Cloud Run / sidecar markers: they would disable the loopback
+  // auto-admin or move the listener to another port (review 12.4).
+  delete pdfEnv.K_SERVICE; delete pdfEnv.ANTIGRAVITY_SIDECAR_WEB_PORT; delete pdfEnv.LOCAL_AUTO_AUTH;
   const srv = spawn(process.execPath, ['server.js'], {
     cwd: path.join(__dirname, '..'),
-    env: {
-      ...process.env,
-      PORT: String(PORT),
-      HOST: '127.0.0.1',
-      APP_DATA_DIR: tmp,
-      AUTH_DATA_DIR: path.join(tmp, 'auth'),
-      ENABLE_WEB_GAME: '0',
-    },
+    env: pdfEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const stop = () => { try { srv.kill('SIGTERM'); } catch (_) {} };
@@ -305,6 +309,29 @@ function decompressPdfStreams(pdfBuf) {
   const notFoundPdf = await fetch(`http://127.0.0.1:${PORT}/api/history/nonexistent-id-123/pdf`);
   assert.strictEqual(notFoundPdf.status, 404, 'Unknown history ID should return 404');
   console.log('✓ GET /api/history/:id/pdf returns 404 for unknown run ID');
+
+  // 4C2. Negative authz (review 12.4): a signed-in non-owner, non-admin user must not be able
+  // to export another user's run. The admin account above comes from the loopback auto-auth;
+  // this user is created through the real admin route and signs in with a password.
+  const mkUser = await fetch(`http://127.0.0.1:${PORT}/api/auth/users`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'pdf.outsider', password: 'OutsiderPassw0rd!', role: 'user', mustChangePassword: false }),
+  });
+  assert.strictEqual(mkUser.status, 200, 'create non-owner test user');
+  const loginRes = await fetch(`http://127.0.0.1:${PORT}/api/auth/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'pdf.outsider', password: 'OutsiderPassw0rd!' }),
+  });
+  assert.strictEqual(loginRes.status, 200, 'non-owner login');
+  const outsiderCookie = String(loginRes.headers.get('set-cookie') || '').split(';')[0];
+  assert(/^sid=/.test(outsiderCookie), 'non-owner session cookie');
+  const foreignPdf = await fetch(`http://127.0.0.1:${PORT}/api/history/${encodeURIComponent(savedItem.id)}/pdf`, { headers: { Cookie: outsiderCookie } });
+  assert([403, 404].includes(foreignPdf.status), `non-owner PDF export must be 403/404, got ${foreignPdf.status}`);
+  const foreignBody = await foreignPdf.text();
+  assert(!/^%PDF/.test(foreignBody), 'non-owner must not receive PDF bytes');
+  const foreignRun = await fetch(`http://127.0.0.1:${PORT}/api/history/${encodeURIComponent(savedItem.id)}`, { headers: { Cookie: outsiderCookie } });
+  assert.strictEqual(foreignRun.status, 404, 'non-owner cannot read the run record either');
+  console.log('✓ GET /api/history/:id/pdf refuses a non-owner, non-admin session');
 
   // 4D. Test attachJudgeToLatestRun attaches judge evaluation to savedItem and GET /api/history/:id/pdf includes Blind Judge section
   const judgeVerdict = {

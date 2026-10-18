@@ -1,7 +1,8 @@
 ---
 id: workforce-schedule
-title: Operations: multi-store weekly staffing schedule
+title: Multi-Store Weekly Workforce Staffing Schedule
 category: business
+subcategory: ops-cx
 language: null
 functionName: solution
 executable: false

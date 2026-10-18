@@ -1,7 +1,8 @@
 ---
 id: health-fhir-interoperability
-title: Healthcare: Hospital Network Real-Time FHIR R4 Interoperability & Clinical Decision Support
+title: Real-Time FHIR R4 Interoperability & Clinical Decision Support
 category: healthcare
+subcategory: healthcare
 language: null
 functionName: solution
 executable: false

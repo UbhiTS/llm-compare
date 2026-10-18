@@ -11,6 +11,7 @@ const { withRetryListener } = require('./providerFetch');
 const { runTests } = require('./runner');
 const { priceFor, priceForPrompt, callCostUsd } = require('./pricing');
 const { budgetAttachmentsForModel } = require('./attachments');
+const { CAD_SYSTEM_PROMPT, isCadTask, buildCadModifyMessages } = require('./cadArena');
 
 const SYSTEM_PROMPT =
   'You are an expert software engineer. You write correct, efficient JavaScript ' +
@@ -95,11 +96,14 @@ function buildFixMessage(task, failing) {
   );
 }
 
-async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, repair, auditUser }) {
+async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, repair, cadModifySlot, auditUser }) {
   const slot = modelConfig.slot;
-  const system = task.language
-    ? CODE_SYSTEM_PROMPT
-    : 'You are a helpful assistant. When the user asks for a detailed plan or analysis, be thorough and well-structured.';
+  const cadTask = isCadTask(task);
+  const system = cadTask
+    ? CAD_SYSTEM_PROMPT
+    : task.language
+      ? CODE_SYSTEM_PROMPT
+      : 'You are a helpful assistant. When the user asks for a detailed plan or analysis, be thorough and well-structured.';
 
   // Per-model context window budgeting & smart head+tail fitting for attachments
   const budgetRes = budgetAttachmentsForModel(task.attachments, { prompt: task.prompt, modelConfig });
@@ -114,13 +118,32 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       message: budgetRes.contextWarning,
       estimatedInputTokens: budgetRes.estimatedInputTokens,
       contextLimit: budgetRes.contextLimit,
+      costUsd: 0, // nothing spent yet
     });
   }
 
   // A repair run replaces the opening turn with the crash report; everything
   // downstream (streaming, metrics, cost) is identical to a normal run.
   const isRepair = !!(repair && repair.code && repair.error);
-  const messages = isRepair ? buildRepairMessages(modelTask, repair) : buildInitialMessages(modelTask);
+  const isCadModify = !!(
+    cadModifySlot &&
+    cadModifySlot.previousCode &&
+    cadModifySlot.modificationPrompt
+  );
+  const messages = isRepair
+    ? buildRepairMessages(modelTask, repair)
+    : isCadModify
+      ? buildCadModifyMessages({
+          originalPrompt: modelTask.prompt,
+          previousCode: cadModifySlot.previousCode,
+          modificationPrompt: cadModifySlot.modificationPrompt,
+          targetPart: cadModifySlot.targetPart,
+          telemetry: cadModifySlot.telemetry,
+          fourViewDataUrl: cadModifySlot.fourViewDataUrl,
+          slot,
+          extraAttachments: modelTask.attachments,
+        })
+      : buildInitialMessages(modelTask);
 
   // completionTokens = ALL output tokens (answer + thinking, which is how output is billed);
   // reasoningTokens = the thinking subset. answer-only = completionTokens - reasoningTokens.
@@ -140,17 +163,42 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
   // rate for both its input and output, so a multi-round task adds up its calls' costs
   // instead of pricing the summed tokens at one flat rate.
   let costSoFar = 0;
-  const runningCost = () => costSoFar;
+  // The in-flight call's best estimate (updated on every delta, reset once its real
+  // usage lands). costSoFar + live is what every event carries as `costUsd`, and what
+  // an abort / provider error reports as `partialCostUsd`: the tokens already streamed
+  // are billed upstream whether or not the slot finishes.
+  const live = { started: false, estPromptTokens: 0, promptTokens: null, completionTokens: 0, costUsd: 0 };
+  const resetLive = (estPromptTokens) => { live.started = false; live.estPromptTokens = estPromptTokens; live.promptTokens = null; live.completionTokens = 0; live.costUsd = 0; };
+  const runningCost = () => costSoFar + live.costUsd;
+  // Spend to report if this slot dies now: completed calls + the in-flight call, whose
+  // prompt counts (at its tier) as soon as generation has started, plus its live output.
+  const partialCost = () => {
+    if (!live.started) return costSoFar;
+    const promptTokens = live.promptTokens != null ? live.promptTokens : live.estPromptTokens;
+    return costSoFar + callCostUsd(modelConfig, promptTokens, live.completionTokens);
+  };
+  // Every event this slot emits carries the cumulative best-estimate cost, so the
+  // server can meter partial spend on abort or error (not only on `done`).
+  const emitSlot = (ev) => emit(ev.costUsd != null ? ev : { ...ev, costUsd: +runningCost().toFixed(6) });
+
+  // Provider stop reasons that mean "do not keep iterating": the output was blocked
+  // or refused, so feeding an empty / clipped answer back would only burn more rounds.
+  const SAFETY_STOP_RE = /SAFETY|PROHIBITED|RECITATION|BLOCKLIST|SPII|refusal|blocked|content_filter/i;
+  const TRUNCATION_RE = /max_tokens|length|MAX_TOKENS/i;
+  let anyTruncated = false;
+  let lastStopReason = null;
 
   const wallStart = Date.now();
 
+  try {
   for (let i = 0; i < maxIterations; i++) {
     iterations = i + 1;
 
-    emit({ type: 'status', slot, phase: 'thinking', iteration: iterations });
+    emitSlot({ type: 'status', slot, phase: 'thinking', iteration: iterations });
     // Our own estimate of this call's prompt size: only picks the live price tier until the
     // provider reports the real prompt-token count mid-stream (see the live cost below).
     const estPromptTokens = estimateTokens(messages, system);
+    resetLive(estPromptTokens);
     let lastDelta = 0;
     let sentAnswer = '';
     let sentReasoning = '';
@@ -158,22 +206,8 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     const WINDOW_MS = 1000; // 1 second
     const onDelta = ({ answer, reasoning, runningOut, runningThink, runningIn }) => {
       const now = Date.now();
-      if (now - lastDelta < 60) return; // throttle delta emissions to ~16 fps
-      lastDelta = now;
-      const wallMs = Date.now() - wallStart;
       const curAns = answer || '';
       const curReason = reasoning || '';
-      const charsLen = curAns.length + curReason.length;
-      // rolling 1s rate from char growth (smooth, immune to end-of-stream usage corrections)
-      samples.push({ ms: wallMs, charsLen });
-      while (samples.length > 1 && samples[0].ms < wallMs - WINDOW_MS) samples.shift();
-      let rollingTps = 0;
-      if (samples.length >= 2) {
-        const first = samples[0], last = samples[samples.length - 1];
-        const dt = (last.ms - first.ms) / 1000;
-        const dc = last.charsLen - first.charsLen;
-        if (dt > 0 && dc > 0) rollingTps = +((dc / 4) / dt).toFixed(1);
-      }
       // Split-aware LIVE estimate. Providers often don't populate token counts
       // mid-stream (Gemini reports thoughtsTokenCount only at the end), so estimate
       // thinking from the reasoning text and answer from the answer text, taking the
@@ -190,7 +224,27 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       // event). Streaming output tokens (incl. thinking) are billed at that tier's output rate.
       const callIn = Number(runningIn) > 0 ? Number(runningIn) : null;
       const callPrice = priceForPrompt(modelConfig, callIn != null ? callIn : estPromptTokens);
-      const liveCostUsd = +(costSoFar + ((callIn != null ? callPrice.input * callIn : 0) + callPrice.output * (answerNow + thinkNow)) / 1e6).toFixed(6);
+      // Kept current on EVERY delta (it is what an abort reports), even when the UI
+      // emission below is throttled.
+      live.started = true;
+      live.promptTokens = callIn;
+      live.completionTokens = answerNow + thinkNow;
+      live.costUsd = ((callIn != null ? callPrice.input * callIn : 0) + callPrice.output * (answerNow + thinkNow)) / 1e6;
+      if (now - lastDelta < 60) return; // throttle delta emissions to ~16 fps
+      lastDelta = now;
+      const wallMs = Date.now() - wallStart;
+      const charsLen = curAns.length + curReason.length;
+      // rolling 1s rate from char growth (smooth, immune to end-of-stream usage corrections)
+      samples.push({ ms: wallMs, charsLen });
+      while (samples.length > 1 && samples[0].ms < wallMs - WINDOW_MS) samples.shift();
+      let rollingTps = 0;
+      if (samples.length >= 2) {
+        const first = samples[0], last = samples[samples.length - 1];
+        const dt = (last.ms - first.ms) / 1000;
+        const dc = last.charsLen - first.charsLen;
+        if (dt > 0 && dc > 0) rollingTps = +((dc / 4) / dt).toFixed(1);
+      }
+      const liveCostUsd = +(costSoFar + live.costUsd).toFixed(6);
 
       // Compute O(1) incremental deltas so we don't re-serialize & secret-scrub
       // the entire cumulative text on every 60ms tick.
@@ -215,7 +269,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     };
     const resp = await withRetryListener(
       (retryInfo) => {
-        emit({
+        emitSlot({
           type: 'status',
           slot,
           phase: 'retrying',
@@ -250,7 +304,7 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       const fresh = resp.attachmentNotes.filter((n) => !attachmentNotes.includes(n));
       if (fresh.length) {
         attachmentNotes.push(...fresh);
-        emit({ type: 'attachment_note', slot, notes: attachmentNotes.slice(), message: attachmentNotes.join(' · ') });
+        emitSlot({ type: 'attachment_note', slot, notes: attachmentNotes.slice(), message: attachmentNotes.join(' · ') });
       }
     }
 
@@ -259,10 +313,35 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     totals.reasoningTokens += resp.reasoningTokens || 0;
     totals.apiLatencyMs += resp.latencyMs;
     costSoFar += callCostUsd(modelConfig, resp.promptTokens, resp.completionTokens); // this call at its own prompt tier
+    resetLive(0); // the call's real usage is now in costSoFar
     // Coding tasks (have a `language`) return a fenced code block → extract it.
     // Prose/general tasks (no language) keep the raw text.
-    code = task.language ? extractCode(resp.text) : resp.text.trim();
+    const respText = String(resp.text || '');
+    code = task.language ? extractCode(respText) : respText.trim();
     lastReasoning = resp.reasoning || '';
+
+    // Why the provider stopped: a safety / refusal stop ends the loop (the answer was
+    // withheld, not wrong), a max-tokens stop is flagged as truncated, and a round with
+    // no text at all is never fed back as an assistant turn (Claude/Gemini reject an
+    // empty assistant message with a 400 after the cost was already spent).
+    const stopReason = resp.stopReason != null ? String(resp.stopReason) : '';
+    lastStopReason = stopReason || null;
+    const safetyStop = SAFETY_STOP_RE.test(stopReason);
+    const roundTruncated = TRUNCATION_RE.test(stopReason);
+    if (roundTruncated) anyTruncated = true;
+    const noText = !respText.trim();
+    const note = safetyStop
+      ? `stopped by the provider (stop reason: ${stopReason}) - no further rounds`
+      : noText
+        ? `model returned no text${stopReason ? ` (stop reason: ${stopReason})` : ''} - no further rounds`
+        : roundTruncated
+          ? `output cut off by the provider (stop reason: ${stopReason})`
+          : null;
+    const roundFlags = {
+      ...(stopReason ? { stopReason } : {}),
+      ...(roundTruncated ? { truncated: true } : {}),
+      ...(note ? { note } : {}),
+    };
 
     // Live, cumulative metrics — emitted the moment each round's generation
     // lands, so the UI ticks up tokens / tokens-per-second / cost per round.
@@ -284,21 +363,22 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       roundReasoningTokens: resp.reasoningTokens ?? null,
       roundLatencyMs: resp.latencyMs,
       reasoning: lastReasoning,
+      ...roundFlags,
     });
 
     if (total === 0) {
       // Custom prompt: no hidden tests — just surface the output + metrics.
-      emit({ type: 'iteration', slot, iteration: iterations, passed: 0, total: 0, code, reasoning: lastReasoning, roundCompletionTokens: resp.completionTokens });
+      emitSlot({ type: 'iteration', slot, iteration: iterations, passed: 0, total: 0, code, reasoning: lastReasoning, roundCompletionTokens: resp.completionTokens, ...roundFlags });
       break;
     }
 
-    emit({ type: 'status', slot, phase: 'testing', iteration: iterations });
+    emitSlot({ type: 'status', slot, phase: 'testing', iteration: iterations });
     const tr = runTests(code, task.functionName, task.testCases);
     passed = tr.passed;
     if (firstTryPassed === null) firstTryPassed = passed;
     history.push({ iteration: iterations, passed, total });
 
-    emit({
+    emitSlot({
       type: 'iteration',
       slot,
       iteration: iterations,
@@ -307,13 +387,30 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       code,
       reasoning: lastReasoning,
       roundCompletionTokens: resp.completionTokens,
+      ...roundFlags,
     });
 
     if (passed === total) break;
+    // A blocked / refused / empty round cannot be self-corrected: stop here instead of
+    // pushing an empty assistant turn and burning the remaining rounds.
+    if (safetyStop || noText) break;
 
     // Feed the failures back so the agent can self-correct.
     messages.push({ role: 'assistant', content: resp.text });
     messages.push({ role: 'user', content: buildFixMessage(task, tr.failing) });
+  }
+  } catch (e) {
+    // Whatever failed (abort, provider error, timeout), the spend so far is real:
+    // completed calls plus the in-flight call's streamed tokens. The orchestrator
+    // forwards it on the model_error event so the server can meter it.
+    if (e && typeof e === 'object') {
+      try {
+        e.partialCostUsd = +partialCost().toFixed(6);
+        e.partialPromptTokens = totals.promptTokens + (live.started ? (live.promptTokens != null ? live.promptTokens : live.estPromptTokens) : 0);
+        e.partialCompletionTokens = totals.completionTokens + live.completionTokens;
+      } catch (_) { /* never mask the original error */ }
+    }
+    throw e;
   }
 
   const wallMs = Date.now() - wallStart;
@@ -330,6 +427,8 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
     contextWarning: budgetRes.contextWarning || null,
     ...(attachmentNotes.length ? { attachmentNotes } : {}),
     repaired: isRepair,                       // this output followed a crash-repair round
+    cadModified: isCadModify,
+    visionAttached: Boolean(isCadModify && cadModifySlot && cadModifySlot.fourViewDataUrl),
     iterations,
     passed,
     total,
@@ -346,6 +445,10 @@ async function runAgent({ modelConfig, task, maxIterations, emit, keys, signal, 
       ? +(totals.completionTokens / (totals.apiLatencyMs / 1000)).toFixed(1)
       : 0,
     costUsd: +costUsd.toFixed(6),
+    // Provider stop signal of the last round: `truncated` when any round hit the output
+    // limit (max_tokens / length), so a clipped answer is never shown as a clean finish.
+    stopReason: lastStopReason,
+    truncated: anyTruncated,
     history,
     code,
     reasoning: lastReasoning,

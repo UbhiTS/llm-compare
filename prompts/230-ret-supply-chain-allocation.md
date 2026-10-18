@@ -1,7 +1,8 @@
 ---
 id: ret-supply-chain-allocation
-title: Retail: Peak Season Multi-Echelon Inventory Allocation & Fulfillment
+title: Peak-Season Multi-Echelon Inventory Allocation
 category: retail
+subcategory: retail
 language: null
 functionName: solution
 executable: false

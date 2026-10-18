@@ -1,6 +1,11 @@
 // ---------------------------------------------------------------------------
 // Provider adapters. Each returns a normalized:
-//   { text, promptTokens, completionTokens, latencyMs }
+//   { text, reasoning?, promptTokens, completionTokens, reasoningTokens?, latencyMs,
+//     stopReason?, attachmentNotes? }
+// `stopReason` is the provider's own finish/stop reason (Gemini finishReason,
+// Claude stop_reason, OpenAI finish_reason / Responses status) so the agent loop
+// can see truncation (max_tokens / length) and safety stops instead of treating
+// a clipped or empty answer as a normal success.
 //
 // API keys are read from the environment ONLY on the server. They are never
 // sent to the browser — a good security talking point during the demo.
@@ -14,7 +19,7 @@
 const crypto = require('crypto');
 const { getClaudeToken } = require('./gcloudToken');
 // Upstream calls go through providerFetch (header timeout + 429/5xx/network retries).
-const { providerFetch } = require('./providerFetch');
+const { providerFetch, withFetchDefaults } = require('./providerFetch');
 const { scrubError } = require('./secrets');
 // Shared keys an admin can set at runtime (Secret Manager), falling back to the
 // deploy-time env vars. A user's own key always wins over these.
@@ -457,6 +462,15 @@ function statusError(message, status, model) {
 
 const docNote = (model, what) => `${what} sent to ${model} as extracted text (the provider rejected the native file)`;
 
+// Same-model fallbacks are gated on what the provider's 400 body actually
+// complains about, so an unrelated 400 (bad prompt, policy, malformed request)
+// is not re-sent, with its full multi-MB body, once per fallback rung.
+const DOC_REJECTION_RE = /file|document|pdf|audio|video|mime/i;        // native doc -> extracted text
+const THINKING_DISPLAY_REJECTION_RE = /display|adaptive/i;            // Claude thinking.display / adaptive
+const EFFORT_REJECTION_RE = /reasoning/i;                              // reasoning_effort unsupported
+const RESPONSES_SUMMARY_REJECTION_RE = /summary|verified/i;            // Responses API reasoning summaries
+const STREAM_OPTIONS_REJECTION_RE = /reasoning|stream_options|include_usage|unsupported|unknown|extra/i; // MaaS stream extras
+
 async function gemini({ model, system, messages, keys, signal }) {
   const key = byok.userCredential('gemini', keys) || globalKeys.get('GEMINI_API_KEY');
   if (!key) throw new Error('Missing GEMINI_API_KEY in environment (.env)');
@@ -492,7 +506,7 @@ async function gemini({ model, system, messages, keys, signal }) {
     signal,
   });
   const notes = [];
-  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     // Visible fallback: PDFs/audio/video as extracted text; images stay inline.
     r = await providerFetch(url, {
       method: 'POST',
@@ -512,6 +526,7 @@ async function gemini({ model, system, messages, keys, signal }) {
   const u = j.usageMetadata || {};
   return {
     text,
+    stopReason: j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || null,
     promptTokens: u.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens: u.candidatesTokenCount ?? estimateTokens([{ content: text }]),
     latencyMs,
@@ -592,7 +607,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
   // Only a native PDF may (visibly) fall back to its extracted text.
   const notes = [];
   let curMsgs = msgs;
-  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     curMsgs = buildOpenAIChatMessages(system, messages, { allowImages: true, allowFiles: false });
     const fbBody = { model, messages: curMsgs };
     if (eff) fbBody.reasoning_effort = eff;
@@ -605,7 +620,7 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     });
     if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
-  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
+  if (r.status === 400 && eff && !(await isImageError(r, messages)) && EFFORT_REJECTION_RE.test(await peekBody(r))) {
     // Fallback if a specific OpenAI-compatible model rejects reasoning_effort
     // (same model, attachments unchanged).
     const noEffBody = { model, messages: curMsgs };
@@ -624,7 +639,8 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
   const j = await r.json();
   const latencyMs = Date.now() - t0;
 
-  const msg = j.choices?.[0]?.message || {};
+  const choice = j.choices?.[0] || {};
+  const msg = choice.message || {};
   const text = msg.content || '';
   const reasoning = msg.reasoning_content || msg.reasoning || msg.thinking || '';
   const u = j.usage || {};
@@ -639,16 +655,20 @@ async function openaiCompat(cfg, { model, system, messages, keys, signal, effort
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
+    stopReason: choice.finish_reason || null,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
 
 // OpenAI /v1/responses streaming adapter — requests `reasoning: { effort, summary: "auto" }`
 // so GPT-5.x / o-series stream live `response.reasoning_summary_text.delta` events AND
-// return exact `output_tokens_details.reasoning_tokens`. Returns null if the endpoint or
-// model does not support `/v1/responses` (or org is unverified for summaries), allowing
-// `openaiCompatStream` to fall back cleanly to `/v1/chat/completions`.
-async function openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser }) {
+// return exact `output_tokens_details.reasoning_tokens`. Returns null ONLY when the
+// endpoint/model does not support `/v1/responses` (400/403/404 before any streaming),
+// allowing `openaiCompatStream` to fall back cleanly to `/v1/chat/completions`.
+// Quota/auth/server errors (429/401/5xx) and any failure after the stream has started
+// (`state.started`) are thrown: they are final for this request, and a second full
+// generation on /chat/completions would double the spend.
+async function openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser, state }) {
   const key = compatKey(cfg, keys);
   const attr = buildUpstreamAttribution(auditUser);
   const eff = validateEffort({ provider: 'openai', model }, effort) || openaiDefaultEffort();
@@ -681,7 +701,7 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 
   const t0 = Date.now();
   let r = await sendReq(true, model);
-  if ((r.status === 400 || r.status === 403) && !(await isImageError(r, messages))) {
+  if ((r.status === 400 || r.status === 403) && !(await isImageError(r, messages)) && RESPONSES_SUMMARY_REJECTION_RE.test(await peekBody(r))) {
     // Some OpenAI orgs are not verified for `summary: "auto"` — retry with `{ effort }` only
     // (same model — never substitute a different one).
     r = await sendReq(false, model);
@@ -690,19 +710,37 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
   // end in a silent text-only retry): surface it so imagePolicy can resend the
   // same model a scaled copy, or fail the slot with a labelled error.
   if (await isImageError(r, messages)) throw await upstreamError(cfg, model, r);
-  if (!r.ok) return null; // fall back to /v1/chat/completions
+  if (!r.ok) {
+    // Quota, auth and server errors are final for this request: a labelled slot
+    // error, never a second full generation (and retry ladder) on /chat/completions.
+    if (r.status === 429 || r.status === 401 || r.status >= 500) throw await upstreamError(cfg, model, r);
+    // Endpoint / model / verification mismatch: release the body and fall back.
+    try { if (r.body && r.body.cancel) await r.body.cancel(); } catch (_) { /* ignore */ }
+    return null;
+  }
 
-  let text = '', reasoning = '', usage = null;
+  let text = '', reasoning = '', usage = null, stopReason = null;
   await readSSE(r, (ev) => {
+    if (state) state.started = true; // from here on a failure is final (no chat fallback)
     const t = ev && ev.type;
+    if (t === 'error' || t === 'response.failed' || (ev && ev.error && !t)) {
+      throw streamErrorEvent(cfg.label, model, (ev.response && ev.response.error) || ev.error || ev);
+    }
     if (t === 'response.output_text.delta' && ev.delta) {
       text += ev.delta;
     } else if ((t === 'response.reasoning_summary_text.delta' || t === 'response.reasoning_text.delta') && ev.delta) {
       reasoning += ev.delta;
     } else if (t === 'response.reasoning_summary_part.done' && ev.part?.text && !reasoning.includes(ev.part.text)) {
       reasoning += (reasoning ? '\n' : '') + ev.part.text;
-    } else if ((t === 'response.completed' || t === 'response.done') && ev.response?.usage) {
-      usage = ev.response.usage;
+    } else if (t === 'response.completed' || t === 'response.done') {
+      if (ev.response?.usage) usage = ev.response.usage;
+      stopReason = ev.response?.status || 'completed';
+    } else if (t === 'response.incomplete') {
+      // Hit max_output_tokens or a content filter: the usage is real and billed,
+      // so take it like a completed response, but flag why it stopped.
+      if (ev.response?.usage) usage = ev.response.usage;
+      const why = ev.response?.incomplete_details?.reason || '';
+      stopReason = /content_filter/i.test(why) ? 'content_filter' : 'max_tokens';
     }
     if (onDelta && (ev.delta || usage)) {
       const uThink = usage?.output_tokens_details?.reasoning_tokens || 0;
@@ -728,6 +766,7 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
+    stopReason,
   };
 }
 
@@ -736,12 +775,16 @@ async function openaiResponsesStream(cfg, { model, system, messages, keys, onDel
 async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser }) {
   const isOpenAI = cfg.keyField === 'openai';
   if (isOpenAI) {
+    const state = { started: false };
     try {
-      const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser });
+      const res = await openaiResponsesStream(cfg, { model, system, messages, keys, onDelta, signal, effort, auditUser, state });
       if (res) return res;
     } catch (e) {
-      if (e && e.status) throw e; // labelled upstream (image) error — never a silent chat fallback
-      /* otherwise fall through to /chat/completions */
+      // A labelled upstream error, or a stream that died AFTER it started (the
+      // generation is already billed upstream), is final for this slot: never a
+      // silent second generation on /chat/completions.
+      if ((e && e.status) || state.started) throw e;
+      /* otherwise (transport error before any event) fall through to /chat/completions */
     }
   }
 
@@ -768,7 +811,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   });
   const notes = [];
   let filesOk = true;
-  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && isOpenAI && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     filesOk = false; // visible fallback: PDF as extracted text; images unchanged
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
@@ -778,7 +821,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     });
     if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
-  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
+  if (r.status === 400 && eff && !(await isImageError(r, messages)) && EFFORT_REJECTION_RE.test(await peekBody(r))) {
     r = await providerFetch(`${cfg.base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -790,10 +833,13 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
   // with a labelled error so it is never priced/labelled as a model it didn't use.
   if (!r.ok) throw await upstreamError(cfg, model, r);
 
-  let text = '', reasoning = '', usage = null;
+  let text = '', reasoning = '', usage = null, stopReason = null;
   await readSSE(r, (ev) => {
+    if (ev && ev.error) throw streamErrorEvent(cfg.label, model, ev.error);
     if (ev.usage) usage = ev.usage;
-    const d = ev.choices?.[0]?.delta;
+    const choice = ev.choices?.[0];
+    const d = choice?.delta;
+    if (choice?.finish_reason) stopReason = choice.finish_reason;
     if (d) {
       if (d.content) text += d.content;
       const rChunk = d.reasoning_content || d.reasoning || d.thinking || '';
@@ -819,6 +865,7 @@ async function openaiCompatStream(cfg, { model, system, messages, keys, onDelta,
     completionTokens: outTok,
     reasoningTokens: think,
     latencyMs,
+    stopReason,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
@@ -855,7 +902,7 @@ async function anthropic({ model, system, messages, keys, signal }) {
   const t0 = Date.now();
   let r = await sendReq(true);
   const notes = [];
-  if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     r = await sendReq(false); // visible fallback: PDF as extracted text; images unchanged
     if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
   }
@@ -966,7 +1013,7 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     signal,
   });
   const notes = [];
-  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     r = await providerFetch(url, {
       method: 'POST',
       headers,
@@ -979,7 +1026,8 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}${ownVertexKeyHint(keys, r.status)}`, r.status, model);
 
-  const parts = j.candidates?.[0]?.content?.parts || [];
+  const candidate = j.candidates?.[0];
+  const parts = candidate?.content?.parts || [];
   const text = parts.filter((x) => x.thought !== true).map((x) => x.text || '').join('');
   const reasoning = parts.filter((x) => x.thought === true).map((x) => x.text || '').join('\n').trim();
   const u = j.usageMetadata || {};
@@ -993,6 +1041,8 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     promptTokens: u.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens,
     latencyMs,
+    // MAX_TOKENS / SAFETY / RECITATION / PROHIBITED_CONTENT, or a prompt-level block.
+    stopReason: candidate?.finishReason || j.promptFeedback?.blockReason || null,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
@@ -1039,27 +1089,32 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
   }
   const notes = [];
   if (r.status === 400 && !(await isImageError(r, messages))) {
-    r = await send(tok, true, model, true);
-    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
-      r = await send(tok, true, model, false); // visible fallback: PDF as extracted text; images unchanged
+    // Same-model fallbacks, each gated on what the 400 body complains about.
+    let body400 = await peekBody(r);
+    let omitDisplay = false;
+    if (THINKING_DISPLAY_REJECTION_RE.test(body400)) {
+      omitDisplay = true; // model predates thinking.display / adaptive
+      r = await send(tok, true, model, true);
+      body400 = r.status === 400 ? await peekBody(r) : '';
+    }
+    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && DOC_REJECTION_RE.test(body400) && !(await isImageError(r, messages))) {
+      r = await send(tok, omitDisplay, model, false); // visible fallback: PDF as extracted text; images unchanged
       if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
     }
   }
   // No silent model substitution (previously a 429/403/404 was re-routed to
   // claude-opus-5-5). The slot fails with a labelled, unpriced error instead.
-  const routedNote = '';
   if (!r.ok) throw await upstreamError(CLAUDE_CFG, model, r);
   const j = await r.json();
   const latencyMs = Date.now() - t0;
-  if (!r.ok) throw new Error(`Claude (Agent Platform) ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`);
 
   const blocks = j.content || [];
   const text = blocks.filter((b) => b.type === 'text').map((b) => b.text || '').join('');
   const stopReason = j.stop_reason || null;
-  const reasoning = (routedNote + blocks
+  const reasoning = blocks
     .filter((b) => b.type === 'thinking')
     .map((b) => b.thinking || '')
-    .join('\n'))
+    .join('\n')
     .trim();
   const u = j.usage || {};
   const outTok = u.output_tokens ?? estimateTokens([{ content: text + reasoning }]);
@@ -1081,26 +1136,83 @@ async function agentPlatformClaude({ model, system, messages, project, keys, sig
 }
 
 // --- Streaming variants (SSE) for live token-by-token updates ----------------
-async function readSSE(response, onEvent) {
+// Idle deadline for a streamed body: if the upstream sends NOTHING for this long
+// the stream is cancelled and the slot fails, instead of holding the run (and
+// its budget charge, heartbeat and request slot) open for the whole Cloud Run
+// request timeout. Distinct from PROVIDER_TIMEOUT_MS, which only covers headers.
+const PROVIDER_IDLE_MS = (() => {
+  const n = Number(process.env.PROVIDER_IDLE_MS);
+  return process.env.PROVIDER_IDLE_MS != null && String(process.env.PROVIDER_IDLE_MS).trim() !== '' && Number.isFinite(n) && n >= 0 ? n : 120000;
+})();
+// A single SSE line can never legitimately approach this; a provider that keeps
+// sending bytes without a newline would otherwise grow `buf` without bound.
+const SSE_MAX_BUFFER_CHARS = 8 * 1024 * 1024;
+
+function idleTimeoutError(idleMs) {
+  const human = idleMs >= 1000 ? `${Math.round(idleMs / 1000)}s` : `${idleMs}ms`;
+  const err = new Error(`provider stream stalled: no data received for ${human} (PROVIDER_IDLE_MS) - the slot was cancelled`);
+  err.name = 'ProviderIdleTimeoutError';
+  err.code = 'PROVIDER_IDLE_TIMEOUT';
+  return err;
+}
+
+async function readSSE(response, onEvent, { idleMs = PROVIDER_IDLE_MS } = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl).replace(/\r$/, '');
-      buf = buf.slice(nl + 1);
-      if (!line || line.startsWith(':') || line.startsWith('event:')) continue;
-      if (line.startsWith('data:')) {
-        const data = line.slice(5).trim();
-        if (!data || data === '[DONE]') continue;
-        try { onEvent(JSON.parse(data)); } catch (_) { /* ignore partial */ }
+  // Race every read() against the idle deadline; on expiry cancel the reader so
+  // the upstream connection is released, then fail the stream with a clear error.
+  const readWithDeadline = () => {
+    if (!(idleMs > 0)) return reader.read();
+    let timer = null;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const err = idleTimeoutError(idleMs);
+        Promise.resolve().then(() => reader.cancel(err)).catch(() => {});
+        reject(err);
+      }, idleMs);
+    });
+    return Promise.race([reader.read(), deadline]).finally(() => { if (timer) clearTimeout(timer); });
+  };
+  try {
+    for (;;) {
+      const { value, done } = await readWithDeadline();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      if (buf.length > SSE_MAX_BUFFER_CHARS) {
+        const err = new Error(`provider stream exceeded the ${SSE_MAX_BUFFER_CHARS / (1024 * 1024)} MB event buffer without a line break`);
+        err.code = 'PROVIDER_STREAM_TOO_LARGE';
+        throw err;
+      }
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).replace(/\r$/, '');
+        buf = buf.slice(nl + 1);
+        if (!line || line.startsWith(':') || line.startsWith('event:')) continue;
+        if (line.startsWith('data:')) {
+          const data = line.slice(5).trim();
+          if (!data || data === '[DONE]') continue;
+          let ev;
+          try { ev = JSON.parse(data); } catch (_) { continue; } // partial / non-JSON line
+          // Handler exceptions (a mid-stream provider error event, a bug in the
+          // adapter) propagate: they must never be swallowed into a "successful"
+          // truncated answer with estimated usage.
+          onEvent(ev);
+        }
       }
     }
+  } catch (e) {
+    try { await reader.cancel(e); } catch (_) { /* already closed */ }
+    throw e;
   }
+}
+
+// Mid-stream provider error events ({error}, type:'error', response.failed) are
+// surfaced as a 502 for the slot: the partial text is NOT a successful answer.
+function streamErrorEvent(label, model, detail) {
+  let text = '';
+  try { text = typeof detail === 'string' ? detail : JSON.stringify(detail); } catch (_) { text = String(detail); }
+  return statusError(`${label} stream error for model "${model}": ${scrubError(text || 'unknown error').slice(0, 400)}`, 502, model);
 }
 
 async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region, auditUser }) {
@@ -1131,19 +1243,24 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
   const t0 = Date.now();
   let r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(true)), signal });
   const notes = [];
-  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages))) {
+  if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
     r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(false)), signal });
     if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}${ownVertexKeyHint(keys, r.status)}`, r.status, model); }
 
-  let answer = '', reasoning = '', usage = {};
+  let answer = '', reasoning = '', usage = {}, stopReason = null;
   await readSSE(r, (obj) => {
-    const parts = obj.candidates?.[0]?.content?.parts || [];
+    if (obj && obj.error) throw streamErrorEvent('Agent Platform', model, obj.error);
+    const cand = obj.candidates?.[0];
+    const parts = cand?.content?.parts || [];
     for (const p of parts) {
       if (p.text == null) continue;
       if (p.thought === true) reasoning += p.text; else answer += p.text;
     }
+    // Truncation / safety stops are reported here and nowhere else.
+    if (cand?.finishReason) stopReason = cand.finishReason;
+    else if (obj.promptFeedback?.blockReason) stopReason = obj.promptFeedback.blockReason;
     if (obj.usageMetadata) usage = obj.usageMetadata;
     if (onDelta && (parts.length || obj.usageMetadata)) {
       const think = usage.thoughtsTokenCount || 0;
@@ -1159,6 +1276,7 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     text: answer, reasoning: reasoning.trim(), reasoningTokens: thoughts,
     promptTokens: usage.promptTokenCount ?? estimateTokens(messages, system),
     completionTokens, latencyMs,
+    stopReason,
     ...(notes.length ? { attachmentNotes: notes } : {}),
   };
 }
@@ -1199,20 +1317,29 @@ async function agentPlatformClaudeStream({ model, system, messages, project, onD
   }
   const notes = [];
   if (r.status === 400 && !(await isImageError(r, messages))) {
-    r = await send(tok, true, model, true);
-    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && !(await isImageError(r, messages))) {
-      r = await send(tok, true, model, false); // visible fallback: PDF as extracted text; images unchanged
+    // Same-model fallbacks, each gated on what the 400 body complains about.
+    let body400 = await peekBody(r);
+    let omitDisplay = false;
+    if (THINKING_DISPLAY_REJECTION_RE.test(body400)) {
+      omitDisplay = true; // model predates thinking.display / adaptive
+      r = await send(tok, true, model, true);
+      body400 = r.status === 400 ? await peekBody(r) : '';
+    }
+    if (r.status === 400 && hasNativeDocs(messages, ['pdf']) && DOC_REJECTION_RE.test(body400) && !(await isImageError(r, messages))) {
+      r = await send(tok, omitDisplay, model, false); // visible fallback: PDF as extracted text; images unchanged
       if (r.ok) notes.push(docNote(model, 'PDF attachment(s)'));
     }
   }
   // No silent model substitution (previously a 429/403/404 was re-routed to
   // claude-opus-5-5). The slot fails with a labelled, unpriced error instead.
-  const routedNote = '';
   if (!r.ok) throw await upstreamError(CLAUDE_CFG, model, r);
-  if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw new Error(`Claude (Agent Platform) ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`); }
 
-  let answer = '', reasoning = routedNote, inTok = 0, outTok = 0, thinkTok = 0, stopReason = null;
+  let answer = '', reasoning = '', inTok = 0, outTok = 0, thinkTok = 0, stopReason = null;
   await readSSE(r, (ev) => {
+    if (ev.type === 'error' || (ev.error && !ev.type)) {
+      // Anthropic reports overloads / internal errors as an SSE event on a 200 stream.
+      throw streamErrorEvent(CLAUDE_CFG.label, model, ev.error || ev);
+    }
     if (ev.type === 'message_start') {
       if (ev.message?.usage) inTok = ev.message.usage.input_tokens || inTok;
       if (ev.message?.stop_reason) stopReason = ev.message.stop_reason;
@@ -1319,14 +1446,15 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
     tok = await getClaudeToken({ forceRefresh: true });
     r = await send(tok, true);
   }
-  if (r.status === 400 && eff && !(await isImageError(r, messages))) {
+  if (r.status === 400 && eff && !(await isImageError(r, messages)) && EFFORT_REJECTION_RE.test(await peekBody(r))) {
     r = await send(tok, false);
   }
   let j; try { j = await r.json(); } catch (_) { j = {}; }
   const latencyMs = Date.now() - t0;
   if (!r.ok) throw statusError(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(j)).slice(0, 400)}`, r.status, model);
 
-  const msg = j.choices?.[0]?.message || {};
+  const choice = j.choices?.[0] || {};
+  const msg = choice.message || {};
   const split = splitThinkTags(msg.content || '', msg.reasoning_content || msg.reasoning || msg.thinking || '');
   const text = split.text;
   const reasoning = split.reasoning.trim();
@@ -1343,6 +1471,7 @@ async function agentPlatformOpenAIMaaS({ model, system, messages, project, keys,
     promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
+    stopReason: choice.finish_reason || null,
   };
 }
 
@@ -1377,7 +1506,7 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
     tok = await getClaudeToken({ forceRefresh: true });
     r = await send(tok, true, true);
   }
-  if (r.status === 400 && !(await isImageError(r, messages))) {
+  if (r.status === 400 && !(await isImageError(r, messages)) && STREAM_OPTIONS_REJECTION_RE.test(await peekBody(r))) {
     r = await send(tok, false, false); // same model, no effort/usage options; attachments unchanged
   }
   if (!r.ok) {
@@ -1385,10 +1514,13 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
     throw statusError(`Vertex AI MaaS (${reg}) ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}`, r.status, model);
   }
 
-  let rawContent = '', rawReasoning = '', usage = null;
+  let rawContent = '', rawReasoning = '', usage = null, stopReason = null;
   await readSSE(r, (ev) => {
+    if (ev && ev.error) throw streamErrorEvent(`Vertex AI MaaS (${reg})`, model, ev.error);
     if (ev.usage) usage = ev.usage;
-    const d = ev.choices?.[0]?.delta;
+    const choice = ev.choices?.[0];
+    const d = choice?.delta;
+    if (choice?.finish_reason) stopReason = choice.finish_reason;
     if (d) {
       if (d.content) rawContent += d.content;
       const rChunk = d.reasoning_content || d.reasoning || d.thinking || '';
@@ -1419,6 +1551,7 @@ async function agentPlatformOpenAIMaaSStream({ model, system, messages, project,
     promptTokens: u.prompt_tokens ?? estimateTokens(messages, system),
     completionTokens: outTok,
     latencyMs,
+    stopReason,
   };
 }
 
@@ -1437,12 +1570,17 @@ const ADAPTERS = { agentplatform, gemini, openai, anthropic, moonshot };
 // adapter uses keys.<x> when present, else falls back to the server's env vars.
 // `signal` aborts the upstream request when the client goes away (or restarts a
 // slot) so an abandoned run stops burning tokens instead of finishing unseen.
+// `timeoutMs` (optional) raises the response-header timeout for every upstream
+// request this call makes: non-streaming callers (the judge) only get headers
+// when the whole generation is done, so the streaming default is far too short
+// for them and a timeout there would abort a billed call.
 async function complete(args) {
-  const { provider, model, messages, publisher, endpointType, signal } = args;
+  const { provider, model, messages, publisher, endpointType, signal, timeoutMs } = args;
   // Every image is either seen by the model (original, or a visibly-labelled
   // scaled copy) or the slot fails with a labelled error — see imagePolicy.js.
-  return withImagePolicy({ provider, model, publisher, endpointType }, messages, signal,
+  const run = () => withImagePolicy({ provider, model, publisher, endpointType }, messages, signal,
     (msgs) => dispatchComplete({ ...args, messages: msgs }));
+  return Number(timeoutMs) > 0 ? withFetchDefaults({ timeoutMs: Number(timeoutMs) }, run) : run();
 }
 
 async function dispatchComplete({ provider, model, system, messages, publisher, project, onDelta, keys, signal, effort, endpointType, region, thinkingMode, auditUser }) {

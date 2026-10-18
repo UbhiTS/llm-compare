@@ -1,15 +1,18 @@
 name: Deploy to Cloud Run
 
-# Builds the container on the runner, pushes it to Artifact Registry, and deploys
-# to Cloud Run on every push to main (and on demand). Authentication to Google
-# Cloud is KEYLESS via Workload Identity Federation — no JSON keys in GitHub.
+# Two jobs: `test` runs the full regression + HTTP smoke/security suites on every push and
+# pull request; `deploy` (push to main / manual only, needs `test`) builds the container,
+# smoke-tests the image itself, pushes it to Artifact Registry and deploys to Cloud Run.
+# Authentication to Google Cloud is KEYLESS via Workload Identity Federation - no JSON
+# keys in GitHub. Third-party actions are pinned to full commit SHAs (the tag is kept as a
+# comment) because this workflow holds the WIF deploy identity.
 #
 # Everything is parameterized:
-#   Repository VARIABLES (Settings ▸ Secrets and variables ▸ Actions ▸ Variables):
+#   Repository VARIABLES (Settings > Secrets and variables > Actions > Variables):
 #     GCP_PROJECT_ID, GCP_REGION, ARTIFACT_REPO, CLOUD_RUN_SERVICE,
-#     RUNTIME_SERVICE_ACCOUNT, ALLOWED_EMAIL_DOMAINS, ADMIN_EMAILS,
-#     MAX_RUNS_PER_DAY, MAX_SINGLE_RUNS_PER_DAY, APP_DATA_BUCKET,
+#     RUNTIME_SERVICE_ACCOUNT, ALLOWED_EMAIL_DOMAINS, ADMIN_EMAILS, APP_DATA_BUCKET,
 #     GOOGLE_CLIENT_ID, OAUTH_REDIRECT_BASE
+#     (daily run limits are edited in the app's Settings modal, not env vars)
 #   Repository SECRETS:
 #     WIF_PROVIDER (workload identity provider resource name),
 #     DEPLOY_SERVICE_ACCOUNT (deployer SA email)
@@ -20,59 +23,111 @@ name: Deploy to Cloud Run
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write   # required for Workload Identity Federation
 
+# One deploy at a time. A running deploy is never cancelled mid `gcloud run deploy`
+# (cancel-in-progress: false); the next run simply waits for it.
 concurrency:
-  group: deploy-cloud-run
-  cancel-in-progress: true
+  group: deploy-cloud-run-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Same major as the runtime image (node:22-bookworm-slim): node:sqlite needs >= 22.13.
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install (locked)
+        run: npm ci
+
+      # Supply-chain gate: fail on any high/critical advisory in the production
+      # dependency tree (dev deps aren't shipped in the image).
+      - name: npm audit (production deps)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Every verify-*.js suite, sequentially, without stopping at the first failure.
+      - name: Regression suites
+        run: npm run test:all
+
+      # Black-box HTTP smoke suites against the real server (offline - no model
+      # calls): endpoints, auth gate, attachments, exec-off mode, /healthz,
+      # structured logs, graceful SIGTERM drain, and the security probes, which FAIL
+      # the build on a VULNERABLE result.
+      - name: HTTP smoke + security probes
+        run: npm run test:smoke
+
   deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.ARTIFACT_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}:${{ github.sha }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js & run regression tests
-        run: |
-          npm ci
-          npm test
-
-      # Supply-chain gate: fail the deploy on any high/critical advisory in the
-      # production dependency tree (dev deps aren't shipped in the image).
-      - name: npm audit (production deps)
-        run: npm audit --omit=dev --audit-level=high
-
-      # Black-box HTTP smoke suites against the real server (offline — no model
-      # calls): endpoints, auth gate, attachments, exec-off mode, /healthz,
-      # structured logs and graceful SIGTERM drain.
-      - name: HTTP smoke tests
-        run: npm run test:smoke
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Authenticate to Google Cloud (keyless)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
         with:
           workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
           service_account: ${{ secrets.DEPLOY_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
 
-      - name: Build & push image
-        run: |
-          docker build -t "$IMAGE" .
-          docker push "$IMAGE"
+      - name: Build image
+        run: docker build -t "$IMAGE" .
 
+      # The image and its Python/pygbag toolchain are exercised BEFORE anything is pushed:
+      # boot it the way Cloud Run does (no loopback auto-admin, ephemeral data dirs), wait
+      # for /api/health, confirm the API is gated, and prove pygbag imports. `pygbag
+      # --version` prints its banner but exits non-zero without an app dir, hence the grep.
+      - name: Container smoke test
+        run: |
+          docker run -d --name llmc-smoke \
+            -e LOCAL_AUTO_AUTH=0 -e APP_DATA_DIR=/tmp/data -e AUTH_DATA_DIR=/tmp/auth \
+            -e GLOBAL_KEYS_ENABLED=0 -e ENABLE_CODE_EXEC=0 -e PORT=8080 \
+            -p 8080:8080 "$IMAGE"
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:8080/api/health; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then echo "::error::container did not become healthy"; docker logs llmc-smoke; exit 1; fi
+          code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/config)"
+          if [ "$code" != "401" ]; then echo "::error::/api/config answered $code without a session"; docker logs llmc-smoke; exit 1; fi
+          docker exec llmc-smoke sh -c 'python3 -m pygbag --version 2>&1 | grep -q "pygbag 0.9.3"'
+          docker rm -f llmc-smoke
+
+      - name: Push image
+        run: docker push "$IMAGE"
+
+      # --concurrency caps in-flight requests per instance (review 9.2: the default 80 let
+      # slow pre-auth bodies and hour-long streams exhaust the single instance); the
+      # liveness probe restarts a wedged process (/healthz answers 503 while draining).
+      # ENABLE_CODE_EXEC=0: LLM-generated Python never runs in the production container.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
@@ -82,12 +137,14 @@ jobs:
             --service-account "${{ vars.RUNTIME_SERVICE_ACCOUNT }}" \
             --allow-unauthenticated \
             --min-instances=1 --max-instances=1 \
+            --concurrency=40 \
             --cpu=2 --memory=2Gi --cpu-boost --no-cpu-throttling --timeout=3600 \
-            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@AGENT_PLATFORM_PROJECT_NUMBER=419460847694@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@MAX_OPENAI_RUNS_PER_DAY=3@@MAX_RUNS_PER_DAY=3@@MAX_SINGLE_RUNS_PER_DAY=3@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
+            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@AGENT_PLATFORM_PROJECT_NUMBER=419460847694@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
             --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest" \
             --add-volume="name=appdata,type=cloud-storage,bucket=${{ vars.APP_DATA_BUCKET }}" \
             --add-volume-mount="volume=appdata,mount-path=/data" \
-            --startup-probe="httpGet.path=/api/health,httpGet.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=48"
+            --startup-probe="httpGet.path=/api/health,httpGet.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=48" \
+            --liveness-probe="httpGet.path=/healthz,httpGet.port=8080,periodSeconds=30,failureThreshold=3"
 
       - name: Show service URL
         run: |

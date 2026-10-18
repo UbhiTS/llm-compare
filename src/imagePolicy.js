@@ -240,8 +240,11 @@ function planImages(messages, cfg, pos, rejectReason) {
   return { messages: out, notes, chosen };
 }
 
-// A provider error caused by OUR image (as opposed to quota/capacity/network).
-const IMAGE_REJECTION_RE = /image|patch|pixel|resiz|dimension|too large|payload|inline.?data|media|mime|base64|vision|multimodal|content.?type|file size|request entity/i;
+// A provider error caused by OUR image (as opposed to quota/capacity/network). The message
+// must name something image-specific: generic size words on their own ("payload too large",
+// "request entity", "content type", "too large") only count when the status is 413 (4.16),
+// so an unrelated 400 can't trigger up to two extra paid retries with smaller copies.
+const IMAGE_REJECTION_RE = /image|patch|pixel|resiz|dimension|inline.?data|media|mime|base64|vision|multimodal|file size/i;
 function isImageRejection(err) {
   if (!err) return false;
   const st = Number(err.status);

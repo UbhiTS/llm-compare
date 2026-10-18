@@ -14,6 +14,9 @@
 //   ATTACHMENT_WORKER_HEAP_MB     per-worker old-generation heap cap (default 256)
 //   ATTACHMENT_WORKER_TIMEOUT_MS  per-file timeout; worker is recycled (default 30000)
 //   ATTACHMENT_WORKER_MIN_BYTES   only offload files at least this big (default 0)
+//   ATTACHMENT_WORKER_MAX_QUEUE   max files waiting for a worker (default 20); beyond that the
+//                                 job is rejected immediately (code ATTACHMENT_QUEUE_FULL) and the
+//                                 caller marks the file as not parsed instead of parsing inline
 // Built-ins only — no new dependencies.
 // ---------------------------------------------------------------------------
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
@@ -33,6 +36,7 @@ if (!isMainThread && workerData && workerData.llmcAttachmentWorker) {
   const size = () => Math.floor(num(process.env.ATTACHMENT_WORKERS, 2));
   const heapMb = () => Math.max(32, num(process.env.ATTACHMENT_WORKER_HEAP_MB, 256));
   const timeoutMs = () => Math.max(1000, num(process.env.ATTACHMENT_WORKER_TIMEOUT_MS, 30000));
+  const maxQueue = () => Math.max(1, Math.floor(num(process.env.ATTACHMENT_WORKER_MAX_QUEUE, 20)));
 
   const pool = [];     // { w, busy, pending: Map }
   let seq = 0;
@@ -75,16 +79,24 @@ if (!isMainThread && workerData && workerData.llmcAttachmentWorker) {
       const job = queue.shift();
       slot.busy = job;
       job.timer = setTimeout(() => {
-        // Recycle a stuck worker; the caller falls back to inline parsing.
+        // Recycle a stuck worker; the caller marks the file as not parsed (no inline re-parse).
         slot.w.terminate().catch(() => {});
       }, timeoutMs());
-      slot.w.postMessage({ id: job.id, op: job.op, bytes: job.bytes });
+      // Transfer the standalone ArrayBuffer (zero-copy) instead of structured-cloning up to 25 MB.
+      slot.w.postMessage({ id: job.id, op: job.op, bytes: job.bytes }, [job.bytes.buffer]);
+      job.bytes = null;
     }
   }
 
   function extractInWorker(op, buf) {
     return new Promise((resolve, reject) => {
-      // Copy into a standalone ArrayBuffer (Buffers are often pool slices).
+      if (queue.length >= maxQueue()) {
+        const err = new Error('attachment parser queue is full');
+        err.code = 'ATTACHMENT_QUEUE_FULL';
+        reject(err);
+        return;
+      }
+      // Copy into a standalone ArrayBuffer (Buffers are often pool slices) so it can be transferred.
       const bytes = new Uint8Array(buf.byteLength);
       bytes.set(buf);
       queue.push({ id: ++seq, op, bytes, resolve, reject });
@@ -96,6 +108,8 @@ if (!isMainThread && workerData && workerData.llmcAttachmentWorker) {
     extractInWorker,
     enabled: () => size() > 0,
     minBytes: () => num(process.env.ATTACHMENT_WORKER_MIN_BYTES, 0),
+    maxQueue,
     _poolSize: () => pool.length,
+    _queueLength: () => queue.length,
   };
 }

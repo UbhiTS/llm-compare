@@ -1,7 +1,8 @@
 ---
 id: sec-hotpatch-sanitizer
-title: Security: Runtime Prototype-Pollution, NoSQLi & SSTI Hot-Patcher
+title: Runtime Prototype-Pollution, NoSQLi & SSTI Sanitizer
 category: security
+subcategory: sec-patching
 language: javascript
 functionName: applyRuntimeHotPatch
 executable: true

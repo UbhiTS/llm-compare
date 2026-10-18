@@ -10,9 +10,19 @@
 // for a local demo where you control the tasks. Don't point it at untrusted
 // task definitions.
 // ---------------------------------------------------------------------------
+'use strict';
 
 const vm = require('vm');
 const { types } = require('util');
+
+// Runs inside every fresh context before the candidate. Error.prepareStackTrace is
+// consulted by the HOST (via the context's own Error) whenever a stack is read, i.e.
+// outside the vm timeout, so a candidate that assigns it could run code with no time
+// limit. Pin it (and keep stack capture bounded) before any candidate code exists.
+const CONTEXT_PRELUDE = new vm.Script(`
+Object.defineProperty(Error, 'prepareStackTrace', { value: undefined, writable: false, configurable: false });
+Object.defineProperty(Error, 'stackTraceLimit', { value: 10, writable: false, configurable: false });
+`, { filename: 'runner-prelude.js' });
 
 function buildHarness(code, functionName, testCases) {
   // A self-contained deep-equality check is injected so we don't depend on
@@ -94,9 +104,13 @@ function runTests(code, functionName, testCases, timeoutMs = 3000) {
   // SECURITY: a null-prototype sandbox object means `this.constructor.constructor`
   // resolves to the CONTEXT's Function (no `process`), not the host's — closing the
   // classic `this.constructor.constructor('return process')()` escape to the host.
-  const context = vm.createContext(Object.create(null));
+  // microtaskMode 'afterEvaluate' gives the context its own microtask queue that is
+  // drained INSIDE the timed run, so `Promise.resolve().then(() => { for(;;); })` is
+  // bounded by the timeout instead of spinning on the host's queue afterwards.
+  const context = vm.createContext(Object.create(null), { microtaskMode: 'afterEvaluate' });
   let results;
   try {
+    CONTEXT_PRELUDE.runInContext(context, { timeout: 1000 });
     const script = new vm.Script(buildHarness(code, functionName, testCases));
     const json = script.runInContext(context, { timeout: timeoutMs });
     // Only a primitive string crosses back; never dereference sandbox objects here.

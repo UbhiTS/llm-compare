@@ -31,27 +31,51 @@ const overClaudeDim = (d) => Boolean(d) && Math.max(d.width, d.height) > CLAUDE_
 // Every inflate is capped; oversized streams keep only their leading content, which
 // is all the extractor ever uses (output is sliced to MAX_SINGLE_TEXT_CHARS anyway).
 const MAX_INFLATE_BYTES = Math.max(1, Number(process.env.ATTACHMENT_MAX_INFLATE_MB) || 32) * 1024 * 1024;
+// Total inflate work allowed per file across ALL of its entries / streams (a 25 MB ZIP of 2000
+// whitespace entries, or a PDF with 5000 FlateDecode streams, otherwise costs gigabytes of CPU).
+const MAX_TOTAL_INFLATE_BYTES = 128 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 2000;
+const MAX_PDF_STREAMS = 5000;
+// Last-resort "readable strings" scan only looks at the leading bytes of a binary.
+const MAX_BINARY_STRING_SCAN_BYTES = 2 * 1024 * 1024;
 // Bound the SHA-1 attachment cache by bytes too (50 × 25 MB base64 could exceed a 1 GiB instance).
 const MAX_CACHE_BYTES = Math.max(16, Number(process.env.ATTACHMENT_CACHE_MAX_MB) || 512) * 1024 * 1024;
+// Warning shown when a PDF / ZIP / Office file could not be parsed off the main thread
+// (worker timeout, heap cap, crash or full queue). The file is never re-parsed inline.
+const WORKER_FAIL_WARNING = 'Could not parse (timed out or too large)';
+const WORKER_BUSY_WARNING = 'Could not parse (server busy, please retry)';
 
 function isTooLarge(e) {
   return !!e && (e.code === 'ERR_BUFFER_TOO_LARGE' || e instanceof RangeError);
 }
 
 // inflateFn is zlib.inflateRawSync (ZIP) or zlib.inflateSync (PDF FlateDecode).
-function boundedInflate(inflateFn, input, cap = MAX_INFLATE_BYTES) {
+// `budget` ({ used, limit }) tracks the total inflate work spent on one file: every over-cap
+// attempt is charged the full cap (that much output was produced before the throw) and once
+// the budget is exhausted nothing more is inflated for that file.
+function boundedInflate(inflateFn, input, cap = MAX_INFLATE_BYTES, budget = null) {
+  const charge = (n) => { if (budget) budget.used += n; };
+  const exhausted = () => Boolean(budget) && budget.used >= budget.limit;
+  if (exhausted()) return Buffer.alloc(0);
   try {
-    return inflateFn(input, { maxOutputLength: cap });
+    const out = inflateFn(input, { maxOutputLength: cap });
+    charge(out.length);
+    return out;
   } catch (e) {
     if (!isTooLarge(e)) throw e;
+    charge(cap);
   }
   // Too big: inflate progressively shorter prefixes of the compressed data with a
   // sync flush (no "unexpected end" error) until the output fits under the cap.
   for (let len = input.length >> 1; len > 0; len >>= 1) {
+    if (exhausted()) return Buffer.alloc(0);
     try {
-      return inflateFn(input.subarray(0, len), { maxOutputLength: cap, finishFlush: zlib.constants.Z_SYNC_FLUSH });
+      const out = inflateFn(input.subarray(0, len), { maxOutputLength: cap, finishFlush: zlib.constants.Z_SYNC_FLUSH });
+      charge(out.length);
+      return out;
     } catch (e) {
       if (!isTooLarge(e)) throw e;
+      charge(cap);
     }
   }
   return Buffer.alloc(0);
@@ -186,12 +210,21 @@ function isLikelyBinaryBuffer(buf) {
   return nullCount > 2 || (nonPrintable / sampleLen) > 0.25;
 }
 
-// Extract readable ASCII/UTF-8 strings from an arbitrary binary buffer as a last-resort fallback
+// Extract readable ASCII/UTF-8 strings from an arbitrary binary buffer as a last-resort fallback.
+// Scans only the first 2 MB, incrementally, and stops as soon as `maxChars` are collected
+// (a global `.match()` over 25 MB built every run before slicing to 8-20 KB).
 function extractReadableStringsFromBinary(buf, maxChars = 20000) {
   if (!Buffer.isBuffer(buf) || !buf.length) return '';
-  const raw = buf.toString('latin1');
-  const matches = raw.match(/[A-Za-z0-9_.,:;!?@#$%^&*()[\]{}<>+\-=/\\'"`~\t ]{6,}/g) || [];
-  return matches.join('\n').slice(0, maxChars).trim();
+  const raw = buf.subarray(0, Math.min(buf.length, MAX_BINARY_STRING_SCAN_BYTES)).toString('latin1');
+  const re = /[A-Za-z0-9_.,:;!?@#$%^&*()[\]{}<>+\-=/\\'"`~\t ]{6,}/g;
+  const parts = [];
+  let total = 0;
+  let m;
+  while (total < maxChars && (m = re.exec(raw)) !== null) {
+    parts.push(m[0]);
+    total += m[0].length + 1;
+  }
+  return parts.join('\n').slice(0, maxChars).trim();
 }
 
 // Pure-Node PKZIP / Office OpenXML (.docx, .xlsx, .pptx, .zip) text extractor
@@ -202,6 +235,8 @@ function extractZipOrOfficeText(buf) {
   const extractedFiles = [];
   let joinedLen = 0; // length of extractedFiles.join('\n\n') so far
   const pushText = (s) => { joinedLen += (extractedFiles.length ? 2 : 0) + s.length; extractedFiles.push(s); };
+  const budget = { used: 0, limit: MAX_TOTAL_INFLATE_BYTES };
+  let entries = 0;
   let offset = 0;
   try {
     while (offset + 30 <= buf.length && buf.readUInt32LE(offset) === 0x04034b50) {
@@ -209,6 +244,8 @@ function extractZipOrOfficeText(buf) {
       // collected further entries can't change the result — stop (bounds CPU/memory
       // for archives with thousands of entries).
       if (joinedLen >= MAX_SINGLE_TEXT_CHARS) break;
+      // Hard caps on entries walked and total bytes inflated for this one archive.
+      if (++entries > MAX_ZIP_ENTRIES || budget.used >= budget.limit) break;
       const compression = buf.readUInt16LE(offset + 8);
       const compressedSize = buf.readUInt32LE(offset + 18);
       const nameLen = buf.readUInt16LE(offset + 26);
@@ -231,9 +268,10 @@ function extractZipOrOfficeText(buf) {
         let rawXml = '';
         if (compression === 0) {
           rawXml = rawSlice.toString('utf8');
+          budget.used += rawSlice.length;
         } else if (compression === 8) {
           try {
-            rawXml = boundedInflate(zlib.inflateRawSync, rawSlice).toString('utf8');
+            rawXml = boundedInflate(zlib.inflateRawSync, rawSlice, MAX_INFLATE_BYTES, budget).toString('utf8');
           } catch (_) {
             rawXml = '';
           }
@@ -329,8 +367,12 @@ function inspectPdfBuffer(buffer) {
     const extractedParts = [];
 
     if (!isEncrypted) {
+      const budget = { used: 0, limit: MAX_TOTAL_INFLATE_BYTES };
+      let streams = 0;
       let pos = 0;
       while (pos < raw.length) {
+        // Hard caps on streams walked and total bytes inflated for this one PDF.
+        if (++streams > MAX_PDF_STREAMS || budget.used >= budget.limit) break;
         const streamIdx = raw.indexOf('stream', pos);
         if (streamIdx < 0) break;
         const endIdx = raw.indexOf('endstream', streamIdx + 6);
@@ -347,7 +389,7 @@ function inspectPdfBuffer(buffer) {
         if (endData > startData && endData - startData < 8 * 1024 * 1024) {
           const slice = buffer.subarray(startData, endData);
           try {
-            const inflated = boundedInflate(zlib.inflateSync, slice).toString('latin1');
+            const inflated = boundedInflate(zlib.inflateSync, slice, MAX_INFLATE_BYTES, budget).toString('latin1');
             const txt = extractTextFromPdfStreamContent(inflated);
             if (txt.trim()) extractedParts.push(txt.trim());
           } catch (_) {
@@ -501,7 +543,12 @@ function estimateAttachmentTokens(att) {
 // (with a SHA-1 alias index so existing clients that reference `{ sha1, name }`
 // keep working) so subsequent runs / re-runs / blind judge evaluations can
 // reference a file without re-uploading multi-megabyte base64 payloads.
-const ATTACHMENT_CACHE = new Map();     // sha256 -> normalized attachment
+//
+// Ownership: the shared `<sha256>` entry belongs to the users in its `_owners` set. When a
+// different user resolves the same hash from THEIR vault, their copy is stored under the
+// composite key `<sha256>|<username>` and the shared entry's bytes are never overwritten, so one
+// user can never substitute the content another user's run will read (review finding 3.5(d)).
+const ATTACHMENT_CACHE = new Map();     // sha256 | `${sha256}|${username}` -> normalized attachment
 const SHA1_INDEX = new Map();           // legacy sha1 -> sha256
 const HEX40 = /^[0-9a-f]{40}$/i;
 const HEX64 = /^[0-9a-f]{64}$/i;
@@ -513,38 +560,77 @@ const approxBytes = (a) => ((a && a.data) ? a.data.length : 0) +
   ((a && a.claudeDataBase64) ? a.claudeDataBase64.length : 0) +
   ((a && a.fitDataBase64) ? a.fitDataBase64.length : 0) +
   ((a && a.textContent) ? a.textContent.length * 2 : 0);
+const normUserKey = (username) => (username ? String(username).trim().toLowerCase() : null);
+const perUserCacheKey = (sha256, user) => `${sha256}|${user}`;
 
-// Accepts a SHA-256 (preferred) or a legacy SHA-1 hex digest.
-function cacheGetAttachment(ref) {
+function cacheTouch(key, hit) {
+  // Refresh LRU order
+  ATTACHMENT_CACHE.delete(key);
+  ATTACHMENT_CACHE.set(key, hit);
+  return { ...hit };
+}
+
+// Accepts a SHA-256 (preferred) or a legacy SHA-1 hex digest. With a `username`, that user's own
+// composite copy wins; the shared entry is returned only when the user is one of its owners
+// (or the caller is an admin). Without a username (no auth context) the shared entry is returned.
+function cacheGetAttachment(ref, username = null, isAdmin = false) {
   if (!ref || typeof ref !== 'string') return null;
   const key = ref.trim().toLowerCase();
   const sha256 = HEX64.test(key) ? key : (HEX40.test(key) ? SHA1_INDEX.get(key) : null);
   if (!sha256) return null;
+  const user = normUserKey(username);
+  if (user) {
+    const ownKey = perUserCacheKey(sha256, user);
+    const own = ATTACHMENT_CACHE.get(ownKey);
+    if (own) return cacheTouch(ownKey, own);
+  }
   const hit = ATTACHMENT_CACHE.get(sha256);
   if (!hit) return null;
-  // Refresh LRU order
-  ATTACHMENT_CACHE.delete(sha256);
-  ATTACHMENT_CACHE.set(sha256, hit);
-  return { ...hit };
+  if (user && !isAdmin && hit._owners instanceof Set && hit._owners.size > 0 && !hit._owners.has(user)) return null;
+  return cacheTouch(sha256, hit);
 }
 
-function cacheEvict(sha256) {
-  const old = ATTACHMENT_CACHE.get(sha256);
+function cacheEvict(key) {
+  const old = ATTACHMENT_CACHE.get(key);
   if (!old) return;
   cacheBytes -= approxBytes(old);
-  ATTACHMENT_CACHE.delete(sha256);
-  if (old.sha1 && SHA1_INDEX.get(old.sha1) === sha256) SHA1_INDEX.delete(old.sha1);
+  ATTACHMENT_CACHE.delete(key);
+  if (old.sha1 && SHA1_INDEX.get(old.sha1) === key) SHA1_INDEX.delete(old.sha1);
+}
+
+function cacheEvictOverBudget() {
+  // Evict least-recently-used entries beyond the count OR byte budget (always keep the newest).
+  while (ATTACHMENT_CACHE.size > MAX_CACHE_ENTRIES || (cacheBytes > MAX_CACHE_BYTES && ATTACHMENT_CACHE.size > 1)) {
+    const oldestKey = ATTACHMENT_CACHE.keys().next().value;
+    if (oldestKey === undefined) break;
+    cacheEvict(oldestKey);
+  }
 }
 
 function cacheSetAttachment(sha256, attObj, username = null) {
   if (!sha256 || !attObj) return;
+  const user = normUserKey(username);
   const prev = ATTACHMENT_CACHE.get(sha256);
-  const owners = (prev && prev._owners instanceof Set) ? new Set(prev._owners) : (attObj._owners instanceof Set ? new Set(attObj._owners) : null);
+  const prevOwners = (prev && prev._owners instanceof Set) ? prev._owners : null;
+  if (prev && user && prevOwners && prevOwners.size > 0 && !prevOwners.has(user)) {
+    const sameBytes = (prev.data || '') === (attObj.data || '') && (prev.textContent || '') === (attObj.textContent || '');
+    if (!sameBytes) {
+      // Another user owns the shared entry and this copy differs: keep it strictly per-user.
+      const ownKey = perUserCacheKey(sha256, user);
+      if (ATTACHMENT_CACHE.has(ownKey)) cacheEvict(ownKey);
+      ATTACHMENT_CACHE.set(ownKey, { ...attObj, _owners: new Set([user]) });
+      cacheBytes += approxBytes(attObj);
+      cacheEvictOverBudget();
+      return;
+    }
+    // Byte-identical content: safe to add this user as an owner of the shared entry (falls through).
+  }
+  const owners = prevOwners ? new Set(prevOwners) : (attObj._owners instanceof Set ? new Set(attObj._owners) : null);
   if (ATTACHMENT_CACHE.has(sha256)) cacheEvict(sha256);
   const nextObj = { ...attObj };
-  if (username) {
+  if (user) {
     const uSet = owners || new Set();
-    uSet.add(String(username).trim().toLowerCase());
+    uSet.add(user);
     nextObj._owners = uSet;
   } else if (owners) {
     nextObj._owners = owners;
@@ -552,12 +638,7 @@ function cacheSetAttachment(sha256, attObj, username = null) {
   ATTACHMENT_CACHE.set(sha256, nextObj);
   if (attObj.sha1) SHA1_INDEX.set(attObj.sha1, sha256);
   cacheBytes += approxBytes(attObj);
-  // Evict least-recently-used entries beyond the count OR byte budget (always keep the newest).
-  while (ATTACHMENT_CACHE.size > MAX_CACHE_ENTRIES || (cacheBytes > MAX_CACHE_BYTES && ATTACHMENT_CACHE.size > 1)) {
-    const oldestKey = ATTACHMENT_CACHE.keys().next().value;
-    if (oldestKey === undefined) break;
-    cacheEvict(oldestKey);
-  }
+  cacheEvictOverBudget();
 }
 
 // Thrown when a request references a cached attachment (by sha256/sha1 only, no
@@ -597,12 +678,14 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
     // `{ sha256, name }` (current), `{ vaultRef, name }`, or `{ sha1, name }`.
     const refSha256 = item.sha256 || item.vaultRef;
     if ((refSha256 || item.sha1) && !data && !providedText) {
-      let cached = (refSha256 && cacheGetAttachment(String(refSha256))) || (item.sha1 && cacheGetAttachment(String(item.sha1)));
+      let cached = (refSha256 && cacheGetAttachment(String(refSha256), username, isAdmin)) || (item.sha1 && cacheGetAttachment(String(item.sha1), username, isAdmin));
       if (cached && username && !isAdmin && cached._owners instanceof Set && !cached._owners.has(username)) {
         cached = null;
       }
       if (!cached && username) {
-        const fromVault = vault.readAttachmentFromVaultSync(username, item, { isAdmin });
+        // normalizeAttachmentsAsync may already have read the vault blob and parsed it in a worker (`pre`)
+        const p = pre && pre.get(i);
+        const fromVault = (p && p.vault) || vault.readAttachmentFromVaultSync(username, item, { isAdmin });
         if (fromVault) {
           // Ensure kind/textContent/estimatedTokens are fully populated if the vault entry came from a raw binary migration
           const vMime = inferMimeType(fromVault.name || name, fromVault.mimeType);
@@ -610,9 +693,14 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
           fromVault.mimeType = vMime;
           fromVault.kind = vKind;
           if (!fromVault.textContent && fromVault.data) {
-            const vBuf = Buffer.from(fromVault.data, 'base64');
-            if (vKind === 'pdf') {
-              const pdfInfo = inspectPdfBuffer(vBuf);
+            if (p && p.failed && (vKind === 'pdf' || vKind === 'archive_doc')) {
+              // Worker could not parse it (timeout / heap cap / full queue): never re-parse on the main thread.
+              fromVault.kind = 'unsupported_binary';
+              fromVault.warning = p.reason === 'busy' ? WORKER_BUSY_WARNING : WORKER_FAIL_WARNING;
+              fromVault.textContent = '';
+              fromVault.extractedText = '';
+            } else if (vKind === 'pdf') {
+              const pdfInfo = (p && p.pdf) || inspectPdfBuffer(Buffer.from(fromVault.data, 'base64'));
               fromVault.pageCount = fromVault.pageCount || pdfInfo.pageCount;
               fromVault.isEncrypted = pdfInfo.isEncrypted;
               fromVault.pdfEncrypted = pdfInfo.isEncrypted;
@@ -621,15 +709,19 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
               fromVault.textContent = pdfInfo.textContent || '';
               fromVault.extractedText = fromVault.textContent;
             } else if (vKind === 'archive_doc') {
-              const extracted = extractZipOrOfficeText(vBuf);
+              const z = p && p.zip;
+              const extracted = z ? z.extracted : extractZipOrOfficeText(Buffer.from(fromVault.data, 'base64'));
               if (extracted) {
                 fromVault.textContent = extracted;
                 fromVault.extractedText = extracted;
                 fromVault.kind = 'text';
               }
-            } else if (vKind === 'text' && !isLikelyBinaryBuffer(vBuf)) {
-              fromVault.textContent = vBuf.toString('utf8').replace(/\0/g, '').slice(0, MAX_SINGLE_TEXT_CHARS);
-              fromVault.extractedText = fromVault.textContent;
+            } else if (vKind === 'text') {
+              const vBuf = Buffer.from(fromVault.data, 'base64');
+              if (!isLikelyBinaryBuffer(vBuf)) {
+                fromVault.textContent = vBuf.toString('utf8').replace(/\0/g, '').slice(0, MAX_SINGLE_TEXT_CHARS);
+                fromVault.extractedText = fromVault.textContent;
+              }
             }
           }
           if (!fromVault.estimatedTokens) {
@@ -713,6 +805,12 @@ function normalizeAttachments(rawList, pre = null, opts = null) {
     if (isEmpty) {
       textContent = `[Attached File "${name}" is empty (0 bytes).]`;
       warning = 'Empty file (0 bytes)';
+    } else if ((kind === 'pdf' || kind === 'archive_doc') && pre && pre.get(i) && pre.get(i).failed) {
+      // The worker timed out / hit its heap cap / crashed / was full: a hostile document must never
+      // be re-parsed inline on the event loop. Keep the bytes, drop the text, surface a warning.
+      kind = 'unsupported_binary';
+      textContent = '';
+      warning = pre.get(i).reason === 'busy' ? WORKER_BUSY_WARNING : WORKER_FAIL_WARNING;
     } else if (kind === 'pdf') {
       const pdfInfo = (pre && pre.get(i) && pre.get(i).pdf) || inspectPdfBuffer(buf);
       pageCount = pdfInfo.pageCount;
@@ -800,31 +898,61 @@ function extractForWorker(op, buf) {
 
 // Same contract as normalizeAttachments, but PDF/ZIP/Office parsing runs in a
 // worker_threads pool so large documents don't block the event loop. Inflate
-// caps (boundedInflate) apply inside the worker exactly as inline. Falls back
-// to inline parsing if workers are disabled (ATTACHMENT_WORKERS=0) or a worker
-// fails, so behaviour never regresses.
+// caps (boundedInflate) apply inside the worker exactly as inline. Parsing runs
+// inline only when workers are disabled (ATTACHMENT_WORKERS=0) or a file is below
+// ATTACHMENT_WORKER_MIN_BYTES; when a worker FAILS (timeout, heap cap, crash, full
+// queue) the file is marked `unsupported_binary` with a warning and is NEVER
+// re-parsed on the main thread (review finding 6.1).
+// Reference-only items (`{ sha256 }` / `{ vaultRef }` / `{ sha1 }`) that miss the cache are
+// resolved from the user's vault here too, so their PDF/ZIP extraction also runs in a worker.
 async function normalizeAttachmentsAsync(rawList, opts = null) {
   if (!Array.isArray(rawList) || !rawList.length) return [];
   const worker = require('./attachmentWorker');
   if (!worker.enabled()) return normalizeAttachments(rawList, null, opts);
+  const username = opts && opts.username ? String(opts.username).trim().toLowerCase() : null;
+  const isAdmin = Boolean(opts && opts.isAdmin);
   const jobs = [];
+  const pre = new Map();
+  const offload = (i, op, buf, extra) => {
+    jobs.push(worker.extractInWorker(op, buf)
+      .then((res) => { pre.set(i, { ...extra, [op]: res }); })
+      .catch((e) => { pre.set(i, { ...extra, failed: true, reason: (e && e.code === 'ATTACHMENT_QUEUE_FULL') ? 'busy' : 'limit' }); }));
+  };
   for (let i = 0; i < Math.min(rawList.length, MAX_ATTACHMENTS); i++) {
     const item = rawList[i];
     if (!item || typeof item !== 'object') continue;
     const data = sanitizeBase64(item.data || item.dataBase64);
-    if (!data || (typeof item.textContent === 'string' && item.textContent)) continue;
+    const providedText = typeof item.textContent === 'string' && item.textContent;
     const name = sanitizeFilename(item.name, i + 1);
+    if (!data && !providedText) {
+      // Reference-only item: on a cache miss, read the bytes from the user's own vault and parse off-thread.
+      const refSha256 = item.sha256 || item.vaultRef;
+      if (!(refSha256 || item.sha1) || !username) continue;
+      const cachedHit = (refSha256 && cacheGetAttachment(String(refSha256), username, isAdmin)) || (item.sha1 && cacheGetAttachment(String(item.sha1), username, isAdmin));
+      if (cachedHit) continue;
+      const fromVault = vault.readAttachmentFromVaultSync(username, item, { isAdmin });
+      if (!fromVault) continue;
+      const vKind = classifyAttachment(inferMimeType(fromVault.name || name, fromVault.mimeType), fromVault.name || name, fromVault.isEmpty);
+      if (fromVault.textContent || !fromVault.data || (vKind !== 'pdf' && vKind !== 'archive_doc')) {
+        pre.set(i, { vault: fromVault });
+        continue;
+      }
+      const vBuf = Buffer.from(fromVault.data, 'base64');
+      if (!vBuf.length || vBuf.length > MAX_ATTACHMENT_BYTES || vBuf.length < worker.minBytes()) {
+        pre.set(i, { vault: fromVault });
+        continue;
+      }
+      offload(i, vKind === 'pdf' ? 'pdf' : 'zip', vBuf, { vault: fromVault });
+      continue;
+    }
+    if (!data) continue;
     const kind = classifyAttachment(inferMimeType(name, item.mimeType), name, false);
     if (kind !== 'pdf' && kind !== 'archive_doc') continue;
     const buf = Buffer.from(data, 'base64');
     if (!buf.length || buf.length > MAX_ATTACHMENT_BYTES || buf.length < worker.minBytes()) continue;
-    const op = kind === 'pdf' ? 'pdf' : 'zip';
-    jobs.push(worker.extractInWorker(op, buf).then((res) => [i, op, res]).catch(() => null));
+    offload(i, kind === 'pdf' ? 'pdf' : 'zip', buf, {});
   }
-  const pre = new Map();
-  for (const r of await Promise.all(jobs)) {
-    if (r) pre.set(r[0], { [r[1]]: r[2] });
-  }
+  await Promise.all(jobs);
   return normalizeAttachments(rawList, pre, opts);
 }
 

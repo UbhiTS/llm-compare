@@ -1,7 +1,8 @@
 ---
 id: semi-fab-yield-defect-metrology
-title: Semiconductor: 300mm Wafer Fab Yield Optimization & Defect Metrology
+title: 300mm Wafer Fab Yield & Defect Metrology
 category: semiconductor
+subcategory: semiconductor
 language: null
 functionName: solution
 executable: false

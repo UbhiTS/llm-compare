@@ -1,7 +1,8 @@
 ---
 id: sec-live-zero-day-patch
-title: Security: Live Zero-Day Emergency Hot-Patch, Virtual WAF & Canary Rollout
+title: Emergency Zero-Day Hot-Patch, WAF & Canary Rollout
 category: security
+subcategory: sec-operations
 language: null
 functionName: solution
 executable: false

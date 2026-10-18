@@ -1,7 +1,8 @@
 ---
 id: trans-ev-fleet-routing
-title: Transport: Commercial EV Fleet Dynamic Routing & Smart Depot Charging
+title: Commercial EV Fleet Routing & Smart Depot Charging
 category: transport
+subcategory: transport
 language: null
 functionName: solution
 executable: false

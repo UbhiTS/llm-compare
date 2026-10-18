@@ -1,7 +1,8 @@
 ---
 id: sec-siem-apt-correlator
-title: Security: Multi-Stage APT Kill-Chain & SIEM Log Correlator
+title: Multi-Stage APT Kill-Chain & SIEM Log Correlator
 category: security
+subcategory: sec-patching
 language: javascript
 functionName: correlateAptCampaigns
 executable: true

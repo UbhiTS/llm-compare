@@ -29,7 +29,6 @@ GITHUB_REPO="${GITHUB_REPO:-llm-compare}"
 # App config (become Cloud Run env / GitHub variables):
 ALLOWED_EMAIL_DOMAINS="${ALLOWED_EMAIL_DOMAINS:-your-workspace-domain.com}"   # a domain you control, NOT google.com
 ADMIN_EMAILS="${ADMIN_EMAILS:-you@your-workspace-domain.com}"
-MAX_RUNS_PER_DAY="${MAX_RUNS_PER_DAY:-20}"
 
 RUNTIME_SA="${SERVICE}-run@${PROJECT_ID}.iam.gserviceaccount.com"
 DEPLOY_SA="${SERVICE}-deployer@${PROJECT_ID}.iam.gserviceaccount.com"
@@ -118,7 +117,6 @@ gh variable set CLOUD_RUN_SERVICE       -b "${SERVICE}"             -R "${GITHUB
 gh variable set RUNTIME_SERVICE_ACCOUNT -b "${RUNTIME_SA}"          -R "${GITHUB_OWNER}/${GITHUB_REPO}"
 gh variable set ALLOWED_EMAIL_DOMAINS   -b "${ALLOWED_EMAIL_DOMAINS}" -R "${GITHUB_OWNER}/${GITHUB_REPO}"
 gh variable set ADMIN_EMAILS            -b "${ADMIN_EMAILS}"        -R "${GITHUB_OWNER}/${GITHUB_REPO}"
-gh variable set MAX_RUNS_PER_DAY        -b "${MAX_RUNS_PER_DAY}"    -R "${GITHUB_OWNER}/${GITHUB_REPO}"
 gh variable set APP_DATA_BUCKET         -b "${DATA_BUCKET}"         -R "${GITHUB_OWNER}/${GITHUB_REPO}"
 # >> EDIT the next two first: GOOGLE_CLIENT_ID from your OAuth client (Step 6); OAUTH_REDIRECT_BASE = your deployed URL.
 gh variable set GOOGLE_CLIENT_ID        -b "YOUR_OAUTH_CLIENT_ID"   -R "${GITHUB_OWNER}/${GITHUB_REPO}"

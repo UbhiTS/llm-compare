@@ -24,9 +24,12 @@ const PROMPTS_DIR = path.join(__dirname, '..', 'prompts');
 function parseValue(raw) {
   const v = raw.trim();
   if (v === '') return '';
-  // JSON-parse arrays / objects / numbers / booleans / null; otherwise keep a string.
-  if (/^[[{]/.test(v) || /^-?\d/.test(v) || v === 'true' || v === 'false' || v === 'null') {
+  // JSON-parse arrays / objects / numbers / booleans / null / quoted strings; otherwise keep a string.
+  if (/^[[{"]/.test(v) || /^-?\d/.test(v) || v === 'true' || v === 'false' || v === 'null') {
     try { return JSON.parse(v); } catch (_) { /* fall through to string */ }
+  }
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1).trim();
   }
   return v;
 }

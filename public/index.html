@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.48"></script>
+  <script src="theme-init.js?v=1.0.50"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.48" />
+  <link rel="stylesheet" href="styles.css?v=1.0.50" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.48" defer></script>
+  <script src="app.js?v=1.0.50" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -35,7 +35,7 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.48</span>
+          <span id="headerAppVersion" class="head-version">v1.0.50</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -48,6 +48,11 @@
       <button type="button" class="arena-mode-btn" data-arena-mode="image" id="modeBtnImage">
         <span class="am-icon">🎨</span>
         <span>Image &amp; GenMedia Arena</span>
+      </button>
+      <button type="button" class="arena-mode-btn" data-arena-mode="3d" id="modeBtn3d">
+        <span class="am-icon">🧊</span>
+        <span>3D &amp; CAD Arena</span>
+        <span class="am-badge is-live">NEW</span>
       </button>
       <button type="button" class="arena-mode-btn" data-arena-mode="video" id="modeBtnVideo">
         <span class="am-icon">🎬</span>
@@ -106,7 +111,12 @@
 
       <div id="customDropzone" class="composer-card">
         <div class="composer-select-row">
-          <select id="categorySelect" aria-label="Select use case category"></select>
+          <select id="categorySelect" aria-label="Select use case category or industry vertical"></select>
+          <span id="subcategorySep" class="composer-select-sep hidden" aria-hidden="true">▸</span>
+          <select id="subcategorySelect" class="hidden" aria-label="Select use case subcategory">
+            <option value="simple">🔩 Simple Parts</option>
+            <option value="complex">⚙️ Complex Parts</option>
+          </select>
           <span class="composer-select-sep" aria-hidden="true">▸</span>
           <select id="taskSelect" aria-label="Select benchmark task or custom prompt"></select>
         </div>
@@ -141,8 +151,8 @@
         <div class="step-header-right">
           <div class="mc-presets" role="group" aria-label="Model lineup presets">
             <span class="mc-preset-label">Presets:</span>
-            <button type="button" class="bar-btn mc-preset-btn" data-preset="frontier" title="Gemini 3.8 Flash · Claude Opus 5.5 · GPT-6 Sol (documented default thinking)">🏆 Flagships</button>
-            <button type="button" class="bar-btn mc-preset-btn" data-preset="fast" title="Gemini 3.8 Flash · Claude Sonnet 5 · GPT-6 Luna">⚡ Fast</button>
+            <button type="button" class="bar-btn mc-preset-btn" data-preset="frontier" title="Gemini 4 Argon · Claude Opus 5.5 · GPT-6 Sol (documented default thinking)">🏆 Flagships</button>
+            <button type="button" class="bar-btn mc-preset-btn" data-preset="fast" title="Gemini 3.8 Flash · Claude Sonnet 5.5 · GPT-6 Luna">⚡ Fast</button>
             <button type="button" class="bar-btn mc-preset-btn" data-preset="same-model-thinking" title="Compare Gemini 3.8 Flash across Low, Medium (default), and High thinking modes">🧠 Thinking A/B/C</button>
             <button type="button" class="bar-btn mc-preset-btn" data-preset="open-maas" title="Llama 4 Maverick · DeepSeek V3.2 · Qwen 3 235B (100% Vertex AI MaaS)">☁️ Vertex MaaS</button>
             <span id="userPresetsList" class="mc-user-presets"></span>
@@ -176,6 +186,62 @@
           <button id="runBtn" class="ctl-btn primary run-btn-main" title="Run comparison across all active model slots (⌘↵ / Ctrl+Enter)">Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd></button>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ==================== 3D & CAD STUDIO TOOLBAR + FOLLOW-UP MODIFY LOOP ==================== -->
+  <section id="cadModifyBar" class="cad-modify-bar glass hidden" aria-label="3D and CAD Studio Controls and Follow-Up Modification">
+    <div class="cad-modify-top">
+      <div class="cad-modify-title-group">
+        <span class="cad-studio-pill">🧊 3D &amp; CAD Studio</span>
+        <button type="button" id="cadSyncCamBtn" class="bar-btn toggle is-on" aria-pressed="true" title="When ON (default), orbiting/zooming the 3D camera in Slot A (or any slot) rotates Slots B, C, and D in lockstep. Click to unlink.">
+          <span class="ar-led"></span>🔗 Synced Camera: ON (Lockstep A↔B↔C↔D)
+        </button>
+        <button type="button" id="cadSpin3AxisBtn" class="bar-btn toggle is-on" aria-pressed="true" title="Simultaneously tumble 3D models around all 3 axes (X + Y + Z) to inspect top, bottom, and side geometry across all viewports">
+          <span class="ar-led"></span>🔄 3-Axis Spin: ON (X+Y+Z)
+        </button>
+        <div class="cad-cam-preset-group" role="group" aria-label="Global 3D Camera Presets">
+          <button type="button" class="bar-btn cad-global-cam-btn" data-global-cam="iso" title="Snap all active 3D viewports to Isometric view">Iso</button>
+          <button type="button" class="bar-btn cad-global-cam-btn" data-global-cam="front" title="Snap all active 3D viewports to Front view">Front</button>
+          <button type="button" class="bar-btn cad-global-cam-btn" data-global-cam="right" title="Snap all active 3D viewports to Right view">Right</button>
+          <button type="button" class="bar-btn cad-global-cam-btn" data-global-cam="top" title="Snap all active 3D viewports to Top view">Top</button>
+        </div>
+      </div>
+
+      <div class="cad-modify-right-actions">
+        <label class="cad-vision-toggle" title="Automatically captures and attaches a 4-angle viewport composite PNG (Iso/Front/Top/Right) for each slot so Gemini sees its current rendered 3D geometry alongside its code">
+          <input type="checkbox" id="cadIncludeVisionToggle" checked />
+          <span>👁 Auto-Attach 4-View Render (Iso/Front/Top/Right)</span>
+        </label>
+        <button type="button" id="cadMcpOpenBtn" class="bar-btn" title="Export or push parametric CAD script to Autodesk Fusion 360 Python API or Headless CAD MCP Bridge">
+          🔌 Fusion 360 / CAD MCP
+        </button>
+      </div>
+    </div>
+
+    <div class="cad-modify-composer">
+      <span id="cadTargetPartBadge" class="cad-target-part-badge hidden" title="Click to clear sub-part target"></span>
+      <input
+        type="text"
+        id="cadModifyInput"
+        class="cad-modify-input"
+        placeholder="Follow-up 3D modification (e.g., 'Increase gear teeth from 24 to 32, thicken vase wall to 4.5 mm, and add 6 radial mounting holes')... (4-angle Iso/Front/Top/Right render attached automatically)"
+      />
+      <select id="cadModifyScopeSelect" class="cad-modify-scope" title="Choose whether to modify all active slots in parallel or a single slot">
+        <option value="all">Modify All Active Slots</option>
+      </select>
+      <button type="button" id="cadModifySubmitBtn" class="ctl-btn primary cad-modify-submit" title="Send follow-up modification prompt + 4-angle viewport vision render + current CAD code to selected model(s)">
+        ✨ Modify 3D Model ▸
+      </button>
+    </div>
+
+    <div class="cad-quick-chips" role="group" aria-label="Quick 3D Engineering Modifications">
+      <span class="mc-preset-label">Quick Edits:</span>
+      <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Increase the gear tooth count by +8 teeth while keeping module constant, and update any meshing radii accordingly.">⚙️ +8 Gear Teeth</button>
+      <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Thicken all hollow structural walls and floors by +1.5 mm and ensure the interior cavity remains a clean watertight hollow shell.">🛡️ Thicken Walls +1.5 mm</button>
+      <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Add a bolt-circle pattern of 6 counterbored M4 mounting holes through the base flange for M4 socket head cap screws.">🔩 Add 6× M4 Bolt Circle</button>
+      <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Create an exploded assembly inspection view by separating the upper and lower sub-assemblies vertically along the Y axis by +24 mm.">💥 Explode Assembly +24 mm</button>
+      <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Add 12 helical sculptural flutes/ribs along the outer body and chamfer the top rim for 3D printing without overhangs.">🌀 Add 12 Helical Flutes</button>
     </div>
   </section>
 
@@ -264,6 +330,8 @@
         <div class="composer-card" id="imgDropzone">
           <div class="composer-select-row">
             <select id="imgPackSelect" aria-label="Select industry pack"></select>
+            <span id="imgSubcategorySep" class="composer-select-sep hidden" aria-hidden="true">▸</span>
+            <select id="imgSubcategorySelect" class="hidden" aria-label="Select image subcategory"></select>
             <span class="composer-select-sep" aria-hidden="true">▸</span>
             <select id="imgScenarioSelect" aria-label="Select image benchmark scenario"></select>
           </div>
@@ -507,6 +575,37 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.48</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-16T18:55:00Z">Last updated Oct 16, 2026, 11:55 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <!-- AUTODESK FUSION 360 & HEADLESS CAD MCP BRIDGE MODAL -->
+  <div id="cadMcpModal" class="img-lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Autodesk Fusion 360 and Headless CAD MCP Bridge">
+    <div class="img-lightbox-dialog glass cad-mcp-dialog">
+      <div class="img-lightbox-head">
+        <div class="img-lightbox-title-wrap">
+          <span class="img-res-pill is-4k">🔌 Phase 3 · CAD Bridge</span>
+          <h3 class="img-lightbox-title">Autodesk Fusion 360 Python API &amp; Headless CAD MCP Bridge</h3>
+        </div>
+        <div class="img-lightbox-actions">
+          <label for="cadMcpSlotSelect" style="font-size:12px;color:var(--muted)">Slot:</label>
+          <select id="cadMcpSlotSelect" class="cad-modify-scope"></select>
+          <button type="button" id="cadMcpCopyScriptBtn" class="bar-btn">📋 Copy Fusion 360 Script</button>
+          <button type="button" id="cadMcpDownloadScriptBtn" class="bar-btn">⬇ Download .py Add-In</button>
+          <button type="button" id="cadMcpPushBtn" class="ctl-btn primary">🚀 Push to Local MCP</button>
+          <button type="button" id="cadMcpCloseBtn" class="bar-btn bar-btn-accent">✕ Close</button>
+        </div>
+      </div>
+      <div class="cad-mcp-body">
+        <p class="sc-sub" style="margin:0 0 8px 0">
+          Directly addresses the Autodesk Fusion 360 Assistant limitation (where native Fusion Assistant can only build a spur gear or a basic vase, not complex editable parametric scripts). Transpiles the selected slot's parametric model into an <code>adsk.core</code> / <code>adsk.fusion</code> Python script or pushes it to a local Fusion 360 / Blender MCP server.
+        </p>
+        <div class="cad-mcp-endpoint-row">
+          <label for="cadMcpEndpointInput">Local MCP Endpoint (optional):</label>
+          <input type="text" id="cadMcpEndpointInput" class="cad-modify-input" placeholder="http://127.0.0.1:8765/mcp (Fusion 360 / Blender MCP loopback)" />
+          <span id="cadMcpStatusBadge" class="quota-badge">Browser STEP AP214 + Fusion Python Ready</span>
+        </div>
+        <pre id="cadMcpCodePreview" class="cad-mcp-code-preview"></pre>
+      </div>
+    </div>
+  </div>
+
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.50</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-18T17:45:00Z">Last updated Oct 18, 2026, 10:45 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

@@ -1,26 +1,39 @@
 // ---------------------------------------------------------------------------
 // providerFetch — fetch() for upstream LLM provider calls with a per-provider
-// response-header timeout and bounded retries (exponential backoff + full
+// response-header timeout and bounded retries (exponential backoff + equal
 // jitter). Built-ins only (global fetch / AbortController), no new deps.
 //
 // Semantics
 //   * Timeout covers connect → response HEADERS only. Once headers arrive the
 //     timer is cleared, so a long streamed body (SSE reasoning) is never cut off
-//     — streaming behaviour is unchanged. Non-streamed calls only return headers
-//     when the model is done, so the defaults are deliberately generous.
-//   * Retries ONLY on HTTP 429, HTTP 5xx, network errors and our own header
-//     timeout. Other 4xx are returned immediately (callers keep their existing
-//     same-model 400/403/404 handling). A client abort (the caller's `signal`)
-//     is never retried.
+//     here — a stalled BODY is handled by the idle deadline in providers.js
+//     readSSE (PROVIDER_IDLE_MS). Non-streamed calls only return headers when
+//     the model is done, so those callers (judge, image generation) pass a
+//     larger `timeoutMs` explicitly (see below).
+//   * Retries ONLY on HTTP 429, HTTP 5xx and network errors. Other 4xx are
+//     returned immediately (callers keep their existing same-model 400/403/404
+//     handling). A client abort (the caller's `signal`) is never retried.
+//   * A header TIMEOUT is retried only when the caller marks the request
+//     `idempotent: true`: a timed-out POST generation may already be running
+//     (and billed) upstream, so re-POSTing it would double the spend.
 //   * Honors a numeric `Retry-After` header (seconds), capped at the max delay.
 //   * Always calls `globalThis.fetch` at call time so test fetch-mocks still work.
 //
+// Per-call options (on top of the usual fetch init):
+//   timeoutMs    override the header timeout for this call (0 = no timeout)
+//   idempotent   true = safe to re-send after a header timeout (GETs, probes)
+//   onRetry      listener({attempt, maxRetries, status, delayMs, provider})
+// Callers that cannot pass options to every nested fetch (the judge's
+// non-streaming `complete()`) can scope defaults with `withFetchDefaults()`.
+//
 // Env (all optional; <P> = GEMINI | OPENAI | ANTHROPIC | MOONSHOT | OTHER):
-//   PROVIDER_TIMEOUT_MS[_<P>]      default 900000 (15 min to first byte)
+//   PROVIDER_TIMEOUT_MS[_<P>]      default 90000 (90 s to response headers)
 //   PROVIDER_MAX_RETRIES[_<P>]     default 2 (i.e. up to 3 attempts)
 //   PROVIDER_RETRY_BASE_MS[_<P>]   default 1000
 //   PROVIDER_RETRY_MAX_MS[_<P>]    default 20000
 //   PROVIDER_CONNECT_ATTEMPT_TIMEOUT_MS  default 2500, clamped 250–10000
+//   PROVIDER_IDLE_MS               default 120000 (streamed-body idle deadline,
+//                                  enforced in providers.js readSSE)
 //
 // Connect attempt timeout (Round 7): Node's fetch uses happy-eyeballs
 // (autoSelectFamily) with a 250 ms per-address attempt timeout. While the event
@@ -41,6 +54,16 @@ const retryListenerStorage = new AsyncLocalStorage();
 function withRetryListener(listener, fn) {
   if (typeof listener !== 'function') return fn();
   return retryListenerStorage.run(listener, fn);
+}
+
+// Scoped per-call defaults (`timeoutMs`, `idempotent`) for every providerFetch
+// made inside `fn`, so a non-streaming caller such as the judge can raise the
+// header timeout without threading an option through every adapter.
+const fetchDefaultsStorage = new AsyncLocalStorage();
+
+function withFetchDefaults(defaults, fn) {
+  if (!defaults || typeof defaults !== 'object') return fn();
+  return fetchDefaultsStorage.run({ ...(fetchDefaultsStorage.getStore() || {}), ...defaults }, fn);
 }
 
 const DEFAULTS = { TIMEOUT_MS: 90000, MAX_RETRIES: 2, RETRY_BASE_MS: 1000, RETRY_MAX_MS: 20000 };
@@ -86,7 +109,9 @@ function backoffMs(attempt, base, max, retryAfterHeader) {
   const ra = Number(retryAfterHeader);
   if (retryAfterHeader != null && Number.isFinite(ra) && ra >= 0) return Math.min(ra * 1000, max);
   const ceiling = Math.min(max, base * 2 ** attempt);
-  return Math.floor(Math.random() * ceiling); // full jitter
+  // Equal jitter: half the ceiling is guaranteed, the rest is random, so the
+  // first retry after a 429/5xx is never an immediate 0 ms re-POST.
+  return Math.floor(ceiling / 2 + Math.random() * (ceiling / 2));
 }
 
 function sleep(ms, signal) {
@@ -109,22 +134,35 @@ async function attempt(url, opts, timeoutMs, provider) {
   const clientSignal = opts && opts.signal;
   const ctrl = new AbortController();
   let timedOut = false;
-  const onClientAbort = () => ctrl.abort(clientSignal.reason);
+  // Combine the caller's (run-wide) signal with this attempt's controller. With
+  // AbortSignal.any the composite holds its sources weakly, so retries and
+  // parallel slots never pile `abort` listeners onto the run signal
+  // (MaxListenersExceededWarning). The fallback adds one `once` listener and
+  // removes it again as soon as the attempt fails; on success it stays until the
+  // body is consumed, because it is what cancels the stream on client abort.
+  let signal = ctrl.signal;
+  let onClientAbort = null;
   if (clientSignal) {
-    if (clientSignal.aborted) ctrl.abort(clientSignal.reason);
-    else clientSignal.addEventListener('abort', onClientAbort, { once: true });
+    if (typeof AbortSignal.any === 'function') {
+      signal = AbortSignal.any([clientSignal, ctrl.signal]);
+    } else if (clientSignal.aborted) {
+      ctrl.abort(clientSignal.reason);
+    } else {
+      onClientAbort = () => ctrl.abort(clientSignal.reason);
+      clientSignal.addEventListener('abort', onClientAbort, { once: true });
+    }
   }
   const timer = timeoutMs > 0 ? setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs) : null;
-  const { onRetry: _omitOnRetry, ...fetchOpts } = opts || {};
+  // Our own options never reach fetch().
+  const { onRetry: _omitOnRetry, timeoutMs: _omitTimeoutMs, idempotent: _omitIdempotent, ...fetchOpts } = opts || {};
   try {
-    return await globalThis.fetch(url, { ...fetchOpts, signal: ctrl.signal });
+    return await globalThis.fetch(url, { ...fetchOpts, signal });
   } catch (e) {
+    if (onClientAbort) clientSignal.removeEventListener('abort', onClientAbort);
     if (timedOut) throw new ProviderTimeoutError(provider, timeoutMs);
     throw e;
   } finally {
     if (timer) clearTimeout(timer);
-    // Keep forwarding client aborts for the body stream; the listener is
-    // `once` and tied to this request's lifetime.
   }
 }
 
@@ -140,7 +178,12 @@ function sanitizedNetworkError(e, provider) {
 
 async function providerFetch(url, opts = {}) {
   const provider = providerOf(url);
-  const timeoutMs = knob('TIMEOUT_MS', provider);
+  const scoped = fetchDefaultsStorage.getStore() || {};
+  const timeoutOverride = opts.timeoutMs != null ? opts.timeoutMs : scoped.timeoutMs;
+  const timeoutMs = Number.isFinite(Number(timeoutOverride)) && Number(timeoutOverride) >= 0
+    ? Number(timeoutOverride)
+    : knob('TIMEOUT_MS', provider);
+  const idempotent = (opts.idempotent != null ? opts.idempotent : scoped.idempotent) === true;
   const maxRetries = Math.floor(knob('MAX_RETRIES', provider));
   const base = knob('RETRY_BASE_MS', provider);
   const max = knob('RETRY_MAX_MS', provider);
@@ -154,6 +197,10 @@ async function providerFetch(url, opts = {}) {
     } catch (e) {
       // Caller cancelled → propagate immediately, never retry.
       if (clientSignal && clientSignal.aborted) throw e;
+      // A header timeout on a non-idempotent POST (every text/image generation)
+      // is NOT retried: the upstream call may already be generating and billing,
+      // so a second POST would double the spend without recording either call.
+      if (e instanceof ProviderTimeoutError && !idempotent) throw e;
       if (i >= maxRetries) throw sanitizedNetworkError(e, provider);
       const waitMs = backoffMs(i, base, max);
       if (typeof notifyRetry === 'function') {
@@ -176,5 +223,5 @@ async function providerFetch(url, opts = {}) {
 module.exports = {
   providerFetch, providerOf, isRetryableStatus, backoffMs, ProviderTimeoutError,
   connectAttemptTimeoutMs, applyConnectAttemptTimeout, CONNECT_ATTEMPT, CONNECT_ATTEMPT_TIMEOUT_MS,
-  withRetryListener,
+  withRetryListener, withFetchDefaults,
 };

@@ -1,7 +1,8 @@
 ---
 id: fin-portfolio-stress-testing
-title: Finance: Macroeconomic Market Risk & Basel III / CCAR Portfolio Stress Testing
+title: Basel III & CCAR Macroeconomic Portfolio Stress Test
 category: finance
+subcategory: finance
 language: null
 functionName: solution
 executable: false

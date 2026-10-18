@@ -9,6 +9,8 @@
 // the browser's WASM sandbox. So this path is safer than the native launcher.
 //
 // Disable with ENABLE_WEB_GAME=0. Requires `pip install pygbag` + Python on PATH.
+// Builds are bounded (6.1): MAX_CONCURRENT_WEB_GAME_BUILDS at once (default 2), a
+// short queue behind that, one in-flight build per user, and source capped at 256 KB.
 // ---------------------------------------------------------------------------
 
 const { spawn } = require('child_process');
@@ -20,9 +22,32 @@ const path = require('path');
 const PYTHON_CMD = process.env.PYTHON_CMD || (process.platform === 'win32' ? 'python' : 'python3');
 const BUILD_TIMEOUT_MS = (Number(process.env.WEB_GAME_BUILD_TIMEOUT_SEC) || 240) * 1000;
 const ROOT = path.join(os.tmpdir(), 'ullm-webgames');
+const MAX_CODE_BYTES = 256 * 1024;
 
 const games = new Map();   // id -> { dir, builtAt }
 const building = new Map(); // id -> Promise (dedupe concurrent builds of the same code)
+const userBuilding = new Map(); // username -> id of that user's in-flight build (one at a time)
+
+// Build semaphore: pygbag is a whole Python process plus a RAM-backed /tmp tree per build,
+// so unbounded concurrency on a 2 GiB instance is an OOM waiting for a loop. Beyond the
+// queue, callers get a BUILD_QUEUE_FULL error straight away (the route answers 429).
+const MAX_CONCURRENT_BUILDS = Math.max(1, Math.floor(Number(process.env.MAX_CONCURRENT_WEB_GAME_BUILDS) || 2));
+const MAX_QUEUED_BUILDS = 10;
+let activeBuilds = 0;
+const buildWaiters = [];
+function buildError(message, code, status) { const e = new Error(message); e.code = code; e.status = status; return e; }
+function acquireBuildSlot() {
+  if (activeBuilds < MAX_CONCURRENT_BUILDS) { activeBuilds += 1; return Promise.resolve(); }
+  if (buildWaiters.length >= MAX_QUEUED_BUILDS) {
+    return Promise.reject(buildError('Too many game builds are queued right now - try again in a minute.', 'BUILD_QUEUE_FULL', 429));
+  }
+  return new Promise((resolve) => buildWaiters.push(resolve));
+}
+function releaseBuildSlot() {
+  const next = buildWaiters.shift();
+  if (next) next(); // slot handed straight to the next waiter (activeBuilds unchanged)
+  else activeBuilds -= 1;
+}
 
 function webGameEnabled() { return process.env.ENABLE_WEB_GAME !== '0'; }
 
@@ -47,10 +72,14 @@ function buildSafeGameEnv() {
 
 function pruneOldGames() {
   if (games.size <= MAX_CACHED_GAMES) return;
+  const now = Date.now();
   const entries = Array.from(games.entries()).sort((a, b) => (a[1].builtAt || 0) - (b[1].builtAt || 0));
   while (games.size > MAX_CACHED_GAMES && entries.length) {
-    const [oldId] = entries.shift();
+    const [oldId, g] = entries.shift();
     if (building.has(oldId)) continue;
+    // builtAt doubles as "last served": a bundle touched in the last minute is most likely
+    // still being fetched by a browser (loader + wasm + apk), so never pull it out from under it.
+    if (now - (g.builtAt || 0) < 60 * 1000) continue;
     games.delete(oldId);
     try {
       fs.rmSync(path.join(ROOT, oldId), { recursive: true, force: true });
@@ -149,9 +178,15 @@ function isBuilt(webDir) {
 }
 
 // Build (or reuse a cached build of) the given Python/Pygame source. Returns
-// { id, cached }. Concurrent requests for identical code share one build.
-async function buildWebGame(code) {
-  const id = idFor(code);
+// { id, cached }. Concurrent requests for identical code share one build. `opts.username`
+// (optional) enforces one in-flight build per user; builds beyond the global semaphore's
+// queue fail fast with code BUILD_QUEUE_FULL.
+async function buildWebGame(code, opts = {}) {
+  const src = String(code == null ? '' : code);
+  if (src.length > MAX_CODE_BYTES) {
+    throw buildError(`The program is too large to build (${Math.round(src.length / 1024)} KB; the limit is ${MAX_CODE_BYTES / 1024} KB).`, 'CODE_TOO_LARGE', 413);
+  }
+  const id = idFor(src);
   const webDir = webDirFor(id);
   if (isBuilt(webDir)) {
     patchIndexHtml(path.join(webDir, 'index.html'));
@@ -159,40 +194,59 @@ async function buildWebGame(code) {
     return { id, cached: true };
   }
   if (building.has(id)) { await building.get(id); return { id, cached: true }; }
+  const user = opts && opts.username ? String(opts.username) : '';
+  if (user && userBuilding.has(user)) {
+    throw buildError('You already have a game build in progress - wait for it to finish before starting another.', 'USER_BUILD_IN_PROGRESS', 429);
+  }
 
   const p = (async () => {
+    await acquireBuildSlot(); // may reject with BUILD_QUEUE_FULL
     const appDir = path.join(ROOT, id);
-    try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
-    fs.mkdirSync(appDir, { recursive: true });
     try {
-      fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(code), 'utf8');
-      await runPygbag(appDir);
-      const idxPath = path.join(webDir, 'index.html');
-      if (!fs.existsSync(idxPath)) {
-        throw new Error('pygbag finished but produced no build/web/index.html');
+      try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) { /* best effort */ }
+      fs.mkdirSync(appDir, { recursive: true });
+      try {
+        fs.writeFileSync(path.join(appDir, 'main.py'), sanitizeForPygbag(src), 'utf8');
+        await runPygbag(appDir);
+        const idxPath = path.join(webDir, 'index.html');
+        if (!fs.existsSync(idxPath)) {
+          throw new Error('pygbag finished but produced no build/web/index.html');
+        }
+        patchIndexHtml(idxPath);
+        if (!fs.readFileSync(idxPath, 'utf8').includes('<script id="ullm-diag">')) {
+          throw new Error('pygbag output could not be patched (the loader would hang)');
+        }
+        fs.writeFileSync(path.join(webDir, READY_FILE), String(Date.now()), 'utf8');
+        games.set(id, { dir: webDir, builtAt: Date.now() });
+        pruneOldGames();
+      } catch (err) {
+        // runPygbag only settles once the child has closed, so nothing is still writing here.
+        try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) {}
+        throw err;
       }
-      patchIndexHtml(idxPath);
-      if (!fs.readFileSync(idxPath, 'utf8').includes('<script id="ullm-diag">')) {
-        throw new Error('pygbag output could not be patched (the loader would hang)');
-      }
-      fs.writeFileSync(path.join(webDir, READY_FILE), String(Date.now()), 'utf8');
-      games.set(id, { dir: webDir, builtAt: Date.now() });
-      pruneOldGames();
-    } catch (err) {
-      try { fs.rmSync(appDir, { recursive: true, force: true }); } catch (_) {}
-      throw err;
+    } finally {
+      releaseBuildSlot();
     }
   })();
   building.set(id, p);
-  try { await p; } finally { building.delete(id); }
+  if (user) userBuilding.set(user, id);
+  try { await p; } finally {
+    building.delete(id);
+    if (user && userBuilding.get(user) === id) userBuilding.delete(user);
+  }
   return { id, cached: false };
 }
 
 // Patch pygbag 0.9.3's generated index.html:
 // 1. Repoint dead browserfs CDN URL to jsdelivr and set ume_block:0 for auto-start.
-// 2. Isolate same-origin capabilities (localStorage, sessionStorage, indexedDB,
-//    window.parent, window.top, and /api/* requests) so untrusted Python code
-//    running in Pygbag WASM cannot read user BYOK keys or call authenticated APIs.
+// 2. DEFENSE IN DEPTH ONLY: shadow localStorage / sessionStorage / indexedDB /
+//    window.parent / window.top and block same-origin /api/* and /auth/* requests in
+//    the page's main realm. This is NOT the security boundary: a nested about:blank
+//    frame, a <form>, navigator.sendBeacon or `location` are untouched, and `top` is
+//    unforgeable. The real boundary is the sandboxed opaque-origin iframe the app embeds
+//    the game in (sandbox="allow-scripts", no allow-same-origin), which gives the bundle
+//    no origin, no cookies and no reach into the parent. Keep these shims as a speed
+//    bump for the case where a build is opened outside that frame.
 // 3. Force full-viewport canvas CSS and permanently hide pygbag's #pyconsole, #dlg,
 //    #box, and #infobox overlays so the console NEVER splits half-code / half-game.
 // 4. Only emit `game-error` to the parent when `___ULLM_FATAL_PYTHON_CRASH___`
@@ -232,7 +286,8 @@ function patchIndexHtml(idxPath) {
         'var postUp=rawParent?rawParent.postMessage.bind(rawParent):function(){};',
         'var origin=window.location.origin;',
         'Object.defineProperty(window,"__ullmPost",{value:function(msg){try{postUp(msg,origin);}catch(e){}},writable:false,configurable:false});',
-        // Isolate storage & parent frame access so untrusted WASM Python cannot read ullm.keys
+        // Defense in depth only (see the function comment): shadow storage and parent-frame
+        // access in this realm. The sandboxed opaque-origin iframe is the real boundary.
         'function memStore(){var d=Object.create(null);return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[k]=String(v);},removeItem:function(k){delete d[k];},clear:function(){d=Object.create(null);},key:function(i){return Object.keys(d)[i]||null;},get length(){return Object.keys(d).length;}};}',
         'try{Object.defineProperty(window,"localStorage",{value:memStore(),configurable:false});}catch(e){}',
         'try{Object.defineProperty(window,"sessionStorage",{value:memStore(),configurable:false});}catch(e){}',
@@ -316,20 +371,32 @@ function runPygbag(appDir) {
       child = spawn(PYTHON_CMD, args, { cwd: appDir, windowsHide: true, env });
     } catch (e) { return reject(new Error('Failed to start pygbag: ' + e.message)); }
     let log = '';
-    const timer = setTimeout(() => { try { child.kill(); } catch (_) {} reject(new Error('pygbag build timed out')); }, BUILD_TIMEOUT_MS);
+    let settled = false;
+    let timedOut = false;
+    const timers = [];
+    const settle = (fn, v) => { if (settled) return; settled = true; for (const t of timers) clearTimeout(t); fn(v); };
+    // Timeout: SIGTERM first, SIGKILL 3 s later if pygbag ignores it. The promise only
+    // settles once the child has CLOSED (bounded by a final 5 s backstop after SIGKILL),
+    // so the caller's rmSync(appDir) never races a process that is still writing there.
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGTERM'); } catch (_) {}
+      timers.push(setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 3000));
+      timers.push(setTimeout(() => settle(reject, new Error('pygbag build timed out')), 3000 + 5000));
+    }, BUILD_TIMEOUT_MS);
+    timers.push(timer);
     const grab = (d) => { log += d.toString(); if (log.length > 20000) log = log.slice(-20000); };
     child.stdout.on('data', grab); // pygbag logs progress to stdout
     child.stderr.on('data', grab);
     child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(new Error('Failed to run pygbag: ' + e.message + (e.code === 'ENOENT' ? ` (is "${PYTHON_CMD}" on PATH and is pygbag installed? "pip install pygbag")` : '')));
+      settle(reject, new Error('Failed to run pygbag: ' + e.message + (e.code === 'ENOENT' ? ` (is "${PYTHON_CMD}" on PATH and is pygbag installed? "pip install pygbag")` : '')));
     });
     child.on('close', (codeNum) => {
-      clearTimeout(timer);
-      if (codeNum === 0) return resolve();
+      if (timedOut) return settle(reject, new Error('pygbag build timed out'));
+      if (codeNum === 0) return settle(resolve);
       // Surface a hint if pygbag itself is missing.
-      const hint = /No module named pygbag/i.test(log) ? ' — pygbag is not installed (run: pip install pygbag).' : '';
-      reject(new Error(`pygbag build failed (exit ${codeNum})${hint} ${log.trim().slice(-600)}`));
+      const hint = /No module named pygbag/i.test(log) ? ' - pygbag is not installed (run: pip install pygbag).' : '';
+      settle(reject, new Error(`pygbag build failed (exit ${codeNum})${hint} ${log.trim().slice(-600)}`));
     });
   });
 }

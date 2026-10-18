@@ -1,7 +1,8 @@
 ---
 id: trans-intermodal-freight-resilience
-title: Transport: Global Intermodal Supply Chain & Port Congestion Recovery
+title: Global Intermodal Freight & Port Congestion Recovery
 category: transport
+subcategory: transport
 language: null
 functionName: solution
 executable: false

@@ -82,10 +82,21 @@ async function refreshOne(name) {
       meta.set(name, { source: value ? 'secret-manager' : 'empty', updatedAt: Date.now() });
     }
   } catch (e) {
-    // 404 = secret not created yet; anything else = permissions/network. Either
-    // way we silently keep using the env value.
+    // 404 = secret not created yet; 403 = no access; anything else = network/5xx. Whatever
+    // the reason, a value we can no longer read must not keep working from the cache
+    // (3.21): disabling or destroying the version in the console has to take effect at
+    // the next refresh, not at the next restart. Reads fall back to the env value.
+    if (e && e.status) {
+      cache.delete(name);
+      const prev = meta.get(name) || {};
+      meta.set(name, { source: e.status === 404 ? 'env' : 'error', updatedAt: prev.updatedAt || 0, error: `HTTP ${e.status}: ${String(e.message || '').slice(0, 200)}`, errorAt: Date.now() });
+    } else {
+      // No status = the request never completed (DNS, token mint, timeout): keep the
+      // cached value, a transient outage must not drop the shared keys.
+      const prev = meta.get(name) || {};
+      meta.set(name, { ...prev, error: String((e && e.message) || e).slice(0, 200), errorAt: Date.now() });
+    }
     if (e.status !== 404 && e.status !== 403) console.warn(`[globalKeys] ${name}: ${e.message}`);
-    if (e.status === 404) meta.set(name, { source: 'env', updatedAt: 0 });
   }
 }
 
@@ -111,6 +122,7 @@ function status() {
       masked: mask(v),
       source: (c && c.value) ? 'secret-manager' : (process.env[m.name] ? 'deploy env' : 'unset'),
       updatedAt: (meta.get(m.name) || {}).updatedAt || null,
+      error: (meta.get(m.name) || {}).error || null, // last Secret Manager read error (value fell back to env)
     };
   });
 }
@@ -127,7 +139,11 @@ async function set(name, value) {
   if (!MANAGED_NAMES.has(name)) throw new Error('Unknown key.');
   const v = String(value == null ? '' : value).trim();
   if (!v) throw new Error('Value is empty.');
-  if (!enabled()) throw new Error('Global keys need GCP_PROJECT_ID set on the server.');
+  if (!enabled()) {
+    throw new Error(process.env.GLOBAL_KEYS_ENABLED === '0'
+      ? 'Global keys are disabled on this server (GLOBAL_KEYS_ENABLED=0); set keys at deploy time instead.'
+      : 'Global keys need GCP_PROJECT_ID set on the server.');
+  }
 
   try {
     await smFetch(`${encodeURIComponent(name)}:addVersion`, {

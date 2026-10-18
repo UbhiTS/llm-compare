@@ -19,18 +19,34 @@ const TOKEN_CMD = process.env.GCLOUD_TOKEN_CMD || 'CLOUDSDK_ACTIVE_CONFIG_NAME=a
 const GCLOUD_TTL_MS = (parseInt(process.env.GCLOUD_TOKEN_TTL_SEC, 10) || 3000) * 1000;
 const MINT_TIMEOUT_MS = 30000;
 const METADATA_HOST = process.env.GCE_METADATA_HOST || 'metadata.google.internal';
+const METADATA_PROBE_TIMEOUT_MS = 5000;   // one slow first probe must not disable the durable path (5.5)
+const METADATA_REPROBE_MS = 60 * 1000;    // after a timeout / 5xx, try the metadata server again this much later
+// The extra gcloud configs (corp account, ADC) are personal to the author's machine and a
+// silent hop onto a different billing identity (3.13): opt in with GCLOUD_TOKEN_FALLBACKS=1.
+const GCLOUD_FALLBACKS = process.env.GCLOUD_TOKEN_FALLBACKS === '1';
+// Fixed message for callers (it can end up on a slot in the browser); the shell detail
+// (command line with account emails and local paths) goes to the server log only.
+const UNAVAILABLE_MSG = 'Vertex OAuth credential unavailable';
 
 let cached = { token: null, expiresAt: 0 };
 let inflight = null;
-let metadataAvailable = null; // null = unknown, true/false once probed
+let metadataAvailable = null;   // null = unknown, true/false once probed
+let metadataRetryAt = 0;        // when false for a transient reason, re-probe after this time
 
 function autoMintEnabled() { return process.env.GCLOUD_TOKEN_AUTOMINT !== '0'; }
+
+// Hard "not on GCP" signals: the hostname does not resolve or nothing listens. Anything
+// else (timeout, 5xx, malformed body) is treated as transient.
+function isDefinitelyNotOnGcp(e) {
+  const code = (e && (e.code || (e.cause && e.cause.code))) || '';
+  return code === 'ENOTFOUND' || code === 'ECONNREFUSED';
+}
 
 // 1. Metadata server (Cloud Run / GCE). Returns { token, ttlMs } or throws quickly.
 async function mintFromMetadata() {
   const url = `http://${METADATA_HOST}/computeMetadata/v1/instance/service-accounts/default/token`;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2000);
+  const timer = setTimeout(() => ctrl.abort(), METADATA_PROBE_TIMEOUT_MS);
   try {
     const r = await fetch(url, { headers: { 'Metadata-Flavor': 'Google' }, signal: ctrl.signal });
     if (!r.ok) throw new Error('metadata token HTTP ' + r.status);
@@ -41,27 +57,73 @@ async function mintFromMetadata() {
   } finally { clearTimeout(timer); }
 }
 
-// 2. gcloud CLI (local dev).
-function mintFromGcloud() {
+// 2. gcloud CLI (local dev). The error carries the shell detail for the server log only.
+function execTokenCmd(cmd) {
   return new Promise((resolve, reject) => {
-    exec(TOKEN_CMD, { timeout: MINT_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(`gcloud token mint failed (\`${TOKEN_CMD}\`): ${String(stderr || err.message).trim().slice(0, 300)}`));
-      const token = String(stdout || '').trim();
+    exec(cmd, { timeout: MINT_TIMEOUT_MS, windowsHide: true, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+      if (err) return reject(new Error(`gcloud token mint failed (\`${cmd}\`): ${String(stderr || err.message).trim().slice(0, 300)}`));
+      const lines = String(stdout || '').trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const token = lines[lines.length - 1] || '';
       if (!token) return reject(new Error('gcloud returned an empty access token (is gcloud authenticated?)'));
       resolve(token);
     });
   });
 }
 
+// A short, token-free label for a mint command (which gcloud config / account it used).
+function describeCmd(cmd) {
+  const m = /CLOUDSDK_ACTIVE_CONFIG_NAME=([^\s]+)/.exec(cmd);
+  const a = /CLOUDSDK_CORE_ACCOUNT=([^\s]+)/.exec(cmd);
+  if (m || a) return `config ${m ? m[1] : 'default'}${a ? ' (' + a[1] + ')' : ''}`;
+  return /application-default/.test(cmd) ? 'application-default credentials' : 'default gcloud config';
+}
+
+async function mintFromGcloud() {
+  const candidates = [TOKEN_CMD];
+  // Extra configs are opt-in (GCLOUD_TOKEN_FALLBACKS=1) and only when GCLOUD_TOKEN_CMD was
+  // not overridden to a custom test stub.
+  if (GCLOUD_FALLBACKS && (!process.env.GCLOUD_TOKEN_CMD || process.env.GCLOUD_TOKEN_CMD.includes('gcloud'))) {
+    const fallbacks = [
+      'CLOUDSDK_ACTIVE_CONFIG_NAME=argolis CLOUDSDK_CORE_ACCOUNT=admin@ubhi.altostrat.com gcloud auth print-access-token',
+      'CLOUDSDK_ACTIVE_CONFIG_NAME=corp-bhi CLOUDSDK_CORE_ACCOUNT=ubhi@google.com gcloud auth print-access-token',
+      'gcloud auth print-access-token',
+      'gcloud auth application-default print-access-token',
+    ];
+    for (const fb of fallbacks) {
+      if (!candidates.includes(fb)) candidates.push(fb);
+    }
+  }
+  let lastErr = null;
+  for (const cmd of candidates) {
+    try {
+      const token = await execTokenCmd(cmd);
+      // Which identity minted (never the token itself), so a fallback hop is visible in the log.
+      console.log(`[gcloudToken] minted a Vertex OAuth token via ${describeCmd(cmd)}${cmd !== candidates[0] ? ' (fallback)' : ''}.`);
+      return token;
+    } catch (e) {
+      lastErr = e;
+      console.error(`[gcloudToken] ${e.message}`);
+    }
+  }
+  throw lastErr || new Error('gcloud token mint failed');
+}
+
 async function acquire() {
-  // 1. metadata server (skip only if we already proved we're not on GCP)
-  if (metadataAvailable !== false) {
+  // 1. metadata server. Skipped only while we believe we're not on GCP: permanently after a
+  //    hard "no such host / connection refused", temporarily (METADATA_REPROBE_MS) after a
+  //    timeout or 5xx, so one slow first probe can't disable the durable path until restart.
+  if (metadataAvailable !== false || Date.now() >= metadataRetryAt) {
     try {
       const m = await mintFromMetadata();
       metadataAvailable = true;
       return m;
     } catch (e) {
-      if (metadataAvailable === null) metadataAvailable = false; // not on GCP; don't probe again
+      if (isDefinitelyNotOnGcp(e)) {
+        metadataAvailable = false; metadataRetryAt = Infinity; // not on GCP; don't probe again
+      } else {
+        metadataAvailable = false; metadataRetryAt = Date.now() + METADATA_REPROBE_MS;
+        console.warn(`[gcloudToken] metadata server probe failed transiently (${String((e && e.message) || e).slice(0, 120)}); retrying in ${METADATA_REPROBE_MS / 1000}s.`);
+      }
     }
   }
   // 2. gcloud CLI (local dev)
@@ -70,14 +132,16 @@ async function acquire() {
       return { token: await mintFromGcloud(), ttlMs: GCLOUD_TTL_MS };
     } catch (e) {
       const fallback = process.env.CLAUDE_BEARER_TOKEN;
-      if (fallback) { console.error(`[gcloudToken] mint failed; using static CLAUDE_BEARER_TOKEN. ${e.message}`); return { token: fallback, ttlMs: 0 }; }
-      throw e;
+      if (fallback) { console.error('[gcloudToken] mint failed; using static CLAUDE_BEARER_TOKEN.'); return { token: fallback, ttlMs: 0 }; }
+      // Detail already logged by mintFromGcloud; callers (and the browser) get the fixed text.
+      throw new Error(UNAVAILABLE_MSG);
     }
   }
   // 3. static token
   const fallback = process.env.CLAUDE_BEARER_TOKEN;
   if (fallback) return { token: fallback, ttlMs: 0 };
-  throw new Error('No Claude credential available (no GCP metadata server, gcloud, or CLAUDE_BEARER_TOKEN).');
+  console.error('[gcloudToken] no credential source: no GCP metadata server, gcloud auto-mint disabled, and no CLAUDE_BEARER_TOKEN.');
+  throw new Error(UNAVAILABLE_MSG);
 }
 
 // Returns a usable bearer token, cached until shortly before expiry. Pass

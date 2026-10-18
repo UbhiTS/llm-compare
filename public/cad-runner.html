@@ -1,0 +1,1928 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LLM Compare - 3D &amp; CAD Viewport</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/vendor/three/build/three.module.js",
+        "three/addons/": "/vendor/three/examples/jsm/"
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --bg-0: #0b101b;
+      --bg-1: #111827;
+      --hud-bg: rgba(15, 23, 42, 0.82);
+      --hud-border: rgba(148, 163, 184, 0.22);
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0284c7;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --danger: #ef4444;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 32%, #17223b 0%, #090d16 100%);
+      color: var(--text);
+      font-family: var(--sans);
+      user-select: none;
+    }
+    #viewportContainer {
+      position: relative;
+      width: 100%;
+      height: 100%;
+    }
+    #cadCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+    }
+    #cadCanvas:active {
+      cursor: grabbing;
+    }
+
+    /* Top HUD Stack (prevents toolbar rows, cut bar, params drawer & error banner from ever overlapping) */
+    .hud-top-stack {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      right: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 6px;
+      pointer-events: none;
+      z-index: 12;
+      max-height: calc(100% - 54px);
+    }
+    .hud-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      width: 100%;
+      pointer-events: none;
+    }
+    .hud-subbars {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 6px;
+      width: 100%;
+      pointer-events: none;
+    }
+    .hud-cluster {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 2px;
+      max-width: 100%;
+      background: var(--hud-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--hud-border);
+      border-radius: 8px;
+      padding: 2.5px;
+      pointer-events: auto;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    }
+    .hud-btn {
+      appearance: none;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 5px;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: all 0.14s ease;
+      white-space: nowrap;
+      line-height: 1.1;
+    }
+    .hud-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .hud-btn.active {
+      color: #fff;
+      background: rgba(56, 189, 248, 0.22);
+      border-color: rgba(56, 189, 248, 0.55);
+    }
+    .hud-btn.sync-on {
+      color: #ecfdf5;
+      background: rgba(16, 185, 129, 0.22);
+      border-color: rgba(16, 185, 129, 0.55);
+    }
+    .hud-btn.sync-off {
+      color: #fef3c7;
+      background: rgba(245, 158, 11, 0.18);
+      border-color: rgba(245, 158, 11, 0.45);
+    }
+    .hud-sep {
+      width: 1px;
+      height: 14px;
+      background: var(--hud-border);
+      margin: 0 2px;
+    }
+
+    /* Section Cut Slider Bar */
+    .hud-section-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--hud-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--hud-border);
+      border-radius: 8px;
+      padding: 5px 9px;
+      font-size: 11px;
+      pointer-events: auto;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+    }
+    .hud-section-bar[hidden] {
+      display: none !important;
+    }
+    .hud-section-bar input[type="range"] {
+      width: 110px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* Parametric Sliders Drawer */
+    .params-drawer {
+      margin-left: auto;
+      width: 235px;
+      max-width: 100%;
+      max-height: 230px;
+      overflow-y: auto;
+      background: rgba(11, 16, 27, 0.92);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--hud-border);
+      border-radius: 10px;
+      padding: 9px 10px;
+      pointer-events: auto;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+    }
+    .params-drawer[hidden] {
+      display: none !important;
+    }
+    .params-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 7px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .param-row {
+      margin-bottom: 7px;
+    }
+    .param-label-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text);
+      margin-bottom: 2px;
+    }
+    .param-val {
+      font-family: var(--mono);
+      color: var(--accent);
+      font-size: 10.5px;
+    }
+    .param-row input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+      margin: 0;
+      cursor: pointer;
+    }
+
+    /* Bottom Telemetry & Export Bar */
+    .hud-bottom {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      right: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .telemetry-pill {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 7px;
+      background: var(--hud-bg);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--hud-border);
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      color: var(--text);
+      pointer-events: auto;
+    }
+    .telemetry-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+      font-size: 10px;
+    }
+    .telemetry-badge.ok {
+      background: rgba(16, 185, 129, 0.2);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .telemetry-badge.warn {
+      background: rgba(245, 158, 11, 0.2);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.4);
+    }
+    .selected-part-chip {
+      background: rgba(56, 189, 248, 0.2);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      padding: 1px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    /* Error Banner (scrollable + dismissible so a long stack trace never covers the export bar) */
+    .error-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      max-height: 40vh;
+      overflow: auto;
+      background: rgba(127, 29, 29, 0.94);
+      border: 1px solid rgba(248, 113, 113, 0.65);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: #fee2e2;
+      font-family: var(--mono);
+      font-size: 11.5px;
+      pointer-events: auto;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    }
+    .error-banner[hidden] {
+      display: none !important;
+    }
+    .error-banner.is-warning {
+      background: rgba(120, 53, 15, 0.94);
+      border-color: rgba(251, 191, 36, 0.6);
+      color: #fef3c7;
+    }
+    .error-banner-text {
+      flex: 1;
+      min-width: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      user-select: text;
+    }
+    .error-banner-dismiss {
+      flex: 0 0 auto;
+      appearance: none;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      background: rgba(255, 255, 255, 0.1);
+      color: inherit;
+      font: 600 11px var(--sans);
+      border-radius: 5px;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .error-banner-dismiss:hover {
+      background: rgba(255, 255, 255, 0.22);
+    }
+
+    /* 4-View Technical Drawing Sheet Overlay Modal */
+    .four-view-modal {
+      position: absolute;
+      inset: 10px;
+      background: rgba(9, 13, 22, 0.95);
+      border: 1px solid var(--hud-border);
+      border-radius: 10px;
+      z-index: 30;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      gap: 8px;
+    }
+    .four-view-modal[hidden] {
+      display: none !important;
+    }
+    .four-view-modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .four-view-img-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: #070a12;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.16);
+    }
+    .four-view-img-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+  </style>
+</head>
+<body>
+  <div id="viewportContainer">
+    <canvas id="cadCanvas"></canvas>
+
+    <!-- Top HUD Stack: Toolbar + Section Cut + Params Drawer + Error Banner (Never Overlaps) -->
+    <div class="hud-top-stack">
+      <div class="hud-top">
+        <div class="hud-cluster" role="toolbar" aria-label="Camera Presets">
+          <button type="button" class="hud-btn active" data-cam="iso" aria-pressed="true" title="Isometric 3D View">Iso</button>
+          <button type="button" class="hud-btn" data-cam="front" aria-pressed="false" title="Front View (X-Y)">Front</button>
+          <button type="button" class="hud-btn" data-cam="right" aria-pressed="false" title="Right View (Z-Y)">Right</button>
+          <button type="button" class="hud-btn" data-cam="top" aria-pressed="false" title="Top View (X-Z)">Top</button>
+          <div class="hud-sep"></div>
+          <button type="button" class="hud-btn" id="hudSpinBtn" aria-pressed="false" title="Toggle Turntable Y-Axis Auto-Rotate">↻ Spin</button>
+          <button type="button" class="hud-btn active" id="hudSpin3AxisBtn" aria-pressed="true" title="Toggle 3-Axis Gimbal Tumble (Simultaneous X + Y + Z Inspection)">🔄 3-Axis</button>
+          <button type="button" class="hud-btn sync-on" id="hudSyncBtn" aria-pressed="true" title="Lockstep Sync 3D Camera across Slots A, B, C, D (Click to Unlink/Relink)">🔗 Synced</button>
+        </div>
+
+        <div class="hud-cluster" role="toolbar" aria-label="Inspection &amp; Parametric Controls">
+          <button type="button" class="hud-btn active" data-render-mode="solid" aria-pressed="true" title="Solid PBR Studio Shading">Solid</button>
+          <button type="button" class="hud-btn" data-render-mode="wireframe" aria-pressed="false" title="Triangle Mesh Wireframe">Wire</button>
+          <button type="button" class="hud-btn" data-render-mode="xray" aria-pressed="false" title="X-Ray Internal Wall &amp; Cavity Inspection">X-Ray</button>
+          <button type="button" class="hud-btn" id="hudSectionBtn" aria-pressed="false" title="Live Cross-Section Cut Plane">✂ Cut</button>
+          <div class="hud-sep"></div>
+          <button type="button" class="hud-btn" id="hudParamsBtn" aria-pressed="false" title="Live Parametric Dimension Sliders (PARAMS)">⚙ Params</button>
+        </div>
+      </div>
+
+      <div class="hud-subbars">
+        <!-- Cross-Section Cut Slider Bar -->
+        <div class="hud-section-bar" id="hudSectionBar" hidden>
+          <span>Axis:</span>
+          <button type="button" class="hud-btn active" data-cut-axis="x" aria-pressed="true">X</button>
+          <button type="button" class="hud-btn" data-cut-axis="y" aria-pressed="false">Y</button>
+          <button type="button" class="hud-btn" data-cut-axis="z" aria-pressed="false">Z</button>
+          <input type="range" id="hudSectionSlider" min="-100" max="100" value="0" step="1" aria-label="Section cut plane offset (percent of model radius)" />
+          <span id="hudSectionVal" style="font-family: var(--mono)">0%</span>
+        </div>
+
+        <!-- Parametric Sliders Drawer -->
+        <div class="params-drawer" id="paramsDrawer" hidden>
+          <div class="params-header">
+            <span>⚙ Parametric Controls</span>
+            <button type="button" class="hud-btn" id="paramsResetBtn" title="Reset PARAMS to Model Defaults">Reset</button>
+          </div>
+          <div id="paramsList"></div>
+        </div>
+      </div>
+
+      <!-- Runtime Error / Export Notice Overlay (scrollable, dismissible) -->
+      <div class="error-banner" id="errorBanner" role="alert" hidden>
+        <div class="error-banner-text" id="errorBannerText"></div>
+        <button type="button" class="error-banner-dismiss" id="errorBannerDismissBtn" aria-label="Dismiss message" title="Dismiss">✕</button>
+      </div>
+    </div>
+
+    <!-- 4-View Sheet Preview Overlay -->
+    <div class="four-view-modal" id="fourViewModal" hidden>
+      <div class="four-view-modal-head">
+        <span>📐 4-Angle Engineering Viewport Composite (Sent Automatically to Gemini on Modify &amp; Judge)</span>
+        <div style="display:flex; gap:6px;">
+          <button type="button" class="hud-btn active" id="fourViewDownloadBtn">⬇ Download PNG</button>
+          <button type="button" class="hud-btn" id="fourViewCloseBtn">✕ Close</button>
+        </div>
+      </div>
+      <div class="four-view-img-wrap">
+        <img id="fourViewPreviewImg" alt="4-Angle Technical Viewport Sheet" />
+      </div>
+    </div>
+
+    <!-- Bottom Telemetry & CAD Export Bar -->
+    <div class="hud-bottom">
+      <div class="telemetry-pill" id="telemetryPill">
+        <span class="telemetry-badge ok" id="telemetryStatus">● Ready</span>
+        <span id="telemetryBbox">0 × 0 × 0 mm</span>
+        <span id="telemetryCounts">0 parts · 0 tris</span>
+        <span class="selected-part-chip" id="selectedPartChip" hidden title="Click to clear part target"></span>
+      </div>
+
+      <div class="hud-cluster" role="toolbar" aria-label="CAD Export Formats">
+        <button type="button" class="hud-btn" id="exportStlBtn" title="Download Binary .STL for 3D Printing / Bambu / PrusaSlicer">⬇ STL</button>
+        <button type="button" class="hud-btn" id="exportStepBtn" title="Download ISO-10303-21 .STEP (AP214) for Fusion 360 / SolidWorks / Onshape">⬇ STEP</button>
+        <button type="button" class="hud-btn" id="exportGlbBtn" title="Download Binary glTF (.GLB) with PBR Materials">⬇ GLB</button>
+        <button type="button" class="hud-btn" id="exportObjBtn" title="Download Wavefront .OBJ Mesh">⬇ OBJ</button>
+        <div class="hud-sep"></div>
+        <button type="button" class="hud-btn" id="showFourViewBtn" title="Inspect 4-Angle Viewport Composite Sheet (Iso/Front/Top/Right)">📸 4-View</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+    import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+    import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+    import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+    import { createCadKernel, analyzeModelTelemetry, buildStepExport, collectStepMeshes } from '/cad-kernel.js';
+
+    // ---- 1. Sandbox Hardening (defense in depth ONLY) ----
+    // The real security boundary is the parent's iframe sandbox WITHOUT allow-same-origin:
+    // this document runs from an opaque origin, so it has no cookies, no storage, no
+    // same-origin access to the app and no credentialed fetch to begin with. The shims below
+    // merely make accidental use of those APIs by LLM-generated model code fail fast and
+    // loudly instead of silently; they are NOT what keeps the session safe and must never be
+    // relied upon as such. Nothing in this runner depends on localStorage, cookies or fetch
+    // (the import map uses absolute-path specifiers that resolve fine from an opaque origin).
+    (function hardenCadSandbox() {
+      const dummyStorage = {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+        clear: () => {},
+        key: () => null,
+        length: 0,
+      };
+      try { Object.defineProperty(window, 'localStorage', { value: dummyStorage, configurable: false }); } catch (_) {}
+      try { Object.defineProperty(window, 'sessionStorage', { value: dummyStorage, configurable: false }); } catch (_) {}
+      try { Object.defineProperty(window, 'indexedDB', { value: null, configurable: false }); } catch (_) {}
+      try { Object.defineProperty(document, 'cookie', { get: () => '', set: () => true, configurable: false }); } catch (_) {}
+      const blockedFetch = async (input) => {
+        const url = String(typeof input === 'string' ? input : (input && input.url) || '');
+        throw new Error(`Network fetch is disabled inside the 3D CAD sandbox (${url}).`);
+      };
+      try { window.fetch = blockedFetch; } catch (_) {}
+    })();
+
+    // Messages go ONLY to the embedding parent. From an opaque origin our own origin is
+    // 'null', so the target origin is derived from document.referrer (the parent page) and
+    // falls back to '*' only when the referrer is unavailable (e.g. opened top-level).
+    const PARENT_ORIGIN = (() => {
+      try {
+        return new URL(document.referrer).origin;
+      } catch {
+        return '*';
+      }
+    })();
+    function postToParent(message) {
+      try {
+        window.parent.postMessage(message, PARENT_ORIGIN);
+      } catch (err) {
+        console.warn('postMessage to parent failed:', err);
+      }
+    }
+
+    // ---- Error / notice banner (scrollable, dismissible) ----
+    function showBanner(text, { warning = false } = {}) {
+      const banner = document.getElementById('errorBanner');
+      const textEl = document.getElementById('errorBannerText');
+      if (!banner || !textEl) return;
+      textEl.textContent = String(text || '');
+      banner.classList.toggle('is-warning', Boolean(warning));
+      banner.hidden = false;
+      banner.scrollTop = 0;
+    }
+    function hideBanner() {
+      const banner = document.getElementById('errorBanner');
+      if (banner) banner.hidden = true;
+    }
+    document.getElementById('errorBannerDismissBtn')?.addEventListener('click', hideBanner);
+
+    // Trim error text for the parent (first stack frames only, bounded length)
+    function describeError(err, maxLen = 4000) {
+      const raw = String(err && err.stack ? err.stack : (err && err.message ? err.message : err));
+      const firstFrames = raw.split('\n').slice(0, 12).join('\n');
+      return firstFrames.length > maxLen ? `${firstFrames.slice(0, maxLen)}\n...` : firstFrames;
+    }
+
+    // Keeps the visual .active state and the ARIA pressed state of HUD toggles in sync
+    function setPressed(btn, on) {
+      if (!btn) return;
+      btn.classList.toggle('active', Boolean(on));
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+
+    const urlParams = new URLSearchParams(window.location.search);
+    let slotId = urlParams.get('slot') || 'A';
+    let modelLabel = urlParams.get('label') || `Slot ${slotId}`;
+    let cameraSyncEnabled = urlParams.get('sync') !== '0';
+
+    // ---- 2. Initialize Three.js WebGL Studio Renderer, Scene & Lighting ----
+    const canvas = document.getElementById('cadCanvas');
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.08;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.localClippingEnabled = false;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b101b);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnv = new RoomEnvironment();
+    scene.environment = pmremGenerator.fromScene(roomEnv, 0.04).texture;
+
+    const camera = new THREE.PerspectiveCamera(
+      38,
+      Math.max(1, window.innerWidth) / Math.max(1, window.innerHeight),
+      0.1,
+      20000
+    );
+    camera.position.set(140, 110, 140);
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.rotateSpeed = 0.85;
+    controls.zoomSpeed = 0.95;
+    controls.panSpeed = 0.85;
+
+    // Studio 3-point engineering lighting
+    const ambientLight = new THREE.AmbientLight(0xdbeafe, 0.55);
+    scene.add(ambientLight);
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.65);
+    keyLight.position.set(180, 260, 160);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.width = 2048;
+    keyLight.shadow.mapSize.height = 2048;
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0x93c5fd, 0.75);
+    fillLight.position.set(-180, 120, -140);
+    scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0xfde68a, 0.45);
+    rimLight.position.set(0, -160, 180);
+    scene.add(rimLight);
+
+    // Millimeter Reference Grid & Origin Axes
+    const gridGroup = new THREE.Group();
+    gridGroup.userData.isHelper = true;
+    const mainGrid = new THREE.GridHelper(240, 24, 0x38bdf8, 0x1e293b);
+    mainGrid.position.y = -0.05;
+    mainGrid.userData.isHelper = true;
+    gridGroup.add(mainGrid);
+    scene.add(gridGroup);
+
+    // Section Clipping Plane
+    const sectionPlane = new THREE.Plane(new THREE.Vector3(-1, 0, 0), 0);
+    let sectionAxis = 'x';
+    let sectionEnabled = false;
+    let renderMode = 'solid';
+
+    // Model state
+    const { CAD, CSG } = createCadKernel(THREE);
+    let currentCode = '';
+    let currentBuildFn = null;
+    let currentParams = {};
+    let defaultParams = {};
+    let currentParamSchema = {};
+    let modelRoot = null;
+    let modelCenter = new THREE.Vector3(0, 25, 0);
+    let modelFitDistance = 180;
+    let modelRadius = 60;
+    let latestTelemetry = null;
+    let latestFourViewDataUrl = '';
+    let selectedPartName = null;
+
+    // Camera sync state prevent echo loops
+    let isApplyingExternalCamera = false;
+    let lastCameraBroadcastMs = 0;
+
+    // 3-Axis Gimbal Tumbling Spin state (rotates modelRoot around modelCenter on X, Y, Z simultaneously, ON by default)
+    let spin3AxisEnabled = true;
+    let spin3AxisAngles = { x: 0, y: 0, z: 0 };
+    let lastAnimFrameMs = performance.now();
+
+    function applySpin3AxisTransform(rx, ry, rz) {
+      spin3AxisAngles.x = Number(rx) || 0;
+      spin3AxisAngles.y = Number(ry) || 0;
+      spin3AxisAngles.z = Number(rz) || 0;
+      if (!modelRoot) {
+        gridGroup.rotation.set(0, 0, 0);
+        gridGroup.position.set(0, 0, 0);
+        gridGroup.updateMatrixWorld(true);
+        return;
+      }
+      if (
+        Math.abs(spin3AxisAngles.x) < 1e-6 &&
+        Math.abs(spin3AxisAngles.y) < 1e-6 &&
+        Math.abs(spin3AxisAngles.z) < 1e-6
+      ) {
+        modelRoot.rotation.set(0, 0, 0);
+        modelRoot.position.set(0, 0, 0);
+        gridGroup.rotation.set(0, 0, 0);
+        gridGroup.position.set(0, 0, 0);
+      } else {
+        modelRoot.rotation.set(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z, 'XYZ');
+        const rotatedCenter = modelCenter.clone().applyEuler(modelRoot.rotation);
+        modelRoot.position.copy(modelCenter).sub(rotatedCenter);
+        gridGroup.rotation.copy(modelRoot.rotation);
+        gridGroup.position.copy(modelRoot.position);
+      }
+      modelRoot.updateMatrixWorld(true);
+      gridGroup.updateMatrixWorld(true);
+    }
+
+    function setSpin3AxisState(enabled, broadcast = true, angles = null) {
+      spin3AxisEnabled = Boolean(enabled);
+      setPressed(document.getElementById('hudSpin3AxisBtn'), spin3AxisEnabled);
+      if (spin3AxisEnabled) {
+        if (controls.autoRotate) {
+          controls.autoRotate = false;
+          setPressed(document.getElementById('hudSpinBtn'), false);
+        }
+        if (angles && typeof angles.x === 'number') {
+          applySpin3AxisTransform(angles.x, angles.y || 0, angles.z || 0);
+        }
+        lastAnimFrameMs = performance.now();
+      } else {
+        applySpin3AxisTransform(0, 0, 0);
+      }
+      if (broadcast) {
+        postToParent({
+          type: 'CAD_SPIN_3AXIS_CHANGE',
+          slot: slotId,
+          enabled: spin3AxisEnabled,
+          angles: { ...spin3AxisAngles },
+        });
+      }
+    }
+
+    function updateSyncButtonUI() {
+      const btn = document.getElementById('hudSyncBtn');
+      if (!btn) return;
+      if (cameraSyncEnabled) {
+        btn.className = 'hud-btn sync-on';
+        btn.textContent = '🔗 Synced';
+      } else {
+        btn.className = 'hud-btn sync-off';
+        btn.textContent = '🔓 Unlinked';
+      }
+      btn.setAttribute('aria-pressed', cameraSyncEnabled ? 'true' : 'false');
+    }
+    updateSyncButtonUI();
+
+    // ---- 3. Camera Framing & Lockstep Spherical Sync across Slots A, B, C, D ----
+    function computeCameraStateNormalized() {
+      const offset = camera.position.clone().sub(controls.target);
+      const spherical = new THREE.Spherical().setFromVector3(offset);
+      const targetOffset = controls.target.clone().sub(modelCenter);
+      const safeFit = Math.max(1, modelFitDistance);
+      return {
+        theta: spherical.theta,
+        phi: spherical.phi,
+        radiusRatio: spherical.radius / safeFit,
+        targetOffsetRatio: [
+          targetOffset.x / safeFit,
+          targetOffset.y / safeFit,
+          targetOffset.z / safeFit,
+        ],
+      };
+    }
+
+    function applyNormalizedCameraState(state) {
+      // Every component must be a finite number: a NaN/Infinity from a sibling slot would
+      // otherwise turn this viewport black and be cached + rebroadcast on the next change.
+      if (!state || !Number.isFinite(state.theta) || !Number.isFinite(state.phi)) return;
+      const radiusRatio = state.radiusRatio === undefined ? 1.0 : state.radiusRatio;
+      if (!Number.isFinite(radiusRatio) || radiusRatio <= 0) return;
+      const tRatio = Array.isArray(state.targetOffsetRatio) ? state.targetOffsetRatio : [0, 0, 0];
+      if (tRatio.length < 3 || !tRatio.slice(0, 3).every((v) => Number.isFinite(v))) return;
+      isApplyingExternalCamera = true;
+      try {
+        const safeFit = Math.max(1, modelFitDistance);
+        const radius = Math.max(5, Math.min(camera.far * 0.45, radiusRatio * safeFit));
+        const spherical = new THREE.Spherical(
+          radius,
+          Math.max(0.02, Math.min(Math.PI - 0.02, state.phi)),
+          state.theta
+        );
+        controls.target.set(
+          modelCenter.x + tRatio[0] * safeFit,
+          modelCenter.y + tRatio[1] * safeFit,
+          modelCenter.z + tRatio[2] * safeFit
+        );
+        const offset = new THREE.Vector3().setFromSpherical(spherical);
+        camera.position.copy(controls.target).add(offset);
+        camera.lookAt(controls.target);
+        controls.update();
+      } finally {
+        setTimeout(() => {
+          isApplyingExternalCamera = false;
+        }, 16);
+      }
+    }
+
+    function broadcastCameraChange() {
+      if (isApplyingExternalCamera || !cameraSyncEnabled) return;
+      const now = performance.now();
+      if (now - lastCameraBroadcastMs < 14) return;
+      lastCameraBroadcastMs = now;
+      postToParent({
+        type: 'CAD_CAMERA_CHANGE',
+        slot: slotId,
+        cameraState: computeCameraStateNormalized(),
+      });
+    }
+
+    controls.addEventListener('change', () => {
+      broadcastCameraChange();
+    });
+
+    // Refit the clip planes to the model's bounding sphere so very large models (R > ~5 m)
+    // do not vanish behind a fixed far plane and small parts keep depth precision.
+    function refitCameraClipPlanes() {
+      const near = Math.max(0.05, modelRadius * 0.005);
+      const far = Math.max(2000, modelFitDistance * 40 + modelRadius * 10);
+      if (Math.abs(camera.near - near) > 1e-6 || Math.abs(camera.far - far) > 1e-6) {
+        camera.near = near;
+        camera.far = far;
+        camera.updateProjectionMatrix();
+      }
+      controls.maxDistance = far * 0.45;
+    }
+
+    function fitCameraToModel(rootObj, preset = 'iso', broadcast = false) {
+      const box = new THREE.Box3();
+      if (rootObj) {
+        rootObj.updateMatrixWorld(true);
+        rootObj.traverse((c) => {
+          if (c.isMesh && !c.userData?.isHelper) box.expandByObject(c);
+        });
+      }
+      if (box.isEmpty()) {
+        modelCenter.set(0, 20, 0);
+        modelRadius = 50;
+        modelFitDistance = 150;
+      } else {
+        box.getCenter(modelCenter);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        modelRadius = Math.max(10, 0.5 * size.length());
+        // Fit against the narrower of the vertical and horizontal FOV so portrait slot
+        // viewports (4-6 slots side by side) do not overflow horizontally.
+        const vFov = (camera.fov * Math.PI) / 180;
+        const aspect = Math.max(0.05, camera.aspect || 1);
+        const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+        const fitFov = Math.min(vFov, hFov);
+        modelFitDistance = Math.max(35, (modelRadius / Math.sin(fitFov / 2)) * 1.18);
+
+        // Adjust grid size if model is large
+        const maxSpan = Math.max(size.x, size.z, 80);
+        const gridScale = Math.max(1, Math.ceil(maxSpan / 180));
+        mainGrid.scale.set(gridScale, 1, gridScale);
+        mainGrid.position.y = Math.min(0, box.min.y) - 0.08;
+      }
+      refitCameraClipPlanes();
+
+      setCameraPreset(preset, broadcast);
+    }
+
+    function setCameraPreset(preset, broadcast = true, pauseSpin = false) {
+      if (pauseSpin && (spin3AxisEnabled || spin3AxisAngles.x || spin3AxisAngles.y || spin3AxisAngles.z)) {
+        setSpin3AxisState(false, broadcast);
+      }
+      isApplyingExternalCamera = !broadcast;
+      controls.target.copy(modelCenter);
+      const d = modelFitDistance;
+      if (preset === 'front') {
+        camera.position.set(modelCenter.x, modelCenter.y, modelCenter.z + d);
+      } else if (preset === 'right') {
+        camera.position.set(modelCenter.x + d, modelCenter.y, modelCenter.z);
+      } else if (preset === 'top') {
+        camera.position.set(modelCenter.x, modelCenter.y + d, modelCenter.z + 0.001);
+      } else {
+        // Isometric default
+        const iso = d * 0.62;
+        camera.position.set(modelCenter.x + iso, modelCenter.y + iso * 0.82, modelCenter.z + iso);
+      }
+      camera.lookAt(controls.target);
+      controls.update();
+
+      document.querySelectorAll('[data-cam]').forEach((btn) => {
+        setPressed(btn, btn.getAttribute('data-cam') === preset);
+      });
+
+      isApplyingExternalCamera = false;
+      if (broadcast) {
+        broadcastCameraChange();
+      }
+    }
+
+    // ---- 4. Render Modes & Section Cut Plane ----
+    function applyRenderModeToModel() {
+      if (!modelRoot) return;
+      renderer.localClippingEnabled = sectionEnabled;
+      modelRoot.traverse((child) => {
+        if (!child.isMesh || !child.material) return;
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const m of mats) {
+          if (m.userData.origOpacity === undefined) {
+            m.userData.origOpacity = m.opacity ?? 1.0;
+            m.userData.origTransparent = Boolean(m.transparent);
+            m.userData.origDepthWrite = m.depthWrite ?? true;
+          }
+          m.wireframe = renderMode === 'wireframe';
+          if (renderMode === 'xray') {
+            m.transparent = true;
+            m.opacity = 0.34;
+            m.depthWrite = false;
+            m.side = THREE.DoubleSide;
+          } else {
+            m.transparent = m.userData.origTransparent;
+            m.opacity = m.userData.origOpacity;
+            m.depthWrite = m.userData.origDepthWrite;
+            m.side = sectionEnabled ? THREE.DoubleSide : THREE.FrontSide;
+          }
+          m.clippingPlanes = sectionEnabled ? [sectionPlane] : [];
+          m.clipShadows = sectionEnabled;
+          m.needsUpdate = true;
+        }
+      });
+    }
+
+    function updateSectionPlaneFromUI() {
+      const slider = document.getElementById('hudSectionSlider');
+      const valLabel = document.getElementById('hudSectionVal');
+      const pct = Number(slider?.value || 0);
+      if (valLabel) valLabel.textContent = `${pct}%`;
+
+      const span = Math.max(20, modelRadius * 1.15);
+      const offset = (pct / 100) * span;
+      if (sectionAxis === 'x') {
+        sectionPlane.normal.set(-1, 0, 0);
+        sectionPlane.constant = modelCenter.x + offset;
+      } else if (sectionAxis === 'y') {
+        sectionPlane.normal.set(0, -1, 0);
+        sectionPlane.constant = modelCenter.y + offset;
+      } else {
+        sectionPlane.normal.set(0, 0, -1);
+        sectionPlane.constant = modelCenter.z + offset;
+      }
+    }
+
+    // ---- 5. Offscreen 4-Angle Viewport Composite Sheet (Iso | Front | Top | Right) ----
+    let offscreenCanvas = null;
+    function captureFourAngleCompositeDataUrl() {
+      if (!modelRoot) return '';
+      const W = 1200;
+      const H = 900;
+      const halfW = W / 2;
+      const halfH = H / 2;
+
+      if (!offscreenCanvas) {
+        offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = W;
+        offscreenCanvas.height = H;
+      }
+      const ctx = offscreenCanvas.getContext('2d');
+      ctx.fillStyle = '#090d16';
+      ctx.fillRect(0, 0, W, H);
+
+      // Save user camera & 3-axis model transform state
+      const savedPos = camera.position.clone();
+      const savedTarget = controls.target.clone();
+      const savedAspect = camera.aspect;
+      const savedSize = new THREE.Vector2();
+      renderer.getSize(savedSize);
+      const savedPixelRatio = renderer.getPixelRatio();
+      const savedModelPos = modelRoot.position.clone();
+      const savedModelRot = modelRoot.rotation.clone();
+      const savedGridPos = gridGroup.position.clone();
+      const savedGridRot = gridGroup.rotation.clone();
+
+      try {
+        // Temporarily align modelRoot and gridGroup to canonical Y-up orientation for 4-angle orthographic sheet
+        modelRoot.rotation.set(0, 0, 0);
+        modelRoot.position.set(0, 0, 0);
+        modelRoot.updateMatrixWorld(true);
+        gridGroup.rotation.set(0, 0, 0);
+        gridGroup.position.set(0, 0, 0);
+        gridGroup.updateMatrixWorld(true);
+
+        renderer.setPixelRatio(1);
+        renderer.setSize(halfW, halfH, false);
+        camera.aspect = halfW / halfH;
+        camera.updateProjectionMatrix();
+
+        const d = modelFitDistance;
+        const iso = d * 0.62;
+        const views = [
+          {
+            label: '1. ISOMETRIC VIEW (3D)',
+            sub: 'X-Y-Z Orthographic Perspective',
+            x: 0,
+            y: 0,
+            pos: new THREE.Vector3(modelCenter.x + iso, modelCenter.y + iso * 0.82, modelCenter.z + iso),
+          },
+          {
+            label: '2. FRONT ELEVATION (X-Y)',
+            sub: 'Looking along -Z Axis',
+            x: halfW,
+            y: 0,
+            pos: new THREE.Vector3(modelCenter.x, modelCenter.y, modelCenter.z + d),
+          },
+          {
+            label: '3. TOP PLAN VIEW (X-Z)',
+            sub: 'Looking down -Y Axis',
+            x: 0,
+            y: halfH,
+            pos: new THREE.Vector3(modelCenter.x, modelCenter.y + d, modelCenter.z + 0.001),
+          },
+          {
+            label: '4. RIGHT SIDE VIEW (Z-Y)',
+            sub: 'Looking along -X Axis',
+            x: halfW,
+            y: halfH,
+            pos: new THREE.Vector3(modelCenter.x + d, modelCenter.y, modelCenter.z),
+          },
+        ];
+
+        for (const v of views) {
+          controls.target.copy(modelCenter);
+          camera.position.copy(v.pos);
+          camera.lookAt(modelCenter);
+          renderer.render(scene, camera);
+          ctx.drawImage(renderer.domElement, v.x, v.y, halfW, halfH);
+
+          // Quadrant header badge
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.86)';
+          ctx.fillRect(v.x + 12, v.y + 12, 270, 42);
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(v.x + 12, v.y + 12, 270, 42);
+
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = 'bold 13px Inter, sans-serif';
+          ctx.fillText(v.label, v.x + 22, v.y + 30);
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '11px JetBrains Mono, monospace';
+          ctx.fillText(v.sub, v.x + 22, v.y + 46);
+        }
+
+        // Quadrant divider lines
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(halfW, 0);
+        ctx.lineTo(halfW, H);
+        ctx.moveTo(0, halfH);
+        ctx.lineTo(W, halfH);
+        ctx.stroke();
+
+        // Bottom engineering title block strip
+        if (latestTelemetry) {
+          const bb = latestTelemetry.boundingBoxMm || [0, 0, 0];
+          const wt = latestTelemetry.watertight === null ? 'UNVERIFIED' : (latestTelemetry.watertight ? 'YES' : 'CHECK');
+          const summary = `SLOT ${slotId} (${modelLabel})  |  BBOX: ${bb[0]} × ${bb[1]} × ${bb[2]} mm  |  PARTS: ${latestTelemetry.partCount}  |  TRIANGLES: ${latestTelemetry.triangleCount}  |  VOLUME: ${latestTelemetry.volumeCm3} cm³  |  WATERTIGHT: ${wt}${latestTelemetry.csgApprox ? ' (CSG APPROX)' : ''}`;
+          ctx.fillStyle = 'rgba(9, 13, 22, 0.92)';
+          ctx.fillRect(12, H - 38, W - 24, 28);
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(12, H - 38, W - 24, 28);
+          ctx.fillStyle = '#f8fafc';
+          ctx.font = 'bold 12px JetBrains Mono, monospace';
+          ctx.fillText(summary, 22, H - 20);
+        }
+      } finally {
+        // Restore 3-axis model transform, grid transform, user camera & viewport dimensions
+        modelRoot.rotation.copy(savedModelRot);
+        modelRoot.position.copy(savedModelPos);
+        modelRoot.updateMatrixWorld(true);
+        gridGroup.rotation.copy(savedGridRot);
+        gridGroup.position.copy(savedGridPos);
+        gridGroup.updateMatrixWorld(true);
+        renderer.setPixelRatio(savedPixelRatio);
+        renderer.setSize(savedSize.x, savedSize.y, false);
+        camera.aspect = savedAspect;
+        camera.updateProjectionMatrix();
+        controls.target.copy(savedTarget);
+        camera.position.copy(savedPos);
+        camera.lookAt(controls.target);
+        renderer.render(scene, camera);
+      }
+
+      latestFourViewDataUrl = offscreenCanvas.toDataURL('image/png');
+      const previewImg = document.getElementById('fourViewPreviewImg');
+      if (previewImg) previewImg.src = latestFourViewDataUrl;
+      return latestFourViewDataUrl;
+    }
+
+    // ---- 6. Build & Execute Parametric CAD Script ----
+    const TRIANGLE_BUDGET = 2000000;
+    const BUILD_DEADLINE_MS = 20000;
+
+    // Dispose a GPU resource tree: geometries, materials and every texture a material holds
+    // (except the shared studio environment map, which belongs to the scene, not the model).
+    function disposeMaterial(mat) {
+      if (!mat || typeof mat !== 'object') return;
+      for (const value of Object.values(mat)) {
+        if (value && value.isTexture && value !== scene.environment) {
+          try { value.dispose(); } catch (_) {}
+        }
+      }
+      if (typeof mat.dispose === 'function') {
+        try { mat.dispose(); } catch (_) {}
+      }
+    }
+
+    function disposeSubtree(root) {
+      if (!root) return;
+      const geometries = new Set();
+      const materials = new Set();
+      root.traverse((child) => {
+        if (child.geometry && typeof child.geometry.dispose === 'function') geometries.add(child.geometry);
+        if (child.material) {
+          const mats = Array.isArray(child.material) ? child.material : [child.material];
+          for (const m of mats) if (m) materials.add(m);
+        }
+        if (child.isLight && child.shadow && child.shadow.map) {
+          try { child.shadow.map.dispose(); } catch (_) {}
+        }
+      });
+      for (const g of geometries) {
+        try { g.dispose(); } catch (_) {}
+      }
+      for (const m of materials) disposeMaterial(m);
+    }
+
+    function clearModelRoot() {
+      if (!modelRoot) return;
+      scene.remove(modelRoot);
+      // Everything the script created hangs under modelRoot (including anything it added to
+      // its throw-away `scene` group), so disposing this subtree frees the whole model.
+      disposeSubtree(modelRoot);
+      modelRoot = null;
+    }
+
+    // Model scripts never see the live scene: they get a throw-away Group named `scene`.
+    // Whatever they add to it (lights, extra meshes) is adopted into modelRoot after each
+    // build so it is rendered AND disposed with the model instead of leaking across re-runs.
+    let scriptScratchScene = null;
+
+    function compileCadScript(codeText) {
+      let cleaned = String(codeText || '').trim();
+      // Strip markdown fences if present
+      const fenceMatch = cleaned.match(/```(?:javascript|js|ts)?\s*([\s\S]*?)```/i);
+      if (fenceMatch) {
+        cleaned = fenceMatch[1].trim();
+      }
+      // Strip ESM import/export keywords so it runs cleanly inside Function constructor
+      cleaned = cleaned
+        .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
+        .replace(/^\s*export\s+default\s+/gm, '')
+        .replace(/^\s*export\s+(?=(?:const|let|var|function|async)\s+)/gm, '');
+
+      if (scriptScratchScene) disposeSubtree(scriptScratchScene);
+      scriptScratchScene = new THREE.Group();
+      scriptScratchScene.name = 'script_scene';
+
+      const factory = new Function(
+        'THREE',
+        'CAD',
+        'CSG',
+        'scene',
+        `
+        "use strict";
+        ${cleaned}
+        const _params = typeof PARAMS !== 'undefined' ? PARAMS : {};
+        const _schema = typeof PARAM_SCHEMA !== 'undefined' ? PARAM_SCHEMA : {};
+        const _fn = typeof buildModel === 'function'
+          ? buildModel
+          : (typeof createModel === 'function'
+              ? createModel
+              : (typeof generateModel === 'function' ? generateModel : null));
+        const _invoke = function(THREE_ARG, paramsOverride, CAD_ARG) {
+          if (_params && typeof _params === 'object' && paramsOverride && typeof paramsOverride === 'object') {
+            Object.assign(_params, paramsOverride);
+          }
+          if (!_fn) return null;
+          const fnSrc = Function.prototype.toString.call(_fn);
+          const m = fnSrc.match(/^[^(]*\\(\\s*([^,)]*)\\s*(?:,\\s*([^,)]*))?\\s*(?:,\\s*([^,)]*))?/);
+          const firstArg = m && m[1] ? m[1].trim() : '';
+          const secondArg = m && m[2] ? m[2].trim() : '';
+          let out;
+          if (/^params$/i.test(firstArg)) {
+            out = /^cad$/i.test(secondArg) ? _fn(_params, CAD_ARG, THREE_ARG) : _fn(_params, THREE_ARG, CAD_ARG);
+          } else if (/^cad$/i.test(firstArg)) {
+            out = _fn(CAD_ARG, _params, THREE_ARG);
+          } else if (/^cad$/i.test(secondArg)) {
+            out = _fn(THREE_ARG, CAD_ARG, _params);
+          } else {
+            out = _fn(THREE_ARG, _params, CAD_ARG);
+          }
+          if (out && out.isBufferGeometry) {
+            out = new THREE_ARG.Mesh(out, CAD_ARG.materials.brushedSteel());
+          }
+          if (out && out.isMesh && !out.isGroup && out.parent === null) {
+            const g = new THREE_ARG.Group();
+            g.name = out.name || 'root_assembly';
+            g.add(out);
+            return g;
+          }
+          return out;
+        };
+        return { PARAMS: _params, PARAM_SCHEMA: _schema, buildModel: _invoke };
+        `
+      );
+      // 4th argument keeps the historical parameter name `scene` but is the scratch group.
+      return factory(THREE, CAD, CSG, scriptScratchScene);
+    }
+
+    // Builds slider rows with DOM APIs only: PARAM_SCHEMA keys/labels come from LLM output.
+    function buildParamSlidersUI() {
+      const container = document.getElementById('paramsList');
+      if (!container) return;
+      container.textContent = '';
+
+      const keys = Object.keys(currentParams || {}).filter(
+        (k) => typeof currentParams[k] === 'number' && Number.isFinite(currentParams[k])
+      );
+      if (keys.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:11px;color:var(--muted)';
+        empty.textContent = 'No numeric PARAMS defined in script.';
+        container.appendChild(empty);
+        return;
+      }
+
+      const finiteOr = (v, fallback) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+      };
+
+      for (const key of keys) {
+        const val = currentParams[key];
+        const schema = currentParamSchema && typeof currentParamSchema[key] === 'object' && currentParamSchema[key]
+          ? currentParamSchema[key]
+          : {};
+        const baseVal = Math.abs(val) > 1e-4 ? Math.abs(val) : 10;
+        // Negative defaults get a symmetric negative range instead of being clamped at 0.
+        const autoMin = Math.min(Math.max(0, Number((val - baseVal * 0.7).toFixed(2))), Number((val * 2).toFixed(2)));
+        const autoMax = Number((val + baseVal * 1.2 + 5).toFixed(2));
+        let min = schema.min !== undefined ? finiteOr(schema.min, autoMin) : autoMin;
+        let max = schema.max !== undefined ? finiteOr(schema.max, autoMax) : autoMax;
+        if (max <= min) max = min + Math.max(1, baseVal);
+        min = Math.min(min, val);
+        max = Math.max(max, val);
+        let step = schema.step !== undefined ? finiteOr(schema.step, 0) : (Number.isInteger(val) && max - min >= 6 ? 1 : 0.5);
+        if (!(step > 0)) step = (max - min) / 100 || 0.5;
+        const label = String(schema.label || key).slice(0, 80);
+
+        const row = document.createElement('div');
+        row.className = 'param-row';
+        const labelRow = document.createElement('div');
+        labelRow.className = 'param-label-row';
+        const labelEl = document.createElement('span');
+        labelEl.textContent = label;
+        const valEl = document.createElement('span');
+        valEl.className = 'param-val';
+        valEl.dataset.paramVal = key;
+        valEl.textContent = String(val);
+        labelRow.appendChild(labelEl);
+        labelRow.appendChild(valEl);
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        input.value = String(val);
+        input.dataset.paramKey = key;
+        input.setAttribute('aria-label', `${label} (${key})`);
+        row.appendChild(labelRow);
+        row.appendChild(input);
+
+        // Debounced live rebuild (150 ms) so dragging a slider does not rebuild per pixel.
+        let rebuildTimer = 0;
+        let rebuildPending = false;
+        const flushRebuild = () => {
+          if (rebuildTimer) {
+            clearTimeout(rebuildTimer);
+            rebuildTimer = 0;
+          }
+          if (!rebuildPending) return;
+          rebuildPending = false;
+          rebuildGeometryFromCurrentParams(false);
+        };
+        input.addEventListener('input', () => {
+          const nextVal = Number(input.value);
+          if (!Number.isFinite(nextVal)) return;
+          currentParams[key] = nextVal;
+          valEl.textContent = String(nextVal);
+          rebuildPending = true;
+          if (rebuildTimer) clearTimeout(rebuildTimer);
+          rebuildTimer = setTimeout(flushRebuild, 150);
+        });
+        input.addEventListener('change', () => {
+          // Update 4-view composite and telemetry when user finishes dragging slider
+          flushRebuild();
+          emitTelemetryToParent(true);
+        });
+        container.appendChild(row);
+      }
+    }
+
+    function rebuildGeometryFromCurrentParams(refitCamera = false) {
+      hideBanner();
+      let ok = false;
+
+      try {
+        clearModelRoot();
+        // Drop whatever a previous (possibly failed) build left on the scratch scene so it
+        // cannot be adopted twice; the script re-adds what it needs on every build.
+        if (scriptScratchScene && scriptScratchScene.children.length) {
+          disposeSubtree(scriptScratchScene);
+          scriptScratchScene.clear();
+        }
+        let built = null;
+        // Arm the kernel watchdog: cooperative 20 s deadline + 2M triangle budget per build.
+        CAD.__deadline = performance.now() + BUILD_DEADLINE_MS;
+        CAD.__triangleCount = 0;
+        try {
+          if (typeof currentBuildFn === 'function') {
+            built = currentBuildFn(THREE, currentParams, CAD);
+          }
+        } finally {
+          CAD.__deadline = Infinity;
+        }
+        if (!built || !built.isObject3D) {
+          throw new Error('buildModel(THREE, PARAMS, CAD) did not return a valid THREE.Object3D / THREE.Group.');
+        }
+        // Adopt anything the script parked on its throw-away `scene` group. The returned
+        // object may itself be one of those children (scene.add(mesh); return mesh;) or sit
+        // inside one of them, so never add an object to itself or to its own descendant.
+        if (scriptScratchScene && scriptScratchScene !== built) {
+          const strays = scriptScratchScene.children.slice();
+          const isAncestorOf = (candidate, obj) => {
+            for (let p = obj.parent; p; p = p.parent) if (p === candidate) return true;
+            return false;
+          };
+          if (strays.some((s) => s !== built && isAncestorOf(s, built))) {
+            const wrap = new THREE.Group();
+            wrap.name = built.name || 'root_assembly';
+            for (const s of strays) wrap.add(s);
+            built = wrap;
+          } else {
+            for (const s of strays) {
+              if (s === built) scriptScratchScene.remove(s);
+              else built.add(s);
+            }
+          }
+        }
+
+        // Ensure shadows on all child meshes
+        built.traverse((c) => {
+          if (c.isMesh) {
+            c.castShadow = true;
+            c.receiveShadow = true;
+          }
+        });
+
+        const telemetry = analyzeModelTelemetry(built, THREE);
+        if (telemetry.triangleCount > TRIANGLE_BUDGET) {
+          disposeSubtree(built);
+          throw new Error(`Model exceeds the 2M triangle budget (${telemetry.triangleCount.toLocaleString()} triangles)`);
+        }
+
+        modelRoot = built;
+        scene.add(modelRoot);
+        applyRenderModeToModel();
+
+        if (refitCamera) {
+          fitCameraToModel(modelRoot, 'iso', false);
+        }
+        updateSectionPlaneFromUI();
+        latestTelemetry = telemetry;
+        updateTelemetryBarUI(latestTelemetry, null);
+        if (spin3AxisEnabled) {
+          applySpin3AxisTransform(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z);
+        }
+        ok = true;
+      } catch (err) {
+        // A failed rebuild must not leave the previous model's telemetry / 4-view around:
+        // the parent would otherwise store them on the new revision and send them to the model.
+        latestTelemetry = null;
+        latestFourViewDataUrl = '';
+        const previewImg = document.getElementById('fourViewPreviewImg');
+        if (previewImg) previewImg.removeAttribute('src');
+        const msg = describeError(err);
+        showBanner(`3D CAD Build Error:\n${msg}`);
+        updateTelemetryBarUI(null, msg);
+        postToParent({
+          type: 'CAD_ERROR',
+          slot: slotId,
+          phase: 'build',
+          error: msg,
+        });
+      }
+      return ok;
+    }
+
+    function updateTelemetryBarUI(telemetry, errorText) {
+      const statusEl = document.getElementById('telemetryStatus');
+      const bboxEl = document.getElementById('telemetryBbox');
+      const countsEl = document.getElementById('telemetryCounts');
+      if (errorText || !telemetry) {
+        if (statusEl) {
+          statusEl.className = 'telemetry-badge warn';
+          statusEl.textContent = '⚠ Error';
+        }
+        if (bboxEl) bboxEl.textContent = '0 × 0 × 0 mm';
+        if (countsEl) countsEl.textContent = '0 parts · 0 tris';
+        return;
+      }
+      if (statusEl) {
+        if (telemetry.watertight === null) {
+          statusEl.className = 'telemetry-badge warn';
+          statusEl.textContent = '● Unverified (too large)';
+        } else if (telemetry.watertight) {
+          statusEl.className = 'telemetry-badge ok';
+          statusEl.textContent = telemetry.csgApprox ? '● Watertight (CSG approx)' : '● Watertight';
+        } else {
+          statusEl.className = 'telemetry-badge warn';
+          statusEl.textContent = telemetry.csgApprox ? '● CSG approx (open mesh)' : '● Check Mesh';
+        }
+      }
+      if (bboxEl) {
+        const bb = telemetry.boundingBoxMm || [0, 0, 0];
+        bboxEl.textContent = `${bb[0]} × ${bb[1]} × ${bb[2]} mm`;
+      }
+      if (countsEl) {
+        countsEl.textContent = `${telemetry.partCount} parts · ${telemetry.triangleCount.toLocaleString()} tris · ${telemetry.volumeCm3} cm³`;
+      }
+    }
+
+    function emitTelemetryToParent(includeFourView = true) {
+      if (!latestTelemetry) return;
+      if (includeFourView) {
+        captureFourAngleCompositeDataUrl();
+      }
+      postToParent({
+        type: 'CAD_TELEMETRY',
+        slot: slotId,
+        telemetry: latestTelemetry,
+        params: { ...currentParams },
+        paramSchema: { ...currentParamSchema },
+        fourViewDataUrl: latestFourViewDataUrl,
+      });
+    }
+
+    function loadAndRunCadCode(codeText, { preserveCamera = false } = {}) {
+      currentCode = String(codeText || '');
+      hideBanner();
+
+      try {
+        const compiled = compileCadScript(currentCode);
+        currentBuildFn = compiled.buildModel;
+        defaultParams = JSON.parse(JSON.stringify(compiled.PARAMS || {}));
+        currentParams = JSON.parse(JSON.stringify(compiled.PARAMS || {}));
+        currentParamSchema = compiled.PARAM_SCHEMA && typeof compiled.PARAM_SCHEMA === 'object' ? compiled.PARAM_SCHEMA : {};
+
+        buildParamSlidersUI();
+        // Build errors are reported by rebuildGeometryFromCurrentParams itself (CAD_ERROR);
+        // telemetry is only emitted after a successful build so the parent never receives
+        // a stale 4-view / telemetry pair for a model that failed to build.
+        if (rebuildGeometryFromCurrentParams(!preserveCamera)) {
+          emitTelemetryToParent(true);
+        }
+      } catch (err) {
+        currentBuildFn = null;
+        latestTelemetry = null;
+        latestFourViewDataUrl = '';
+        const msg = describeError(err);
+        showBanner(`3D CAD Script Compile Error:\n${msg}`);
+        updateTelemetryBarUI(null, msg);
+        postToParent({
+          type: 'CAD_ERROR',
+          slot: slotId,
+          phase: 'compile',
+          error: msg,
+        });
+      }
+    }
+
+    // ---- 7. Click-to-Inspect & Target Sub-Part (`@part_name`) ----
+    const raycaster = new THREE.Raycaster();
+    const pointerDownPos = new THREE.Vector2();
+
+    canvas.addEventListener('pointerdown', (e) => {
+      pointerDownPos.set(e.clientX, e.clientY);
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+      if (dist > 5 || !modelRoot) return; // Ignore orbit drags
+
+      const rect = canvas.getBoundingClientRect();
+      const ndc = new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      );
+      raycaster.setFromCamera(ndc, camera);
+      const meshes = [];
+      modelRoot.traverse((c) => {
+        if (c.isMesh && !c.userData?.isHelper) meshes.push(c);
+      });
+      const hits = raycaster.intersectObjects(meshes, false);
+      const chip = document.getElementById('selectedPartChip');
+
+      // Clear previous selection highlight
+      meshes.forEach((m) => {
+        if (m.material && m.material.emissive) {
+          m.material.emissive.setHex(0x000000);
+        }
+      });
+
+      if (hits.length > 0) {
+        const hitMesh = hits[0].object;
+        const pName = (hitMesh.name || hitMesh.parent?.name || 'selected_part').replace(/\s+/g, '_');
+        selectedPartName = pName;
+        if (hitMesh.material && hitMesh.material.emissive) {
+          hitMesh.material.emissive.setHex(0x0ea5e9);
+          hitMesh.material.emissiveIntensity = 0.35;
+        }
+        if (chip) {
+          chip.textContent = `🎯 @${pName} ✕`;
+          chip.hidden = false;
+        }
+        postToParent({
+          type: 'CAD_PART_SELECTED',
+          slot: slotId,
+          partName: pName,
+        });
+      } else {
+        selectedPartName = null;
+        if (chip) chip.hidden = true;
+      }
+    });
+
+    document.getElementById('selectedPartChip')?.addEventListener('click', () => {
+      selectedPartName = null;
+      const chip = document.getElementById('selectedPartChip');
+      if (chip) chip.hidden = true;
+      if (modelRoot) {
+        modelRoot.traverse((m) => {
+          if (m.isMesh && m.material && m.material.emissive) {
+            m.material.emissive.setHex(0x000000);
+          }
+        });
+      }
+    });
+
+    // ---- 8. Export Handlers: Binary .STL, ISO-10303-21 .STEP, .GLB, .OBJ ----
+    function triggerBlobDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    }
+
+    function safeSlug() {
+      return `llm-compare-slot-${slotId}-${modelLabel}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+    }
+
+    document.getElementById('exportStlBtn')?.addEventListener('click', () => {
+      if (!modelRoot) return;
+      const exporter = new STLExporter();
+      const buffer = exporter.parse(modelRoot, { binary: true });
+      const blob = new Blob([buffer], { type: 'application/octet-stream' });
+      triggerBlobDownload(blob, `${safeSlug()}.stl`);
+    });
+
+    document.getElementById('exportObjBtn')?.addEventListener('click', () => {
+      if (!modelRoot) return;
+      const exporter = new OBJExporter();
+      const text = exporter.parse(modelRoot);
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      triggerBlobDownload(blob, `${safeSlug()}.obj`);
+    });
+
+    document.getElementById('exportGlbBtn')?.addEventListener('click', () => {
+      if (!modelRoot) return;
+      const exporter = new GLTFExporter();
+      exporter.parse(
+        modelRoot,
+        (result) => {
+          const blob =
+            result instanceof ArrayBuffer
+              ? new Blob([result], { type: 'model/gltf-binary' })
+              : new Blob([JSON.stringify(result, null, 2)], { type: 'model/gltf+json' });
+          triggerBlobDownload(blob, `${safeSlug()}.glb`);
+        },
+        (err) => console.error('GLB export error:', err),
+        { binary: true }
+      );
+    });
+
+    // STEP serialisation runs in cad-step-worker.js so a large export does not freeze the
+    // orbit controls. From an opaque origin `new Worker('/cad-step-worker.js')` is refused
+    // (workers must be same-origin with the document), so the second attempt is a blob:
+    // module worker that imports the kernel by absolute URL (served with CORS headers for
+    // exactly this reason). If both fail, buildStepExport runs on the main thread.
+    let stepWorker = null;
+    let stepWorkerBroken = false;
+    let stepReqSeq = 0;
+    const stepPending = new Map();
+
+    function failAllStepRequests(reason) {
+      for (const [, pending] of stepPending) {
+        clearTimeout(pending.timer);
+        pending.reject(reason instanceof Error ? reason : new Error(String(reason || 'STEP worker failed')));
+      }
+      stepPending.clear();
+    }
+
+    function attachStepWorker(worker) {
+      worker.addEventListener('message', (ev) => {
+        const data = ev.data || {};
+        if (data.type !== 'STEP_EXPORT_DONE' && data.type !== 'EXPORT_STEP_DONE') return;
+        const pending = stepPending.get(data.reqId);
+        if (!pending) return;
+        stepPending.delete(data.reqId);
+        clearTimeout(pending.timer);
+        if (data.ok && typeof data.stepText === 'string') {
+          pending.resolve({ stepText: data.stepText, warnings: Array.isArray(data.warnings) ? data.warnings : [] });
+        } else {
+          pending.reject(new Error(String(data.error || 'STEP worker returned no data')));
+        }
+      });
+      worker.addEventListener('error', (ev) => {
+        stepWorkerBroken = true;
+        try { worker.terminate(); } catch (_) {}
+        if (stepWorker === worker) stepWorker = null;
+        failAllStepRequests(new Error(`STEP worker error: ${ev && ev.message ? ev.message : 'unknown'}`));
+      });
+      return worker;
+    }
+
+    function getStepWorker() {
+      if (stepWorker) return stepWorker;
+      if (stepWorkerBroken || typeof Worker === 'undefined') return null;
+      // window.origin is the string 'null' inside a sandbox without allow-same-origin, where
+      // a same-origin URL worker is refused: go straight to the blob worker in that case.
+      if (window.origin !== 'null') {
+        try {
+          stepWorker = attachStepWorker(new Worker('/cad-step-worker.js', { type: 'module' }));
+          return stepWorker;
+        } catch (_) {
+          // Fall through to the blob worker
+        }
+      }
+      try {
+        const kernelUrl = new URL('/cad-kernel.js', window.location.href).href;
+        const src = [
+          `import { buildStepExport } from ${JSON.stringify(kernelUrl)};`,
+          "self.addEventListener('message', (event) => {",
+          '  const data = event.data || {};',
+          "  if (data.type !== 'STEP_EXPORT') return;",
+          '  try {',
+          '    const out = buildStepExport(data.meshes || [], { productName: data.productName, maxFacesPerPart: data.maxFacesPerPart });',
+          "    self.postMessage({ type: 'STEP_EXPORT_DONE', reqId: data.reqId, ok: true, stepText: out.stepText, warnings: out.warnings });",
+          '  } catch (err) {',
+          "    self.postMessage({ type: 'STEP_EXPORT_DONE', reqId: data.reqId, ok: false, error: String(err && err.message ? err.message : err) });",
+          '  }',
+          '});',
+        ].join('\n');
+        const blobUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+        stepWorker = attachStepWorker(new Worker(blobUrl, { type: 'module' }));
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        return stepWorker;
+      } catch (_) {
+        stepWorkerBroken = true;
+        return null;
+      }
+    }
+
+    function exportStepAsync(options = {}) {
+      if (!modelRoot) return Promise.resolve({ stepText: '', warnings: [] });
+      const productName = options.productName || `${safeSlug()}_AP214`;
+      const maxFacesPerPart = options.maxFacesPerPart || 3500;
+      const meshes = collectStepMeshes(modelRoot);
+      const runInline = () => buildStepExport(meshes, { productName, maxFacesPerPart });
+      const worker = getStepWorker();
+      if (!worker) return Promise.resolve(runInline());
+      return new Promise((resolve, reject) => {
+        const reqId = `step-${++stepReqSeq}`;
+        const timer = setTimeout(() => {
+          stepPending.delete(reqId);
+          reject(new Error('STEP worker timed out'));
+        }, 30000);
+        stepPending.set(reqId, { resolve, reject, timer });
+        try {
+          worker.postMessage(
+            { type: 'STEP_EXPORT', reqId, productName, maxFacesPerPart, meshes },
+            meshes.map((m) => m.positions.buffer)
+          );
+        } catch (err) {
+          stepPending.delete(reqId);
+          clearTimeout(timer);
+          reject(err);
+        }
+      }).catch((err) => {
+        console.warn('STEP worker unavailable, exporting on the main thread:', err);
+        // Buffers may have been transferred: re-collect from the live model.
+        return buildStepExport(collectStepMeshes(modelRoot), { productName, maxFacesPerPart });
+      });
+    }
+
+    function showStepWarnings(warnings) {
+      if (!Array.isArray(warnings) || warnings.length === 0) return;
+      showBanner(`STEP export notes:\n- ${warnings.slice(0, 12).join('\n- ')}`, { warning: true });
+    }
+
+    document.getElementById('exportStepBtn')?.addEventListener('click', () => {
+      if (!modelRoot) return;
+      const stepBtn = document.getElementById('exportStepBtn');
+      const origText = stepBtn.textContent;
+      stepBtn.textContent = '⏳ STEP...';
+      stepBtn.disabled = true;
+      exportStepAsync({ productName: `${safeSlug()}_AP214`, maxFacesPerPart: 3500 })
+        .then(({ stepText, warnings }) => {
+          showStepWarnings(warnings);
+          const blob = new Blob([stepText], { type: 'application/step;charset=utf-8' });
+          triggerBlobDownload(blob, `${safeSlug()}.step`);
+        })
+        .catch((err) => {
+          showBanner(`STEP export failed:\n${describeError(err)}`);
+        })
+        .finally(() => {
+          stepBtn.textContent = origText;
+          stepBtn.disabled = false;
+        });
+    });
+
+    // ---- 9. HUD Toolbar Wire-Up ----
+    document.querySelectorAll('[data-cam]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const preset = btn.getAttribute('data-cam') || 'iso';
+        setCameraPreset(preset, true, true);
+      });
+    });
+
+    document.getElementById('hudSpinBtn')?.addEventListener('click', (e) => {
+      controls.autoRotate = !controls.autoRotate;
+      controls.autoRotateSpeed = 2.0;
+      setPressed(e.currentTarget, controls.autoRotate);
+      if (controls.autoRotate && spin3AxisEnabled) {
+        setSpin3AxisState(false, true);
+      }
+    });
+
+    document.getElementById('hudSpin3AxisBtn')?.addEventListener('click', () => {
+      setSpin3AxisState(!spin3AxisEnabled, true);
+    });
+
+    document.getElementById('hudSyncBtn')?.addEventListener('click', () => {
+      cameraSyncEnabled = !cameraSyncEnabled;
+      updateSyncButtonUI();
+      postToParent({
+        type: 'CAD_TOGGLE_SYNC_REQUEST',
+        slot: slotId,
+        enabled: cameraSyncEnabled,
+      });
+    });
+
+    document.querySelectorAll('[data-render-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        renderMode = btn.getAttribute('data-render-mode') || 'solid';
+        document.querySelectorAll('[data-render-mode]').forEach((b) => {
+          setPressed(b, b === btn);
+        });
+        applyRenderModeToModel();
+      });
+    });
+
+    document.getElementById('hudSectionBtn')?.addEventListener('click', (e) => {
+      sectionEnabled = !sectionEnabled;
+      setPressed(e.currentTarget, sectionEnabled);
+      const bar = document.getElementById('hudSectionBar');
+      if (bar) bar.hidden = !sectionEnabled;
+      updateSectionPlaneFromUI();
+      applyRenderModeToModel();
+    });
+
+    document.querySelectorAll('[data-cut-axis]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        sectionAxis = btn.getAttribute('data-cut-axis') || 'x';
+        document.querySelectorAll('[data-cut-axis]').forEach((b) => {
+          setPressed(b, b === btn);
+        });
+        updateSectionPlaneFromUI();
+      });
+    });
+
+    document.getElementById('hudSectionSlider')?.addEventListener('input', () => {
+      updateSectionPlaneFromUI();
+    });
+
+    document.getElementById('hudParamsBtn')?.addEventListener('click', (e) => {
+      const drawer = document.getElementById('paramsDrawer');
+      if (!drawer) return;
+      drawer.hidden = !drawer.hidden;
+      setPressed(e.currentTarget, !drawer.hidden);
+    });
+
+    document.getElementById('paramsResetBtn')?.addEventListener('click', () => {
+      currentParams = JSON.parse(JSON.stringify(defaultParams || {}));
+      buildParamSlidersUI();
+      if (rebuildGeometryFromCurrentParams(false)) {
+        emitTelemetryToParent(true);
+      }
+    });
+
+    document.getElementById('showFourViewBtn')?.addEventListener('click', () => {
+      captureFourAngleCompositeDataUrl();
+      const modal = document.getElementById('fourViewModal');
+      if (modal) modal.hidden = false;
+    });
+
+    document.getElementById('fourViewCloseBtn')?.addEventListener('click', () => {
+      const modal = document.getElementById('fourViewModal');
+      if (modal) modal.hidden = true;
+    });
+
+    document.getElementById('fourViewDownloadBtn')?.addEventListener('click', () => {
+      if (!latestFourViewDataUrl) captureFourAngleCompositeDataUrl();
+      if (!latestFourViewDataUrl) return;
+      const a = document.createElement('a');
+      a.href = latestFourViewDataUrl;
+      a.download = `${safeSlug()}-4view-sheet.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    });
+
+    // ---- 10. Parent Window PostMessage Bridge ----
+    // Only the embedding parent may drive this viewport. Sibling frames (another CAD slot, a
+    // Pygame game) could otherwise post CAD_RUN_CODE / CAD_APPLY_CAMERA here; event.source
+    // is the only unforgeable sender identity, so everything else is ignored outright.
+    window.addEventListener('message', (event) => {
+      if (event.source !== window.parent) return;
+      const msg = event.data || {};
+      if (!msg || typeof msg.type !== 'string') return;
+
+      if (msg.type === 'CAD_RUN_CODE') {
+        if (msg.slot) slotId = String(msg.slot).slice(0, 8);
+        if (msg.label) modelLabel = String(msg.label).slice(0, 120);
+        if (typeof msg.sync === 'boolean') {
+          cameraSyncEnabled = msg.sync;
+          updateSyncButtonUI();
+        }
+        loadAndRunCadCode(msg.code || '', { preserveCamera: Boolean(msg.preserveCamera) });
+      } else if (msg.type === 'CAD_APPLY_CAMERA') {
+        const camState = msg.cameraState || msg.camera;
+        if (cameraSyncEnabled && camState) {
+          applyNormalizedCameraState(camState);
+        }
+      } else if (msg.type === 'CAD_SET_SYNC_STATE') {
+        cameraSyncEnabled = Boolean(msg.enabled !== undefined ? msg.enabled : msg.sync);
+        updateSyncButtonUI();
+      } else if (msg.type === 'CAD_SET_PRESET' || msg.type === 'CAD_SET_CAMERA_PRESET') {
+        setCameraPreset(msg.preset || 'iso', false, true);
+      } else if (msg.type === 'CAD_SET_SPIN_3AXIS') {
+        setSpin3AxisState(Boolean(msg.enabled), false, msg.angles || null);
+      } else if (msg.type === 'CAD_CAPTURE_FOUR_VIEW' || msg.type === 'CAD_REQUEST_4VIEW') {
+        const dataUrl = captureFourAngleCompositeDataUrl();
+        postToParent({
+          type: 'CAD_FOUR_VIEW_READY',
+          slot: slotId,
+          reqId: msg.reqId || '',
+          fourViewDataUrl: dataUrl,
+          dataUrl,
+          telemetry: latestTelemetry,
+        });
+        postToParent({
+          type: 'CAD_4VIEW_SNAPSHOT',
+          slot: slotId,
+          dataUrl,
+          fourViewDataUrl: dataUrl,
+          telemetry: latestTelemetry,
+        });
+      } else if (msg.type === 'CAD_EXPORT_STEP_TEXT') {
+        const reqId = msg.reqId || '';
+        exportStepAsync({ productName: `${safeSlug()}_AP214` })
+          .then(({ stepText, warnings }) => {
+            postToParent({
+              type: 'CAD_STEP_TEXT_READY',
+              slot: slotId,
+              reqId,
+              stepText,
+              warnings,
+            });
+          })
+          .catch((err) => {
+            postToParent({
+              type: 'CAD_STEP_TEXT_READY',
+              slot: slotId,
+              reqId,
+              stepText: '',
+              warnings: [`STEP export failed: ${String(err && err.message ? err.message : err)}`],
+            });
+          });
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      const w = Math.max(1, window.innerWidth);
+      const h = Math.max(1, window.innerHeight);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    });
+
+    // Render loop. A render-time exception (e.g. a material the script left half-configured)
+    // used to kill the loop silently and freeze the viewport; now it is reported once to the
+    // parent and the loop keeps running so the next successful rebuild recovers. Rendering is
+    // skipped while the tab is hidden so 4-6 slots do not burn GPU time in the background.
+    let renderErrorReported = false;
+    function animate(nowMs) {
+      requestAnimationFrame(animate);
+      if (document.visibilityState !== 'visible') return;
+      try {
+        const now = typeof nowMs === 'number' ? nowMs : performance.now();
+        const dt = Math.min(0.1, Math.max(0, (now - lastAnimFrameMs) / 1000));
+        lastAnimFrameMs = now;
+        if (spin3AxisEnabled && modelRoot) {
+          const nx = (spin3AxisAngles.x + dt * 0.65) % (Math.PI * 2);
+          const ny = (spin3AxisAngles.y + dt * 1.05) % (Math.PI * 2);
+          const nz = (spin3AxisAngles.z + dt * 0.42) % (Math.PI * 2);
+          applySpin3AxisTransform(nx, ny, nz);
+        }
+        controls.update();
+        renderer.render(scene, camera);
+      } catch (err) {
+        if (renderErrorReported) return;
+        renderErrorReported = true;
+        const msg = describeError(err);
+        showBanner(`3D render loop error:\n${msg}`);
+        updateTelemetryBarUI(null, msg);
+        postToParent({
+          type: 'CAD_ERROR',
+          slot: slotId,
+          phase: 'render',
+          error: msg,
+        });
+      }
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') lastAnimFrameMs = performance.now();
+    });
+    animate();
+
+    // Notify parent that CAD viewport iframe is ready
+    postToParent({ type: 'CAD_VIEWPORT_READY', slot: slotId });
+  </script>
+</body>
+</html>

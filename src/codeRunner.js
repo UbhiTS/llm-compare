@@ -8,9 +8,11 @@
 //                  cases in the vm sandbox (src/runner.js) and report pass/fail.
 //
 // SECURITY: this runs model-generated code on the host. Intended for a LOCAL
-// demo where you control the tasks — NOT a hardened sandbox. Disable with
+// demo where you control the tasks - NOT a hardened sandbox. OFF by default on
+// Cloud Run (K_SERVICE): opt in with ENABLE_CODE_EXEC=1; locally it is on unless
 // ENABLE_CODE_EXEC=0. (Same posture as the vm test runner in runner.js.)
 // ---------------------------------------------------------------------------
+'use strict';
 
 const { spawn } = require('child_process');
 const os = require('os');
@@ -20,19 +22,39 @@ const { runTests } = require('./runner');
 
 const PYTHON_CMD = process.env.PYTHON_CMD || (process.platform === 'win32' ? 'python' : 'python3');
 const EXEC_TIMEOUT_MS = (parseInt(process.env.EXEC_TIMEOUT_SEC, 10) || 10) * 1000;
+const GUI_MAX_LIFETIME_MS = 10 * 60 * 1000; // a launched window is killed after this, whatever it is doing
 const MAX_OUTPUT = 100_000; // cap captured stdout/stderr (chars)
+const POSIX = process.platform !== 'win32';
 
 const SUPPORTED = new Set(['python', 'javascript']);
 
+// Opt-in on Cloud Run, opt-out locally (3.3): the deploy scripts never set the flag, so
+// "default on" meant arbitrary Python on the production instance.
 function executionEnabled() {
-  return process.env.ENABLE_CODE_EXEC !== '0';
+  if (process.env.ENABLE_CODE_EXEC === '1') return true;
+  return !process.env.K_SERVICE && process.env.ENABLE_CODE_EXEC !== '0';
 }
+
+// Children we started and may still be running (headless runs + launched GUI windows):
+// killed when the server exits so nothing model-generated outlives the process.
+const liveChildren = new Set();
+function killTree(child) {
+  if (!child || !child.pid) return;
+  if (!POSIX) {
+    try { spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true }); } catch (_) { try { child.kill(); } catch (_e) { /* gone */ } }
+    return;
+  }
+  // Detached children lead their own process group: -pid takes the grandchildren too.
+  try { process.kill(-child.pid, 'SIGKILL'); } catch (_) { try { child.kill('SIGKILL'); } catch (_e) { /* gone */ } }
+}
+process.on('exit', () => { for (const c of liveChildren) killTree(c); });
 
 // SECURITY: executed code must not inherit the server's credentials (provider API
 // keys, OAuth client secret, bootstrap admin password, bearer tokens, the gcloud
-// token command, SSH agent socket...). Anything whose NAME looks secret is dropped;
-// everything else (PATH, HOME, DISPLAY, XAUTHORITY, proxies, locale, SDL vars) is kept
-// so programs — including windowed Pygame launches — behave exactly as before.
+// token command, SSH agent socket...). For the local GUI launcher anything whose NAME
+// looks secret is dropped and everything else (PATH, HOME, DISPLAY, XAUTHORITY, proxies,
+// locale, SDL vars) is kept so windowed Pygame launches behave exactly as before.
+// Headless runs use the stricter allow-list below (headlessEnv).
 // Extra names can be dropped with EXEC_ENV_DENY=NAME1,NAME2 and specific names can be
 // kept with EXEC_ENV_ALLOW=NAME1,NAME2.
 const SECRET_ENV_RE = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|BEARER|PRIVATE)/i;
@@ -45,6 +67,20 @@ function childEnv(extra) {
     if (allow.has(k)) { env[k] = v; continue; }
     if (deny.has(k) || SECRET_ENV_EXACT.has(k) || SECRET_ENV_RE.test(k)) continue;
     env[k] = v;
+  }
+  return { ...env, ...extra };
+}
+
+// Headless runs get an ALLOW-list instead (3.3), the same shape as webGame.buildSafeGameEnv:
+// a headless program needs nothing but an interpreter, a locale and a temp dir, so nothing
+// else from the server's environment (proxies, cloud metadata hints, tool paths...) is
+// visible to it. EXEC_ENV_ALLOW names are still honoured for operator opt-ins (e.g. a venv).
+const EXEC_SAFE_ENV_KEYS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'PYTHONIOENCODING', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'WINDIR'];
+function headlessEnv(extra) {
+  const env = { PYTHONIOENCODING: 'utf-8' };
+  const allow = new Set(String(process.env.EXEC_ENV_ALLOW || '').split(',').map((s) => s.trim()).filter(Boolean));
+  for (const k of [...EXEC_SAFE_ENV_KEYS, ...allow]) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
   }
   return { ...env, ...extra };
 }
@@ -66,18 +102,21 @@ function runPython(code) {
     let settled = false;
 
     // Headless: lets Pygame / SDL programs init without a real display.
-    const env = childEnv({ SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy', PYGAME_HIDE_SUPPORT_PROMPT: '1' });
+    const env = headlessEnv({ SDL_VIDEODRIVER: 'dummy', SDL_AUDIODRIVER: 'dummy', PYGAME_HIDE_SUPPORT_PROMPT: '1' });
     // -I = isolated mode (ignore env-derived sys.path / user site) for a bit of hygiene.
-    const child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { windowsHide: true, env });
+    // cwd is the scratch dir (relative file writes land there, not in the server tree);
+    // detached on POSIX puts the program in its own process group so a timeout kills
+    // whatever it forked as well, not just the interpreter.
+    let child;
+    try {
+      child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { cwd: dir, windowsHide: true, env, detached: POSIX });
+    } catch (e) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      return resolve({ kind: 'program', stdout: '', stderr: `Failed to launch ${PYTHON_CMD}: ${e.message}`, exitCode: null, timedOut: false, durationMs: 0, truncated: false });
+    }
+    liveChildren.add(child);
 
-    const killProcessTree = () => {
-      if (!child.pid) return;
-      if (process.platform === 'win32') {
-        try { spawn('taskkill', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true }); } catch (_) { child.kill(); }
-      } else {
-        child.kill('SIGKILL');
-      }
-    };
+    const killProcessTree = () => killTree(child);
     const timer = setTimeout(() => { timedOut = true; killProcessTree(); }, EXEC_TIMEOUT_MS);
     if (child.stdin) { try { child.stdin.end(); } catch (_) { /* ignore */ } }
     child.stdout.on('data', (d) => { if (stdout.length < MAX_OUTPUT) stdout += d.toString(); });
@@ -87,6 +126,7 @@ function runPython(code) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      liveChildren.delete(child);
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
       resolve({
         kind: 'program',
@@ -100,16 +140,28 @@ function runPython(code) {
     };
 
     child.on('error', (e) => { stderr += `Failed to launch ${PYTHON_CMD}: ${e.message}`; finish(null); });
-    child.on('close', (codeExit) => finish(codeExit));
+    // Resolve on 'exit' (+ a short drain for buffered output) rather than on 'close': a
+    // grandchild that inherited the pipes and keeps running would hold 'close' back for
+    // as long as it lives, i.e. well past the timeout.
+    let exitCode = null;
+    child.on('exit', (codeExit) => {
+      exitCode = codeExit;
+      const drain = setTimeout(() => finish(exitCode), 500);
+      if (drain.unref) drain.unref();
+    });
+    child.on('close', (codeExit) => finish(codeExit != null ? codeExit : exitCode));
   });
 }
 
 // Launch a GRAPHICAL program (e.g. Pygame) on the local machine so its window
 // opens on the user's desktop. Unlike runPython this uses the REAL display (no
-// dummy SDL driver), does not capture/kill the process, and returns as soon as
-// the window is up (or reports an immediate failure). Only meaningful when the
-// server runs on the same machine as the display (the localhost demo).
+// dummy SDL driver), does not capture the process, and returns as soon as the
+// window is up (or reports an immediate failure). Only meaningful when the
+// server runs on the same machine as the display (the localhost demo), so it is
+// refused outright on Cloud Run, and a launched program is killed after
+// GUI_MAX_LIFETIME_MS so a forgotten window can't run forever (3.3).
 function launchGuiProgram(code, opts = {}) {
+  if (process.env.K_SERVICE) throw new Error('GUI launch is local-only');
   return new Promise((resolve) => {
     // Force the window TITLE to the model name (monkeypatch pygame so whatever the
     // program sets is overridden) by prepending a small preamble before the code.
@@ -190,7 +242,14 @@ function launchGuiProgram(code, opts = {}) {
       env.SDL_VIDEO_WINDOW_POS = `${Math.round(opts.posX)},${Math.round(opts.posY)}`;
       env.SDL_VIDEO_CENTERED = '0';
     }
-    const child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { windowsHide: false, env });
+    let child;
+    try {
+      child = spawn(PYTHON_CMD, ['-I', path.join(dir, 'program.py')], { cwd: dir, windowsHide: false, env, detached: POSIX });
+    } catch (e) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      return resolve({ kind: 'launched', launched: false, message: `Failed to launch ${PYTHON_CMD}: ${e.message}` });
+    }
+    liveChildren.add(child);
 
     if (child.stdin) { try { child.stdin.end(); } catch (_) { /* ignore */ } }
     child.stderr.on('data', (d) => { if (stderr.length < MAX_OUTPUT) stderr += d.toString(); });
@@ -202,11 +261,15 @@ function launchGuiProgram(code, opts = {}) {
       kind: 'launched', launched: false, exitCode, durationMs: Date.now() - t0,
       message: stderr.trim() ? 'Program exited right away:\n' + stderr.slice(-1500) : 'Program exited immediately (no window stayed open).',
     }));
-    // Still running after the grace window -> assume the window is up. We do NOT kill it.
+    // Still running after the grace window -> assume the window is up. The window stays
+    // open for the user; it is only force-closed at the lifetime cap (or server exit).
     setTimeout(() => done({
       kind: 'launched', launched: true, durationMs: Date.now() - t0,
       message: '▶ Launched on this machine — a window should be open on your desktop. Close it to stop.',
     }), 2500);
+    const lifetime = setTimeout(() => killTree(child), GUI_MAX_LIFETIME_MS);
+    if (lifetime.unref) lifetime.unref();
+    child.on('exit', () => { clearTimeout(lifetime); liveChildren.delete(child); });
     // Best-effort temp cleanup later (Python has already read the file by then).
     setTimeout(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ } }, 60000);
   });
@@ -227,7 +290,7 @@ function runJsTests(code, functionName, testCases) {
 
 // Dispatch on language. opts = { functionName, testCases } for graded JS.
 async function runCode(language, code, opts = {}) {
-  if (!executionEnabled()) throw new Error('Code execution is disabled (ENABLE_CODE_EXEC=0).');
+  if (!executionEnabled()) throw new Error('Code execution is disabled on this server (ENABLE_CODE_EXEC=0, or unset on Cloud Run; set ENABLE_CODE_EXEC=1 to allow it).');
   if (!SUPPORTED.has(language)) throw new Error(`Unsupported language: ${language} (supported: ${[...SUPPORTED].join(', ')}).`);
   if (typeof code !== 'string' || !code.trim()) throw new Error('No code to run.');
   if (language === 'python') return opts.gui ? launchGuiProgram(code, opts) : runPython(code);

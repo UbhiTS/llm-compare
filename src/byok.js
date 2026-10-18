@@ -56,8 +56,19 @@ function userCredential(family, keys) {
 }
 
 // The user's own GCP project (only ever paired with the user's own credential).
+// Validated against the GCP grammar (3.22): a project ID is 6-30 chars, lowercase letter
+// first, letters/digits/hyphens, no trailing hyphen; a project NUMBER is all digits. It is
+// interpolated into Vertex URL paths, so anything else is rejected up front with a
+// slot-level 400 instead of a confusing upstream error.
+const GCP_PROJECT_RE = /^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|\d{6,})$/;
 function userProject(keys) {
-  return keys && typeof keys === 'object' ? str(keys.gcpProject) : '';
+  const raw = keys && typeof keys === 'object' ? str(keys.gcpProject) : '';
+  if (!raw) return '';
+  const p = raw.toLowerCase();
+  if (!GCP_PROJECT_RE.test(p)) {
+    throw byokError(`"${raw.slice(0, 40)}" is not a valid GCP project ID (6-30 lowercase letters, digits or hyphens, starting with a letter) or project number - fix it under "Your API keys".`);
+  }
+  return p;
 }
 
 // Does this model run on the user's own credential? Decides whether a run

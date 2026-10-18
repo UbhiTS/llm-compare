@@ -7,7 +7,6 @@ const MIN_SLOTS = 1; // keep at least 1 active slot
 const MAX_SLOTS = 6; // compare up to 6 models / thinking modes at a time
 let CONFIG = null;       // from /api/config
 let MODELS = [];         // current editable model configs (the dynamic source of truth)
-let radarChart = null;
 let wallStartMs = 0;     // client-side wall clock (ticks even while a model is only thinking)
 let wallTimer = null;
 const wallFinished = new Set();
@@ -95,18 +94,230 @@ function initTheme() {
 
 const TASK_CATEGORIES = [
   ['custom', '✏️ Custom Prompt'],
-  ['enterprise', '🏢 Enterprise'],
-  ['retail', '🛍️ Retail & Commerce'],
-  ['semiconductor', '⚡ Semiconductor & EDA'],
-  ['transport', '🚆 Transport & Logistics'],
-  ['finance', '💳 Financial Services'],
-  ['healthcare', '🏥 Healthcare & Bio'],
-  ['security', '🛡️ Security'],
-  ['coding', '💻 Coding'],
-  ['games', '🎮 Games'],
-  ['business', '📊 Business'],
-  ['general', '🌐 General'],
+  ['industry', '🏢 Industry Architecture & Verticals'],
+  ['security', '🛡️ Cybersecurity & SecOps'],
+  ['engineering', '💻 Software, Systems & Games'],
+  ['strategy', '📊 Strategy, Operations & Governance'],
 ];
+
+const TEXT_SUBCATEGORIES_BY_CATEGORY = {
+  industry: [
+    ['enterprise', '🏛️ Enterprise Cloud & M&A'],
+    ['retail', '🛍️ Retail & Omnichannel Commerce'],
+    ['semiconductor', '🔬 Semiconductor & Silicon EDA'],
+    ['transport', '🚆 Transport & Fleet Logistics'],
+    ['finance', '💳 Financial Services & Risk'],
+    ['healthcare', '🏥 Healthcare & Life Sciences'],
+  ],
+  security: [
+    ['sec-patching', '🩹 Automated Vulnerability Patching'],
+    ['sec-operations', '🕵️ Threat Hunting & Red-Teaming'],
+  ],
+  engineering: [
+    ['sys-engineering', '⚙️ Distributed Systems, DBs & Compilers'],
+    ['wasm-games', '🎮 Interactive WebAssembly Games'],
+    ['algo-viz', '🧩 Algorithms & Visualizers'],
+  ],
+  strategy: [
+    ['ops-cx', '📦 Supply Chain, Workforce & CX'],
+    ['governance-rca', '⚖️ Incident RCA & Compliance'],
+    ['mission-travel', '🌐 Aerospace & Travel Planning'],
+  ],
+};
+
+const TEXT_SUBCATEGORY_LABELS = {
+  enterprise: '🏛️ Enterprise Cloud & M&A',
+  retail: '🛍️ Retail & Omnichannel Commerce',
+  semiconductor: '🔬 Semiconductor & Silicon EDA',
+  transport: '🚆 Transport & Fleet Logistics',
+  finance: '💳 Financial Services & Risk',
+  healthcare: '🏥 Healthcare & Life Sciences',
+  'sec-patching': '🩹 Automated Vulnerability Patching',
+  'sec-operations': '🕵️ Threat Hunting & Red-Teaming',
+  'sys-engineering': '⚙️ Distributed Systems, DBs & Compilers',
+  'wasm-games': '🎮 Interactive WebAssembly Games',
+  'algo-viz': '🧩 Algorithms & Visualizers',
+  'ops-cx': '📦 Supply Chain, Workforce & CX',
+  'governance-rca': '⚖️ Incident RCA & Compliance',
+  'mission-travel': '🌐 Aerospace & Travel Planning',
+};
+
+const CAD_VERTICAL_CATEGORIES = [
+  ['cad3d-automotive',  '🚗 Automotive & Powertrain',              'automotive'],
+  ['cad3d-medical',     '🏥 Medical & Biotech Devices',            'medical'],
+  ['cad3d-electronics', '🔌 Electronics, Thermal & Semiconductor', 'electronics'],
+  ['cad3d-aerospace',   '✈️ Aerospace & Turbomachinery',           'aerospace'],
+  ['cad3d-robotics',    '🤖 Robotics & Motion Control',            'robotics'],
+  ['cad3d-industrial',  '🏭 Industrial Hardware, Piping & Tooling','industrial'],
+  ['cad3d-all',         '🧊 All Manufacturing Verticals',          null],
+  ['custom',            '✏️ Custom 3D / CAD Prompt',               null],
+];
+
+const CAD_VERTICAL_LABELS = {
+  automotive:  '🚗 Automotive & Powertrain',
+  medical:     '🏥 Medical & Biotech',
+  electronics: '🔌 Electronics & Semiconductor',
+  aerospace:   '✈️ Aerospace & Turbomachinery',
+  robotics:    '🤖 Robotics & Motion Control',
+  industrial:  '🏭 Industrial & Tooling',
+};
+
+function isCadCategoryKey(catKey) {
+  return catKey === 'cad3d' || String(catKey || '').startsWith('cad3d-');
+}
+
+function getTextTaskSubcategory(t) {
+  if (!t) return 'ops-cx';
+  if (t.subcategory && TEXT_SUBCATEGORY_LABELS[t.subcategory]) return t.subcategory;
+  const legacyCat = t.category || 'general';
+  if (TEXT_SUBCATEGORY_LABELS[legacyCat]) return legacyCat;
+  if (legacyCat === 'security') return t.executable ? 'sec-patching' : 'sec-operations';
+  if (legacyCat === 'coding') return t.visualizer ? 'algo-viz' : 'sys-engineering';
+  if (legacyCat === 'games') return 'wasm-games';
+  if (legacyCat === 'business') return 'ops-cx';
+  return 'mission-travel';
+}
+
+function getTextTaskTopCategory(t) {
+  if (!t) return 'strategy';
+  const sub = getTextTaskSubcategory(t);
+  for (const [topKey, list] of Object.entries(TEXT_SUBCATEGORIES_BY_CATEGORY)) {
+    if (list.some(([k]) => k === sub)) return topKey;
+  }
+  return 'strategy';
+}
+
+function filterCadTasksByCategoryAndSubcategory(catKey, subcatOverride) {
+  const allCad = ((CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [])
+    .filter((t) => (t.category || 'general') === 'cad3d');
+  let verticalFiltered = allCad;
+  if (catKey === 'cad3d-simple') {
+    verticalFiltered = allCad.filter((t) => t.subcategory === 'simple');
+  } else if (catKey === 'cad3d-complex') {
+    verticalFiltered = allCad.filter((t) => t.subcategory !== 'simple');
+  } else if (String(catKey || '').startsWith('cad3d-') && catKey !== 'cad3d-all') {
+    const vert = String(catKey).replace(/^cad3d-/, '');
+    verticalFiltered = allCad.filter((t) => (t.vertical || 'industrial') === vert);
+  }
+  const subSel = $('#subcategorySelect');
+  const subVal = subcatOverride !== undefined
+    ? subcatOverride
+    : ((subSel && subSel.value === 'complex') ? 'complex' : 'simple');
+  if (subVal === 'simple' && catKey !== 'cad3d-simple' && catKey !== 'cad3d-complex') {
+    return verticalFiltered.filter((t) => t.subcategory === 'simple');
+  }
+  if (subVal === 'complex' && catKey !== 'cad3d-simple' && catKey !== 'cad3d-complex') {
+    return verticalFiltered.filter((t) => t.subcategory !== 'simple');
+  }
+  return verticalFiltered;
+}
+
+function filterTextTasksByCategoryAndSubcategory(catKey, subcatOverride) {
+  const allText = ((CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [])
+    .filter((t) => (t.category || 'general') !== 'cad3d');
+  if (TEXT_SUBCATEGORIES_BY_CATEGORY[catKey]) {
+    const inTop = allText.filter((t) => getTextTaskTopCategory(t) === catKey);
+    const subSel = $('#subcategorySelect');
+    const subVal = subcatOverride !== undefined ? subcatOverride : (subSel ? subSel.value : '');
+    if (subVal && subVal !== 'all' && inTop.some((t) => getTextTaskSubcategory(t) === subVal)) {
+      return inTop.filter((t) => getTextTaskSubcategory(t) === subVal);
+    }
+    return inTop;
+  }
+  return allText.filter((t) => (t.category || 'general') === catKey || getTextTaskSubcategory(t) === catKey);
+}
+
+function populateSubcategorySelect(catKey, preferredSubcat) {
+  const subSel = $('#subcategorySelect');
+  const subSep = $('#subcategorySep');
+  if (!subSel) return;
+  const prevVal = preferredSubcat !== undefined ? preferredSubcat : subSel.value;
+
+  if (isCadCategoryKey(catKey)) {
+    subSel.innerHTML = '';
+    [
+      ['simple', '🔩 Simple Parts'],
+      ['complex', '⚙️ Complex Parts'],
+    ].forEach(([val, lbl]) => {
+      const o = el('option');
+      o.value = val;
+      o.textContent = lbl;
+      subSel.appendChild(o);
+    });
+    subSel.value = prevVal === 'complex' ? 'complex' : 'simple';
+    subSel.classList.remove('hidden');
+    if (subSep) subSep.classList.remove('hidden');
+    return;
+  }
+
+  const textSubs = TEXT_SUBCATEGORIES_BY_CATEGORY[catKey];
+  if (Array.isArray(textSubs) && textSubs.length > 0) {
+    subSel.innerHTML = '';
+    const allText = ((CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [])
+      .filter((t) => (t.category || 'general') !== 'cad3d');
+    textSubs.forEach(([val, lbl]) => {
+      if (!allText.some((t) => getTextTaskSubcategory(t) === val)) return;
+      const o = el('option');
+      o.value = val;
+      o.textContent = lbl;
+      subSel.appendChild(o);
+    });
+    if (prevVal && Array.from(subSel.options).some((o) => o.value === prevVal)) {
+      subSel.value = prevVal;
+    } else if (subSel.options.length > 0) {
+      subSel.value = subSel.options[0].value;
+    }
+    const hasOpts = subSel.options.length > 0;
+    subSel.classList.toggle('hidden', !hasOpts);
+    if (subSep) subSep.classList.toggle('hidden', !hasOpts);
+    return;
+  }
+
+  subSel.classList.add('hidden');
+  if (subSep) subSep.classList.add('hidden');
+}
+
+function syncSubcategorySelectVisibility(catKey, preferredSubcat) {
+  populateSubcategorySelect(catKey, preferredSubcat);
+}
+
+function isCadActiveTask(t) {
+  const task = t || (typeof currentTask === 'function' ? currentTask() : null);
+  return (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d')
+    || !!(task && (task.visualizer === 'cad3d' || task.category === 'cad3d'));
+}
+
+function populateCategorySelect(mode) {
+  const cs = $('#categorySelect');
+  if (!cs || !CONFIG) return;
+  const is3d = mode === '3d';
+  const prevVal = cs.value;
+  cs.innerHTML = '';
+  const list = is3d ? CAD_VERTICAL_CATEGORIES : TASK_CATEGORIES;
+  list.forEach(([cat, label]) => {
+    if (cat === 'custom') {
+      const o = el('option');
+      o.value = 'custom';
+      o.textContent = is3d
+        ? '✏️ Custom 3D / CAD Prompt'
+        : (SAVED_PROMPTS.length > 0 ? '✏️ Custom & Saved Prompts' : label);
+      cs.appendChild(o);
+      return;
+    }
+    const inCat = isCadCategoryKey(cat)
+      ? filterCadTasksByCategoryAndSubcategory(cat, 'all')
+      : filterTextTasksByCategoryAndSubcategory(cat, 'all');
+    if (!inCat.length) return;
+    const o = el('option');
+    o.value = cat;
+    o.textContent = label;
+    cs.appendChild(o);
+  });
+  if (prevVal && Array.from(cs.options).some((o) => o.value === prevVal)) {
+    cs.value = prevVal;
+  }
+  populateSubcategorySelect(cs.value);
+}
 
 let SAVED_PROMPTS = [];
 let ACTIVE_SAVED_PROMPT_ID = null;
@@ -133,9 +344,10 @@ function updateCategoryCustomOptionCount() {
   if (!cs) return;
   const opt = cs.querySelector('option[value="custom"]');
   if (!opt) return;
-  opt.textContent = SAVED_PROMPTS.length > 0
-    ? '✏️ Custom & Saved Prompts'
-    : '✏️ Custom Prompt';
+  const is3d = typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d';
+  opt.textContent = is3d
+    ? '✏️ Custom 3D / CAD Prompt'
+    : (SAVED_PROMPTS.length > 0 ? '✏️ Custom & Saved Prompts' : '✏️ Custom Prompt');
 }
 
 function syncSavedPromptButtons() {
@@ -155,6 +367,9 @@ function syncSavedPromptButtons() {
 }
 
 function taskTagLabel(t) {
+  if (t && t.category === 'cad3d') {
+    return t.subcategory === 'simple' ? 'Simple Part' : 'Complex Part';
+  }
   return t.testCount ? `${t.testCount} hidden tests` : (t.language ? `${t.language}` : 'prompt only');
 }
 
@@ -162,13 +377,14 @@ function populateTaskSelect(catKey, preferredTaskId) {
   const ts = $('#taskSelect');
   if (!ts) return;
   ts.innerHTML = '';
+  syncSubcategorySelectVisibility(catKey);
 
   if (!catKey || catKey === 'custom') {
     const customOpt = el('option');
     customOpt.value = 'custom';
     customOpt.textContent = SAVED_PROMPTS.length > 0
       ? '✏️ New / Freeform Custom Prompt & File Attachments'
-      : 'Custom Prompt — Freeform & File Attachments';
+      : 'Custom Prompt - Freeform & File Attachments';
     ts.appendChild(customOpt);
 
     if (SAVED_PROMPTS.length > 0) {
@@ -195,15 +411,30 @@ function populateTaskSelect(catKey, preferredTaskId) {
     return;
   }
 
-  const tasks = (CONFIG && Array.isArray(CONFIG.tasks) ? CONFIG.tasks : [])
-    .filter((t) => (t.category || 'general') === catKey);
+  const isCadCat = isCadCategoryKey(catKey);
+  const tasks = isCadCat
+    ? filterCadTasksByCategoryAndSubcategory(catKey)
+    : filterTextTasksByCategoryAndSubcategory(catKey);
 
-  tasks.forEach((t) => {
-    const o = el('option');
-    o.value = t.id;
-    o.textContent = `${t.title}  (${taskTagLabel(t)})`;
-    ts.appendChild(o);
-  });
+  if (isCadCat) {
+    tasks.forEach((t) => {
+      const o = el('option');
+      o.value = t.id;
+      const vertBadge = (catKey === 'cad3d' || catKey === 'cad3d-all') && t.vertical && CAD_VERTICAL_LABELS[t.vertical]
+        ? `[${CAD_VERTICAL_LABELS[t.vertical].replace(/^[^\s]+\s+/, '')}] `
+        : '';
+      const cleanTitle = String(t.title || '').replace(/^3D CAD:\s*/i, '');
+      o.textContent = `${vertBadge}${cleanTitle}`;
+      ts.appendChild(o);
+    });
+  } else {
+    tasks.forEach((t) => {
+      const o = el('option');
+      o.value = t.id;
+      o.textContent = t.title;
+      ts.appendChild(o);
+    });
+  }
 
   ts.disabled = false;
   if (preferredTaskId && tasks.some((t) => t.id === preferredTaskId)) {
@@ -224,8 +455,25 @@ function selectTaskById(taskId) {
   const tasks = (CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [];
   const found = tasks.find((t) => t.id === taskId);
   if (found) {
-    const cat = found.category || 'general';
-    if (cs) cs.value = cat;
+    const is3d = typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d';
+    let cat = found.category || 'general';
+    if (cat === 'cad3d' && is3d) {
+      const vertCat = found.vertical ? `cad3d-${found.vertical}` : 'cad3d-automotive';
+      if (cs && Array.from(cs.options).some((o) => o.value === vertCat)) {
+        cat = vertCat;
+      } else if (cs && Array.from(cs.options).some((o) => o.value === 'cad3d-all')) {
+        cat = 'cad3d-all';
+      }
+      if (cs) cs.value = cat;
+      populateSubcategorySelect(cat, found.subcategory === 'complex' ? 'complex' : 'simple');
+    } else {
+      const topCat = getTextTaskTopCategory(found);
+      if (cs && Array.from(cs.options).some((o) => o.value === topCat)) {
+        cat = topCat;
+      }
+      if (cs) cs.value = cat;
+      populateSubcategorySelect(cat, getTextTaskSubcategory(found));
+    }
     populateTaskSelect(cat, found.id);
   } else {
     if (cs) cs.value = 'custom';
@@ -233,11 +481,73 @@ function selectTaskById(taskId) {
   }
 }
 
+// ---------- composer pristine/dirty tracking + per-user session draft (1.2 / 1.3) ----------
+// COMPOSER_APPLIED is the text + attachment count last put into the composer by
+// the app itself (blank reset, saved prompt, History restore, draft restore).
+// Anything the user changed since then is "dirty" and is never silently wiped.
+let COMPOSER_APPLIED = { text: '', attCount: 0 };
+function markComposerApplied() {
+  const ta = $('#customPrompt');
+  COMPOSER_APPLIED = { text: ta ? ta.value : '', attCount: Array.isArray(CUSTOM_ATTACHMENTS) ? CUSTOM_ATTACHMENTS.length : 0 };
+}
+function composerIsDirty() {
+  const ta = $('#customPrompt');
+  const text = ta ? ta.value : '';
+  if (text.trim() !== String(COMPOSER_APPLIED.text || '').trim()) return true;
+  const attCount = Array.isArray(CUSTOM_ATTACHMENTS) ? CUSTOM_ATTACHMENTS.length : 0;
+  return attCount !== COMPOSER_APPLIED.attCount;
+}
+// Confirm before replacing a dirty composer (History restore, saved prompt switch).
+function confirmReplaceComposer(message) {
+  if (!composerIsDirty()) return true;
+  return window.confirm(message || 'Replace your current prompt and attachments?');
+}
+
+// The typed prompt survives a 401 redirect / reload via sessionStorage (text only;
+// attachments are too large and are re-attached by the user).
+const COMPOSER_DRAFT_MAX_CHARS = 200000;
+function composerDraftKey() { return 'ullm.draft.' + getUsername(); }
+function saveComposerDraft() {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const ta = $('#customPrompt');
+    const ts = $('#taskSelect');
+    const prompt = ta ? String(ta.value || '') : '';
+    const key = composerDraftKey();
+    if (!prompt.trim()) { sessionStorage.removeItem(key); return; }
+    sessionStorage.setItem(key, JSON.stringify({
+      prompt: prompt.slice(0, COMPOSER_DRAFT_MAX_CHARS),
+      taskId: ts ? ts.value : 'custom',
+      at: Date.now(),
+    }));
+  } catch (_) { /* quota or privacy mode: drafts are best-effort */ }
+}
+function clearComposerDraft() {
+  try { if (typeof sessionStorage !== 'undefined') sessionStorage.removeItem(composerDraftKey()); } catch (_) { /* ignore */ }
+}
+function loadComposerDraft() {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const raw = sessionStorage.getItem(composerDraftKey());
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (!d || typeof d.prompt !== 'string' || !d.prompt.trim()) return null;
+    return d;
+  } catch (_) { return null; }
+}
+let _draftSaveTimer = null;
+function saveComposerDraftDebounced() {
+  if (_draftSaveTimer) clearTimeout(_draftSaveTimer);
+  _draftSaveTimer = setTimeout(() => { _draftSaveTimer = null; saveComposerDraft(); }, 400);
+}
+
 function resetCustomComposerToBlank(opts) {
   const customTa = $('#customPrompt');
   if (customTa) customTa.value = '';
   clearAttachments();
   ACTIVE_SAVED_PROMPT_ID = null;
+  markComposerApplied();
+  clearComposerDraft();
   syncSavedPromptButtons();
   renderTaskPrompt();
   if (opts && opts.focus && customTa && !customTa.classList.contains('hidden')) {
@@ -255,6 +565,8 @@ function applySavedPromptToComposer(savedItem) {
     clearAttachments();
   }
   ACTIVE_SAVED_PROMPT_ID = savedItem.id;
+  markComposerApplied();
+  saveComposerDraft();
   syncSavedPromptButtons();
   renderTaskPrompt();
 }
@@ -578,38 +890,55 @@ async function init() {
   seedSlots();
   syncModelsFromSlots();
 
-  // 2-stage category -> filtered task selector (always defaults to Custom Prompt on load)
+  // 3-stage category -> subcategory -> filtered task selector (defaults to Custom Prompt on load)
   const cs = $('#categorySelect');
   const ts = $('#taskSelect');
-  if (cs) {
-    cs.innerHTML = '';
-    TASK_CATEGORIES.forEach(([cat, label]) => {
-      if (cat === 'custom') {
-        const o = el('option');
-        o.value = 'custom';
-        o.textContent = SAVED_PROMPTS.length > 0 ? '✏️ Custom & Saved Prompts' : label;
-        cs.appendChild(o);
-        return;
-      }
-      const inCat = CONFIG.tasks.filter((t) => (t.category || 'general') === cat);
-      if (!inCat.length) return;
-      const o = el('option');
-      o.value = cat;
-      o.textContent = label;
-      cs.appendChild(o);
-    });
-  }
+  populateCategorySelect(typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text');
+
+  // Last applied Step 1 selection, so a change the user declines (a comparison is
+  // still streaming, or the composer holds unsaved text) can be rolled back.
+  let lastTaskSelection = null;
+  const snapshotTaskSelection = () => {
+    const subSelNow = $('#subcategorySelect');
+    lastTaskSelection = { cat: cs ? cs.value : '', sub: subSelNow ? subSelNow.value : '', task: ts ? ts.value : '' };
+  };
+  const revertTaskSelection = () => {
+    if (!lastTaskSelection) return;
+    if (cs && lastTaskSelection.cat) {
+      cs.value = lastTaskSelection.cat;
+      populateSubcategorySelect(cs.value, lastTaskSelection.sub || undefined);
+      populateTaskSelect(cs.value, lastTaskSelection.task || undefined);
+    }
+    if (ts && lastTaskSelection.task) ts.value = lastTaskSelection.task;
+    syncSavedPromptButtons();
+  };
 
   const onTaskSelectionChange = () => {
+    // Changing the task rebuilds the arena under the same element ids; a stream
+    // still in flight would paint the old task's tokens into the new columns (1.1).
+    if (!confirmInterruptRun('A comparison is still running. Stop it and switch tasks?')) { revertTaskSelection(); return; }
     const selVal = (ts && ts.value) || 'custom';
     if (String(selVal).startsWith('saved:')) {
       const savedItem = getSavedPromptById(selVal);
-      if (savedItem) applySavedPromptToComposer(savedItem);
+      if (savedItem && savedItem.id !== ACTIVE_SAVED_PROMPT_ID) {
+        if (!confirmReplaceComposer(`Replace your current prompt and attachments with the saved prompt "${savedItem.title || 'Saved prompt'}"?`)) { revertTaskSelection(); return; }
+        applySavedPromptToComposer(savedItem);
+      }
     } else if (selVal === 'custom') {
-      resetCustomComposerToBlank({ focus: true });
+      // Only wipe a pristine composer; typed text / attachments need an explicit OK (1.2).
+      if (!composerIsDirty()) {
+        resetCustomComposerToBlank({ focus: true });
+      } else if (window.confirm('Clear your current prompt and attachments and start a blank custom prompt?')) {
+        resetCustomComposerToBlank({ focus: true });
+      } else {
+        ACTIVE_SAVED_PROMPT_ID = null;   // keep the text, just detach it from any saved prompt
+        saveComposerDraft();
+      }
     }
+    snapshotTaskSelection();
     syncSavedPromptButtons();
     renderTaskPrompt();
+    if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
     $('#scorecard').classList.add('hidden');
     { const jb = $('#jumpScorecardBtn'); if (jb) jb.classList.add('hidden'); }
     { const pb = $('#exportPdfTopBtn'); if (pb) pb.classList.add('hidden'); }
@@ -617,9 +946,19 @@ async function init() {
     saveUserPreferencesDebounced();
   };
 
+  const subSel = $('#subcategorySelect');
   if (cs) {
     cs.addEventListener('change', () => {
+      if (!confirmInterruptRun('A comparison is still running. Stop it and switch tasks?')) { revertTaskSelection(); return; }
+      populateSubcategorySelect(cs.value);
       populateTaskSelect(cs.value);
+      onTaskSelectionChange();
+    });
+  }
+  if (subSel) {
+    subSel.addEventListener('change', () => {
+      if (!confirmInterruptRun('A comparison is still running. Stop it and switch tasks?')) { revertTaskSelection(); return; }
+      if (cs) populateTaskSelect(cs.value, ts ? ts.value : undefined);
       onTaskSelectionChange();
     });
   }
@@ -633,6 +972,10 @@ async function init() {
     if (db) db.addEventListener('click', onDeleteSavedPromptClick);
   }
   initAttachmentsUI();
+  // Dropping a file anywhere outside the drop zone must never navigate the tab
+  // away from the app (and lose the run / prompt) (1.11).
+  document.addEventListener('dragover', (e) => { e.preventDefault(); });
+  document.addEventListener('drop', (e) => { e.preventDefault(); });
 
   const me = CONFIG && CONFIG.me;
   const prefs = (me && me.preferences) || {};
@@ -640,6 +983,7 @@ async function init() {
   if (customTa) {
     customTa.addEventListener('input', () => {
       renderContextMeter();
+      saveComposerDraftDebounced();
     });
   }
 
@@ -658,11 +1002,34 @@ async function init() {
     const savedItem = getSavedPromptById(initialTask);
     if (savedItem) applySavedPromptToComposer(savedItem);
   }
+  // Snapshot the programmatic composer state first so a restored draft that differs
+  // from it still counts as dirty (and is protected from silent wipes).
+  markComposerApplied();
+  // Bring back the prompt that was being typed before a reload / session-expiry
+  // redirect (saved on every input; see saveComposerDraft).
+  {
+    const draft = loadComposerDraft();
+    if (draft && customTa && !String(customTa.value || '').trim()) {
+      customTa.value = draft.prompt;
+      ACTIVE_SAVED_PROMPT_ID = null;
+      if (draft.taskId && String(draft.taskId).startsWith('saved:') && getSavedPromptById(draft.taskId)) {
+        selectTaskById(draft.taskId);
+        ACTIVE_SAVED_PROMPT_ID = String(draft.taskId).replace(/^saved:/, '');
+      } else if (!draft.taskId || isCustomTaskId(draft.taskId)) {
+        selectTaskById('custom');
+      }
+      syncSavedPromptButtons();
+    }
+  }
+  snapshotTaskSelection();
   renderTaskPrompt();
 
   renderModelEditors();
   buildArena();
   updateRunButton();
+  if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d' && typeof switchArenaMode === 'function') {
+    switchArenaMode('3d', { updateUrl: false, initialBoot: true });
+  }
 
   $('#runBtn').addEventListener('click', run);
   {
@@ -694,7 +1061,13 @@ async function init() {
   }); }
   $('#historyBtn').addEventListener('click', () => openHistoryModal({ arenaTab: 'text' }));
   updateQuotaBadge();
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeModal(); closeAuthModal(); } });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeModal();
+    closeAuthModal();
+    const mcp = $('#cadMcpModal'); // 2.1: the CAD MCP dialog ignored Escape
+    if (mcp && !mcp.classList.contains('hidden')) mcp.classList.add('hidden');
+  });
 }
 
 // ---------- account / user menu ----------
@@ -1017,7 +1390,7 @@ function renderAuditLogModal(body, data) {
 }
 
 async function openUsersModal() {
-  const body = openAuthModal('Manage external users', { wide: true });
+  const body = openAuthModal('Manage users & admins', { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   let data;
   try {
@@ -1031,6 +1404,44 @@ async function openUsersModal() {
 
 function renderUsersModal(body, data) {
   const defaultVertexCap = (CONFIG && CONFIG.limits && Number.isFinite(CONFIG.limits.vertex)) ? CONFIG.limits.vertex : 10;
+  const bootstrapAdmins = Array.isArray(data.bootstrapAdmins) ? data.bootstrapAdmins : [];
+  const addedAdmins = Array.isArray(data.adminEmails) ? data.adminEmails : [];
+  const allowedDomains = Array.isArray(data.allowedDomains) && data.allowedDomains.length
+    ? data.allowedDomains
+    : ((CONFIG && CONFIG.allowedDomains) || ['google.com']);
+  const knownInternal = (Array.isArray(data.knownInternalUsers) ? data.knownInternalUsers : [])
+    .filter((e) => !bootstrapAdmins.includes(e) && !addedAdmins.includes(e));
+
+  const googleAdminRows = [
+    ...bootstrapAdmins.map((e) => `<tr>
+      <td class="u-name">${esc(e)}</td>
+      <td><span class="u-role is-admin">admin</span></td>
+      <td><span class="u-tag" title="Configured via ADMIN_EMAILS on the server">built-in (@google.com)</span></td>
+      <td class="u-act"></td>
+    </tr>`),
+    ...addedAdmins.map((e) => {
+      const isSelf = String(data.me || '').toLowerCase() === String(e).toLowerCase();
+      const rmBtn = isSelf
+        ? '<span class="u-you" title="This is you. Ask another admin to remove your own admin access.">you</span>'
+        : `<button class="u-icon-btn danger u-rm-google-admin" type="button" data-email="${esc(e)}" title="Revoke @google.com admin role" aria-label="Revoke admin access for ${esc(e)}">${ICON_TRASH}</button>`;
+      return `<tr>
+        <td class="u-name">${esc(e)}</td>
+        <td><span class="u-role is-admin">admin</span></td>
+        <td><span class="u-status ok">✓ Google OAuth Admin</span></td>
+        <td class="u-act"><div class="u-act-btns">${rmBtn}</div></td>
+      </tr>`;
+    }),
+  ].join('');
+
+  const quickPromoteHtml = knownInternal.length
+    ? `<div style="margin-top:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">` +
+        `<span style="font-size:11.5px;color:var(--muted)">Quick promote recent <code>@google.com</code> users:</span>` +
+        knownInternal.slice(0, 8).map((e) =>
+          `<button type="button" class="u-btn u-quick-promote-google" data-email="${esc(e)}" title="Make ${esc(e)} an admin">+ ${esc(e)}</button>`
+        ).join('') +
+      `</div>`
+    : '';
+
   const rows = (data.users || []).map((u) => {
     const isMe = u.username === data.me;
     const statusBadge = u.mustChangePassword
@@ -1099,7 +1510,18 @@ function renderUsersModal(body, data) {
     </tr>`;
   }).join('');
   body.innerHTML =
-    '<p class="keys-intro" style="margin-top:0;margin-bottom:12px">External username/password accounts (does not apply to <code>@google.com</code> OAuth sign-ins). You can require a password change on first login, set a daily Vertex AI run cap, or configure an optional account expiration date for any external account at any time. Daily caps only apply to runs on the <b>shared keys</b>: when a user adds their own keys, those runs use only their keys and aren\'t capped. The expiration date always applies.</p>' +
+    '<h4 class="st-h" style="margin-top:0">Google Workspace (<code>@google.com</code>) Admins</h4>' +
+    '<p class="keys-intro" style="margin-top:4px;margin-bottom:10px">Grant full admin privileges (manage users, global keys, budgets, and audit logs; unlimited runs) to any ' + allowedDomains.map((d) => '<code>@' + esc(d) + '</code>').join(' / ') + ' user who signs in with Google. Changes take effect immediately without requiring sign-out.</p>' +
+    '<table class="users-table st-table"><thead><tr><th>Google Account</th><th>Role</th><th>Source</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + googleAdminRows + '</tbody></table>' +
+    '<div class="st-add" style="margin-top:10px">' +
+      '<input type="email" id="umGoogleAdminEmail" list="umKnownGoogleUsers" autocomplete="off" spellcheck="false" placeholder="colleague@' + esc(allowedDomains[0] || 'google.com') + '" aria-label="Google sign-in email to make an admin" />' +
+      '<datalist id="umKnownGoogleUsers">' + knownInternal.map((e) => `<option value="${esc(e)}"></option>`).join('') + '</datalist>' +
+      '<button class="submit-btn" type="button" id="umAddGoogleAdminBtn">+ Make @google.com user admin</button>' +
+    '</div>' +
+    quickPromoteHtml +
+    '<div class="auth-msg" id="umGoogleAdminMsg" style="margin-top:6px;margin-bottom:14px"></div>' +
+    '<h4 class="st-h">External Username / Password Accounts</h4>' +
+    '<p class="keys-intro" style="margin-top:4px;margin-bottom:12px">External username/password accounts for non-<code>@google.com</code> users. You can require a password change on first login, set a daily Vertex AI run cap, or configure an optional account expiration date at any time.</p>' +
     '<table class="users-table"><thead><tr><th>Username</th><th>Role</th><th>Password Status</th><th>Vertex Cap &amp; Expiry</th><th style="text-align:right">Actions</th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '<form class="add-user-form" id="addUserForm">' +
       '<h4>Add an external user</h4>' +
@@ -1115,6 +1537,64 @@ function renderUsersModal(body, data) {
       '<button class="submit-btn" type="submit">+ Add user</button>' +
     '</form>' +
     googleAccessHelp();
+
+  const promoteGoogleAdmin = async (rawEmail) => {
+    const email = String(rawEmail || '').trim().toLowerCase();
+    const msgEl = body.querySelector('#umGoogleAdminMsg');
+    if (!email) {
+      if (msgEl) { msgEl.className = 'auth-msg err'; msgEl.textContent = 'Enter a @google.com email address.'; }
+      return;
+    }
+    if (msgEl) { msgEl.className = 'auth-msg'; msgEl.textContent = 'Promoting ' + email + ' to admin…'; }
+    try {
+      const r = await fetch('/api/auth/google-admins', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      if (r.status === 401) { window.location.replace('/login'); return; }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.error || 'Could not add Google admin.');
+      renderUsersModal(body, j);
+      const m2 = body.querySelector('#umGoogleAdminMsg');
+      if (m2) { m2.className = 'auth-msg ok'; m2.textContent = `✓ ${email} is now an admin.`; }
+    } catch (e) {
+      if (msgEl) { msgEl.className = 'auth-msg err'; msgEl.textContent = e.message; }
+    }
+  };
+
+  const addGAdminBtn = body.querySelector('#umAddGoogleAdminBtn');
+  const addGAdminInp = body.querySelector('#umGoogleAdminEmail');
+  if (addGAdminBtn && addGAdminInp) {
+    addGAdminBtn.addEventListener('click', () => promoteGoogleAdmin(addGAdminInp.value));
+    addGAdminInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); promoteGoogleAdmin(addGAdminInp.value); }
+    });
+  }
+  body.querySelectorAll('.u-quick-promote-google').forEach((b) => {
+    b.addEventListener('click', () => promoteGoogleAdmin(b.dataset.email));
+  });
+  body.querySelectorAll('.u-rm-google-admin').forEach((b) => {
+    b.addEventListener('click', async () => {
+      const email = b.dataset.email;
+      if (!window.confirm(`Remove @google.com admin access for ${email}?`)) return;
+      const msgEl = body.querySelector('#umGoogleAdminMsg');
+      if (msgEl) { msgEl.className = 'auth-msg'; msgEl.textContent = 'Removing admin access…'; }
+      try {
+        const r = await fetch('/api/auth/google-admins/' + encodeURIComponent(email), {
+          method: 'DELETE', credentials: 'same-origin',
+        });
+        if (r.status === 401) { window.location.replace('/login'); return; }
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) throw new Error(j.error || 'Could not remove Google admin.');
+        renderUsersModal(body, j);
+        const m2 = body.querySelector('#umGoogleAdminMsg');
+        if (m2) { m2.className = 'auth-msg ok'; m2.textContent = `Removed admin access for ${email}.`; }
+      } catch (e) {
+        if (msgEl) { msgEl.className = 'auth-msg err'; msgEl.textContent = e.message; }
+      }
+    });
+  });
 
   body.querySelectorAll('.u-del').forEach((b) => b.addEventListener('click', () => deleteUser(b.dataset.user, body)));
   body.querySelectorAll('.u-toggle-force').forEach((b) => b.addEventListener('click', () => toggleForcePasswordChange(b.dataset.user, b.dataset.force === '1', body)));
@@ -1509,7 +1989,7 @@ async function addUser(body) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || 'Could not add user.');
-    renderUsersModal(body, { users: j.users, me: (ME && ME.username) }); // refresh list
+    renderUsersModal(body, { ...j, me: (ME && ME.username) }); // refresh list
   } catch (e) {
     msg.className = 'auth-msg err'; msg.textContent = e.message; btn.disabled = false;
   }
@@ -1534,7 +2014,7 @@ async function saveUserLimits(username, body) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || 'Could not update external account limits.');
-    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+    renderUsersModal(body, { ...j, me: (ME && ME.username) });
   } catch (e) {
     if (msg) { msg.className = 'auth-msg err u-limits-msg'; msg.textContent = e.message; }
     if (btn) btn.disabled = false;
@@ -1551,7 +2031,7 @@ async function toggleForcePasswordChange(username, mustChangePassword, body) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || 'Could not update password policy.');
-    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+    renderUsersModal(body, { ...j, me: (ME && ME.username) });
   } catch (e) { window.alert(e.message); }
 }
 
@@ -1578,7 +2058,7 @@ async function saveUserTempPassword(username, body) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || 'Could not reset password.');
-    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+    renderUsersModal(body, { ...j, me: (ME && ME.username) });
   } catch (e) {
     if (msg) { msg.className = 'auth-msg err u-reset-msg'; msg.textContent = e.message; }
     if (btn) btn.disabled = false;
@@ -1592,7 +2072,7 @@ async function deleteUser(username, body) {
     if (r.status === 401) { window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || 'Could not remove user.');
-    renderUsersModal(body, { users: j.users, me: (ME && ME.username) });
+    renderUsersModal(body, { ...j, me: (ME && ME.username) });
   } catch (e) { window.alert(e.message); }
 }
 
@@ -1998,6 +2478,7 @@ function assignToSlot(catalogId, slot, effortOverride) {
 
 function addSlot() {
   if (SLOT_IDS.length >= MAX_SLOTS) return;
+  if (!confirmInterruptRun('A comparison is still running. Stop it and add a model slot?')) return;
   const nextSlot = ALL_SLOT_IDS.find((s) => !SLOT_IDS.includes(s));
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
@@ -2024,6 +2505,9 @@ function clearSlot(slot) {
   if (SLOT_IDS.length <= MIN_SLOTS) return;
   const idx = SLOT_IDS.indexOf(slot);
   if (idx < 0) return;
+  // Removing a column mid-run shifts the remaining assignments down, so a
+  // stream would render under another model's label (1.1): stop first.
+  if (!confirmInterruptRun('A comparison is still running. Stop it and remove this slot?')) return;
   // Shift remaining slot assignments down so slots stay contiguous A, B, C...
   const remaining = SLOT_IDS.filter((s) => s !== slot).map((s) => ({
     id: SLOT_ASSIGN[s],
@@ -2082,6 +2566,7 @@ function builtinPresetSlots(presetName) {
 function applyPreset(presetName) {
   const valid = builtinPresetSlots(presetName);
   if (!valid.length) return;
+  if (!confirmInterruptRun('A comparison is still running. Stop it and apply this preset?')) return;
   ACTIVE_SAVED_PRESET_ID = null;
   SLOT_IDS = ALL_SLOT_IDS.slice(0, valid.length);
   ALL_SLOT_IDS.forEach((s, i) => {
@@ -2210,6 +2695,7 @@ function applySavedPreset(presetId) {
     window.alert('None of the models in this preset are currently available.');
     return;
   }
+  if (!confirmInterruptRun('A comparison is still running. Stop it and apply this preset?')) return;
   ACTIVE_SAVED_PRESET_ID = preset.id;
   SLOT_IDS = ALL_SLOT_IDS.slice(0, valid.length);
   ALL_SLOT_IDS.forEach((s, i) => {
@@ -2343,15 +2829,17 @@ function currentTask() {
   const id = ($('#taskSelect') && $('#taskSelect').value) || 'custom';
   if (isCustomTaskId(id)) {
     const saved = String(id).startsWith('saved:') ? getSavedPromptById(id) : null;
+    const is3d = typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d';
     return {
       id: 'custom',
       savedPromptId: saved ? saved.id : null,
-      title: saved && saved.title ? saved.title : 'Custom prompt',
+      title: saved && saved.title ? saved.title : (is3d ? 'Custom 3D / CAD prompt' : 'Custom prompt'),
       prompt: '',
       testCount: 0,
-      category: 'general',
-      language: null,
+      category: is3d ? 'cad3d' : 'general',
+      language: is3d ? 'javascript' : null,
       executable: false,
+      visualizer: is3d ? 'cad3d' : undefined,
     };
   }
   return CONFIG.tasks.find((t) => t.id === id) || CONFIG.tasks[0];
@@ -3274,22 +3762,36 @@ function renderTaskMeta() {
   if (!meta) return;
   const catKey = t.category || 'general';
   const catLabel = ({
-    enterprise: 'Enterprise',
-    retail: 'Retail',
-    semiconductor: 'Semiconductor',
-    transport: 'Transport',
-    finance: 'Finance',
-    healthcare: 'Healthcare',
-    security: 'Security',
-    coding: 'Coding',
-    games: 'Games',
-    business: 'Business',
+    cad3d: '3D & CAD',
+    industry: 'Industry Architecture',
+    security: 'Cybersecurity & SecOps',
+    engineering: 'Software, Systems & Games',
+    strategy: 'Strategy, Ops & Governance',
+    enterprise: 'Enterprise Cloud',
+    retail: 'Retail & Commerce',
+    semiconductor: 'Semiconductor & EDA',
+    transport: 'Transport & Logistics',
+    finance: 'Financial Services',
+    healthcare: 'Healthcare & Life Sciences',
+    coding: 'Software & Systems',
+    games: 'WebAssembly Games',
+    business: 'Strategy & Operations',
     general: 'General',
   })[catKey] || 'General';
   const bits = [catLabel];
+  if (t.category === 'cad3d' && t.vertical) {
+    const vLbl = CAD_VERTICAL_LABELS[t.vertical];
+    if (vLbl) bits.push(vLbl);
+  }
+  if (t.category === 'cad3d' && t.subcategory) {
+    bits.push(t.subcategory === 'simple' ? '🔩 Simple Part' : '⚙️ Complex Part');
+  } else if (t.category !== 'cad3d' && t.subcategory && TEXT_SUBCATEGORY_LABELS[t.subcategory]) {
+    bits.push(TEXT_SUBCATEGORY_LABELS[t.subcategory]);
+  }
   if (t.language) bits.push(t.language);
   if (t.testCount) bits.push(`${t.testCount} hidden tests`);
-  if (t.executable) bits.push('runnable \u25b8');
+  if (t.visualizer === 'cad3d') bits.push('3D WebGL CAD ▸');
+  else if (t.executable) bits.push('runnable \u25b8');
   if (t.savedPromptId) bits.push('🔖 saved prompt');
   if (t.id === 'custom' && CUSTOM_ATTACHMENTS.length) {
     bits.push(`${CUSTOM_ATTACHMENTS.length} attachment${CUSTOM_ATTACHMENTS.length > 1 ? 's' : ''}`);
@@ -3413,10 +3915,16 @@ function modelAvailability(c) {
 function extBadge(c) { return c.external ? '<span class="ext-badge" title="Not on Vertex — needs its own API key; the prompt leaves Google infrastructure">EXT</span>' : ''; }
 
 // Wire up cascading events on any container holding .slot-provider-select / .slot-model-select / .slot-think-select
+// Each select remembers its last applied value so a change the user declines (while a
+// comparison is streaming, see confirmInterruptRun) can be rolled back in place.
 function bindCascadingSelects(root) {
   if (!root) return;
+  const remember = (sel) => { sel.dataset.prev = sel.value; };
+  const rollback = (sel) => { if (sel.dataset.prev != null) sel.value = sel.dataset.prev; };
   root.querySelectorAll('.slot-provider-select').forEach((sel) => {
+    remember(sel);
     sel.addEventListener('change', () => {
+      if (!confirmInterruptRun('A comparison is still running. Stop it and change this slot?')) { rollback(sel); return; }
       const slot = sel.dataset.slot;
       const fam = sel.value;
       const firstModel = catalog().find((x) => providerFamilyOf(x) === fam && modelAvailability(x).ok);
@@ -3428,14 +3936,18 @@ function bindCascadingSelects(root) {
     });
   });
   root.querySelectorAll('.slot-model-select').forEach((sel) => {
+    remember(sel);
     sel.addEventListener('change', () => {
+      if (!confirmInterruptRun('A comparison is still running. Stop it and change this slot?')) { rollback(sel); return; }
       const slot = sel.dataset.slot;
       const newId = sel.value;
       assignToSlot(newId, slot);
     });
   });
   root.querySelectorAll('.slot-think-select').forEach((sel) => {
+    remember(sel);
     sel.addEventListener('change', () => {
+      if (!confirmInterruptRun('A comparison is still running. Stop it and change this slot?')) { rollback(sel); return; }
       const slot = sel.dataset.slot;
       const val = sel.value || '';
       if (val.startsWith('model:')) {
@@ -3609,7 +4121,7 @@ function buildArena(models) {
       </div>
       ${(task.executable || !!task.visualizer) ? `
       <div class="exec">
-        <button class="exec-btn" data-slot="${m.slot}" type="button" disabled title="Run the generated program (${esc(task.language || 'python')})">▸ Run code</button>
+        <button class="exec-btn" data-slot="${m.slot}" type="button" disabled title="Run the generated program (${esc(task.language || 'python')})">${task.visualizer === 'cad3d' ? '🧊 Render 3D CAD' : '▸ Run code'}</button>
         <div class="exec-viz hidden" id="exec-viz-${m.slot}"></div>
         <pre class="exec-out hidden" id="exec-out-${m.slot}"><code></code></pre>
       </div>` : ''}
@@ -3668,6 +4180,7 @@ function judgeableEntries() {
   return (ARENA_MODELS || MODELS)
     .map((m) => {
       const r = LAST_RESULTS[m.slot] || {};
+      const cadSt = (typeof CAD_SLOT_STATE !== 'undefined' && CAD_SLOT_STATE[m.slot]) || {};
       return {
         slot: m.slot,
         label: m.label,
@@ -3676,6 +4189,8 @@ function judgeableEntries() {
         wallMs: typeof r.wallMs === 'number' && isFinite(r.wallMs) ? r.wallMs : null,
         tokensPerSec: typeof r.tokensPerSec === 'number' && isFinite(r.tokensPerSec) ? r.tokensPerSec : null,
         completionTokens: typeof r.completionTokens === 'number' && isFinite(r.completionTokens) ? r.completionTokens : null,
+        cadTelemetry: cadSt.telemetry || r.cadTelemetry || null,
+        fourViewDataUrl: cadSt.fourViewDataUrl || r.fourViewDataUrl || null,
       };
     })
     .filter((e) => e.text.trim());
@@ -3780,14 +4295,15 @@ function renderJudge(r) {
     const scores = res.scores || {};
     const cells = criteria.map((c) => {
       const v = scores[c.key];
-      return `<td class="jr-score"><span class="jr-bar" style="width:${v ? v * 10 : 0}%"></span><b>${v == null ? '—' : v}</b></td>`;
+      const vn = Number(v);
+      return `<td class="jr-score"><span class="jr-bar" style="width:${Number.isFinite(vn) ? Math.max(0, Math.min(100, vn * 10)) : 0}%"></span><b>${v == null ? '—' : esc(v)}</b></td>`;
     }).join('');
     const win = res.slot === r.winnerSlot;
     return `<tr class="${win ? 'jr-win' : ''}" style="--accent:${slotColor(res.slot)}">` +
       `<td class="jr-name"><span class="jr-dot"></span>${esc(res.label)}` +
       `${win ? '<span class="jr-badge">judge’s pick</span>' : ''}` +
       `<span class="jr-blind">seen as ${esc(res.blindId || '?')}</span></td>` +
-      `<td class="jr-overall"><b>${res.overall == null ? '—' : res.overall}</b><i>/10</i></td>` +
+      `<td class="jr-overall"><b>${res.overall == null ? '—' : esc(res.overall)}</b><i>/10</i></td>` +
       cells +
       `<td class="jr-note">${esc(res.note || '')}</td></tr>`;
   }).join('');
@@ -3910,9 +4426,14 @@ async function repairSlot(slot, automatic) {
 
 // The framed game page posts its own status/failures up to us. Match the reporting
 // window back to a slot by comparing it with each column's iframe.
+// SECURITY: the game frame is sandboxed without allow-same-origin, so its
+// messages arrive with the string origin 'null'. We accept that opaque origin
+// ONLY when e.source is one of our own .game-frame windows (same-origin messages
+// from a legacy frame are still accepted); anything else is dropped.
 window.addEventListener('message', (e) => {
   const d = e && e.data;
-  if (!d || (d.__ullm !== 'game-error' && d.__ullm !== 'game-booted') || e.origin !== window.location.origin) return;
+  if (!d || (d.__ullm !== 'game-error' && d.__ullm !== 'game-booted')) return;
+  if (e.origin !== window.location.origin && e.origin !== 'null') return;
   const frames = document.querySelectorAll('.game-frame');
   for (const f of frames) {
     if (f.contentWindow === e.source) {
@@ -3921,11 +4442,12 @@ window.addEventListener('message', (e) => {
       if (d.__ullm === 'game-booted') {
         clearCrash(slot);
       } else if (d.__ullm === 'game-error') {
-        noteCrash(slot, { error: d.message, source: d.kind });
+        noteCrash(slot, { error: String(d.message || 'Game crashed').slice(0, 4000), source: String(d.kind || 'runtime').slice(0, 40) });
       }
       return;
     }
   }
+  // Not one of our game frames (e.g. a nested or forged window): ignore.
 });
 
 // ---------- execute generated code (Python) from the UI ----------
@@ -3946,6 +4468,9 @@ async function execSlotCode(slot) {
   const out = $(`#exec-out-${slot}`);
   const viz = $(`#exec-viz-${slot}`);
   if (!code.trim() || !out) return;
+  if (task.visualizer === 'cad3d' || (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d')) {
+    return runCad3dViewport(slot, code, btn, out, viz);
+  }
   // GUI (Pygame) tasks render IN THE BROWSER via WebAssembly so they work for
   // remote users — build with pygbag and embed an iframe instead of launching a
   // native window on the server host.
@@ -4043,19 +4568,37 @@ async function runWebGame(slot, code, btn, out, viz) {
       const colEl = $(`#col-${slot}`);
       if (colEl) colEl.classList.add('game-code-collapsed');
       viz.classList.remove('hidden');
+      // SECURITY: `sandbox="allow-scripts"` WITHOUT allow-same-origin gives the
+      // LLM-generated bundle an opaque origin, so it cannot reach this page's
+      // cookies, localStorage (BYOK keys) or same-origin /api/* endpoints. The
+      // server serves /games/* unauthenticated with CORS so the bundle still loads.
       viz.innerHTML =
-        '<div class="game-wrap"><iframe class="game-frame" src="' + r.url + '" title="' + esc(modelLabel(slot)) +
-        '" sandbox="allow-scripts allow-same-origin" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
+        '<div class="game-wrap"><iframe class="game-frame" src="' + esc(r.url) + '" title="' + esc(modelLabel(slot)) +
+        '" sandbox="allow-scripts" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
         '<div class="game-bar"><span>Running in your browser via WebAssembly' + (r.cached ? ' · cached build' : '') +
         '</span><div class="game-bar-actions">' +
         '<button type="button" class="game-code-toggle" data-slot="' + esc(slot) + '" title="Toggle Python source code view">&lt;/&gt; Show code</button>' +
-        '<a href="' + r.url + '" target="_blank" rel="noopener">↗ Full screen</a>' +
+        '<button type="button" class="game-fullscreen-btn" data-slot="' + esc(slot) + '" title="Play this game full screen (stays sandboxed)">⛶ Full screen</button>' +
         '</div></div>';
       const toggleBtn = viz.querySelector('.game-code-toggle');
       if (toggleBtn && colEl) {
         toggleBtn.addEventListener('click', () => {
           const collapsed = colEl.classList.toggle('game-code-collapsed');
           toggleBtn.innerHTML = collapsed ? '&lt;/&gt; Show code' : '&lt;/&gt; Hide code';
+        });
+      }
+      // In-card fullscreen keeps the sandbox attribute in force; the old "open the
+      // bundle top-level" link ran the generated code unsandboxed on the app origin.
+      const fsBtn = viz.querySelector('.game-fullscreen-btn');
+      const gameFrame = viz.querySelector('iframe.game-frame');
+      if (fsBtn && gameFrame) {
+        fsBtn.addEventListener('click', () => {
+          const req = gameFrame.requestFullscreen || gameFrame.webkitRequestFullscreen;
+          if (typeof req !== 'function') { fsBtn.disabled = true; fsBtn.title = 'Full screen is not supported by this browser'; return; }
+          try {
+            const p = req.call(gameFrame);
+            if (p && typeof p.catch === 'function') p.catch(() => { /* user gesture or policy denied */ });
+          } catch (_) { /* ignore */ }
         });
       }
     }
@@ -4386,6 +4929,7 @@ const SLOT_GEN = {};                      // slot -> generation counter
 const SLOT_RUNS = {};                     // slot -> { abort, timer } for a single-slot re-run
 let _fullRun = false;                     // a full comparison is streaming
 let _busy = false;                        // kept for updateRunButton(): any run in flight
+let FULL_RUN_ABORT = null;                // AbortController of the full comparison in flight (1.1)
 function claimSlots(slots) {              // take ownership; returns the snapshot to validate against
   const snap = {};
   slots.forEach((s) => { SLOT_GEN[s] = (SLOT_GEN[s] || 0) + 1; snap[s] = SLOT_GEN[s]; });
@@ -4393,10 +4937,42 @@ function claimSlots(slots) {              // take ownership; returns the snapsho
 }
 const ownsSlot = (snap, slot) => snap && snap[slot] != null && snap[slot] === SLOT_GEN[slot];
 const slotIsRunning = (slot) => !!SLOT_RUNS[slot] || (_fullRun && !wallFinished.has(slot));
+const anyRunInFlight = () => _fullRun || Object.keys(SLOT_RUNS).length > 0;
+
+// Called before any action that rebuilds the arena or changes what a running
+// stream would be attributed to (task/category change, slot edits, presets,
+// History restore, arena-mode switch). While a comparison or a single-slot
+// re-run is streaming it asks for confirmation, then aborts every stream and
+// bumps the slot generations so late events from the old owner are dropped.
+// Returns false when the user chose to keep the current run (caller must bail).
+function confirmInterruptRun(message) {
+  if (!anyRunInFlight()) return true;
+  if (!window.confirm(message || 'A comparison is still running. Stop it and continue?')) return false;
+  stopAllRuns();
+  return true;
+}
+function stopAllRuns() {
+  try { if (FULL_RUN_ABORT) FULL_RUN_ABORT.abort(); } catch (_) { /* ignore */ }
+  Object.keys(SLOT_RUNS).forEach((s) => {
+    const r = SLOT_RUNS[s];
+    if (!r) return;
+    try { r.abort.abort(); } catch (_) { /* ignore */ }
+    clearInterval(r.timer);
+    delete SLOT_RUNS[s];
+  });
+  claimSlots(slotIds());
+  if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
+  _fullRun = false;
+  _busy = false;
+  updateRunButton();
+  paintAllRerunButtons();
+}
 
 // POST /api/run and pump the NDJSON stream into `results`.
 // Returns 'ok' | 'auth' | 'quota'; throws on transport/HTTP failure.
-async function streamRun(payload, results, signal, own, retried) {
+// `ctx` carries per-run context (the task that was current when the run
+// started) so event handlers never re-read mutable UI state mid-stream.
+async function streamRun(payload, results, signal, own, retried, ctx) {
   const resp = await fetch('/api/run', {
     method: 'POST',
     credentials: 'same-origin',
@@ -4404,7 +4980,7 @@ async function streamRun(payload, results, signal, own, retried) {
     body: JSON.stringify(payload),
     signal,
   });
-  if (resp.status === 401) { window.location.replace('/login'); return 'auth'; } // session expired mid-use
+  if (resp.status === 401) { saveComposerDraft(); window.location.replace('/login'); return 'auth'; } // session expired mid-use
   if (resp.status === 403) {
     const j = await resp.json().catch(() => ({}));
     if (j && j.code === 'PASSWORD_CHANGE_REQUIRED') {
@@ -4416,18 +4992,21 @@ async function streamRun(payload, results, signal, own, retried) {
     const j = await resp.json().catch(() => ({}));
     if (j && j.code === 'ATTACHMENT_EXPIRED' && !retried && markAttachmentsExpired(j)) {
       // Re-upload the full files once and retry (no quota was consumed by the 409).
-      return streamRun({ ...payload, attachments: currentAttachmentsPayload() }, results, signal, own, true);
+      return streamRun({ ...payload, attachments: currentAttachmentsPayload() }, results, signal, own, true, ctx);
     }
     throw new Error((j && j.error) || 'An attachment expired from the server cache — please re-attach it.');
   }
-  if (resp.status === 429) {                                                     // a daily per-user budget on the global keys is used up
+  if (resp.status === 429) {                                                     // a daily per-user budget on the global keys is used up, or the server is busy
     const j = await resp.json().catch(() => ({}));
     if (j && j.quotas) myQuotas = j.quotas;
     if (j && j.quota && j.provider === 'openai') myQuota = j.quota;
     if (j && j.vertexQuota) myVertexQuota = j.vertexQuota;
     updateQuotaBadge();
     window._lastQuotaObj = j || {};
-    window._lastQuotaMsg = (j && j.error) || 'Daily run limit reached.';
+    // Concurrency cap (no quota payload): a transient "try again in a moment", not a
+    // budget problem. Painted per slot by the caller; never alerts or offers Vertex.
+    window._lastQuotaBusy = !!(j && !j.quotas && !j.quota && !j.vertexQuota && /concurrent/i.test(String(j.error || '')));
+    window._lastQuotaMsg = (j && j.error) || (window._lastQuotaBusy ? 'The server is busy, wait for the current run to finish.' : 'Daily run limit reached.');
     return 'quota';
   }
   if (!resp.ok || !resp.body) throw new Error('Request failed: ' + resp.status);
@@ -4444,10 +5023,19 @@ async function streamRun(payload, results, signal, own, retried) {
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (line) {
-        const ev = JSON.parse(line);
+        let ev;
+        try {
+          ev = JSON.parse(line);
+        } catch (parseErr) {
+          // A corrupt frame means the stream is no longer trustworthy: stop reading
+          // instead of leaving the columns spinning forever on an uncaught throw.
+          try { await reader.cancel(); } catch (_) { /* ignore */ }
+          throw new Error('The run stream returned a malformed event; the connection was dropped.');
+        }
+        if (!ev || typeof ev !== 'object') continue;
         // Drop events for a slot this stream no longer owns (someone hit Run
         // again on that column) — otherwise a stale run would clobber the new one.
-        if (!ev.slot || ownsSlot(own, ev.slot)) handleEvent(ev, results, own);
+        if (!ev.slot || ownsSlot(own, ev.slot)) handleEvent(ev, results, own, ctx);
       }
     }
   }
@@ -4471,10 +5059,14 @@ function paintAllRerunButtons() { (ARENA_MODELS || MODELS).forEach((m) => paintR
 
 async function run() {
   if (!MODELS.length) return;   // nothing selected — the button is disabled anyway
+  if (_fullRun) return;         // not re-entrant: a second click / timer while streaming is ignored (1.4)
   const btn = $('#runBtn');
   btn.disabled = true;
   btn.textContent = 'Running…';
-  _busy = true; _fullRun = true;
+  _busy = true; _fullRun = true;   // set synchronously, before the first await
+  const ac = new AbortController();   // lets confirmInterruptRun() cancel the whole comparison (1.1)
+  FULL_RUN_ABORT = ac;
+  let rerunWithVertex = false;
   // A new comparison gets a fresh repair allowance per slot.
   Object.keys(AUTOFIXED).forEach((k) => delete AUTOFIXED[k]);
   _judgeScored = null;
@@ -4517,11 +5109,15 @@ async function run() {
     slots.forEach((s) => { if (!wallFinished.has(s) && ownsSlot(own, s)) setTileVal(s, 'time', secs); });
   }, 100);
 
+  // Captured once: the `done` handler decides auto-execution against the task
+  // this run was started for, not whatever Step 1 shows when the event lands.
   const curTask = currentTask();
+  const taskAtStart = curTask;
 
   const payload = {
     taskId: $('#taskSelect').value,
     taskTitle: curTask && curTask.title ? curTask.title : undefined,
+    arenaMode: typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text',
     maxIterations: 1, // single-shot: correctness = the model's first-attempt pass rate (no self-debug retries)
     models: MODELS,
     customPrompt: $('#customPrompt').value,
@@ -4529,16 +5125,19 @@ async function run() {
     keys: loadKeys(), // bring-your-own keys (empty {} ⇒ shared keys, subject to the daily limit)
   };
 
+  if (typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
+
   saveUserPreferencesImmediate();
 
   LAST_RESULTS = {};
   const results = LAST_RESULTS;
   try {
-    const st = await streamRun(payload, results, undefined, own);
+    const st = await streamRun(payload, results, ac.signal, own, false, { task: taskAtStart, arenaMode: payload.arenaMode });
     if (st === 'auth') return;
     if (st === 'quota') {
       const m = window._lastQuotaMsg;
       slots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(m), 'err'); });
+      if (window._lastQuotaBusy) return; // concurrency cap: per-slot message only, no alert loop
       if (window._lastQuotaObj && (window._lastQuotaObj.externalQuotaExhausted || window._lastQuotaObj.openaiQuotaExhausted)) {
         const switchToVertex = window.confirm(
           `${m}\n\nReplace the OpenAI / external slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison now? It will count against your Vertex AI budget instead.`
@@ -4558,7 +5157,9 @@ async function run() {
           renderModelEditors();
           buildArena();
           updateQuotaBadge();
-          setTimeout(() => run(), 50);
+          // Re-armed from `finally` once this run's state is fully reset (no timer
+          // racing the re-enabled button, no double run / double charge window).
+          rerunWithVertex = true;
           return;
         }
       } else {
@@ -4567,14 +5168,20 @@ async function run() {
       return;
     }
   } catch (e) {
-    slots.forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
+    if (e && e.name === 'AbortError') {
+      // Interrupted by the user via confirmInterruptRun(); the new owner paints the UI.
+    } else {
+      slots.forEach((s) => { if (!results[s] && ownsSlot(own, s)) setStatus(s, 'Error: ' + esc(e.message), 'err'); });
+    }
   } finally {
     if (wallTimer) { clearInterval(wallTimer); wallTimer = null; }
     btn.innerHTML = 'Run comparison ▸ <kbd class="run-kbd">⌘↵</kbd>';
+    if (FULL_RUN_ABORT === ac) FULL_RUN_ABORT = null;
     _fullRun = false;
     _busy = Object.keys(SLOT_RUNS).length > 0;   // re-runs may still be going
     updateRunButton();          // stays disabled if every slot was cleared meanwhile
     paintAllRerunButtons();
+    if (rerunWithVertex) run(); // state is reset above; run() disables the button synchronously
   }
 }
 
@@ -4619,9 +5226,11 @@ async function rerunSlot(slot, repair) {
 
   try {
     const curTask = currentTask();
+    const arenaModeNow = typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text';
     const st = await streamRun({
       taskId: $('#taskSelect').value,
       taskTitle: curTask && curTask.title ? curTask.title : undefined,
+      arenaMode: arenaModeNow,
       maxIterations: 1,
       models: [model],
       mode: 'single',            // draws on the separate single-model re-run budget
@@ -4629,9 +5238,9 @@ async function rerunSlot(slot, repair) {
       customPrompt: $('#customPrompt').value,
       attachments: currentAttachmentsPayload(),
       keys: loadKeys(),
-    }, LAST_RESULTS, ac.signal, own);
+    }, LAST_RESULTS, ac.signal, own, false, { task: curTask, arenaMode: arenaModeNow });
     if (st === 'auth') return;
-    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, esc(window._lastQuotaMsg), 'err'); window.alert(window._lastQuotaMsg); return; }
+    if (st === 'quota' && ownsSlot(own, slot)) { setStatus(slot, esc(window._lastQuotaMsg), 'err'); if (!window._lastQuotaBusy) window.alert(window._lastQuotaMsg); return; }
   } catch (e) {
     // AbortError just means this column was taken over — the new owner has the UI.
     if (e && e.name === 'AbortError') return;
@@ -4648,7 +5257,7 @@ async function rerunSlot(slot, repair) {
   }
 }
 
-function handleEvent(ev, results, own) {
+function handleEvent(ev, results, own, ctx) {
   switch (ev.type) {
     case 'start':
     case 'ping':
@@ -4766,11 +5375,30 @@ function handleEvent(ev, results, own) {
       setTileVal(ev.slot, 'cost', fmtCost(ev.result.costUsd));
       setTileVal(ev.slot, 'time', (ev.result.wallMs / 1000).toFixed(1) + 's');
       paintRerunButton(ev.slot);
-      if ((currentTask().executable || currentTask().visualizer === 'hanoi') && ev.result.code) {
-        const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
-        if (eb) eb.disabled = false;
-        const auto = $('#autoRun');
-        if (auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
+      {
+        // Auto-execution is decided against the task this run was STARTED for. If
+        // Step 1 has moved on since (and the user kept the stream), the code is only
+        // offered via the Run button, never auto-sent to /api/execute or the CAD
+        // viewport as the newly selected task.
+        const runTask = (ctx && ctx.task) || currentTask();
+        const nowTask = currentTask();
+        const sameTask = !!(runTask && nowTask && runTask.id === nowTask.id
+          && (runTask.visualizer || null) === (nowTask.visualizer || null));
+        const runIsCad = (ctx && ctx.arenaMode === '3d') || isCadActiveTask(runTask);
+        if ((runTask.executable || runTask.visualizer === 'hanoi') && ev.result.code) {
+          const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
+          if (eb) eb.disabled = false;
+          const auto = $('#autoRun');
+          if (sameTask && auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
+        }
+        if (runIsCad && ev.result.code) {
+          const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
+          if (eb) eb.disabled = false;
+          const auto = $('#autoRun');
+          if (sameTask && isCadActiveTask() && (!auto || auto.classList.contains('is-on'))) {
+            execSlotCode(ev.slot);
+          }
+        }
       }
       {
         const rr = ev.result;
@@ -5001,120 +5629,9 @@ function renderMetricGrid(scored, isCustom) {
   }).join('');
 }
 
-// Headline: the balanced winner + the single most striking comparative fact.
-function renderWinnerHero(scored, isCustom) {
-  const host = $('#winnerHero');
-  if (!host) return;
-  const ranked = [...scored].sort((a, b) => b.overall - a.overall);
-  const winner = ranked[0];
-  const cheapest = [...scored].sort((a, b) => a.costUsd - b.costUsd)[0];
-  const fastest = [...scored].sort((a, b) => a.wallMs - b.wallMs)[0];
-  const priciest = [...scored].sort((a, b) => b.costUsd - a.costUsd)[0];
-  const slowest = [...scored].sort((a, b) => b.wallMs - a.wallMs)[0];
-  const bits = [];
-  if (!isCustom) {
-    const allSolved = scored.every((r) => r.solved);
-    bits.push(allSolved ? 'all models reached 100% correct' : `${esc(winner.label)} led on correctness`);
-  }
-  const costMult = priciest.costUsd / Math.max(cheapest.costUsd, 1e-9);
-  if (scored.length > 1 && costMult >= 1.15) bits.push(`<b>${esc(cheapest.label)}</b> ${costMult.toFixed(1)}× cheaper`);
-  const timeMult = slowest.wallMs / Math.max(fastest.wallMs, 1);
-  if (scored.length > 1 && timeMult >= 1.15) bits.push(`<b>${esc(fastest.label)}</b> ${timeMult.toFixed(1)}× faster`);
-  const why = bits.length ? bits.join(' · ') : 'closely matched across speed, tokens and cost';
-  host.style.setProperty('--accent', slotColor(winner.slot));
-  host.innerHTML = `
-    <div class="wh-icon">${modelIconSvg(winner)}</div>
-    <div class="wh-main">
-      <div class="wh-badge">▲ Best balanced</div>
-      <div class="wh-name">${esc(winner.label)}</div>
-      <div class="wh-why">${why}</div>
-    </div>
-    <div class="wh-score"><div class="whs-num">${winner.overall}</div><div class="whs-lbl">overall / 100</div></div>`;
-}
-
-// One scannable card per model, ranked, with icon + big score + key stats.
-function renderModelCards(scored, isCustom) {
-  const wrap = $('#modelCards');
-  if (!wrap) return;
-  const ranked = [...scored].sort((a, b) => b.overall - a.overall);
-  wrap.innerHTML = ranked.map((r, i) => {
-    const stats = isCustom
-      ? [['Cost / task', fmtCost(r.costUsd)], ['Speed', (r.wallMs / 1000).toFixed(1) + 's'], ['Out tokens', fmtInt(Math.max(0, r.completionTokens - (r.reasoningTokens || 0)))]]
-      : [['Correctness', (r.correctness == null ? '—' : r.correctness + '%')], ['Cost / task', fmtCost(r.costUsd)], ['Speed', (r.wallMs / 1000).toFixed(1) + 's']];
-    const statHtml = stats.map(([k, v]) => `<div class="mcc-stat"><span class="mcs-k">${k}</span><span class="mcs-v">${esc(v)}</span></div>`).join('');
-    return `<div class="mc-card${i === 0 ? ' is-win' : ''}" style="--accent:${slotColor(r.slot)}">
-      <div class="mcc-top">
-        <span class="mcc-rank">P${i + 1}</span>
-        <span class="mcc-ic">${modelIconSvg(r)}</span>
-        <span class="mcc-name">${esc(r.label)}</span>
-      </div>
-      <div class="mcc-overall"><b>${r.overall}</b><span>/ 100</span><i>balanced score</i></div>
-      <div class="mcc-stats">${statHtml}</div>
-      ${thinkTag(r.thinking)}
-    </div>`;
-  }).join('');
-}
-
-function renderRadar(scored) {
-  const labels = Object.keys(scored[0].axes);
-  const datasets = scored.map((r) => {
-    const c = slotColor(r.slot);
-    return {
-      label: r.label,
-      data: labels.map((l) => r.axes[l]),
-      borderColor: c,
-      backgroundColor: c + '33',
-      pointBackgroundColor: c,
-      borderWidth: 2,
-    };
-  });
-  if (radarChart) radarChart.destroy();
-  radarChart = new Chart($('#radar'), {
-    type: 'radar',
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      plugins: { legend: { labels: { color: '#98a6c0', font: { family: 'Inter' } } } },
-      scales: {
-        r: {
-          min: 0, max: 100,
-          angleLines: { color: 'rgba(150,170,210,.14)' },
-          grid: { color: 'rgba(150,170,210,.12)' },
-          pointLabels: { color: '#98a6c0', font: { size: 11, family: 'Inter' } },
-          ticks: { color: '#5f6e8a', backdropColor: 'transparent', stepSize: 25 },
-        },
-      },
-    },
-  });
-}
-
-function renderBars(scored) {
-  const wrap = $('#barWrap');
-  wrap.innerHTML = '';
-  const metrics = [
-    ['Overall (balanced)', (r) => r.overall, (r) => r.overall + '/100'],
-    ['Cost efficiency', (r) => r.axes['Cost efficiency'], (r) => fmtCost(r.costUsd) + '/task'],
-    ['Speed', (r) => r.axes.Speed, (r) => (r.wallMs / 1000).toFixed(1) + 's'],
-  ];
-  const champSlot = [...scored].sort((a, b) => b.overall - a.overall)[0].slot;
-  metrics.forEach(([title, scoreFn, labelFn]) => {
-    const block = el('div', 'bar-metric');
-    block.appendChild(el('div', 'bar-title', `<span>${title}</span>`));
-    const rows = el('div', 'bar-rows');
-    const maxScore = Math.max(...scored.map((r) => scoreFn(r) || 0), 1);
-    scored.forEach((r) => {
-      const w = Math.max(4, Math.round(((scoreFn(r) || 0) / maxScore) * 100));
-      const row = el('div', 'bar-row' + (title.indexOf('Overall') === 0 && r.slot === champSlot ? ' champ' : ''));
-      row.innerHTML =
-        `<span class="name">${modelIconSvg(r)}${esc(r.label)}</span>` +
-        `<span class="bar-track"><span class="bar-fill" style="width:${w}%;background:${slotColor(r.slot)}"></span></span>` +
-        `<span class="val">${labelFn(r)}</span>`;
-      rows.appendChild(row);
-    });
-    block.appendChild(rows);
-    wrap.appendChild(block);
-  });
-}
+// (The legacy winner-hero / model-card / radar / bar renderers that targeted
+// #winnerHero, #modelCards, #radar and #barWrap were removed: those elements no
+// longer exist and renderScorecard() never called them - 6.11.)
 
 function renderTable(scored, isCustom) {
   const tbody = $('#resultsTable tbody');
@@ -5135,45 +5652,6 @@ function renderTable(scored, isCustom) {
       `<td class="${r.costUsd === bestCost ? 'best' : ''}">${fmtCost(r.costUsd * 1000)}</td>`;
     tbody.appendChild(tr);
   });
-}
-
-function renderTakeaway(scored, isCustom) {
-  const byOverall = [...scored].sort((a, b) => b.overall - a.overall);
-  const winner = byOverall[0];
-  const cheapest = [...scored].sort((a, b) => a.costUsd - b.costUsd)[0];
-  const fastest = [...scored].sort((a, b) => a.wallMs - b.wallMs)[0];
-  const priciest = [...scored].sort((a, b) => b.costUsd - a.costUsd)[0];
-  const slowest = [...scored].sort((a, b) => b.wallMs - a.wallMs)[0];
-
-  const parts = [];
-  if (isCustom) {
-    parts.push(`Custom prompt across ${scored.length} models — comparing speed, tokens and cost (no correctness grading).`);
-  } else {
-    const allSolved = scored.every((r) => r.solved);
-    parts.push(allSolved
-      ? `All ${scored.length} models reached <b>100% correctness</b> on the hidden edge-case tests.`
-      : `Final correctness: ${scored.map((r) => `${esc(r.label)} ${r.correctness}%`).join(', ')}.`);
-  }
-
-  const costMult = (priciest.costUsd / Math.max(cheapest.costUsd, 1e-9));
-  if (costMult >= 1.15) {
-    parts.push(`<b>${esc(cheapest.label)}</b> was the cheapest at <b>${fmtCost(cheapest.costUsd)}</b>/task ` +
-      `(${fmtCost(cheapest.costUsd * 1000)} per 1,000 tasks) — about <b>${costMult.toFixed(1)}×</b> cheaper than ${esc(priciest.label)} (${fmtCost(priciest.costUsd)}).`);
-  } else {
-    parts.push(`Costs were close: cheapest was ${esc(cheapest.label)} at ${fmtCost(cheapest.costUsd)}/task.`);
-  }
-
-  const timeMult = (slowest.wallMs / Math.max(fastest.wallMs, 1));
-  if (timeMult >= 1.15) {
-    parts.push(`<b>${esc(fastest.label)}</b> finished fastest in <b>${(fastest.wallMs / 1000).toFixed(1)}s</b> — ` +
-      `about <b>${timeMult.toFixed(1)}×</b> faster than ${esc(slowest.label)} (${(slowest.wallMs / 1000).toFixed(1)}s).`);
-  } else {
-    parts.push(`Latency was comparable; fastest was ${esc(fastest.label)} at ${(fastest.wallMs / 1000).toFixed(1)}s.`);
-  }
-
-  parts.push(`Best balanced score: <b>${esc(winner.label)}</b> (${winner.overall}/100).`);
-
-  $('#takeaway').innerHTML = parts.join(' ');
 }
 
 // While a coding task streams, show only the code inside the first fenced block
@@ -5485,14 +5963,24 @@ function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
   </div>`;
 }
 
+// SECURITY (3.2): image-run history rows are stored data that any user can POST to
+// /api/image-arena/history, and admins see every user's rows. A thumbnail src is
+// only rendered when it is a plain base64 image data URL or one of our own vault
+// URLs; anything else (markup, javascript:, external URLs) is skipped entirely.
+const SAFE_IMG_SRC_RE = /^(data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+|\/api\/me\/vault\/[A-Za-z0-9%._-]+)$/;
+function safeImageSrc(src) {
+  if (typeof src !== 'string' || !src || src.length > 12 * 1024 * 1024) return '';
+  return SAFE_IMG_SRC_RE.test(src) ? src : '';
+}
+
 function imgHistRowHtml(r) {
   const isStarred = Boolean(r && r.starred);
   const rawList = (Array.isArray(r.summary) && r.summary.length) ? r.summary : (Array.isArray(r.results) ? r.results : []);
   const slotList = rawList.filter((x) => x && isCurrentImageModel(x.catalogId));
   const thumbs = slotList.filter((x) => !x.error && (x.thumbDataUrl || x.imageDataUrl || x.imageVaultRef)).slice(0, 4).map((x) => {
-    const src = x.thumbDataUrl || x.imageDataUrl || (x.imageVaultRef ? '/api/me/vault/' + encodeURIComponent(x.imageVaultRef) : '');
+    const src = safeImageSrc(x.thumbDataUrl || x.imageDataUrl || (x.imageVaultRef ? '/api/me/vault/' + encodeURIComponent(String(x.imageVaultRef)) : ''));
     if (!src) return '';
-    return `<img src="${src}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:4px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : (x.imageSize || r.imageSize || '2K'))})"/>`;
+    return `<img src="${esc(src)}" class="img-hist-thumb ihc-thumb" width="42" height="32" alt="${esc(x.shortLabel || x.label || x.slot)}" style="width:42px;height:32px;max-width:42px;max-height:32px;object-fit:cover;border-radius:4px;border:1px solid var(--border);flex-shrink:0;display:block" title="${esc(x.label || x.model)} (${esc((x.width && x.height) ? x.width + '×' + x.height : (x.imageSize || r.imageSize || '2K'))})"/>`;
   }).join('');
   const chips = slotList.map((s) => {
     const stat = s.error
@@ -5604,6 +6092,8 @@ function paintHistoryModal() {
       closeAuthModal();
     }));
     body.querySelectorAll('.hist-img-del').forEach((b) => b.addEventListener('click', async () => {
+      // Same confirmation as the text-run delete; admins can delete other users' runs here (1.9).
+      if (!window.confirm('Delete this image run from history?')) return;
       await deleteImageArenaRunFromHistory(b.dataset.id);
       _histState.imgRuns = (_histState.imgRuns || []).filter((x) => x.id !== b.dataset.id);
       if (isAdmin) {
@@ -5878,15 +6368,19 @@ function renderUsagePanel(u) {
 }
 
 async function restoreHistory(id) {
+  // Restoring rebuilds the arena and overwrites the composer: never do that under
+  // a streaming comparison or over unsaved input without an explicit OK (1.6).
+  if (!confirmInterruptRun('A comparison is still running. Stop it and restore this run?')) return;
+  if (!confirmReplaceComposer('Restoring this run will replace your current prompt and attachments. Continue?')) return;
   try {
     const r = await fetch('/api/history/' + encodeURIComponent(id), { credentials: 'same-origin' });
-    if (r.status === 401) { window.location.replace('/login'); return; }
+    if (r.status === 401) { saveComposerDraft(); window.location.replace('/login'); return; }
     const j = await r.json();
     if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
     const snap = j.run;
     closeAuthModal();
     if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== 'text') {
-      switchArenaMode('text');
+      switchArenaMode('text', { skipInterruptCheck: true });
     }
     selectTaskById(snap.taskId);
     if (isCustomTaskId(snap.taskId) && snap.prompt && $('#customPrompt')) {
@@ -5897,6 +6391,8 @@ async function restoreHistory(id) {
     } else if (isCustomTaskId(snap.taskId)) {
       clearAttachments();
     }
+    markComposerApplied();
+    saveComposerDraft();
     renderTaskPrompt();
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
     $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -5919,6 +6415,22 @@ async function deleteHistoryRun(id) {
 // task's saved snapshot and any in-flight wall timer, then rebuilds empty columns.
 // Repaint the arena + scorecard + Step 2 model selectors from a saved snapshot (used by History → Restore).
 function renderSavedRun(snap) {
+  // A restore replaces every CAD slot's code/telemetry/4-view state; never let a
+  // previous session's revisions leak into (and be sent to the model for) this run (1.7).
+  if (typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
+  // SECURITY: slot ids from a stored run are interpolated into element ids and
+  // data-* attributes by buildArena, so coerce them to the known A..F set first.
+  if (Array.isArray(snap.models)) {
+    snap.models = snap.models.slice(0, MAX_SLOTS).map((m, i) => {
+      const mm = (m && typeof m === 'object') ? m : {};
+      return { ...mm, slot: ALL_SLOT_IDS.includes(mm.slot) ? mm.slot : String.fromCharCode(65 + i) };
+    });
+  }
+  if (Array.isArray(snap.slots)) {
+    snap.slots = snap.slots.filter((s) => s && ALL_SLOT_IDS.includes(s.slot));
+  } else {
+    snap.slots = [];
+  }
   _lastRunId = snap.id || null;
   _currentRunId = snap.id || null;
   _judgeScored = snap.judge || null;
@@ -6154,12 +6666,17 @@ function applyResultToColumn(slot, r) {
   const secs = (r.wallMs / 1000).toFixed(1);
   setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
   { const rb = document.querySelector(`.rerun-btn[data-slot="${slot}"]`); if (rb) rb.disabled = false; }
+  // SECURITY (3.1): a restored run is stored data that may have been produced by
+  // another user (admins restore any run) or by a prompt-injected model, so it is
+  // NEVER auto-executed here - not the Hanoi visualizer, not the CAD viewport. The
+  // Run button is enabled instead; live `done` events keep their auto-run behaviour.
   if ((currentTask().executable || currentTask().visualizer === 'hanoi') && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;
-    if (currentTask().visualizer === 'hanoi') {
-      execSlotCode(slot);
-    }
+  }
+  if (isCadActiveTask() && r.code) {
+    const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
+    if (eb) eb.disabled = false;
   }
 }
 
@@ -6256,14 +6773,25 @@ let IMG_CURTAIN_PICKS = null;  // { left, right } layer ids the user chose expli
 let IMG_RUNNING = false;
 let IMG_TIMER_ID = null;
 
-function switchArenaMode(mode, { updateUrl = true } = {}) {
-  const target = (mode === 'image' || mode === 'video') ? mode : 'text';
+function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInterruptCheck = false } = {}) {
+  const target = (mode === 'image' || mode === 'video' || mode === '3d') ? mode : 'text';
+  const prevMode = ACTIVE_ARENA_MODE;
+  // Switching tabs rebuilds the text arena (and drops CAD viewport state): a
+  // comparison still streaming has to be stopped explicitly first (1.1).
+  if (!skipInterruptCheck && !initialBoot && (prevMode === 'text' || prevMode === '3d') && target !== prevMode) {
+    if (!confirmInterruptRun('A comparison is still running. Stop it and switch arenas?')) return;
+  }
   ACTIVE_ARENA_MODE = target;
+  // Leaving the 3D arena: forget per-slot CAD code / telemetry / 4-view renders so
+  // they can never be attached to a later text run or a restored run (1.7).
+  if (prevMode === '3d' && target !== '3d' && typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
 
   const textBtn = $('#modeBtnText');
+  const cadBtn = $('#modeBtn3d');
   const imgBtn = $('#modeBtnImage');
   const vidBtn = $('#modeBtnVideo');
   if (textBtn) textBtn.classList.toggle('active', target === 'text');
+  if (cadBtn) cadBtn.classList.toggle('active', target === '3d');
   if (imgBtn) imgBtn.classList.toggle('active', target === 'image');
   if (vidBtn) vidBtn.classList.toggle('active', target === 'video');
 
@@ -6279,6 +6807,7 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
     if (textScorecard) textScorecard.classList.add('hidden');
     if (vidSection) vidSection.classList.add('hidden');
     if (imgSection) imgSection.classList.remove('hidden');
+    if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
     ensureImageArenaLoaded();
     updateImageHistoryButton();
   } else if (target === 'video') {
@@ -6287,11 +6816,40 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
     if (textScorecard) textScorecard.classList.add('hidden');
     if (imgSection) imgSection.classList.add('hidden');
     if (vidSection) vidSection.classList.remove('hidden');
+    if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
   } else {
     if (imgSection) imgSection.classList.add('hidden');
     if (vidSection) vidSection.classList.add('hidden');
     if (textControls) textControls.classList.remove('hidden');
     if (textArena) textArena.classList.remove('hidden');
+
+    if (CONFIG) {
+      populateCategorySelect(target);
+      const cs = $('#categorySelect');
+      const curTask = currentTask();
+      if (target === '3d') {
+        if (curTask.category !== 'cad3d' && (!isCustomTaskSelected() || prevMode !== '3d' || initialBoot)) {
+          const defCat = 'cad3d-automotive';
+          if (cs) cs.value = defCat;
+          populateSubcategorySelect(defCat, 'complex');
+          populateTaskSelect(defCat, 'cad-planetary-gearbox');
+          renderTaskPrompt();
+          buildArena();
+        } else {
+          renderTaskPrompt();
+          buildArena();
+        }
+      } else if (target === 'text' && prevMode === '3d') {
+        if (cs && isCadCategoryKey(cs.value)) {
+          cs.value = 'custom';
+          populateSubcategorySelect('custom');
+          populateTaskSelect('custom', 'custom');
+          renderTaskPrompt();
+          buildArena();
+        }
+      }
+    }
+    if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
     if (textScorecard && Object.keys(LAST_RESULTS || {}).length > 0) {
       textScorecard.classList.remove('hidden');
     }
@@ -6300,7 +6858,7 @@ function switchArenaMode(mode, { updateUrl = true } = {}) {
   if (updateUrl && window.history && typeof window.history.replaceState === 'function') {
     try {
       const url = new URL(window.location.href);
-      if (target === 'image' || target === 'video') url.searchParams.set('tab', target);
+      if (target === 'image' || target === 'video' || target === '3d') url.searchParams.set('tab', target);
       else url.searchParams.delete('tab');
       window.history.replaceState({}, '', url.toString());
     } catch (_) { /* ignore */ }
@@ -6314,7 +6872,7 @@ async function ensureImageArenaLoaded() {
   _imgConfigPromise = (async () => {
     try {
       const resp = await fetch('/api/image-arena/config', { credentials: 'same-origin' });
-      if (resp.status === 401) return null;
+      if (resp.status === 401) { window.location.replace('/login'); return null; } // session expired mid-use
       const data = await resp.json();
       if (!data || !data.ok) return null;
       IMG_CONFIG = data;
@@ -6450,6 +7008,9 @@ function openCurrentLightboxImageInNewTab() {
       const blob = new Blob([u8], { type: mime });
       const blobUrl = URL.createObjectURL(blob);
       window.open(blobUrl, '_blank', 'noopener');
+      // The new tab has loaded the bytes long before this fires; without it every
+      // click pins another 5-25 MB blob to this document for its whole lifetime (2.10).
+      setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch (_) { /* ignore */ } }, 60000);
       return;
     }
     window.open(item.url, '_blank', 'noopener');
@@ -6562,6 +7123,7 @@ function renderImageSizeAndAspectPills() {
       b.textContent = r.label;
       b.title = r.description || r.label;
       b.addEventListener('click', () => {
+        if (IMG_RUNNING) return; // size is captured at run start; frozen until it finishes (1.5)
         IMG_SELECTED_SIZE = r.id;
         renderImageSizeAndAspectPills();
         renderImageSlotsConfigurator();
@@ -6569,6 +7131,7 @@ function renderImageSizeAndAspectPills() {
         renderImageMetricComparison();
         renderImageEconomicsModeler();
       });
+      b.disabled = IMG_RUNNING;
       sizeWrap.appendChild(b);
     });
   }
@@ -6580,10 +7143,12 @@ function renderImageSizeAndAspectPills() {
       b.type = 'button';
       b.textContent = a.label;
       b.addEventListener('click', () => {
+        if (IMG_RUNNING) return; // frozen during a run (1.5)
         IMG_SELECTED_ASPECT = a.id;
         renderImageSizeAndAspectPills();
         if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
       });
+      b.disabled = IMG_RUNNING;
       aspectWrap.appendChild(b);
     });
   }
@@ -6658,6 +7223,7 @@ function renderImageSlotsConfigurator() {
       rm.type = 'button';
       rm.title = `Remove Slot ${slotObj.slot}`;
       rm.addEventListener('click', () => {
+        if (IMG_RUNNING) return; // lineup is frozen while images are generating (1.5)
         IMG_SLOTS.splice(idx, 1);
         IMG_SLOTS.forEach((s, i) => { s.slot = String.fromCharCode(65 + i); });
         IMG_LAST_RESULTS = [];
@@ -6680,6 +7246,7 @@ function renderImageSlotsConfigurator() {
       sel.appendChild(opt);
     });
     sel.addEventListener('change', () => {
+      if (IMG_RUNNING) { sel.value = slotObj.catalogId; return; } // frozen during a run (1.5)
       slotObj.catalogId = sel.value;
       IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
@@ -6706,10 +7273,32 @@ function renderImageSlotsConfigurator() {
 
     grid.appendChild(card);
   });
+  // A re-render during a run must keep the lineup frozen (1.5).
+  if (IMG_RUNNING) setImageArenaControlsDisabled(true);
+}
+
+// Disable every control that would desync IMG_SLOTS / cards / results while a
+// generation is in flight (slot model selects, remove, add, presets, size and
+// aspect pills, scenario pickers). Re-enabled in the run's finally (1.5).
+function setImageArenaControlsDisabled(disabled) {
+  const sel = '#imgSlotGrid select, #imgSlotGrid .ca-remove, #imgAddSlotBtn, .img-preset-btn, ' +
+    '#imgSizePills button, #imgAspectPills button, #imgPackSelect, #imgSubcategorySelect, #imgScenarioSelect';
+  document.querySelectorAll(sel).forEach((n) => { n.disabled = !!disabled; });
+  if (!disabled) {
+    // Restore the data-driven state of the Add button once the lock lifts.
+    const addBtn = $('#imgAddSlotBtn');
+    const catalog = (IMG_CONFIG && IMG_CONFIG.catalog) || [];
+    const maxActiveSlots = Math.min(4, Math.max(1, catalog.length || 4));
+    if (addBtn) addBtn.disabled = IMG_SLOTS.length >= maxActiveSlots;
+  }
+  const grid = $('#imgSlotGrid');
+  if (grid) grid.classList.toggle('is-locked', !!disabled);
 }
 
 function populateImagePacksAndScenarios() {
   const packSel = $('#imgPackSelect');
+  const subSel = $('#imgSubcategorySelect');
+  const subSep = $('#imgSubcategorySep');
   const scSel = $('#imgScenarioSelect');
   if (!packSel || !scSel || !IMG_CONFIG) return;
 
@@ -6722,24 +7311,64 @@ function populateImagePacksAndScenarios() {
     packSel.appendChild(o);
   });
 
-  const updateScenariosForPack = (packId) => {
-    const pack = packs.find((p) => p.id === packId) || packs[0];
+  const populateImgScenariosForSubcat = (pack, subcatId, preferredScenarioId) => {
     if (!pack) return;
     const badge = $('#imgScenarioBadge');
     if (badge) badge.textContent = pack.badge || 'Image Benchmark';
+    const allSc = pack.scenarios || [];
+    const filteredSc = (subcatId && Array.isArray(pack.subcategories) && pack.subcategories.length > 0 && allSc.some((s) => s.subcategory === subcatId))
+      ? allSc.filter((s) => s.subcategory === subcatId)
+      : allSc;
     scSel.innerHTML = '';
-    (pack.scenarios || []).forEach((s) => {
+    filteredSc.forEach((s) => {
       const o = el('option');
       o.value = s.id;
       o.textContent = s.title;
       scSel.appendChild(o);
     });
-    if (pack.scenarios && pack.scenarios[0]) {
-      applyImageScenario(pack, pack.scenarios[0]);
+    const chosen = (preferredScenarioId && filteredSc.find((s) => s.id === preferredScenarioId)) || filteredSc[0] || allSc[0];
+    if (chosen) {
+      scSel.value = chosen.id;
+      applyImageScenario(pack, chosen);
     }
   };
 
+  const updateScenariosForPack = (packId, preferredSubcatId, preferredScenarioId) => {
+    const pack = packs.find((p) => p.id === packId) || packs[0];
+    if (!pack) return;
+    const subs = Array.isArray(pack.subcategories) ? pack.subcategories : [];
+    if (subSel) {
+      subSel.innerHTML = '';
+      if (subs.length > 0) {
+        subs.forEach((sub) => {
+          const o = el('option');
+          o.value = sub.id;
+          o.textContent = sub.label;
+          subSel.appendChild(o);
+        });
+        if (preferredSubcatId && subs.some((s) => s.id === preferredSubcatId)) {
+          subSel.value = preferredSubcatId;
+        } else {
+          subSel.value = subs[0].id;
+        }
+        subSel.classList.remove('hidden');
+        if (subSep) subSep.classList.remove('hidden');
+      } else {
+        subSel.classList.add('hidden');
+        if (subSep) subSep.classList.add('hidden');
+      }
+    }
+    const activeSub = (subSel && !subSel.classList.contains('hidden')) ? subSel.value : '';
+    populateImgScenariosForSubcat(pack, activeSub, preferredScenarioId);
+  };
+
   packSel.onchange = () => updateScenariosForPack(packSel.value);
+  if (subSel) {
+    subSel.onchange = () => {
+      const pack = packs.find((p) => p.id === packSel.value) || packs[0];
+      populateImgScenariosForSubcat(pack, subSel.value);
+    };
+  }
   scSel.onchange = () => {
     const pack = packs.find((p) => p.id === packSel.value) || packs[0];
     const sc = (pack && pack.scenarios || []).find((s) => s.id === scSel.value);
@@ -6758,7 +7387,7 @@ function applyImageScenario(pack, sc) {
   if (promptEl) promptEl.value = sc.prompt || '';
   if (whyEl) {
     if (sc.whyItMatters) {
-      whyEl.innerHTML = `<strong>Why this scenario matters:</strong> ${esc(sc.whyItMatters)}`;
+      whyEl.textContent = sc.whyItMatters;
       whyEl.classList.remove('hidden');
     } else {
       whyEl.classList.add('hidden');
@@ -6775,6 +7404,7 @@ function applyImageScenario(pack, sc) {
   IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
   IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
   IMG_LAST_RESULTS = [];
+  markImageComposerApplied();
   renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
@@ -6782,6 +7412,21 @@ function applyImageScenario(pack, sc) {
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
+}
+
+// Image Arena composer pristine/dirty tracking (prompt text + reference images last
+// applied by a scenario or a History restore), mirroring the text composer (1.6).
+let IMG_COMPOSER_APPLIED = { prompt: '', refCount: 0 };
+function markImageComposerApplied() {
+  const p = $('#imgPromptInput');
+  IMG_COMPOSER_APPLIED = { prompt: p ? String(p.value || '') : '', refCount: Array.isArray(IMG_REF_ATTACHMENTS) ? IMG_REF_ATTACHMENTS.length : 0 };
+}
+function imageComposerIsDirty() {
+  const p = $('#imgPromptInput');
+  const text = p ? String(p.value || '') : '';
+  if (text.trim() !== String(IMG_COMPOSER_APPLIED.prompt || '').trim()) return true;
+  const n = Array.isArray(IMG_REF_ATTACHMENTS) ? IMG_REF_ATTACHMENTS.length : 0;
+  return n !== IMG_COMPOSER_APPLIED.refCount;
 }
 
 function aspectRatioCssValue(aspectStr, w, h) {
@@ -6860,7 +7505,7 @@ function renderImageReferenceAttachments() {
     const info = el('div', 'ca-info');
     const nm = el('div', 'ca-name', esc(att.label || att.name || `ref-${idx + 1}.png`));
     const kb = Math.max(1, Math.round((cleanB64.length * 3) / 4 / 1024));
-    const meta = el('div', 'ca-meta', `Ref #${idx + 1} · ${kb} KB · ${att.mimeType || 'image/png'}`);
+    const meta = el('div', 'ca-meta', `Ref #${idx + 1} · ${kb} KB · ${esc(att.mimeType || 'image/png')}`);
     info.appendChild(nm);
     info.appendChild(meta);
     item.appendChild(info);
@@ -7121,7 +7766,7 @@ function updateSplitCurtainView() {
     divider.appendChild(handle);
 
     const leftTag = el('span', 'img-curtain-tag left', 'Before · Original');
-    const rightTag = el('span', 'img-curtain-tag right', `After · ${res.shortLabel || res.label}`);
+    const rightTag = el('span', 'img-curtain-tag right', `After · ${esc(res.shortLabel || res.label)}`);
 
     stage.appendChild(clip);
     stage.appendChild(divider);
@@ -7442,6 +8087,14 @@ async function updateImageHistoryButton() {
 }
 
 async function restoreImageArenaRun(runId) {
+  // A restore overwrites the prompt, reference images and result cards: never do it
+  // under a running generation (its slots would land in the wrong cards) or over
+  // unsaved input without an explicit OK (1.6).
+  if (IMG_RUNNING) {
+    window.alert('An image generation is still running. Wait for it to finish before restoring a run.');
+    return;
+  }
+  if (imageComposerIsDirty() && !window.confirm('Replace your current prompt and reference images with this saved run?')) return;
   await ensureImageArenaLoaded();
   if (ACTIVE_ARENA_MODE !== 'image') {
     switchArenaMode('image');
@@ -7506,9 +8159,36 @@ async function restoreImageArenaRun(runId) {
   }
   if (matchedPack && packSel) {
     packSel.value = matchedPack.id;
+    const subSel = $('#imgSubcategorySelect');
+    const subSep = $('#imgSubcategorySep');
+    const subs = Array.isArray(matchedPack.subcategories) ? matchedPack.subcategories : [];
+    const targetSub = matchedScenario && matchedScenario.subcategory
+      ? matchedScenario.subcategory
+      : (subs[0] ? subs[0].id : '');
+    if (subSel) {
+      subSel.innerHTML = '';
+      if (subs.length > 0) {
+        subs.forEach((sub) => {
+          const o = el('option');
+          o.value = sub.id;
+          o.textContent = sub.label;
+          subSel.appendChild(o);
+        });
+        if (targetSub && subs.some((s) => s.id === targetSub)) subSel.value = targetSub;
+        subSel.classList.remove('hidden');
+        if (subSep) subSep.classList.remove('hidden');
+      } else {
+        subSel.classList.add('hidden');
+        if (subSep) subSep.classList.add('hidden');
+      }
+    }
     if (scSel) {
       scSel.innerHTML = '';
-      (matchedPack.scenarios || []).forEach((s) => {
+      const allSc = matchedPack.scenarios || [];
+      const filteredSc = (targetSub && subs.length > 0 && allSc.some((s) => s.subcategory === targetSub))
+        ? allSc.filter((s) => s.subcategory === targetSub)
+        : allSc;
+      filteredSc.forEach((s) => {
         const o = el('option');
         o.value = s.id;
         o.textContent = s.title;
@@ -7524,7 +8204,7 @@ async function restoreImageArenaRun(runId) {
   }
   if (whyEl) {
     if (matchedScenario && matchedScenario.whyItMatters) {
-      whyEl.innerHTML = `<strong>Why this scenario matters:</strong> ${esc(matchedScenario.whyItMatters)}`;
+      whyEl.textContent = matchedScenario.whyItMatters;
       whyEl.classList.remove('hidden');
     } else {
       whyEl.classList.add('hidden');
@@ -7564,6 +8244,7 @@ async function restoreImageArenaRun(runId) {
   } else {
     IMG_REF_ATTACHMENTS = [];
   }
+  markImageComposerApplied();
 
   renderImageReferenceAttachments();
   renderImageSizeAndAspectPills();
@@ -7671,6 +8352,7 @@ async function runImageArenaComparisonClick() {
   }
 
   IMG_RUNNING = true;
+  setImageArenaControlsDisabled(true); // freeze slots / size / aspect / presets for the run's duration (1.5)
   const runBtn = $('#imgRunBtn');
   const timerBadge = $('#imgStatusTimer');
   if (runBtn) {
@@ -7679,6 +8361,7 @@ async function runImageArenaComparisonClick() {
   }
   const finishEarly = () => {
     IMG_RUNNING = false;
+    setImageArenaControlsDisabled(false);
     if (runBtn) { runBtn.disabled = false; runBtn.innerHTML = 'Generate &amp; Compare Images ▸ <kbd class="run-kbd">⌘↵</kbd>'; }
   };
 
@@ -7699,8 +8382,10 @@ async function runImageArenaComparisonClick() {
     if (rr.status === 403 && rj && rj.code === 'PASSWORD_CHANGE_REQUIRED') { openChangePwModal({ forced: true }); finishEarly(); return; }
     if (rr.status === 429) {
       const m = (rj && rj.error) || 'Daily run limit reached.';
-      if (timerBadge) timerBadge.textContent = rj && rj.monthlyBudgetExhausted ? 'Monthly budget used up' : 'Daily limit reached';
+      const busy = !!(rj && !rj.quotas && /concurrent/i.test(String(rj.error || ''))); // concurrency cap, not a budget
+      if (timerBadge) timerBadge.textContent = busy ? m : (rj && rj.monthlyBudgetExhausted ? 'Monthly budget used up' : 'Daily limit reached');
       finishEarly();
+      if (busy) return; // inline message only, no alert loop
       if (rj && (rj.externalQuotaExhausted || rj.openaiQuotaExhausted) && swapSharedExternalImageSlotsToVertex(true)) {
         if (window.confirm(`${m}\n\nReplace the GPT Image slot(s) with Gemini (Nano Banana) models and run now? It will count against your Vertex AI budget instead.`)) {
           swapSharedExternalImageSlotsToVertex(false);
@@ -7722,6 +8407,9 @@ async function runImageArenaComparisonClick() {
   if (runBtn) runBtn.textContent = '⏳ Generating…';
 
   IMG_LAST_RESULTS = [];
+  // Every in-flight slot pushes into THIS array, so a lineup change (now locked,
+  // but defensively) can never route a result into a card titled for another model (1.5).
+  const resultsArr = IMG_LAST_RESULTS;
   renderImageArenaPlaceholderCards();
   updateSplitCurtainView();
   renderImageMetricComparison();
@@ -7747,7 +8435,7 @@ async function runImageArenaComparisonClick() {
   if (IMG_TIMER_ID) clearInterval(IMG_TIMER_ID);
   IMG_TIMER_ID = setInterval(() => {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    const doneCount = IMG_LAST_RESULTS.length;
+    const doneCount = resultsArr.length;
     if (timerBadge) {
       timerBadge.textContent = `Running (${doneCount}/${activeSlotsSnapshot.length} done) · ${elapsed}s`;
     }
@@ -7821,8 +8509,8 @@ async function runImageArenaComparisonClick() {
           ok: false,
           error: 'Empty result from Vertex AI.',
         };
-        IMG_LAST_RESULTS.push(slotResult);
-        IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+        resultsArr.push(slotResult);
+        resultsArr.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
         applyImageResultToCard(slotResult);
         return slotResult;
       } catch (slotErr) {
@@ -7835,8 +8523,8 @@ async function runImageArenaComparisonClick() {
           ok: false,
           error: slotErr.message || String(slotErr),
         };
-        IMG_LAST_RESULTS.push(fallbackErr);
-        IMG_LAST_RESULTS.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+        resultsArr.push(fallbackErr);
+        resultsArr.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
         applyImageResultToCard(fallbackErr);
         return fallbackErr;
       }
@@ -7845,13 +8533,13 @@ async function runImageArenaComparisonClick() {
     await Promise.allSettled(slotPromises);
 
     IMG_RUNNING = false;
-    highlightImageWinnerTiles(IMG_LAST_RESULTS);
+    highlightImageWinnerTiles(resultsArr);
     updateSplitCurtainView();
     renderImageMetricComparison();
     renderImageEconomicsModeler();
 
     const totalSec = ((Date.now() - t0) / 1000).toFixed(1);
-    const okCount = IMG_LAST_RESULTS.filter((r) => r && r.ok).length;
+    const okCount = resultsArr.filter((r) => r && r.ok).length;
     if (timerBadge) {
       timerBadge.textContent = `Completed ${okCount}/${activeSlotsSnapshot.length} models in ${totalSec}s`;
     }
@@ -7868,7 +8556,7 @@ async function runImageArenaComparisonClick() {
         aspectRatio: reqAspect,
         slots: activeSlotsSnapshot,
         attachments: reqRefs,
-        results: IMG_LAST_RESULTS,
+        results: resultsArr,
       });
       await updateImageHistoryButton();
     }
@@ -7878,6 +8566,7 @@ async function runImageArenaComparisonClick() {
   } finally {
     if (IMG_TIMER_ID) { clearInterval(IMG_TIMER_ID); IMG_TIMER_ID = null; }
     IMG_RUNNING = false;
+    setImageArenaControlsDisabled(false);
     if (runBtn) {
       runBtn.disabled = false;
       runBtn.innerHTML = 'Generate &amp; Compare Images ▸ <kbd class="run-kbd">⌘↵</kbd>';
@@ -7914,8 +8603,8 @@ function applyImageResultToCard(r) {
     badges.innerHTML =
       `<span class="img-res-pill ${isTrue4K ? 'is-4k' : ''}">${esc(dimsStr)}${mpStr ? ' · ' + esc(mpStr) : ''}</span>` +
       `<span class="img-res-pill">${esc(r.slaBadge || '')}</span>` +
-      (r.savingsVsNanoBanana2Pct > 0
-        ? `<span class="img-res-pill is-4k">~${r.savingsVsNanoBanana2Pct}% Lower Cost</span>`
+      (Number(r.savingsVsNanoBanana2Pct) > 0
+        ? `<span class="img-res-pill is-4k">~${Math.round(Number(r.savingsVsNanoBanana2Pct))}% Lower Cost</span>`
         : '');
   }
 
@@ -7925,7 +8614,7 @@ function applyImageResultToCard(r) {
     const rightWrap = el('div', 'img-card-actions-right');
 
     if (r.hasThoughtImage && r.thoughtImageDataUrl) {
-      const tDims = (r.thoughtDims && r.thoughtDims.width) ? `${r.thoughtDims.width}×${r.thoughtDims.height}` : '1K';
+      const tDims = (r.thoughtDims && r.thoughtDims.width) ? `${esc(r.thoughtDims.width)}×${esc(r.thoughtDims.height)}` : '1K';
       const toggleBtn = el('button', 'bar-btn img-thought-toggle', `🧠 1K Thinking Draft (${tDims})`);
       toggleBtn.type = 'button';
       toggleBtn.title = 'Toggle between the 1K visual thinking draft (part[0]) and the final high-resolution output (part[1])';
@@ -8389,6 +9078,7 @@ function initImageArenaBindings() {
   if (addSlotBtn) {
     addSlotBtn.addEventListener('click', () => {
       if (!IMG_CONFIG) return;
+      if (IMG_RUNNING) return; // lineup is frozen while images are generating (1.5)
       const catalog = IMG_CONFIG.catalog || [];
       const maxActive = Math.min(4, Math.max(1, catalog.length));
       if (IMG_SLOTS.length >= maxActive) return;
@@ -8408,6 +9098,7 @@ function initImageArenaBindings() {
 
   document.querySelectorAll('.img-preset-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
+      if (IMG_RUNNING) return; // lineup is frozen while images are generating (1.5)
       const p = btn.dataset.imgPreset;
       if (p === 'nb2-vs-21') {
         IMG_SLOTS = [
@@ -8450,7 +9141,8 @@ function initImageArenaBindings() {
       if (!b) return;
       setMetricView(b.dataset.view);
       renderImageMetricComparison();
-      if (LAST_RUN && LAST_RUN.scored) renderMetricGrid(LAST_RUN.scored, LAST_RUN.isCustom);
+      // The Bars/Scale view is shared with the text scorecard; keep it in sync when one exists (2.11).
+      if (_lastScored && _lastScored.scored) renderMetricGrid(_lastScored.scored, _lastScored.isCustom);
     });
   }
 
@@ -8517,7 +9209,7 @@ function initImageArenaBindings() {
   initCurtainDrag();
   updateImageHistoryButton();
 
-  // Check URL deep link (?tab=image, ?tab=video, #image-arena, #video-arena)
+  // Check URL deep link (?tab=image, ?tab=video, ?tab=3d, #image-arena, #video-arena, #3d-arena)
   try {
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get('tab') || params.get('mode');
@@ -8525,8 +9217,904 @@ function initImageArenaBindings() {
       switchArenaMode('image', { updateUrl: false });
     } else if (tabParam === 'video' || window.location.hash === '#video-arena') {
       switchArenaMode('video', { updateUrl: false });
+    } else if (tabParam === '3d' || tabParam === 'cad' || window.location.hash === '#3d-arena') {
+      switchArenaMode('3d', { updateUrl: false });
     }
   } catch (_) { /* ignore */ }
+}
+
+// ============================================================================
+// 🧊 3D & CAD Engineering Arena Subsystem
+// - Lockstep synced 3D camera across Slots A, B, C, D... (ON by default, toggleable)
+// - Interactive CAD/CSG WebGL viewport in each slot (`cad-runner.html`)
+// - Follow-up modification loop with automatic 4-angle viewport vision input
+// - Per-slot revision history stepper (v1, v2, v3...)
+// - Headless CAD / Autodesk Fusion 360 MCP bridge modal
+// ============================================================================
+
+let CAD_CAMERA_SYNC_ON = true; // Lockstep synced camera across slots ON by default
+let CAD_SPIN_3AXIS_ON = true; // Simultaneous X+Y+Z 3-axis gimbal spin across slots (ON by default)
+let CAD_LAST_SHARED_CAMERA = null;
+const CAD_SLOT_STATE = {}; // slot -> { code, telemetry, fourViewDataUrl, revisions: [{rev, code, telemetry, fourViewDataUrl, note, at}], activeRevIndex, targetPartName, iframe, ready }
+
+function ensureCadSlotState(slot) {
+  if (!CAD_SLOT_STATE[slot]) {
+    CAD_SLOT_STATE[slot] = {
+      code: '',
+      telemetry: null,
+      fourViewDataUrl: null,
+      revisions: [],
+      activeRevIndex: -1,
+      targetPartName: '',
+      iframe: null,
+      ready: false,
+      awaitingRun: false, // true between a CAD_RUN_CODE we sent and its telemetry/error reply
+    };
+  }
+  return CAD_SLOT_STATE[slot];
+}
+
+function resetAllCadSlotStates() {
+  Object.keys(CAD_SLOT_STATE).forEach((s) => {
+    delete CAD_SLOT_STATE[s];
+  });
+  CAD_LAST_SHARED_CAMERA = null;
+  updateCadTargetChip('');
+  syncCadModifyBarVisibility();
+}
+
+// Keep at most this many revisions per slot in memory; older ones drop their
+// 4-view PNG data URL (each is a multi-MB string) so a long Modify session
+// cannot grow the tab without bound (6.8 / 1.7).
+const CAD_MAX_REVISIONS = 10;
+function pushCadRevision(st, rev) {
+  st.revisions.push(rev);
+  if (st.revisions.length > CAD_MAX_REVISIONS) {
+    st.revisions.splice(0, st.revisions.length - CAD_MAX_REVISIONS);
+  }
+  // Only the newest revision keeps its full-resolution 4-view render.
+  st.revisions.forEach((r, i) => { if (i < st.revisions.length - 1) r.fourViewDataUrl = null; });
+  st.activeRevIndex = st.revisions.length - 1;
+}
+
+// SECURITY (3.6): map a `message` event back to the CAD slot whose iframe sent it.
+// The runner frame is sandboxed without allow-same-origin, so its origin is the
+// string 'null'; we never trust `msg.slot` (any frame could forge it) and only
+// accept windows we created ourselves.
+function cadSlotForSource(source) {
+  if (!source) return null;
+  const slots = Object.keys(CAD_SLOT_STATE);
+  for (let i = 0; i < slots.length; i++) {
+    const st = CAD_SLOT_STATE[slots[i]];
+    if (st && st.iframe && st.iframe.contentWindow === source) return slots[i];
+  }
+  return null;
+}
+
+function isTrustedCadMessageEvent(ev) {
+  if (!ev) return false;
+  if (ev.origin !== 'null' && ev.origin !== window.location.origin) return false;
+  return Boolean(cadSlotForSource(ev.source));
+}
+
+// Telemetry comes from a frame that just executed LLM-generated code, so treat
+// it as untrusted: keep only finite numbers, booleans and short strings.
+function sanitizeCadTelemetry(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+  const vec3 = (arr) => {
+    if (!Array.isArray(arr) || arr.length < 3) return null;
+    const out = arr.slice(0, 3).map(num);
+    return out.every((n) => n != null) ? out : null;
+  };
+  const bbSrc = Array.isArray(raw.boundingBoxMm)
+    ? raw.boundingBoxMm
+    : (raw.boundingBox && Array.isArray(raw.boundingBox.size) ? raw.boundingBox.size : null);
+  const t = {
+    partCount: num(raw.partCount),
+    triangleCount: num(raw.triangleCount),
+    vertexCount: num(raw.vertexCount),
+    boundingBoxMm: vec3(bbSrc),
+    minMm: vec3(raw.minMm),
+    maxMm: vec3(raw.maxMm),
+    volumeCm3: num(raw.volumeCm3),
+    volumeMm3: num(raw.volumeMm3),
+    surfaceAreaCm2: num(raw.surfaceAreaCm2),
+    // null = the kernel could not verify manifoldness ("unverified"), not "open".
+    watertight: raw.watertight === null || raw.watertight === undefined ? null : Boolean(raw.watertight),
+    // CSG results are an approximation in the browser kernel; the strip and the
+    // judge-facing telemetry both carry the flag so nobody reads volume as exact.
+    csgApprox: Boolean(raw.csgApprox),
+    nonManifoldEdges: num(raw.nonManifoldEdges),
+  };
+  if (Array.isArray(raw.partNames)) {
+    t.partNames = raw.partNames
+      .filter((p) => typeof p === 'string' && p.trim())
+      .slice(0, 64)
+      .map((p) => p.trim().slice(0, 80));
+  }
+  return t;
+}
+
+// A 4-view render must be a bounded PNG/JPEG/WebP data URL (it is forwarded to
+// the model as a vision attachment and shown in the UI).
+const CAD_FOUR_VIEW_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/;
+function sanitizeCadFourView(v) {
+  if (typeof v !== 'string' || v.length < 32 || v.length > 12 * 1024 * 1024) return null;
+  return CAD_FOUR_VIEW_RE.test(v) ? v : null;
+}
+
+// Every CAD_RUN_CODE we send is a round trip we initiated. Only the telemetry
+// that answers one of these may clear a slot's crash banner (1.8 / 3.6); a
+// spontaneous telemetry re-emit after a failed rebuild must not.
+function postCadRunCode(slot, code, extra) {
+  const st = ensureCadSlotState(slot);
+  if (!st.iframe || !st.iframe.contentWindow) return false;
+  st.awaitingRun = true;
+  try {
+    st.iframe.contentWindow.postMessage(Object.assign({
+      type: 'CAD_RUN_CODE',
+      slot,
+      label: modelLabel(slot),
+      sync: CAD_CAMERA_SYNC_ON,
+      code,
+      autoCapture4View: true,
+    }, extra || {}), '*');
+    return true;
+  } catch (_) {
+    st.awaitingRun = false;
+    return false;
+  }
+}
+
+// Render the per-slot telemetry strip from sanitized numbers only (3.2).
+function renderCadTelemetryStrip(slot, t) {
+  const strip = $(`#cad-telem-${slot}`);
+  if (!strip || !t) return;
+  const bb = t.boundingBoxMm || [0, 0, 0];
+  const sz = bb.map((n) => Number(n || 0).toFixed(1)).join('×');
+  const volText = t.volumeCm3 != null
+    ? `${Number(t.volumeCm3).toFixed(2)} cm³`
+    : `${fmtInt(Math.round(t.volumeMm3 || 0))} mm³`;
+  strip.textContent = '';
+  const badge = document.createElement('span');
+  if (t.watertight === null) {
+    // The kernel could not run its manifold check (e.g. a CSG result): say so
+    // instead of claiming either outcome.
+    badge.className = 'cad-badge-warn';
+    badge.title = 'Mesh integrity could not be verified by the browser kernel';
+    badge.textContent = '? Unverified';
+  } else {
+    badge.className = t.watertight ? 'cad-badge-ok' : 'cad-badge-warn';
+    badge.title = t.watertight
+      ? 'Manifold watertight 3D mesh'
+      : (t.nonManifoldEdges != null ? `${fmtInt(t.nonManifoldEdges)} open or non-manifold edges detected` : 'Open or non-manifold edges detected');
+    badge.textContent = t.watertight ? '✓ Watertight' : '⚠ Check Mesh';
+  }
+  strip.appendChild(badge);
+  const addText = (s) => strip.appendChild(document.createTextNode(s));
+  const addBold = (s) => { const b = document.createElement('b'); b.textContent = s; strip.appendChild(b); };
+  addText(' · ');
+  addBold(fmtInt(t.partCount || 0));
+  addText(' parts · ');
+  addBold(fmtInt(t.triangleCount || 0));
+  addText(' tris · BBox ');
+  addBold(sz);
+  addText(' mm · Vol ');
+  addBold(volText);
+  if (t.csgApprox) {
+    addText(' ');
+    const approx = document.createElement('span');
+    approx.className = 'cad-badge-warn';
+    approx.title = 'Boolean (CSG) operations are approximated in the browser kernel; volume and watertightness are estimates';
+    approx.textContent = '≈ approx CSG';
+    strip.appendChild(approx);
+  }
+}
+
+function extractCadJsCode(rawText) {
+  let s = String(rawText || '');
+  const fence = s.match(/```(?:javascript|js|ts|cad)?[ \t]*\r?\n([\s\S]*?)```/i)
+    || s.match(/```[a-zA-Z0-9+#.-]*[ \t]*\r?\n?([\s\S]*?)```/);
+  if (fence && fence[1]) s = fence[1];
+  return s.trim();
+}
+
+function syncCadModifyBarVisibility() {
+  const bar = $('#cadModifyBar');
+  if (!bar) return;
+  const isCad = isCadActiveTask();
+  bar.classList.toggle('hidden', !isCad);
+  if (isCad) {
+    updateCadSyncCamButtonUi();
+    updateCadSpin3AxisButtonUi();
+    syncCadScopeSelectOptions();
+  }
+}
+
+function syncCadScopeSelectOptions() {
+  const sel = $('#cadModifyScopeSelect');
+  if (!sel) return;
+  const prev = sel.value || 'all';
+  sel.innerHTML = `<option value="all">Modify All Active Slots</option>` +
+    MODELS.map((m) => `<option value="${esc(m.slot)}">Slot ${esc(m.slot)} only (${esc(m.shortLabel || m.label || m.catalogId)})</option>`).join('');
+  if (prev === 'all' || MODELS.some((m) => m.slot === prev)) sel.value = prev;
+}
+
+function updateCadSyncCamButtonUi() {
+  const btn = $('#cadSyncCamBtn');
+  if (btn) {
+    btn.classList.toggle('is-on', CAD_CAMERA_SYNC_ON);
+    btn.setAttribute('aria-pressed', String(CAD_CAMERA_SYNC_ON));
+    btn.innerHTML = `<span class="ar-led"></span>${CAD_CAMERA_SYNC_ON ? '🔗 Synced Camera: ON (Lockstep A↔B↔C↔D)' : '🔓 Synced Camera: OFF (Independent)'}`;
+  }
+  // Broadcast sync state to all mounted CAD iframes
+  document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+    try {
+      if (ifr.contentWindow) {
+        ifr.contentWindow.postMessage({
+          type: 'CAD_SET_SYNC_STATE',
+          enabled: CAD_CAMERA_SYNC_ON,
+          sync: CAD_CAMERA_SYNC_ON,
+        }, '*');
+      }
+    } catch (_) { /* ignore */ }
+  });
+}
+
+function setCadCameraSyncState(nextSync) {
+  CAD_CAMERA_SYNC_ON = Boolean(nextSync);
+  updateCadSyncCamButtonUi();
+  if (CAD_CAMERA_SYNC_ON && CAD_LAST_SHARED_CAMERA) {
+    document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+      try {
+        if (ifr.contentWindow) {
+          ifr.contentWindow.postMessage({
+            type: 'CAD_APPLY_CAMERA',
+            cameraState: CAD_LAST_SHARED_CAMERA,
+            camera: CAD_LAST_SHARED_CAMERA,
+          }, '*');
+        }
+      } catch (_) { /* ignore */ }
+    });
+  }
+}
+
+function updateCadSpin3AxisButtonUi() {
+  const btn = $('#cadSpin3AxisBtn');
+  if (btn) {
+    btn.classList.toggle('is-on', CAD_SPIN_3AXIS_ON);
+    btn.setAttribute('aria-pressed', String(CAD_SPIN_3AXIS_ON));
+    btn.innerHTML = `<span class="ar-led"></span>${CAD_SPIN_3AXIS_ON ? '🔄 3-Axis Spin: ON (X+Y+Z)' : '🔄 3-Axis Spin: OFF'}`;
+  }
+}
+
+function setCadSpin3AxisState(nextSpin, angles = null, sourceWin = null) {
+  CAD_SPIN_3AXIS_ON = Boolean(nextSpin);
+  updateCadSpin3AxisButtonUi();
+  document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+    try {
+      if (ifr.contentWindow && (!sourceWin || ifr.contentWindow !== sourceWin)) {
+        ifr.contentWindow.postMessage({
+          type: 'CAD_SET_SPIN_3AXIS',
+          enabled: CAD_SPIN_3AXIS_ON,
+          angles: angles || null,
+        }, '*');
+      }
+    } catch (_) { /* ignore */ }
+  });
+}
+
+function updateCadTargetChip(partName, sourceSlot) {
+  const chip = $('#cadTargetPartBadge') || $('#cadTargetChip');
+  if (!chip) return;
+  const clean = String(partName || '').trim();
+  Object.keys(CAD_SLOT_STATE).forEach((s) => {
+    CAD_SLOT_STATE[s].targetPartName = clean;
+  });
+  if (clean) {
+    chip.classList.remove('hidden', 'is-empty');
+    chip.innerHTML = `🎯 Target: <b>@${esc(clean)}</b>${sourceSlot ? ` <span class="cad-chip-slot">(Slot ${esc(sourceSlot)})</span>` : ''} <span class="cad-chip-clear" title="Clear target part">✕</span>`;
+    chip.onclick = () => updateCadTargetChip('');
+  } else {
+    chip.classList.add('hidden');
+    chip.textContent = '';
+  }
+}
+
+function renderCadRevisionBar(slot) {
+  const bar = document.querySelector(`#col-${slot} .cad-rev-bar`);
+  const st = CAD_SLOT_STATE[slot];
+  if (!bar || !st) return;
+  if (!st.revisions || st.revisions.length <= 1) {
+    bar.innerHTML = `<span class="cad-rev-tag">v1 (Initial build)</span>`;
+    return;
+  }
+  const pills = st.revisions.map((r, idx) => {
+    const active = idx === st.activeRevIndex;
+    const title = r.note ? `v${r.rev}: ${r.note}` : `Revision v${r.rev}`;
+    return `<button type="button" class="cad-rev-btn${active ? ' is-active' : ''}" data-slot="${esc(slot)}" data-rev-idx="${idx}" title="${esc(title)}">v${r.rev}</button>`;
+  }).join('');
+  const cur = st.revisions[st.activeRevIndex] || st.revisions[st.revisions.length - 1];
+  const noteTxt = cur && cur.note ? `<span class="cad-rev-note" title="${esc(cur.note)}">${esc(cur.note)}</span>` : '';
+  bar.innerHTML = `<span class="cad-rev-lbl">Revisions:</span><div class="cad-rev-pills">${pills}</div>${noteTxt}`;
+  bar.querySelectorAll('.cad-rev-btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      const idx = parseInt(b.dataset.revIdx, 10);
+      const revObj = st.revisions[idx];
+      if (!revObj) return;
+      st.activeRevIndex = idx;
+      st.code = revObj.code;
+      const codeNode = $(`#code-${slot}`);
+      if (codeNode) codeNode.textContent = revObj.code;
+      renderCadRevisionBar(slot);
+      postCadRunCode(slot, revObj.code);
+    });
+  });
+}
+
+async function runCad3dViewport(slot, rawCodeText, btnOrOpts, outEl, vizEl) {
+  const code = extractCadJsCode(rawCodeText || (($(`#code-${slot}`) || {}).textContent || ''));
+  const colEl = $(`#col-${slot}`);
+  const out = outEl || $(`#exec-out-${slot}`);
+  const viz = vizEl || $(`#exec-viz-${slot}`);
+  const opts = (btnOrOpts && typeof btnOrOpts === 'object' && !(btnOrOpts instanceof Element)) ? btnOrOpts : {};
+  if (!code || !viz) return;
+
+  const st = ensureCadSlotState(slot);
+  st.code = code;
+
+  // Record revision if new or first
+  const lastRev = st.revisions.length ? st.revisions[st.revisions.length - 1] : null;
+  if (!lastRev || lastRev.code !== code) {
+    const nextNum = (lastRev ? lastRev.rev : 0) + 1;
+    pushCadRevision(st, {
+      rev: nextNum,
+      code,
+      telemetry: null,
+      fourViewDataUrl: null,
+      note: opts.revisionNote || (nextNum === 1 ? 'Initial 3D generation' : `Modification #${nextNum - 1}`),
+      at: Date.now(),
+    });
+  }
+
+  if (out) out.classList.add('hidden');
+  viz.classList.remove('hidden');
+  if (colEl) colEl.classList.add('game-code-collapsed');
+  syncCadModifyBarVisibility();
+
+  const label = modelLabel(slot);
+  let ifr = viz.querySelector('iframe.cad-frame');
+  if (!ifr) {
+    // SECURITY: no `allow-same-origin` - the runner executes LLM-generated JS, so it
+    // must live in an opaque origin (no cookies, no parent.localStorage BYOK keys, no
+    // same-origin /api/* fetches). The server serves /cad-runner.html, /cad-kernel.js
+    // and /vendor/three/* unauthenticated with CORS so the module imports still load.
+    viz.innerHTML =
+      `<div class="cad-viz-wrap">` +
+        `<iframe class="cad-frame" src="/cad-runner.html?slot=${encodeURIComponent(slot)}&label=${encodeURIComponent(label)}&sync=${CAD_CAMERA_SYNC_ON ? '1' : '0'}" ` +
+          `title="3D CAD Viewport - ${esc(label)}" sandbox="allow-scripts allow-downloads"></iframe>` +
+      `</div>` +
+      `<div class="cad-bar">` +
+        `<div class="cad-rev-bar"></div>` +
+        `<div class="cad-telemetry-strip" id="cad-telem-${esc(slot)}">Compiling 3D solid &amp; manifold telemetry…</div>` +
+        `<div class="cad-bar-actions">` +
+          `<button type="button" class="cad-code-toggle" data-slot="${esc(slot)}" title="Toggle parametric Three.js / CAD source code">&lt;/&gt; Show code</button>` +
+          `<button type="button" class="cad-mcp-slot-btn" data-slot="${esc(slot)}" title="Export this slot to Autodesk Fusion 360 Python API / Headless CAD MCP">🔌 Fusion 360</button>` +
+        `</div>` +
+      `</div>`;
+    ifr = viz.querySelector('iframe.cad-frame');
+    st.iframe = ifr;
+    st.ready = false;
+
+    const toggleBtn = viz.querySelector('.cad-code-toggle');
+    if (toggleBtn && colEl) {
+      toggleBtn.addEventListener('click', () => {
+        const collapsed = colEl.classList.toggle('game-code-collapsed');
+        toggleBtn.innerHTML = collapsed ? '&lt;/&gt; Show code' : '&lt;/&gt; Hide code';
+      });
+    }
+    const mcpSlotBtn = viz.querySelector('.cad-mcp-slot-btn');
+    if (mcpSlotBtn) {
+      mcpSlotBtn.addEventListener('click', () => openCadMcpModal(slot));
+    }
+  } else {
+    st.iframe = ifr;
+    if (st.ready && ifr.contentWindow) {
+      postCadRunCode(slot, st.code);
+    }
+  }
+  renderCadRevisionBar(slot);
+}
+
+function handleCadViewportMessage(ev) {
+  const msg = ev && ev.data;
+  if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string' || !msg.type.startsWith('CAD_')) return;
+  // SECURITY (3.6): the slot is derived from the sending window, never from msg.slot,
+  // and messages from windows we did not create (other frames, forged sources) are dropped.
+  if (!isTrustedCadMessageEvent(ev)) return;
+  const slot = cadSlotForSource(ev.source);
+  if (!slot) return;
+  const st = ensureCadSlotState(slot);
+
+  if (msg.type === 'CAD_VIEWPORT_READY') {
+    st.ready = true;
+    if (st.iframe && st.iframe.contentWindow) {
+      st.iframe.contentWindow.postMessage({
+        type: 'CAD_SET_SYNC_STATE',
+        enabled: CAD_CAMERA_SYNC_ON,
+        sync: CAD_CAMERA_SYNC_ON,
+      }, '*');
+      if (st.code) {
+        postCadRunCode(slot, st.code);
+      }
+      st.iframe.contentWindow.postMessage({
+        type: 'CAD_SET_SPIN_3AXIS',
+        enabled: CAD_SPIN_3AXIS_ON,
+      }, '*');
+    }
+    return;
+  }
+
+  if (msg.type === 'CAD_SPIN_3AXIS_CHANGE') {
+    const nextSpin = Boolean(msg.enabled);
+    if (CAD_CAMERA_SYNC_ON) {
+      setCadSpin3AxisState(nextSpin, msg.angles || null, ev.source);
+    } else {
+      CAD_SPIN_3AXIS_ON = nextSpin;
+      updateCadSpin3AxisButtonUi();
+    }
+    return;
+  }
+
+  if (msg.type === 'CAD_CAMERA_CHANGE' && (msg.cameraState || msg.camera)) {
+    const cam = msg.cameraState || msg.camera;
+    CAD_LAST_SHARED_CAMERA = cam;
+    if (!CAD_CAMERA_SYNC_ON) return;
+    document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+      try {
+        if (ifr.contentWindow && ifr.contentWindow !== ev.source) {
+          ifr.contentWindow.postMessage({
+            type: 'CAD_APPLY_CAMERA',
+            cameraState: cam,
+            camera: cam,
+          }, '*');
+        }
+      } catch (_) { /* ignore */ }
+    });
+    return;
+  }
+
+  if (msg.type === 'CAD_TOGGLE_SYNC_REQUEST') {
+    const nextState = typeof msg.enabled === 'boolean' ? msg.enabled : !CAD_CAMERA_SYNC_ON;
+    setCadCameraSyncState(nextState);
+    return;
+  }
+
+  if (msg.type === 'CAD_TELEMETRY') {
+    const t = sanitizeCadTelemetry(msg.telemetry);
+    const fourView = sanitizeCadFourView(msg.fourViewDataUrl);
+    st.telemetry = t || null;
+    if (msg.params && typeof msg.params === 'object' && !Array.isArray(msg.params)) st.params = msg.params;
+    if (fourView) st.fourViewDataUrl = fourView;
+    const curRev = st.revisions[st.activeRevIndex];
+    if (curRev) {
+      if (t) curRev.telemetry = t;
+      if (fourView) curRev.fourViewDataUrl = fourView;
+    }
+    if (t) {
+      // Only a reply to a CAD_RUN_CODE we sent counts as a successful rebuild;
+      // a stale re-emit after a failed build must not hide the crash banner (1.8).
+      if (st.awaitingRun) {
+        st.awaitingRun = false;
+        clearCrash(slot);
+      }
+      renderCadTelemetryStrip(slot, t);
+    }
+    return;
+  }
+
+  if (msg.type === 'CAD_ERROR') {
+    st.awaitingRun = false;
+    const errMsg = String(msg.error || '3D CAD script error').slice(0, 4000);
+    // Optional phase from the runner: compile (syntax), build (buildModel threw),
+    // render (exception inside the frame loop). Shown so a render-time crash is
+    // not mistaken for a bad script, and forwarded with the repair prompt.
+    const phase = typeof msg.phase === 'string' && /^(compile|build|render)$/.test(msg.phase) ? msg.phase : '';
+    const strip = $(`#cad-telem-${slot}`);
+    if (strip) {
+      strip.textContent = '';
+      const badge = document.createElement('span');
+      badge.className = 'cad-badge-err';
+      badge.title = phase ? `Error during the ${phase} phase` : '3D CAD script error';
+      badge.textContent = '✗ ' + (phase ? phase + ': ' : '') + errMsg.split('\n')[0];
+      strip.appendChild(badge);
+    }
+    noteCrash(slot, { error: (phase ? `[${phase}] ` : '') + errMsg, source: '3d-cad' });
+    return;
+  }
+
+  if ((msg.type === 'CAD_4VIEW_SNAPSHOT' || msg.type === 'CAD_FOUR_VIEW_READY') && (msg.dataUrl || msg.fourViewDataUrl)) {
+    const dUrl = sanitizeCadFourView(msg.fourViewDataUrl || msg.dataUrl);
+    if (!dUrl) return;
+    st.fourViewDataUrl = dUrl;
+    const curRev = st.revisions[st.activeRevIndex];
+    if (curRev) curRev.fourViewDataUrl = dUrl;
+    return;
+  }
+
+  if (msg.type === 'CAD_PART_SELECTED') {
+    const partName = typeof msg.partName === 'string' ? msg.partName.trim().slice(0, 80) : '';
+    updateCadTargetChip(partName, slot);
+    const inp = $('#cadModifyInput');
+    if (inp && partName) {
+      const tag = `@${partName}`;
+      if (!inp.value.includes(tag)) {
+        inp.value = inp.value ? `${tag} ${inp.value}` : `${tag} `;
+      }
+      inp.focus();
+    }
+  }
+}
+
+function requestFresh4ViewFromSlot(slot, timeoutMs = 1800) {
+  return new Promise((resolve) => {
+    const st = CAD_SLOT_STATE[slot];
+    if (!st || !st.iframe || !st.iframe.contentWindow) {
+      resolve((st && st.fourViewDataUrl) || null);
+      return;
+    }
+    let settled = false;
+    const onMsg = (ev) => {
+      const m = ev && ev.data;
+      // SECURITY (3.6): match the reply by sending window, never by m.slot.
+      if (!m || !isTrustedCadMessageEvent(ev) || cadSlotForSource(ev.source) !== slot) return;
+      if (
+        (m.type === 'CAD_4VIEW_SNAPSHOT' || m.type === 'CAD_FOUR_VIEW_READY') &&
+        (m.dataUrl || m.fourViewDataUrl)
+      ) {
+        const dUrl = sanitizeCadFourView(m.fourViewDataUrl || m.dataUrl);
+        if (!dUrl) return;
+        if (!settled) {
+          settled = true;
+          window.removeEventListener('message', onMsg);
+          st.fourViewDataUrl = dUrl;
+          resolve(dUrl);
+        }
+      }
+    };
+    window.addEventListener('message', onMsg);
+    try {
+      st.iframe.contentWindow.postMessage({ type: 'CAD_CAPTURE_FOUR_VIEW' }, '*');
+    } catch (_) { /* ignore */ }
+    setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        window.removeEventListener('message', onMsg);
+        resolve(st.fourViewDataUrl || null);
+      }
+    }, timeoutMs);
+  });
+}
+
+// Follow-up 3D modification loop: sends each slot its previous code, 3D mesh
+// telemetry, optional @part_name target, AND (when checked, ON by default)
+// its 4-angle viewport composite PNG render (Iso/Front/Top/Right) as a
+// multimodal vision attachment (`slot-${slot}-4view-render.png` via `fourViewDataUrl`)
+// so Gemini sees the current geometry alongside its code.
+async function runCadModification() {
+  const inp = $('#cadModifyInput');
+  const modBtn = $('#cadModifySubmitBtn') || $('#cadModifyRunBtn');
+  const include4ViewEl = $('#cadIncludeVisionToggle') || $('#cadInclude4ViewChk');
+  const scopeSel = $('#cadModifyScopeSelect');
+  const scopeVal = (scopeSel && scopeSel.value) || 'all';
+  const modRequest = String((inp && inp.value) || '').trim();
+  if (!modRequest) {
+    if (inp) inp.focus();
+    return;
+  }
+  const activeSlots = MODELS.filter((m) => {
+    if (scopeVal !== 'all' && m.slot !== scopeVal) return false;
+    const st = CAD_SLOT_STATE[m.slot];
+    const domCode = (($(`#code-${m.slot}`) || {}).textContent || '').trim();
+    return (st && st.code) || domCode;
+  });
+  if (!activeSlots.length) {
+    window.alert('Generate an initial 3D model first (click Run Comparison), then submit a follow-up modification.');
+    return;
+  }
+  // Same lifecycle as run()/rerunSlot(): one stream at a time per slot, abortable.
+  if (!confirmInterruptRun('A comparison is still running. Stop it and apply this modification instead?')) return;
+
+  const includeVision = include4ViewEl ? Boolean(include4ViewEl.checked) : true;
+  const origBtnHtml = modBtn ? modBtn.innerHTML : '✨ Modify 3D Model ▸';
+  if (modBtn) {
+    modBtn.disabled = true;
+    modBtn.textContent = includeVision ? '📸 Capturing 4-Views & Modifying…' : '✨ Modifying 3D Model…';
+  }
+
+  const modAbort = new AbortController();
+  let modSlots = [];
+  let own = null;
+  let runOk = false;
+  try {
+    // 1. Capture fresh 4-angle viewport composite (Iso/Front/Top/Right) from each active slot
+    if (includeVision) {
+      await Promise.all(activeSlots.map((m) => requestFresh4ViewFromSlot(m.slot, 1800)));
+    }
+
+    const baseTask = currentTask();
+    const bySlot = {};
+    let sharedTargetPart = null;
+
+    activeSlots.forEach((m) => {
+      const slot = m.slot;
+      const st = ensureCadSlotState(slot);
+      const prevCode = st.code || extractCadJsCode(($(`#code-${slot}`) || {}).textContent || '');
+      if (st.targetPartName && !sharedTargetPart) sharedTargetPart = st.targetPartName;
+      bySlot[slot] = {
+        previousCode: prevCode,
+        modificationPrompt: modRequest,
+        targetPart: st.targetPartName || null,
+        telemetry: st.telemetry || null,
+        // Attached server-side as `slot-${slot}-4view-render.png` vision input
+        fourViewDataUrl: includeVision && st.fourViewDataUrl ? st.fourViewDataUrl : null,
+      };
+      resetStreamState(slot);
+      clearCrash(slot);
+      setStatus(slot, includeVision ? 'Modifying (with 4-View vision)…' : 'Modifying 3D model…', 'run');
+    });
+
+    const slotList = activeSlots.map((m) => m.slot);
+    modSlots = slotList;
+    own = claimSlots(slotList);
+    slotList.forEach((s) => {
+      const prev = SLOT_RUNS[s];
+      if (prev) { try { prev.abort.abort(); } catch (_) { /* ignore */ } clearInterval(prev.timer); }
+      SLOT_RUNS[s] = { abort: modAbort, timer: null };
+    });
+    _busy = true;
+    updateRunButton();
+    paintAllRerunButtons();
+
+    const payload = {
+      taskId: $('#taskSelect').value,
+      taskTitle: baseTask && baseTask.title ? baseTask.title : undefined,
+      arenaMode: '3d',
+      maxIterations: 1,
+      models: activeSlots,
+      customPrompt: $('#customPrompt').value,
+      attachments: currentAttachmentsPayload(),
+      keys: loadKeys(),
+      cadModify: {
+        modificationPrompt: modRequest,
+        targetPart: sharedTargetPart,
+        bySlot,
+      },
+    };
+
+    const st = await streamRun(payload, LAST_RESULTS, modAbort.signal, own, false, { task: baseTask, arenaMode: '3d' });
+    if (st === 'quota' && window._lastQuotaMsg) {
+      slotList.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, esc(window._lastQuotaMsg), 'err'); });
+    }
+    runOk = st === 'ok';
+    if (inp && runOk) inp.value = ''; // keep the request text when nothing ran (quota, busy, auth)
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      // Interrupted (confirmInterruptRun / a single-slot re-run took one column over):
+      // the new owner paints its own column; columns still owned here get a clear end state.
+      modSlots.forEach((s) => { if (ownsSlot(own, s)) setStatus(s, 'Interrupted', 'err'); });
+    } else {
+      window.alert('3D modification failed: ' + err.message);
+    }
+  } finally {
+    // Only tear down the slots this modification still owns (a newer run may have taken over).
+    modSlots.forEach((s) => {
+      if (SLOT_RUNS[s] && SLOT_RUNS[s].abort === modAbort) delete SLOT_RUNS[s];
+    });
+    _busy = _fullRun || Object.keys(SLOT_RUNS).length > 0;
+    if (modBtn) {
+      modBtn.disabled = false;
+      modBtn.innerHTML = origBtnHtml;
+    }
+    updateRunButton();
+    paintAllRerunButtons();
+  }
+}
+
+async function openCadMcpModal(preferredSlot) {
+  const modal = $('#cadMcpModal');
+  const slotSel = $('#cadMcpSlotSelect');
+  const codePre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
+  const statusEl = $('#cadMcpStatusBadge') || $('#cadMcpPushStatus');
+  if (!modal || !slotSel || !codePre) return;
+
+  slotSel.innerHTML = MODELS.map((m) => `<option value="${esc(m.slot)}">Slot ${esc(m.slot)} - ${esc(m.label || m.catalogId)}</option>`).join('');
+  if (preferredSlot && MODELS.some((m) => m.slot === preferredSlot)) {
+    slotSel.value = preferredSlot;
+  }
+
+  const refreshScript = async () => {
+    const slot = slotSel.value || (MODELS[0] && MODELS[0].slot) || 'A';
+    const st = CAD_SLOT_STATE[slot];
+    const jsCode = (st && st.code) || extractCadJsCode(($(`#code-${slot}`) || {}).textContent || '');
+    const title = currentTask().title || 'LLMCompare_3D_Component';
+    if (statusEl) statusEl.textContent = 'Browser STEP AP214 + Fusion Python Ready';
+    codePre.textContent = 'Generating Autodesk Fusion 360 Python API script…';
+    try {
+      const resp = await fetch('/api/cad-mcp/fusion360-script', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `${title}_Slot_${slot}`,
+          slot,
+          modelLabel: (() => { const m = MODELS.find((x) => x.slot === slot); return (m && (m.label || m.catalogId)) || ''; })(),
+          code: jsCode,
+          telemetry: (st && st.telemetry) || null,
+        }),
+      });
+      if (resp.status === 401) { window.location.replace('/login'); return; }
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok || !data || !data.ok) throw new Error((data && data.error) || 'Failed to generate script');
+      codePre.textContent = data.script || data.fusionScript || '';
+    } catch (e) {
+      codePre.textContent = '# Error generating script: ' + e.message;
+    }
+  };
+
+  slotSel.onchange = refreshScript;
+  modal.classList.remove('hidden');
+  await refreshScript();
+}
+
+function initCadArenaBindings() {
+  window.addEventListener('message', handleCadViewportMessage);
+
+  const syncBtn = $('#cadSyncCamBtn');
+  if (syncBtn) {
+    syncBtn.addEventListener('click', () => {
+      setCadCameraSyncState(!CAD_CAMERA_SYNC_ON);
+    });
+  }
+
+  const spin3Btn = $('#cadSpin3AxisBtn');
+  if (spin3Btn) {
+    spin3Btn.addEventListener('click', () => {
+      setCadSpin3AxisState(!CAD_SPIN_3AXIS_ON);
+    });
+  }
+
+  document.querySelectorAll('.cad-global-cam-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const preset = btn.dataset.globalCam;
+      if (!preset) return;
+      if (CAD_SPIN_3AXIS_ON) {
+        setCadSpin3AxisState(false);
+      }
+      document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+        try {
+          if (ifr.contentWindow) {
+            ifr.contentWindow.postMessage({ type: 'CAD_SET_CAMERA_PRESET', preset }, '*');
+          }
+        } catch (_) { /* ignore */ }
+      });
+    });
+  });
+
+  const modBtn = $('#cadModifySubmitBtn') || $('#cadModifyRunBtn');
+  const modInput = $('#cadModifyInput');
+  if (modBtn) modBtn.addEventListener('click', runCadModification);
+  if (modInput) {
+    modInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runCadModification();
+      }
+    });
+  }
+
+  document.querySelectorAll('.cad-chip-btn, .cad-QuickChip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const modText = chip.dataset.cadEdit || chip.dataset.mod || '';
+      if (modInput && modText) {
+        modInput.value = modInput.value ? `${modInput.value.trim()} ${modText}` : modText;
+        modInput.focus();
+      }
+    });
+  });
+
+  const mcpOpenBtn = $('#cadMcpOpenBtn') || $('#cadMcpExportBtn');
+  const mcpModal = $('#cadMcpModal');
+  const mcpCloseBtn = $('#cadMcpCloseBtn');
+  const mcpCopyBtn = $('#cadMcpCopyScriptBtn');
+  const mcpDlBtn = $('#cadMcpDownloadScriptBtn');
+  const mcpPushBtn = $('#cadMcpPushBtn');
+
+  if (mcpOpenBtn) mcpOpenBtn.addEventListener('click', () => openCadMcpModal());
+  if (mcpCloseBtn && mcpModal) mcpCloseBtn.addEventListener('click', () => mcpModal.classList.add('hidden'));
+  if (mcpModal) {
+    mcpModal.addEventListener('click', (e) => {
+      if (e.target === mcpModal) mcpModal.classList.add('hidden');
+    });
+  }
+  if (mcpCopyBtn) {
+    mcpCopyBtn.addEventListener('click', async () => {
+      const pre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
+      if (!pre) return;
+      try {
+        await navigator.clipboard.writeText(pre.textContent || '');
+        mcpCopyBtn.textContent = '✓ Copied!';
+        setTimeout(() => { mcpCopyBtn.textContent = '📋 Copy Fusion 360 Script'; }, 1600);
+      } catch (_) { /* ignore */ }
+    });
+  }
+  if (mcpDlBtn) {
+    mcpDlBtn.addEventListener('click', () => {
+      const pre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
+      const slotSel = $('#cadMcpSlotSelect');
+      if (!pre) return;
+      const slot = (slotSel && slotSel.value) || 'A';
+      const blob = new Blob([pre.textContent || ''], { type: 'text/x-python' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `fusion360_llm_compare_slot_${slot}.py`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 300);
+    });
+  }
+  if (mcpPushBtn) {
+    mcpPushBtn.addEventListener('click', async () => {
+      const pre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
+      const statusEl = $('#cadMcpStatusBadge') || $('#cadMcpPushStatus');
+      const slotSel = $('#cadMcpSlotSelect');
+      if (!pre || !statusEl) return;
+      const slot = (slotSel && slotSel.value) || 'A';
+      const st = CAD_SLOT_STATE[slot];
+      const slotModel = MODELS.find((m) => m.slot === slot) || null;
+      statusEl.textContent = 'Pushing to the server-configured MCP bridge…';
+      try {
+        // SECURITY (3.7): the bridge URL is server-side config only (CAD_MCP_URL); the
+        // optional endpoint input in the modal is informational and is never sent.
+        const resp = await fetch('/api/cad-mcp/push', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            slot,
+            modelLabel: (slotModel && (slotModel.label || slotModel.catalogId)) || '',
+            title: `${currentTask().title || 'CAD_Model'}_Slot_${slot}`,
+            code: (st && st.code) || '',
+            telemetry: (st && st.telemetry) || null,
+          }),
+        });
+        if (resp.status === 401) { window.location.replace('/login'); return; }
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data || !data.ok) throw new Error((data && data.error) || `MCP push failed (HTTP ${resp.status})`);
+        if (data.pushed) {
+          statusEl.textContent = `✓ Pushed to ${data.endpointUrl || 'the configured bridge'} (HTTP ${data.upstreamStatus != null ? data.upstreamStatus : 'ok'})`;
+        } else {
+          // Not an exception: the script was generated, but no bridge accepted it.
+          const why = data.reason === 'bridge_not_configured'
+            ? 'No CAD MCP bridge is configured on the server (CAD_MCP_URL). Copy or download the script instead.'
+            : data.reason === 'bridge_unreachable'
+              ? `The configured CAD MCP bridge${data.endpointUrl ? ' at ' + data.endpointUrl : ''} is unreachable. Copy or download the script instead.`
+              : `The configured CAD MCP bridge rejected the script${data.upstreamStatus != null ? ' (HTTP ' + data.upstreamStatus + ')' : ''}. Copy or download the script instead.`;
+          statusEl.textContent = `⚠ Not pushed: ${why}`;
+        }
+      } catch (e) {
+        statusEl.textContent = `⚠ ${e.message}`;
+      }
+    });
+  }
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initCadArenaBindings);
+} else {
+  initCadArenaBindings();
 }
 
 if (document.readyState === 'loading') {

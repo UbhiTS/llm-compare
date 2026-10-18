@@ -1,20 +1,23 @@
 {
   "name": "llm-compare",
-  "version": "1.0.48",
-  "lastUpdated": "2026-10-16T18:55:00Z",
+  "version": "1.0.50",
+  "lastUpdated": "2026-10-18T17:45:00Z",
   "description": "LLM Compare — race the same agentic task across multiple LLMs and compare correctness, speed, tokens and cost.",
   "license": "MIT",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js && node test/verify-user-preferences.js && node test/verify-pdf-export.js && node test/verify-saved-prompts-and-games.js && node test/verify-byok-strict.js && node test/verify-run-budgets.js && node test/verify-spend-budgets.js && node test/verify-budget-enforcement.js && node test/verify-arena-polish-and-regressions.js",
+    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js && node test/verify-user-preferences.js && node test/verify-pdf-export.js && node test/verify-saved-prompts-and-games.js && node test/verify-byok-strict.js && node test/verify-run-budgets.js && node test/verify-spend-budgets.js && node test/verify-budget-enforcement.js && node test/verify-arena-polish-and-regressions.js && node test/verify-3d-arena.js && node test/verify-auth-hardening.js",
+    "test:auth": "node test/verify-auth-hardening.js",
+    "test:all": "node test/run-all.js",
     "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js && node test/smoke-secrets.js && node test/smoke-secondary.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "three": "^0.186.1"
   }
 }

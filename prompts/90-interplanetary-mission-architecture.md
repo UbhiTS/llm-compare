@@ -1,7 +1,8 @@
 ---
 id: interplanetary-mission-architecture
-title: Aerospace Systems: Autonomous Deep-Space Trajectory & Power Architecture
+title: Autonomous Deep-Space Trajectory & Power Architecture
 category: general
+subcategory: mission-travel
 language: null
 functionName: solution
 executable: false

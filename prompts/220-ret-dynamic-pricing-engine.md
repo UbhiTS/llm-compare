@@ -1,7 +1,8 @@
 ---
 id: ret-dynamic-pricing-engine
-title: Retail: Omnichannel Dynamic Pricing & Margin Elasticity Model
+title: Omnichannel Dynamic Pricing & Margin Elasticity Model
 category: retail
+subcategory: retail
 language: null
 functionName: solution
 executable: false

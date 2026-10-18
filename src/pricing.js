@@ -211,15 +211,19 @@ function resolveModels(requested) {
   const list = Array.isArray(requested) ? requested : [];
   const out = [];
   const usedSlots = new Set();
-  list.slice(0, 6).forEach((m, idx) => {
+  list.slice(0, 6).forEach((m) => {
     if (!m) return;
     const rawId = m.catalogId || m.id || m.model;
     const mappedId = RETIRED_REPLACEMENT[rawId] || rawId;
     const c = catalogEntry(mappedId);
     if (!c) return;       // not in the catalog → cannot be run
     if (c.blocked) return; // listed for visibility, but known-unrunnable on this project
-    let slot = (typeof m.slot === 'string' && m.slot.trim()) ? m.slot.trim() : String.fromCharCode(65 + idx);
-    if (usedSlots.has(slot)) slot = String.fromCharCode(65 + out.length); // keep slots unique
+    // Slots are single upper-case letters, unique per run. Anything else the client
+    // sends (duplicates, '<img>', '__proto__', long strings) is replaced by the next
+    // free letter, so two models can never collapse onto one slot and book their cost
+    // to the wrong provider bucket.
+    let slot = /^[A-Z]$/.test(m.slot || '') ? m.slot : null;
+    for (let n = usedSlots.size; !slot || usedSlots.has(slot); n++) slot = String.fromCharCode(65 + n);
     usedSlots.add(slot);
     const resolved = modelFromCatalog(slot, c.id);
     // The one client-supplied field we honour — and only after the provider
@@ -239,6 +243,11 @@ function resolveModels(requested) {
       m.label = `${m.label} (${tag})`;
     }
   });
+  // The default trio is only a fallback for a request that named NO models at all.
+  // When the client explicitly named models and none of them resolve (retired,
+  // blocked, unknown), return [] so the server can answer 400 instead of silently
+  // running (and charging for) three models the user never picked.
+  if (!out.length && list.length) return [];
   return out.length ? out : DEFAULT_MODELS.map((m) => modelFromCatalog(m.slot, m.catalogId));
 }
 

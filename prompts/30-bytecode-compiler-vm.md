@@ -1,7 +1,8 @@
 ---
 id: compiler-vm
-title: Compilers: Bytecode Optimizer & Stack Virtual Machine Runtime
+title: Bytecode Optimizer & Stack Virtual Machine Runtime
 category: coding
+subcategory: sys-engineering
 language: javascript
 functionName: compileAndExecuteVM
 executable: true

@@ -9,10 +9,13 @@
 //   SMOKE_LIVE=1 node test/smoke-http.js  # also runs one REAL compare + judge
 //                                         # (Gemini 3.5 Flash / Flash-Lite on Vertex AI)
 //   SMOKE_JSON=out.json node test/smoke-http.js   # also write results as JSON
+//   SMOKE_BASELINE=1 node test/smoke-http.js      # security probes informational only
 //
-// Functional checks FAIL the process (exit 1). Security probes are informational
-// (they report VULNERABLE / PROTECTED) and never fail the run, so the same script
-// can be run on the pre-fix baseline and on the hardened code.
+// Functional checks FAIL the process (exit 1). Security probes are assertions too:
+// a VULNERABLE result fails the run (this is the CI gate before deploy). Set
+// SMOKE_BASELINE=1 to keep the old informational behaviour (VULNERABLE / PROTECTED
+// is reported but never fails), so the same script can be run on a pre-fix
+// baseline for a before/after comparison.
 // ---------------------------------------------------------------------------
 
 const { spawn } = require('child_process');
@@ -24,10 +27,12 @@ const zlib = require('zlib');
 const ROOT = path.join(__dirname, '..');
 const PORT = Number(process.env.SMOKE_PORT || 18765);
 const LIVE = process.env.SMOKE_LIVE === '1';
+// SMOKE_BASELINE=1: security probes report but never fail (pre-fix baseline runs).
+const BASELINE = process.env.SMOKE_BASELINE === '1';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'llmc-smoke-'));
 
 const results = [];   // functional
-const probes = [];    // security (informational)
+const probes = [];    // security (assertions unless SMOKE_BASELINE=1)
 let failed = 0;
 
 function lanIp() {
@@ -63,9 +68,13 @@ function check(name, cond, info) {
   results.push({ name, ok, ...info });
   console.log(`${ok ? '✓' : '✗'} ${name}${info && info.status != null ? `  [${info.status}]` : ''}${info && info.shape ? '  ' + info.shape : ''}`);
 }
+// Security probe. `vulnerable` true = the control is missing. Outside SMOKE_BASELINE=1 a
+// vulnerable result is a failed check (counts toward the exit code), so a regression can
+// never ship through CI as a mere warning (review finding 9.1).
 function probe(name, vulnerable, detail) {
   probes.push({ name, result: vulnerable ? 'VULNERABLE' : 'PROTECTED', detail });
-  console.log(`  ${vulnerable ? '!! VULNERABLE' : '   PROTECTED '}  ${name}${detail ? '  — ' + detail : ''}`);
+  if (!BASELINE) return check(name, !vulnerable, { status: detail });
+  console.log(`  ${vulnerable ? '!! VULNERABLE' : '   PROTECTED '}  ${name}${detail ? '  - ' + detail : ''}`);
 }
 
 // ---- tiny fixture builders (no deps) ----
@@ -109,6 +118,36 @@ async function waitUp() {
 }
 
 (async () => {
+  // Offline upstream mock (not in LIVE mode): answers Vertex Gemini streaming calls so the
+  // run-path sandbox probe (SEC-02b) can push model "output" through the real /api/run ->
+  // agent -> runner.runTests grading path, and blocks every other external host. Round 1
+  // returns code that tries to reach the host `process`; round 2 (the self-fix prompt,
+  // which quotes the failing test's `got ...` value) echoes that prompt back inside the code
+  // block so the test can read what the sandbox actually produced.
+  const preload = path.join(tmp, 'mock-upstream.js');
+  fs.writeFileSync(preload, `
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (url, init) => {
+      const u = new URL(String(url));
+      if (u.hostname === '127.0.0.1' || u.hostname === 'localhost') return realFetch(url, init);
+      if (/(^|\\.)aiplatform\\.googleapis\\.com$/.test(u.hostname) && u.pathname.includes(':streamGenerateContent')) {
+        let contents = [];
+        try { contents = JSON.parse((init && init.body) || '{}').contents || []; } catch (_) { contents = []; }
+        const lastUser = [...contents].reverse().find((c) => c && c.role === 'user');
+        const lastText = lastUser && Array.isArray(lastUser.parts) ? lastUser.parts.map((p) => p.text || '').join('\\n') : '';
+        let code;
+        if (/failed these hidden test cases/.test(lastText)) {
+          const echo = lastText.replace(/\\r?\\n/g, ' | ').replace(/\\x60/g, "'").slice(0, 1500);
+          code = '// FIXMSG: ' + echo + '\\nfunction syncCrdtDocument() { return "round2"; }';
+        } else {
+          code = 'function syncCrdtDocument() { return typeof this.constructor.constructor("return process")().pid; }';
+        }
+        const chunk = { candidates: [{ content: { parts: [{ text: '\\x60\\x60\\x60javascript\\n' + code + '\\n\\x60\\x60\\x60' }] } }], usageMetadata: { promptTokenCount: 1200, candidatesTokenCount: 80 } };
+        return new Response('data: ' + JSON.stringify(chunk) + '\\n\\n', { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+      }
+      throw new Error('blocked in test: ' + u.hostname);
+    };
+  `);
   const env = {
     ...process.env,
     PORT: String(PORT),
@@ -116,7 +155,18 @@ async function waitUp() {
     APP_DATA_DIR: tmp,
     AUTH_DATA_DIR: path.join(tmp, 'auth'),
     ENABLE_WEB_GAME: '0',
+    // Code execution is opt-in (review 3.3); the functional /api/execute checks and the
+    // SEC-02 / SEC-03 probes need it on.
+    ENABLE_CODE_EXEC: '1',
+    // A host allow-list is configured on purpose: SEC-01d/e prove it never applies to a
+    // non-loopback peer (review 3.3).
+    LOCAL_AUTO_AUTH_HOSTS: 'smoke-allowed.example',
     SMOKE_CANARY_SECRET_TOKEN: 'canary-should-not-leak',
+    ...(LIVE ? {} : {
+      GLOBAL_KEYS_ENABLED: '0', GCP_PROJECT_ID: '', GCLOUD_TOKEN_AUTOMINT: '0',
+      AGENT_PLATFORM_API_KEY: 'vertex-smoke-canary-0123456789',
+      NODE_OPTIONS: `--require ${preload}`,
+    }),
   };
   delete env.K_SERVICE;
   delete env.ANTIGRAVITY_SIDECAR_WEB_PORT;
@@ -441,6 +491,17 @@ async function waitUp() {
       probe('SEC-01 LAN client spoofs "Host: localhost" to get auto-admin', spoof.status === 200, `LAN-IP plain=${plain.status}, spoofed Host=${spoof.status}`);
       const xff = await req('GET', '/api/config', { host: ip, headers: { 'X-Forwarded-For': '127.0.0.1' } });
       probe('SEC-01b LAN client spoofs X-Forwarded-For: 127.0.0.1', xff.status === 200, `status=${xff.status}`);
+      // Review 3.3: LOCAL_AUTO_AUTH_HOSTS (and any *.googlers.com suffix) must never grant
+      // access on the Host header alone; the TCP peer still has to be loopback.
+      const hostOnly = async (hostHeader) => new Promise((resolve) => {
+        const hr = require('http').request({ host: ip, port: PORT, path: '/api/config', method: 'GET', headers: { Host: hostHeader } }, (res) => { res.resume(); resolve(res.statusCode); });
+        hr.on('error', (e) => resolve('error:' + e.message));
+        hr.end();
+      });
+      const allowed = await hostOnly('smoke-allowed.example');
+      probe('SEC-01d LAN client sends an allow-listed Host (LOCAL_AUTO_AUTH_HOSTS) to get auto-admin', allowed === 200, `status=${allowed}`);
+      const googlers = await hostOnly('anything.c.googlers.com');
+      probe('SEC-01e LAN client sends a *.c.googlers.com Host to get auto-admin', googlers === 200, `status=${googlers}`);
     } catch (e) { probe('SEC-01 LAN probe', false, 'skipped: ' + e.message); }
   } else probe('SEC-01 LAN probe', false, 'skipped (no LAN IPv4)');
 
@@ -457,6 +518,26 @@ async function waitUp() {
   r = await req('POST', '/api/execute', { body: { language: 'javascript', taskId: 'crdt-sync', code: 'var __esc; try { __esc = typeof this.constructor.constructor("return process")().pid; } catch (e) { __esc = "blocked"; } function syncCrdtDocument(){ return __esc; }' } });
   const got = r.json && r.json.failing && r.json.failing[0] && r.json.failing[0].gotStr;
   probe('SEC-02 vm sandbox escape to host `process` via /api/execute', got === '"number"', `gotStr=${got}`);
+
+  // SEC-02b: the same escape through the LIVE grading path (/api/run -> agent -> runner.runTests),
+  // which /api/execute does not cover and which stays on in production. The mocked model
+  // returns code whose function reads `typeof <host process>.pid`; round 2 echoes the
+  // self-fix prompt (and with it the failing test's `got ...` value) back as a code comment.
+  if (!LIVE) {
+    const run = await req('POST', '/api/run', { body: { taskId: 'crdt-sync', maxIterations: 2, models: [{ slot: 'A', catalogId: 'gemini-3.8-flash' }] } });
+    const lines = run.text.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+    const iters = lines.filter((l) => l.type === 'iteration');
+    const done = lines.find((l) => l.type === 'done');
+    const echoed = iters.map((l) => String(l.code || '')).join('\n');
+    const gotMatch = echoed.match(/-> got ([^,]*), expected/);
+    check('SEC-02b harness: mocked model output reached the grading path and the fix round echoed the result',
+      run.status === 200 && iters.length === 2 && done && done.result && done.result.total === 12 && !!gotMatch,
+      { status: run.status, shape: `events=${[...new Set(lines.map((l) => l.type))].join(',')} iterations=${iters.length} got=${gotMatch ? gotMatch[1].slice(0, 60) : 'n/a'}` });
+    const got2 = gotMatch ? gotMatch[1] : '';
+    probe('SEC-02b vm sandbox escape to host `process` via /api/run grading (runner.runTests)',
+      got2 === '"number"' || (done && done.result && done.result.passed > 0),
+      `got=${got2.slice(0, 80)} passed=${done && done.result ? done.result.passed : 'n/a'}/12`);
+  }
 
   r = await req('POST', '/api/execute', { body: { language: 'python', taskId: 'hanoi-python', code: 'import os\nprint(sorted(k for k in os.environ if any(s in k for s in ("KEY","TOKEN","SECRET","PASSWORD"))))' } });
   const leaked = (r.json && r.json.stdout) || '';
@@ -475,9 +556,10 @@ async function waitUp() {
   console.log(`     INFO        SEC-04 ZIP bomb — status=${r.status} ${bombMs}ms extractedChars=${bombChars}`);
 
   stop();
-  const summary = { when: new Date().toISOString(), live: LIVE, functional: { passed: results.filter((x) => x.ok).length, failed }, results, probes };
+  const summary = { when: new Date().toISOString(), live: LIVE, baseline: BASELINE, functional: { passed: results.filter((x) => x.ok).length, failed }, results, probes };
   if (process.env.SMOKE_JSON) fs.writeFileSync(process.env.SMOKE_JSON, JSON.stringify(summary, null, 2));
-  console.log(`\nFUNCTIONAL: ${summary.functional.passed} passed, ${failed} failed`);
+  const vuln = probes.filter((p) => p.result === 'VULNERABLE').length;
+  console.log(`\nFUNCTIONAL${BASELINE ? '' : ' + SECURITY'}: ${summary.functional.passed} passed, ${failed} failed; probes: ${probes.length - vuln} protected, ${vuln} vulnerable${BASELINE && vuln ? ' (SMOKE_BASELINE=1: not failing the run)' : ''}`);
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

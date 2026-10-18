@@ -119,6 +119,7 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
   await check('the ledger persists in AUTH_DATA_DIR and reloads after a restart (survives deploys)', () => {
     const file = path.join(process.env.AUTH_DATA_DIR, 'spend-ledger.json');
     assert.strictEqual(spendLedger.LEDGER_FILE, file);
+    spendLedger.flushSync(); // writes are debounced (one per 2 s); flush the trailing write before reading the file
     const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.strictEqual(onDisk.months[month].openai.calls, 2);
     delete require.cache[LEDGER_MODULE];
@@ -136,6 +137,7 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
     spendLedger = require('../src/spendLedger');
     assert.deepStrictEqual(spendLedger.monthToDate('2002-06').providers.vertex, { usd: 0, calls: 0 }, 'negative / non-numeric values read as 0');
     spendLedger.recordModelCost({ provider: 'moonshot' }, {}, 0.25);
+    spendLedger.flushSync();
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
     const keys = Object.keys(after.months).sort();
     assert.strictEqual(keys.length, 13);

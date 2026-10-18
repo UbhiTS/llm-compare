@@ -656,98 +656,98 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
       id: 'sample-beach-photobomber',
       name: 'coastal-family-with-orange-bin-photobomber.png',
       mimeType: 'image/png',
-      label: 'Coastal Portrait + Orange Bin & Wire Distraction',
+      label: 'Coastal Family Portrait with Beach Clutter',
       data: beachBuf.toString('base64'),
     },
     storybookFox: {
       id: 'sample-char-fox',
       name: 'ref-1-character-red-fox-blue-scarf.png',
       mimeType: 'image/png',
-      label: 'Ref 1 · Explorer Fox Character (Blue/Gold Scarf)',
+      label: 'Explorer Fox Character Reference',
       data: foxBuf.toString('base64'),
     },
     storybookStyle: {
       id: 'sample-style-watercolor',
       name: 'ref-2-watercolor-pine-palette.png',
       mimeType: 'image/png',
-      label: 'Ref 2 · Storybook Watercolor Pine Style',
+      label: 'Watercolor Pine Forest Style Reference',
       data: styleBuf.toString('base64'),
     },
     storybookLantern: {
       id: 'sample-prop-lantern',
       name: 'ref-3-golden-brass-lantern.png',
       mimeType: 'image/png',
-      label: 'Ref 3 · Glowing Brass Lantern Prop',
+      label: 'Vintage Brass Woodland Lantern Prop',
       data: lanternBuf.toString('base64'),
     },
     lowResCabinThumb: {
       id: 'sample-lowres-cabin-thumb',
       name: 'lowres-160x120-pixelated-alpine-cabin.png',
       mimeType: 'image/png',
-      label: 'Low-Res 160×120 Pixelated Cabin Thumbnail',
+      label: 'Pixelated Alpine Cabin Thumbnail',
       data: lowResCabinBuf.toString('base64'),
     },
     squareLighthouseCrop: {
       id: 'sample-square-lighthouse-crop',
       name: 'tight-1x1-square-lighthouse-crop.png',
       mimeType: 'image/png',
-      label: 'Tight 1:1 Square Lighthouse Crop (240×240)',
+      label: 'Square Coastal Lighthouse Crop',
       data: lighthouseBuf.toString('base64'),
     },
     scratchedVintagePhoto: {
       id: 'sample-scratched-vintage-photo',
       name: 'vintage-sepia-creased-heirloom-photo.png',
       mimeType: 'image/png',
-      label: 'Damaged Vintage Sepia Photo (Creases & Dust)',
+      label: 'Damaged Vintage Sepia Family Portrait',
       data: vintageBuf.toString('base64'),
     },
     glareGlassesPortrait: {
       id: 'sample-glare-glasses-portrait',
       name: 'indoor-portrait-eyeglass-flash-glare.png',
       mimeType: 'image/png',
-      label: 'Indoor Portrait with Eyeglass Flash Glare & Cast',
+      label: 'Indoor Portrait with Eyeglass Flash Glare',
       data: glareBuf.toString('base64'),
     },
     clutteredDeskMug: {
       id: 'sample-cluttered-desk-mug',
       name: 'ceramic-mug-with-desk-clutter-cables.png',
       mimeType: 'image/png',
-      label: 'Product Mug Surrounded by Desk Clutter & Cables',
+      label: 'Handcrafted Terracotta Mug on Desk',
       data: deskMugBuf.toString('base64'),
     },
     botanicalPatternNavyGold: {
       id: 'sample-botanical-pattern-navy-gold',
       name: 'repeat-floral-pattern-navy-gold-swatch.png',
       mimeType: 'image/png',
-      label: 'Repeat Floral & Geometric Pattern (Navy & Gold)',
+      label: 'Botanical & Geometric Pattern Swatch',
       data: patternBuf.toString('base64'),
     },
     crimsonThrowPillow: {
       id: 'sample-crimson-throw-pillow',
       name: 'crimson-red-knit-pillow-sku.png',
       mimeType: 'image/png',
-      label: 'Crimson Red Woven Knit Throw Pillow SKU',
+      label: 'Crimson Cable-Knit Throw Pillow',
       data: pillowBuf.toString('base64'),
     },
     summerPorchScene: {
       id: 'sample-summer-porch-scene',
       name: 'summer-midday-green-trees-porch.png',
       mimeType: 'image/png',
-      label: 'Summer Midday Green Foliage & Porch',
+      label: 'Craftsman Porch in Summer Foliage',
       data: summerPorchBuf.toString('base64'),
     },
     lowResPortraitThumb: {
       id: 'sample-lowres-portrait-thumb',
       name: 'lowres-180x180-compressed-portrait.jpg',
       mimeType: 'image/png',
-      label: 'Low-Res 180×180 Compressed Portrait (Skin Tone & Weave)',
+      label: 'Compressed Studio Portrait',
       data: lowResPortraitBuf.toString('base64'),
     },
     holidayCard2025Template: {
       id: 'sample-holiday-card-2025-template',
       name: 'holiday-card-2025-template.jpg',
       mimeType: 'image/png',
-      label: '2025 Holiday Card Template ("The Miller Family · 2025")',
+      label: 'Holiday Greeting Card Template',
       data: holidayCard2025Buf.toString('base64'),
     },
   };
@@ -759,184 +759,194 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
 const IMAGE_USE_CASE_PACKS = [
   {
     id: 'upscaling-resampling',
-    title: '🔍 Upscaling, Resampling & Print Super-Resolution',
-    badge: 'Upscaling & Resampling',
+    title: '🔍 Super-Resolution & Outpainting',
+    badge: 'Super-Resolution & Outpainting',
+    subcategories: [
+      { id: 'super-res', label: '🔬 4K Super-Resolution Upscaling' },
+      { id: 'outpaint-print', label: '🖼️ Outpainting & Large-Format Print' },
+    ],
     scenarios: [
       {
         id: 'lowres-to-4k-upscale',
-        title: 'Low-Res Thumbnail → 4K Print Upscaling (100% Exact Framing & Details)',
-        badge: '160×120 Input → Native 4K (4:3 Exact Match)',
+        subcategory: 'super-res',
+        title: 'Low-Resolution Landscape to 4K Print Upscale',
+        badge: '4K Super-Resolution',
         recommendedSize: '4K',
         recommendedAspectRatio: '4:3',
-        prompt: 'Perform a strict, lossless super-resolution upscale of the attached photograph to 4K print-ready resolution without changing any aspect of the image. Do not add, remove, reframe, crop, restyle, or alter any subjects, faces, expressions, pets, clothing, fabrics, colors, lighting, shadows, or background geometry. Strictly preserve the exact pixel layout, color palette, cabin structure, roofline, glowing window, shoreline trees, mountain ridge, and water reflections 100% identical to the original photo—only eliminate pixelation, compression blockiness, and blur to restore crisp, natural optical sharpness.',
-        whyItMatters: 'Benchmarks generative super-resolution — rescuing legacy low-DPI customer uploads so they pass 300-DPI preflight checks for large-format wall canvases and photo books.',
+        prompt: 'Perform a strict, lossless super-resolution upscale of the attached photograph to 4K print-ready resolution without changing any aspect of the image. Do not add, remove, reframe, crop, restyle, or alter any subjects, faces, expressions, pets, clothing, fabrics, colors, lighting, shadows, or background geometry. Strictly preserve the exact pixel layout, color palette, cabin structure, roofline, glowing window, shoreline trees, mountain ridge, and water reflections 100% identical to the original photo - only eliminate pixelation, compression blockiness, and blur to restore crisp, natural optical sharpness.',
+        whyItMatters: 'Evaluates lossless generative super-resolution for rescuing low-DPI uploads so they pass 300-DPI preflight checks for wall canvases and photo books.',
         sampleAttachments: ['lowResCabinThumb'],
       },
       {
+        id: 'portrait-color-science-4k-upscale',
+        subcategory: 'super-res',
+        title: 'Identity-Locked Portrait & Fabric 4K Super-Resolution',
+        badge: '4K Portrait Upscale',
+        recommendedSize: '4K',
+        recommendedAspectRatio: '1:1',
+        prompt: 'Perform a strict, identity-locked 4K super-resolution upscale of the attached portrait without changing any aspect of the person, pets, clothing, or scene. Treat the subject’s facial features, expression, smile, eye shape, iris color, eyeglasses, eyebrows, hair strands, skin tone, cable-knit sweater weave, colors, lighting, and framing as strictly locked to the original photograph. Do not beautify, age, de-age, restyle, relight, or plastic-smooth the face - only remove JPEG compression blockiness, mosquito noise, and blur to restore natural optical sharpness, fine hair strands, and crisp fabric weave 100% faithful to the original image.',
+        whyItMatters: 'Validates skin-tone accuracy, natural hair and pore micro-detail, and zero plastic smoothing when upscaling compressed portraits to 4K print DPI.',
+        sampleAttachments: ['lowResPortraitThumb'],
+      },
+      {
         id: 'aspect-ratio-resampling',
-        title: 'Aspect-Ratio Resampling & Generative Outpainting (1:1 Square → 16:9 Panoramic Spread)',
-        badge: '1:1 Input → 16:9 Panoramic Outpaint',
+        subcategory: 'outpaint-print',
+        title: 'Panoramic Aspect-Ratio Outpainting',
+        badge: '1:1 to 16:9 Outpainting',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
         prompt: 'Outpaint and extend the borders of the attached photograph to fill the target 16:9 panoramic aspect ratio while keeping the entire original image 100% intact, untouched, and unmodified in the center. Do not alter, relight, restyle, rescale, or regenerate any subjects, faces, clothing, structures, colors, textures, or details inside the original frame (keep the red-and-white striped lighthouse, basalt cliff, and ocean base pixel-identical to the input). Seamlessly extend only the surrounding coastline, ocean waves, and sky outward beyond the original borders with zero visible seams.',
-        whyItMatters: 'Tests aspect-ratio resampling and generative outpainting when fitting square mobile photos into full-bleed 16:9 panoramic photo-book spreads or banners.',
+        whyItMatters: 'Tests aspect-ratio expansion and border outpainting when fitting square mobile photos into full-bleed 16:9 panoramic spreads or banners.',
         sampleAttachments: ['squareLighthouseCrop'],
       },
       {
         id: 'dpi-canvas-resampling',
-        title: '300-DPI Large-Format Canvas & Metal Print Texture Resampling (4K)',
-        badge: 'Native 4K · 5504×3072 (16.9 MP)',
+        subcategory: 'outpaint-print',
+        title: '300-DPI Large-Format Architectural Canvas Synthesis',
+        badge: 'Native 4K Print',
         recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
-        prompt: 'Generate an ultra-high-resolution 4K (300-DPI print-ready) architectural and botanical photograph of a traditional Kyoto autumn courtyard garden at dawn. Render microscopic surface detail in the wet moss-covered stepping stones, hand-raked gravel ripples, crimson Japanese maple leaves, and warm cedar joinery engineered for a 36×24 inch metallic or canvas wall print. (If a reference image is attached, perform a strict 4K super-resolution upscale preserving all original subjects, faces, fabrics, colors, and framing 100% as-is.)',
-        whyItMatters: 'Compares 1K vs 2K vs 4K native output token fidelity and micro-texture sharpness using the full-size 1:1 native pixel viewer.',
+        prompt: 'Generate an ultra-high-resolution 4K (300-DPI print-ready) architectural and botanical photograph of a traditional Kyoto autumn courtyard garden at dawn. Render microscopic surface detail in the wet moss-covered stepping stones, hand-raked gravel ripples, crimson Japanese maple leaves, and warm cedar joinery engineered for a 36x24 inch metallic or canvas wall print. (If a reference image is attached, perform a strict 4K super-resolution upscale preserving all original subjects, faces, fabrics, colors, and framing 100% as-is.)',
+        whyItMatters: 'Compares 1K, 2K, and 4K native output token fidelity and micro-texture sharpness in the 1:1 pixel viewer.',
         sampleAttachments: [],
-      },
-      {
-        id: 'portrait-color-science-4k-upscale',
-        title: 'Low-Res Portrait → 4K Skin-Tone, Iris & Fabric Super-Resolution',
-        badge: '180×180 Input → Native 4K Portrait',
-        recommendedSize: '4K',
-        recommendedAspectRatio: '1:1',
-        prompt: 'Perform a strict, identity-locked 4K super-resolution upscale of the attached portrait without changing any aspect of the person, pets, clothing, or scene. Treat the subject’s facial features, expression, smile, eye shape, iris color, eyeglasses, eyebrows, hair strands, skin tone, cable-knit sweater weave, colors, lighting, and framing as strictly locked to the original photograph. Do not beautify, age, de-age, restyle, relight, or plastic-smooth the face—only remove JPEG compression blockiness, mosquito noise, and blur to restore natural optical sharpness, fine hair strands, and crisp fabric weave 100% faithful to the original image.',
-        whyItMatters: 'Validates color-scientist-grade skin tone fidelity, natural pore/hair micro-detail, and zero plastic smoothing when upscaling compressed customer portraits to 4K print DPI.',
-        sampleAttachments: ['lowResPortraitThumb'],
       },
     ],
   },
   {
     id: 'cleaning-restoration',
-    title: '🧹 Image Cleaning, Restoration & Smart Erase',
-    badge: 'Image Cleaning & Repair',
+    title: '🧹 Photo Restoration & Smart Cleanup',
+    badge: 'Restoration & Cleanup',
+    subcategories: [
+      { id: 'distraction-erase', label: '✨ Distraction & Clutter Removal' },
+      { id: 'heritage-retouch', label: '🎞️ Archival Restoration & Retouching' },
+    ],
     scenarios: [
       {
         id: 'smart-erase-conversational',
-        title: 'Smart Erase — Photobomber, Trash Bin & Power-Line Removal (Mask-Free)',
-        badge: '1-Click Built-In Reference Photo',
+        subcategory: 'distraction-erase',
+        title: 'Mask-Free Distraction & Power-Line Removal',
+        badge: 'Conversational Smart Erase',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
-        prompt: 'Edit the attached photograph by removing ONLY the bright neon-orange trash bin on the right side of the beach and the dark overhead utility power wires across the upper sky. Treat the two people on the left (their faces, expressions, hair, skin tones, jackets, pants, shoes, poses, scale, and positions) and the rest of the coastal scene as a strictly locked, untouched pixel mask. Do not alter, relight, rescale, or re-render the people or their clothing in any way—only inpaint the exact background pixels where the orange bin and overhead wires were removed with matching sand, ocean waves, and sunset sky.',
-        whyItMatters: 'Shows mask-free conversational photo cleanup (Smart Erase) — removing background clutter, power lines, and photobombers while preserving subject identity and scene lighting.',
+        prompt: 'Edit the attached photograph by removing ONLY the bright neon-orange trash bin on the right side of the beach and the dark overhead utility power wires across the upper sky. Treat the two people on the left (their faces, expressions, hair, skin tones, jackets, pants, shoes, poses, scale, and positions) and the rest of the coastal scene as a strictly locked, untouched pixel mask. Do not alter, relight, rescale, or re-render the people or their clothing in any way - only inpaint the exact background pixels where the orange bin and overhead wires were removed with matching sand, ocean waves, and sunset sky.',
+        whyItMatters: 'Evaluates mask-free conversational photo cleanup by removing background clutter and utility lines while locking subject identity and lighting.',
         sampleAttachments: ['smartEraseBeach'],
       },
       {
+        id: 'cluttered-desk-cleanup',
+        subcategory: 'distraction-erase',
+        title: 'Product Isolation & Studio Tabletop Cleanup',
+        badge: 'Object Isolation',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Treat the centerpiece handcrafted terracotta ceramic mug as a strictly locked, untouched pixel cutout at its exact original position, scale, angle, and lighting - do not alter its shape, rim, handle, speckled glaze texture, or terracotta color. Remove only the surrounding desk clutter (the yellow sticky notes on the left, green plastic bottle on the right, and black cable in the foreground) and replace the messy surface behind and beneath the mug with a clean, sunlit honed marble tabletop and soft studio background.',
+        whyItMatters: 'Transforms casual tabletop product snapshots into clean, catalog-ready studio imagery without manual clipping paths.',
+        sampleAttachments: ['clutteredDeskMug'],
+      },
+      {
         id: 'vintage-photo-restoration',
-        title: 'Vintage Heirloom Restoration — Crease, Scratch, Dust & Sepia Repair',
-        badge: 'Crease & Dust Repair + Colorization',
+        subcategory: 'heritage-retouch',
+        title: 'Vintage Print Crease, Scratch & Color Restoration',
+        badge: 'Archival Restoration',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
         prompt: 'Restore the attached damaged vintage photograph by repairing only the white diagonal paper fold creases, surface scratches, dust specks, and corner staining. Strictly preserve 100% of the original subjects’ exact facial features, expressions, eye shapes, eyeglasses, hairstyles, clothing, collars, poses, framing, and proportions without altering or modernizing their faces or outfits. Faithfully reconstruct only the damaged pixels along the paper creases and restore natural, balanced daylight color while keeping every person’s identity and appearance completely true to the original photo.',
-        whyItMatters: 'Validates automated archival photo cleaning and restoration for heritage photo books, memorial tributes, and family anniversary albums.',
+        whyItMatters: 'Validates automated archival photo repair and colorization for heritage photo books and family anniversary albums.',
         sampleAttachments: ['scratchedVintagePhoto'],
       },
       {
         id: 'glare-shadow-cleanup',
-        title: 'Eyeglass Flash Glare, Harsh Shadow & Indoor Color-Cast Cleaning',
-        badge: 'Glare Removal & White-Balance Cleanup',
+        subcategory: 'heritage-retouch',
+        title: 'Eyeglass Flash Glare & Color-Cast Correction',
+        badge: 'Portrait Retouching',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
-        prompt: 'Retouch the attached indoor portrait by removing ONLY the bright white/green camera flash reflection glare inside the eyeglass lenses and neutralizing the yellow indoor tungsten color cast to clean natural daylight. Keep the subject’s exact facial features, eye shape, expression, wrinkles, skin texture, eyeglass frame geometry, hair strands, clothing, fabric weave, pose, and framing 100% identical and untouched—do not alter the person’s identity, face shape, or outfit in any way.',
-        whyItMatters: 'Tests high-frequency portrait retouching — rescuing school portraits, event photos, and holiday card uploads ruined by eyeglass flash glare and indoor lighting casts.',
+        prompt: 'Retouch the attached indoor portrait by removing ONLY the bright white/green camera flash reflection glare inside the eyeglass lenses and neutralizing the yellow indoor tungsten color cast to clean natural daylight. Keep the subject’s exact facial features, eye shape, expression, wrinkles, skin texture, eyeglass frame geometry, hair strands, clothing, fabric weave, pose, and framing 100% identical and untouched - do not alter the person’s identity, face shape, or outfit in any way.',
+        whyItMatters: 'Tests portrait retouching on event photos and portraits affected by eyeglass flash reflections and indoor tungsten lighting casts.',
         sampleAttachments: ['glareGlassesPortrait'],
-      },
-      {
-        id: 'cluttered-desk-cleanup',
-        title: 'Background Clutter Cleaning & Studio Tabletop Isolation',
-        badge: 'Object Isolation & Mess Removal',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '16:9',
-        prompt: 'Treat the centerpiece handcrafted terracotta ceramic mug as a strictly locked, untouched pixel cutout at its exact original position, scale, angle, and lighting—do not alter its shape, rim, handle, speckled glaze texture, or terracotta color. Remove only the surrounding desk clutter (the yellow sticky notes on the left, green plastic bottle on the right, and black cable in the foreground) and replace the messy surface behind and beneath the mug with a clean, sunlit honed marble tabletop and soft studio background.',
-        whyItMatters: 'Turns casual smartphone product snapshots into clean, catalog-ready studio imagery without manual clipping paths.',
-        sampleAttachments: ['clutteredDeskMug'],
       },
     ],
   },
   {
     id: 'recoloring-restyling',
-    title: '🎨 Recoloring, Textile Colorways & Seasonal Restyling',
-    badge: 'Recoloring & Colorways',
+    title: '🎨 Colorway Studio & Scene Relighting',
+    badge: 'Colorways & Relighting',
+    subcategories: [
+      { id: 'textile-sku', label: '🧵 Textile & Product SKU Colorways' },
+      { id: 'scene-relight', label: '🌅 Scene Relighting & Background Swap' },
+    ],
     scenarios: [
       {
         id: 'pattern-colorway-recoloring',
-        title: 'Surface Pattern & Wallpaper Colorway Recoloring (Navy/Gold → Terracotta & Sage)',
-        badge: 'Textile & Wallpaper Colorway Studio',
+        subcategory: 'textile-sku',
+        title: 'Surface Pattern & Textile Colorway Recoloring',
+        badge: 'Pattern Colorway Studio',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
-        prompt: 'Recolor ONLY the color palette of the attached repeat botanical floral and geometric wallpaper/textile pattern from Navy Blue and Mustard Gold into warm Autumn Terracotta, Sage Green, Dusty Rose, and Warm Cream. Treat all pattern outlines, floral rosette geometry, leaf veins, diamond lattice lines, motif positions, scale, and seamless repeat layout as 100% locked and pixel-identical to the original image—do not redraw, shift, add, or remove any pattern elements.',
-        whyItMatters: 'Directly powers custom fabric, wallpaper, and home-decor marketplaces — generating instant seasonal colorway variants from a single artist surface pattern without altering motif geometry.',
+        prompt: 'Recolor ONLY the color palette of the attached repeat botanical floral and geometric wallpaper/textile pattern from Navy Blue and Mustard Gold into warm Autumn Terracotta, Sage Green, Dusty Rose, and Warm Cream. Treat all pattern outlines, floral rosette geometry, leaf veins, diamond lattice lines, motif positions, scale, and seamless repeat layout as 100% locked and pixel-identical to the original image - do not redraw, shift, add, or remove any pattern elements.',
+        whyItMatters: 'Powers custom fabric, wallpaper, and home-decor catalogs by generating seasonal colorway variants from a single surface pattern without altering motif geometry.',
         sampleAttachments: ['botanicalPatternNavyGold'],
       },
       {
         id: 'sku-colorway-swap',
-        title: 'Home Goods & Apparel SKU Colorway Swap (Crimson Red → Forest Emerald & Gold)',
-        badge: 'Zero-Reshoot SKU Recoloring',
+        subcategory: 'textile-sku',
+        title: 'Home Goods & Apparel SKU Colorway Swap',
+        badge: 'SKU Recoloring',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
         prompt: 'Change ONLY the fabric color of the attached crimson-red woven knit throw pillow into a rich Heathered Forest Emerald Green with subtle Champagne Gold edge piping. Keep the pillow’s exact shape, dimensions, placement, individual cable-knit stitch geometry, fabric fold shadows, and the entire surrounding oat-linen sofa and room background 100% untouched and pixel-identical to the original photograph.',
-        whyItMatters: 'Eliminates physical studio reshoots when launching new seasonal SKU colorways across pillows, blankets, drinkware, and custom apparel.',
+        whyItMatters: 'Eliminates physical studio reshoots when launching new seasonal SKU colorways across pillows, textiles, drinkware, and apparel.',
         sampleAttachments: ['crimsonThrowPillow'],
       },
       {
         id: 'seasonal-relighting',
-        title: 'Seasonal & Time-of-Day Recoloring (Summer Midday → Autumn Golden Hour)',
-        badge: 'Palette & Lighting Transformation',
+        subcategory: 'scene-relight',
+        title: 'Seasonal Foliage & Golden-Hour Relighting',
+        badge: 'Seasonal Relighting',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
         prompt: 'Recolor and relight only the seasonal foliage and sky lighting of the attached summer midday porch photograph into an October Autumn Golden Hour setting: transform the green tree canopies into amber, copper, and crimson fall leaves and add warm sunset lighting while keeping the white Craftsman porch architecture, columns, railings, stone steps, roofline, camera angle, and framing 100% identical to the original photo.',
-        whyItMatters: 'Demonstrates semantic scene recoloring and relighting to adapt evergreen catalog photography for autumn and holiday campaigns.',
+        whyItMatters: 'Demonstrates semantic scene recoloring and relighting to adapt evergreen catalog photography for seasonal campaigns.',
         sampleAttachments: ['summerPorchScene'],
       },
       {
         id: 'winter-wonderland-bg-swap',
-        title: 'Background Replacement — Winter Wonderland (100% Pixel-Locked People, Pets & Clothes)',
-        badge: 'Pixel-Locked Foreground Mask',
+        subcategory: 'scene-relight',
+        title: 'Identity-Locked Winter Scene Background Replacement',
+        badge: 'Locked Foreground Swap',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
         prompt: 'Treat all foreground subjects (every person, pet, face, and body from head to toe) as a strictly locked, read-only pixel mask at their exact original position, scale, and framing. Do NOT re-render, rescale, relight, smooth, or modify any facial features, wrinkles, smiles, teeth, eyeglasses, hair strands, fur, skin tones, jackets, sweaters, logos, zippers, scarves, purses, or shoes. Keep the foreground subjects 100% pixel-identical to the input photo with the exact same neutral daylight on their faces, and replace ONLY the background behind them with a scenic snow-covered evergreen pine forest and winter trail. Do not add falling snowflakes or lighting casts in front of the subjects.',
-        whyItMatters: 'Replaces the background scene with a winter wonderland while strictly locking 100% of foreground facial features, expressions, eyeglasses, pets, and clothing without drift.',
+        whyItMatters: 'Replaces the background scene while locking foreground facial features, expressions, eyeglasses, and clothing without drift.',
         sampleAttachments: ['lowResPortraitThumb'],
       },
     ],
   },
   {
     id: 'print-photobooks',
-    title: '📸 Image Creation — Print, Photo Books & Personalized Stationery',
-    badge: 'Print & Consumer Photo',
+    title: '📸 Print, Photo Books & Stationery',
+    badge: 'Print & Stationery',
+    subcategories: [
+      { id: 'stationery-cards', label: '💌 Cards, Invitations & Typography' },
+      { id: 'photobooks-art', label: '📚 Storybooks, Stickers & Wall Art' },
+    ],
     scenarios: [
       {
         id: 'holiday-card-typography',
-        title: 'Holiday Card Template Year Modernization ("2025" → "2026") & Multilingual Typography',
-        badge: '2025 Template Input → 2026 Refresh',
+        subcategory: 'stationery-cards',
+        title: 'Greeting Card Template Year Refresh & Typography',
+        badge: 'Card Template Refresh',
         recommendedSize: '2K',
         recommendedAspectRatio: '4:3',
         prompt: 'Modernize the attached "2025" holiday greeting card template for the 2026 season by updating ONLY the year reference from "2025" to "2026" (so the card reads "WARMEST WISHES · THE MILLER FAMILY · 2026") while keeping the entire card layout, textured warm cream cotton cardstock, gold-foil botanical pine and berry borders, font family, letter kerning, gold-foil embossing, card placement, and natural tabletop shadows 100% pixel-identical to the original 2025 template.',
-        whyItMatters: 'Eliminates multi-day manual designer bottlenecks for updating year references ("2025" → "2026") across holiday card catalogs while enabling Split Curtain comparison against the original 2025 template.',
+        whyItMatters: 'Automates annual template updates across stationery catalogs while preserving cardstock textures, foil borders, and kerning.',
         sampleAttachments: ['holidayCard2025Template'],
       },
       {
-        id: 'print-4k-upscale',
-        title: '4K (16.9 MP) Fine-Art Wall Canvas Creation',
-        badge: 'Native 4K · 5504×3072 (16.9 MP)',
-        recommendedSize: '4K',
-        recommendedAspectRatio: '16:9',
-        prompt: 'Ultra-high-resolution fine-art gallery canvas photograph of an autumn alpine lake at sunrise in the Dolomites. Capture razor-sharp 300-DPI micro-texture in the weathered wooden boat planks in the foreground, individual frost crystals on shoreline pine needles, mirror-like water reflections, and subtle linen canvas weave suitable for a 36×24 inch large-format wall print.',
-        whyItMatters: 'Demonstrates true 4K (5504×3072 = 16.9 MP) generation for large-format wall art and photo books—preventing blurry upscaling and reducing physical print reprints.',
-        sampleAttachments: [],
-      },
-      {
-        id: 'multi-image-storybook',
-        title: 'Multi-Image Character & Style Consistency (3 Built-In Reference Inputs)',
-        badge: '3 Built-In Reference Images Loaded',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '16:9',
-        prompt: 'Using the 3 attached reference images, illustrate a cohesive two-page children’s photo-book spread while strictly preserving the exact visual identity of each reference: (1) keep the red fox explorer’s exact facial features, eye shape, black ear tips, white cheek patches, and cobalt-blue scarf with gold stars 100% identical to Reference 1; (2) match the exact pastel sage watercolor and gouache pine forest palette and brushwork of Reference 2; and (3) preserve the exact vintage brass woodland lantern geometry and warm golden glow from Reference 3. Show the exact same fox character holding the brass lantern on a snowy woodland bridge at twilight with a clean header reading "Chapter 3 · The Winter Lantern".',
-        whyItMatters: 'Tests multi-image subject and style locking across up to 13 reference images (64K context window) so multi-page photo books and calendars maintain consistent characters.',
-        sampleAttachments: ['storybookFox', 'storybookStyle', 'storybookLantern'],
-      },
-      {
         id: 'wedding-invitation-suite',
-        title: 'Bespoke Wedding Invitation Suite with Gold-Foil & Letterpress Typography',
-        badge: 'Stationery & Letterpress Creation',
+        subcategory: 'stationery-cards',
+        title: 'Letterpress Wedding Invitation Suite & Foil Typography',
+        badge: 'Letterpress Stationery',
         recommendedSize: '2K',
         recommendedAspectRatio: '3:4',
         prompt: 'Overhead editorial flat-lay photograph of a luxury letterpress wedding invitation suite on handmade deckle-edge cotton paper with wax seal, dried olive branches, and silk ribbon. Render crisp debossed serif typography reading:\n"SOPHIA LAURENT & ETHAN VANCE"\n"SATURDAY, OCTOBER 24, 2026"\n"VILLA CIMBRONE · RAVELLO, ITALY"\n"RECEPTION TO FOLLOW IN THE BELVEDERE GARDENS"',
@@ -944,45 +954,86 @@ const IMAGE_USE_CASE_PACKS = [
         sampleAttachments: [],
       },
       {
+        id: 'multi-image-storybook',
+        subcategory: 'photobooks-art',
+        title: 'Multi-Reference Storybook Character & Style Consistency',
+        badge: 'Multi-Reference Consistency',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Using the 3 attached reference images, illustrate a cohesive two-page children’s photo-book spread while strictly preserving the exact visual identity of each reference: (1) keep the red fox explorer’s exact facial features, eye shape, black ear tips, white cheek patches, and cobalt-blue scarf with gold stars 100% identical to Reference 1; (2) match the exact pastel sage watercolor and gouache pine forest palette and brushwork of Reference 2; and (3) preserve the exact vintage brass woodland lantern geometry and warm golden glow from Reference 3. Show the exact same fox character holding the brass lantern on a snowy woodland bridge at twilight with a clean header reading "Chapter 3 · The Winter Lantern".',
+        whyItMatters: 'Tests multi-image subject and style locking across reference inputs so multi-page photo books maintain consistent characters and props.',
+        sampleAttachments: ['storybookFox', 'storybookStyle', 'storybookLantern'],
+      },
+      {
         id: 'persistent-custom-stickers',
-        title: 'Persistent Custom Stickers & Die-Cut Scrapbook Embellishments (From Character Reference)',
-        badge: 'Character-Locked Sticker Sheet',
+        subcategory: 'photobooks-art',
+        title: 'Character-Locked Die-Cut Sticker Sheet Generation',
+        badge: 'Die-Cut Sticker Sheet',
         recommendedSize: '2K',
         recommendedAspectRatio: '1:1',
-        prompt: 'Using the attached explorer fox character reference image, generate a cohesive sheet of 6 die-cut vinyl photo-book stickers and scrapbook embellishments on a clean light-gray studio backing. Strictly preserve 100% of the character’s exact facial features, eye shape, fur color, black ear tips, white cheek patches, and cobalt-blue scarf with gold stars from the reference image across all 6 stickers—do not alter the character’s facial structure or outfit. Show the exact same character in 6 playful poses (waving, holding a camera, sipping hot cocoa, wearing a winter beanie, framing a photo border, and a "2026 Family Memories" badge), each with a crisp white kiss-cut sticker border.',
-        whyItMatters: 'Unlocks persistent custom stickers, scrapbook embellishments, and character-locked decorative packs across photo book spreads from a single reference image.',
+        prompt: 'Using the attached explorer fox character reference image, generate a cohesive sheet of 6 die-cut vinyl photo-book stickers and scrapbook embellishments on a clean light-gray studio backing. Strictly preserve 100% of the character’s exact facial features, eye shape, fur color, black ear tips, white cheek patches, and cobalt-blue scarf with gold stars from the reference image across all 6 stickers - do not alter the character’s facial structure or outfit. Show the exact same character in 6 playful poses (waving, holding a camera, sipping hot cocoa, wearing a winter beanie, framing a photo border, and a "2026 Family Memories" badge), each with a crisp white kiss-cut sticker border.',
+        whyItMatters: 'Generates character-locked die-cut sticker packs and scrapbook embellishments from a single character reference image.',
         sampleAttachments: ['storybookFox'],
+      },
+      {
+        id: 'print-4k-upscale',
+        subcategory: 'photobooks-art',
+        title: 'Fine-Art Alpine Gallery Wall Canvas Generation',
+        badge: 'Native 4K Wall Art',
+        recommendedSize: '4K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Ultra-high-resolution fine-art gallery canvas photograph of an autumn alpine lake at sunrise in the Dolomites. Capture razor-sharp 300-DPI micro-texture in the weathered wooden boat planks in the foreground, individual frost crystals on shoreline pine needles, mirror-like water reflections, and subtle linen canvas weave suitable for a 36x24 inch large-format wall print.',
+        whyItMatters: 'Demonstrates native 4K generation for large-format wall art and photo books, preventing blurry upscaling.',
+        sampleAttachments: [],
       },
     ],
   },
   {
     id: 'retail-ecommerce',
-    title: '🛍️ Image Creation — Retail, Packaging & Brand Key Art',
+    title: '🛍️ Retail, Packaging & Brand Key Art',
     badge: 'Retail & Brand Studio',
+    subcategories: [
+      { id: 'lifestyle-staging', label: '🛋️ Product Lifestyle Staging' },
+      { id: 'packaging-keyart', label: '📦 Packaging & Campaign Key Art' },
+    ],
     scenarios: [
       {
         id: 'retail-lifestyle-staging',
-        title: 'Virtual Lifestyle Staging & Promotional Badge Creation',
-        badge: 'Product Input → Lifestyle Staging',
+        subcategory: 'lifestyle-staging',
+        title: 'Kitchen Counter Product Lifestyle Staging & Promo Badge',
+        badge: 'Lifestyle Staging',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
-        prompt: 'Treat the centerpiece handcrafted terracotta ceramic mug from the attached photo as a strictly locked, untouched product cutout—keep its exact shape, rim, handle geometry, speckled glaze texture, terracotta color, scale, and position 100% identical to the original photo. Replace only the cluttered desk background around the mug with a sunlit Scandinavian oak kitchen counter lifestyle scene featuring fresh croissants, linen napkins, and an espresso machine, and render a clean promotional badge in the upper-right corner reading "AUTUMN ROAST EVENT · SAVE 25% · CODE: ESPRESSO26".',
-        whyItMatters: 'Replaces expensive physical studio reshoots with instant seasonal lifestyle staging and localized promotional badge typography.',
+        prompt: 'Treat the centerpiece handcrafted terracotta ceramic mug from the attached photo as a strictly locked, untouched product cutout - keep its exact shape, rim, handle geometry, speckled glaze texture, terracotta color, scale, and position 100% identical to the original photo. Replace only the cluttered desk background around the mug with a sunlit Scandinavian oak kitchen counter lifestyle scene featuring fresh croissants, linen napkins, and an espresso machine, and render a clean promotional badge in the upper-right corner reading "AUTUMN ROAST EVENT · SAVE 25% · CODE: ESPRESSO26".',
+        whyItMatters: 'Replaces physical studio reshoots with seasonal lifestyle staging and localized promotional badge typography.',
         sampleAttachments: ['clutteredDeskMug'],
       },
       {
+        id: 'personalized-plaque-lifestyle',
+        subcategory: 'lifestyle-staging',
+        title: 'Living Room Home-Decor & Gift SKU Staging',
+        badge: 'Home Decor Staging',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: 'Treat the attached crimson-red woven cable-knit throw pillow SKU as a strictly locked, untouched product cutout - keep its exact crimson color, cable-knit stitch geometry, fabric folds, shape, and proportions 100% identical to the input photo. Stage the surrounding environment into a warm, modern apartment living room lifestyle scene alongside a 5x7 wooden desktop photo plaque and warm fairy lights on an oak shelf, and render a clean promotional campaign badge in the upper-right corner reading "PERSONALIZED HOME & GIFT EVENT · 50% OFF".',
+        whyItMatters: 'Places customized home-decor and gift SKUs into targeted lifestyle scenes with promotional badge copy.',
+        sampleAttachments: ['crimsonThrowPillow'],
+      },
+      {
         id: 'retail-packaging-mockup',
-        title: '4K Botanical Serum Packaging & Micro-Typography Proofing',
+        subcategory: 'packaging-keyart',
+        title: 'Botanical Serum Bottle Packaging & Label Proofing',
         badge: '4K Label Proofing',
         recommendedSize: '4K',
         recommendedAspectRatio: '1:1',
         prompt: 'Macro studio product photograph of an amber glass botanical serum bottle standing on wet slate stone with water droplets. The matte cream paper label must legibly display: "LUMIÈRE BOTANICALS · HYALURONIC + VITAMIN C SERUM · 30 ML / 1.0 FL OZ · MADE IN CALIFORNIA".',
-        whyItMatters: 'Validates fine-print packaging legibility and specular glass/liquid reflections at 4K resolution.',
+        whyItMatters: 'Validates fine-print packaging legibility and specular glass and liquid reflections at 4K resolution.',
         sampleAttachments: [],
       },
       {
         id: 'media-key-art',
-        title: 'Cinematic Key Art Poster with Multi-Line Title Credits',
+        subcategory: 'packaging-keyart',
+        title: 'Theatrical Sci-Fi Key Art Poster & Title Credits',
         badge: 'Key Art & Credits',
         recommendedSize: '2K',
         recommendedAspectRatio: '3:4',
@@ -990,31 +1041,22 @@ const IMAGE_USE_CASE_PACKS = [
         whyItMatters: 'Benchmarks dramatic lighting composition paired with multi-line display typography.',
         sampleAttachments: [],
       },
-      {
-        id: 'personalized-plaque-lifestyle',
-        title: 'Personalized Desktop Plaque & Home-Decor Lifestyle Staging (Multi-Cohort Campaign)',
-        badge: 'Home Decor & Gift Staging',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '16:9',
-        prompt: 'Treat the attached crimson-red woven cable-knit throw pillow SKU as a strictly locked, untouched product cutout—keep its exact crimson color, cable-knit stitch geometry, fabric folds, shape, and proportions 100% identical to the input photo. Stage the surrounding environment into a warm, modern apartment living room lifestyle scene alongside a 5×7 wooden desktop photo plaque and warm fairy lights on an oak shelf, and render a clean promotional campaign badge in the upper-right corner reading "PERSONALIZED HOME & GIFT EVENT · 50% OFF".',
-        whyItMatters: 'Accelerates marketing campaign velocity — placing customized home-decor and photo gift SKUs into targeted lifestyle scenes with promotional badge copy in seconds.',
-        sampleAttachments: ['crimsonThrowPillow'],
-      },
     ],
   },
   {
     id: 'custom-image-prompt',
-    title: '✏️ Custom Prompt & Reference Image Upload',
-    badge: 'Freeform Studio',
+    title: '✏️ Custom Image Prompt',
+    badge: 'Custom Studio',
+    subcategories: [],
     scenarios: [
       {
         id: 'custom-freeform',
-        title: 'Freeform Image Generation or Multi-Image Conversational Edit',
-        badge: 'Custom Prompt + Up to 13 Reference Photos',
+        title: 'Custom Generation or Multi-Image Edit',
+        badge: 'Custom Prompt',
         recommendedSize: '2K',
         recommendedAspectRatio: '16:9',
         prompt: '',
-        whyItMatters: 'Write any custom generation, upscaling, resampling, cleaning, or recoloring prompt and attach up to 13 reference images.',
+        whyItMatters: 'Write any custom generation, upscaling, outpainting, restoration, or recoloring prompt and attach up to 13 reference images.',
         sampleAttachments: [],
       },
     ],
@@ -1054,13 +1096,15 @@ function extractImageResponseParts(parts) {
   const nonThoughtImages = imageParts.filter((p) => p.thought !== true);
   const thoughtImages = imageParts.filter((p) => p.thought === true);
 
+  // The final image is ONLY ever a non-thought part. When the model produced a
+  // visual-thinking draft but the final image was blocked or never arrived, the
+  // slot must fail (with the block reason) instead of presenting the 1K draft
+  // as the 4K result the user asked and paid for.
   const finalImagePart = nonThoughtImages.length > 0
     ? nonThoughtImages[nonThoughtImages.length - 1]
-    : (imageParts[imageParts.length - 1] || null);
-
-  const thoughtImagePart = (thoughtImages.length > 0 && thoughtImages[0] !== finalImagePart)
-    ? thoughtImages[0]
     : null;
+
+  const thoughtImagePart = thoughtImages.length > 0 ? thoughtImages[0] : null;
 
   const text = list
     .filter((p) => p && typeof p.text === 'string' && p.thought !== true)
@@ -1097,8 +1141,16 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
   let textOutputTokens = 0;
   let totalTokens = 0;
   let inputCostUsd = 0;
+  // 'usage' when the provider reported token counts; 'reference' when a successful
+  // generation came back without any usage block, in which case the catalog's
+  // per-image reference price is billed instead of $0 (the image was still made).
+  let costBasis = 'usage';
 
-  if (typeof u.input_tokens === 'number' || typeof u.output_tokens === 'number') {
+  const hasOpenAIUsage = typeof u.input_tokens === 'number' || typeof u.output_tokens === 'number';
+  const hasVertexUsage = ['promptTokenCount', 'candidatesTokenCount', 'totalTokenCount', 'thoughtsTokenCount']
+    .some((k) => typeof u[k] === 'number') || (Array.isArray(u.candidatesTokensDetails) && u.candidatesTokensDetails.length > 0);
+
+  if (hasOpenAIUsage) {
     // OpenAI /v1/images usage schema:
     // { input_tokens, output_tokens, total_tokens, input_tokens_details: { text_tokens, image_tokens }, output_tokens_details: { image_tokens, text_tokens } }
     const inDetails = u.input_tokens_details || {};
@@ -1116,7 +1168,7 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
     } else {
       inputCostUsd = (promptTokens / 1_000_000) * p.inputPerM;
     }
-  } else {
+  } else if (hasVertexUsage) {
     // Vertex AI usageMetadata schema
     promptTokens = Number(u.promptTokenCount) || 0;
     reasoningTokens = Number(u.thoughtsTokenCount) || 0;
@@ -1132,11 +1184,17 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
     }
     totalTokens = Number(u.totalTokenCount) || (promptTokens + imageOutputTokens + textOutputTokens + reasoningTokens);
     inputCostUsd = (promptTokens / 1_000_000) * p.inputPerM;
+  } else {
+    costBasis = 'reference';
   }
 
   const imageOutputCostUsd = (imageOutputTokens / 1_000_000) * p.imageOutputPerM;
   const textAndThinkingCostUsd = ((textOutputTokens + reasoningTokens) / 1_000_000) * p.textOutputPerM;
-  const standardPayGoCostUsd = inputCostUsd + imageOutputCostUsd + textAndThinkingCostUsd;
+  const ref = (p.referenceCostBySize && typeof p.referenceCostBySize === 'object') ? p.referenceCostBySize : {};
+  const referenceCostUsd = Number(ref[requestedSize]) || Number(ref['2K']) || Number(ref['1K']) || 0;
+  const standardPayGoCostUsd = costBasis === 'reference'
+    ? referenceCostUsd
+    : inputCostUsd + imageOutputCostUsd + textAndThinkingCostUsd;
   const offPeakDiscount = Number(p.offPeakDiscount) || 0;
   const offPeakPayGoCostUsd = standardPayGoCostUsd * (1 - offPeakDiscount);
 
@@ -1155,6 +1213,7 @@ function computeImageSlotEconomics(catalogEntry, usageMetadata, requestedSize) {
     textOutputTokens,
     reasoningTokens,
     totalTokens,
+    costBasis,
     standardPayGoCostUsd,
     standardPayGoPer1kUsd: standardPayGoCostUsd * 1000,
     offPeakPayGoCostUsd,
@@ -1197,26 +1256,96 @@ function resolveOpenAIImageSize(sizeId, aspectRatio) {
   return tier[aspectRatio] || tier['16:9'] || '1024x1024';
 }
 
-async function readJsonBodyWithRetry(sendFn, signal, maxBodyRetries = 1) {
-  for (let attempt = 0; ; attempt++) {
-    const r = await sendFn();
-    try {
-      const rawText = await r.text();
-      let j = {};
-      if (rawText && rawText.trim()) {
-        j = JSON.parse(rawText);
-      }
-      return { r, j };
-    } catch (bodyErr) {
-      if (signal && signal.aborted) throw bodyErr;
-      if (!r.ok) return { r, j: {} };
-      if (attempt < maxBodyRetries) continue;
-      throw new Error(`Response stream interrupted while downloading image payload (${(bodyErr && bodyErr.message) || 'truncated JSON'}).`);
+// Image generations are non-streaming: headers only arrive once the image is
+// rendered (a 4K Nano Banana call can take a couple of minutes), so every call
+// raises the provider header timeout well above the streaming default.
+const IMAGE_TIMEOUT_MS = 300000;
+// Wall-clock budget for ONE slot including every fallback step (alternate
+// project, projectless alias, 4K -> 2K -> 1K cascade). Checked before each step
+// so a slow upstream cannot chain five multi-minute generations.
+const IMAGE_SLOT_DEADLINE_MS = 240000;
+// Per reference image: base64 length cap (~9 MB of pixels) and MIME allow-list.
+const MAX_REFERENCE_IMAGE_B64_CHARS = 12 * 1024 * 1024;
+const REFERENCE_IMAGE_MIME_RE = /^image\/(png|jpeg|webp|gif)$/i;
+
+const imageFetch = (url, init) => providerFetch(url, { timeoutMs: IMAGE_TIMEOUT_MS, ...init });
+
+function slotDeadline(entry, t0) {
+  return (stage) => {
+    const elapsed = Date.now() - t0;
+    if (elapsed <= IMAGE_SLOT_DEADLINE_MS) return;
+    throw new Error(`${entry.label} gave up after ${Math.round(elapsed / 1000)}s: no time left for ${stage} (per-slot limit ${Math.round(IMAGE_SLOT_DEADLINE_MS / 1000)}s).`);
+  };
+}
+
+// Sniff the container from the first base64 bytes when the declared MIME is missing.
+function sniffImageMime(b64) {
+  const head = String(b64 || '').slice(0, 16);
+  if (head.startsWith('iVBORw0KGgo')) return 'image/png';
+  if (head.startsWith('/9j/')) return 'image/jpeg';
+  if (head.startsWith('R0lGOD')) return 'image/gif';
+  if (head.startsWith('UklGR')) return 'image/webp';
+  return null;
+}
+
+// Validate the user's reference images up front: count, per-image size and MIME.
+// Returns [{ mimeType, data }] with the data-URL prefix stripped.
+function validateReferenceImages(entry, attachments) {
+  const list = Array.isArray(attachments) ? attachments : [];
+  if (list.length > entry.maxReferenceImages) {
+    throw new Error(`${entry.label} accepts at most ${entry.maxReferenceImages} reference images (${list.length} attached).`);
+  }
+  const out = [];
+  list.forEach((att, idx) => {
+    if (!att || typeof att.data !== 'string' || !att.data) return; // empty slots are skipped, as before
+    const rawB64 = att.data.replace(/^data:[^;]+;base64,/, '');
+    if (rawB64.length > MAX_REFERENCE_IMAGE_B64_CHARS) {
+      throw new Error(`Reference image ${idx + 1}${att.name ? ` (${String(att.name).slice(0, 80)})` : ''} is too large: ${(rawB64.length / (1024 * 1024)).toFixed(1)} MB encoded, limit ${MAX_REFERENCE_IMAGE_B64_CHARS / (1024 * 1024)} MB. Downscale it and try again.`);
     }
+    const declared = String(att.mimeType || '').trim().toLowerCase();
+    const mimeType = REFERENCE_IMAGE_MIME_RE.test(declared) ? declared : (declared ? null : sniffImageMime(rawB64));
+    if (!mimeType) {
+      throw new Error(`Reference image ${idx + 1}${att.name ? ` (${String(att.name).slice(0, 80)})` : ''} has an unsupported type${declared ? ` "${declared.slice(0, 60)}"` : ''}: only PNG, JPEG, WebP and GIF are accepted.`);
+    }
+    out.push({ mimeType, data: rawB64 });
+  });
+  return out;
+}
+
+// A safety / moderation rejection is final for the prompt: retrying the same
+// prompt at a smaller size (the 4K -> 2K -> 1K cascade) or on another project
+// would only produce the same block, each time billed as a request.
+function isModerationError(j) {
+  const e = j && typeof j === 'object' ? (j.error || j) : null;
+  if (!e || typeof e !== 'object') return false;
+  const blob = [e.code, e.type, e.status, e.message, e.reason, j && j.promptFeedback && j.promptFeedback.blockReason]
+    .filter((v) => v != null).map((v) => String(v)).join(' ');
+  return /moderation_blocked|content_policy|safety|prohibited|blocked|usage guidelines|responsible ai|harm|violat/i.test(blob);
+}
+
+// Read a JSON body exactly once. A parse failure on an OK response fails the
+// slot: the generation was made and billed, and re-invoking `sendFn()` would
+// silently buy a second one.
+async function readJsonBody(sendFn, signal) {
+  const r = await sendFn();
+  let rawText = '';
+  try {
+    rawText = await r.text();
+  } catch (bodyErr) {
+    if (signal && signal.aborted) throw bodyErr;
+    if (!r.ok) return { r, j: {} };
+    throw new Error(`Response stream interrupted while downloading the image payload (${(bodyErr && bodyErr.message) || 'truncated body'}); the generation was not retried.`);
+  }
+  if (!rawText || !rawText.trim()) return { r, j: {} };
+  try {
+    return { r, j: JSON.parse(rawText) };
+  } catch (parseErr) {
+    if (!r.ok) return { r, j: {} };
+    throw new Error(`Image provider returned an unreadable payload (${(parseErr && parseErr.message) || 'invalid JSON'}, ${rawText.length} chars); the generation was not retried.`);
   }
 }
 
-async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser }) {
+async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, refs, keys, signal, auditUser }) {
   const { buildUpstreamAttribution } = require('./providers');
   const attr = buildUpstreamAttribution(auditUser);
   // Strict BYOK: the user's own OpenAI key (when supplied) is the ONLY key used
@@ -1238,9 +1367,8 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
     : (imageSize || '2K');
   const validAspect = aspectRatio || '16:9';
   const promptText = String(prompt || '').trim() || 'Generate a high-resolution studio image.';
-  const safeAtts = (Array.isArray(attachments) ? attachments : []).filter(
-    (att) => att && typeof att.data === 'string' && att.data.length > 0
-  );
+  // Reference images were validated (count, size, MIME) in runSingleImageSlot.
+  const safeAtts = Array.isArray(refs) ? refs : [];
 
   const sendOpenAIRequest = async (sizeTier) => {
     const oaSize = resolveOpenAIImageSize(sizeTier, validAspect);
@@ -1254,15 +1382,12 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
       if (attr && attr.openaiUser) form.append('user', attr.openaiUser);
       const fieldName = safeAtts.length > 1 ? 'image[]' : 'image';
       safeAtts.forEach((att, idx) => {
-        const rawB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
-        const mimeType = /^image\/(png|jpeg|webp|gif)$/i.test(String(att.mimeType || ''))
-          ? att.mimeType
-          : 'image/png';
+        const mimeType = att.mimeType;
         const ext = (mimeType.split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '');
-        const buf = Buffer.from(rawB64, 'base64');
+        const buf = Buffer.from(att.data, 'base64');
         form.append(fieldName, new Blob([buf], { type: mimeType }), `ref-${idx}.${ext}`);
       });
-      return providerFetch('https://api.openai.com/v1/images/edits', {
+      return imageFetch('https://api.openai.com/v1/images/edits', {
         method: 'POST',
         headers: { Authorization: `Bearer ${oaKey}` },
         body: form,
@@ -1277,7 +1402,7 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
       quality: 'high',
     };
     if (attr && attr.openaiUser) genPayload.user = attr.openaiUser;
-    return providerFetch('https://api.openai.com/v1/images/generations', {
+    return imageFetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1289,18 +1414,21 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
   };
 
   const t0 = Date.now();
-  let { r, j } = await readJsonBodyWithRetry(() => sendOpenAIRequest(effectiveSize), signal, 1);
-  if (r.status === 400 && effectiveSize !== '1K') {
+  const checkDeadline = slotDeadline(entry, t0);
+  let { r, j } = await readJsonBody(() => sendOpenAIRequest(effectiveSize), signal);
+  // A moderation / content-policy block is final: never re-run the prompt smaller.
+  if (r.status === 400 && effectiveSize !== '1K' && !isModerationError(j)) {
     const fallbackOrder = effectiveSize === '4K' ? ['2K', '1K'] : ['1K'];
     for (const fbTier of fallbackOrder) {
-      const fb = await readJsonBodyWithRetry(() => sendOpenAIRequest(fbTier), signal, 1);
+      checkDeadline(`the ${fbTier} fallback`);
+      const fb = await readJsonBody(() => sendOpenAIRequest(fbTier), signal);
       if (fb.r.ok) {
         r = fb.r;
         j = fb.j;
         effectiveSize = fbTier;
         break;
       }
-      if (fb.r.status !== 400) {
+      if (fb.r.status !== 400 || isModerationError(fb.j)) {
         r = fb.r;
         j = fb.j;
         break;
@@ -1311,13 +1439,16 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
   const latencyMs = Date.now() - t0;
   if (!r.ok) {
     const errMsg = (j && j.error && j.error.message) || JSON.stringify(j).slice(0, 320);
-    throw new Error(`OpenAI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
+    const err = new Error(`OpenAI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
+    if (isModerationError(j)) err.code = 'IMAGE_BLOCKED';
+    throw err;
   }
 
   const firstItem = (j && Array.isArray(j.data) && j.data[0]) || null;
   let finalB64 = firstItem && typeof firstItem.b64_json === 'string' ? firstItem.b64_json : '';
   if (!finalB64 && firstItem && typeof firstItem.url === 'string' && firstItem.url) {
-    const imgRes = await providerFetch(firstItem.url, { method: 'GET', signal });
+    // A plain GET of the rendered file: safe to retry after a header timeout.
+    const imgRes = await imageFetch(firstItem.url, { method: 'GET', signal, idempotent: true });
     if (imgRes.ok) {
       const arrBuf = await imgRes.arrayBuffer();
       finalB64 = Buffer.from(arrBuf).toString('base64');
@@ -1375,13 +1506,12 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   if (!entry) {
     throw new Error(`Unknown image model "${catalogId}".`);
   }
-  const refCount = Array.isArray(attachments) ? attachments.length : 0;
-  if (refCount > entry.maxReferenceImages) {
-    throw new Error(`${entry.label} accepts at most ${entry.maxReferenceImages} reference images (${refCount} attached).`);
-  }
+  // Count, per-image size and MIME allow-list are enforced before any key is read
+  // or any upstream request is built (a rejected reference costs nothing).
+  const refs = validateReferenceImages(entry, attachments);
 
   if (entry.provider === 'openai') {
-    return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, attachments, keys, signal, auditUser });
+    return runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize, refs, keys, signal, auditUser });
   }
   const { buildUpstreamAttribution } = require('./providers');
   const attr = buildUpstreamAttribution(auditUser);
@@ -1412,14 +1542,8 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     ].filter(Boolean)));
 
   const userParts = [];
-  const safeAtts = Array.isArray(attachments) ? attachments : [];
-  for (const att of safeAtts) {
-    if (!att || typeof att.data !== 'string' || !att.data) continue;
-    const rawB64 = att.data.replace(/^data:[^;]+;base64,/, '');
-    const mimeType = /^image\/(png|jpeg|webp|gif)$/i.test(String(att.mimeType || ''))
-      ? att.mimeType
-      : 'image/png';
-    userParts.push({ inlineData: { mimeType, data: rawB64 } });
+  for (const att of refs) {
+    userParts.push({ inlineData: { mimeType: att.mimeType, data: att.data } });
   }
   userParts.push({ text: String(prompt || '').trim() || 'Generate a high-resolution studio image.' });
 
@@ -1450,28 +1574,21 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
   const payloadStr = buildPayload(effectiveSize);
   const t0 = Date.now();
+  const checkDeadline = slotDeadline(entry, t0);
+  const post = (url, body) => imageFetch(url, { method: 'POST', headers, body, signal });
 
   // Own key without an own project -> straight to the projectless alias.
   let usedUrl = candidateProjects.length
     ? buildGlobalProjectUrl(candidateProjects[0])
     : (ownVertexKey ? shortPublisherUrl : buildGlobalProjectUrl(DEFAULT_IMAGE_PROJECT_NUMBER));
-  let { r, j } = await readJsonBodyWithRetry(() => providerFetch(usedUrl, {
-    method: 'POST',
-    headers,
-    body: payloadStr,
-    signal,
-  }), signal, 1);
+  let { r, j } = await readJsonBody(() => post(usedUrl, payloadStr), signal);
 
   // If the key belongs to another candidate project (e.g., GCP_PROJECT_ID when a custom key is mounted),
   // try remaining candidate /locations/global project endpoints next.
   for (let i = 1; i < candidateProjects.length && (r.status === 403 || r.status === 404); i++) {
+    checkDeadline('an alternate project endpoint');
     const altUrl = buildGlobalProjectUrl(candidateProjects[i]);
-    const fbAlt = await readJsonBodyWithRetry(() => providerFetch(altUrl, {
-      method: 'POST',
-      headers,
-      body: payloadStr,
-      signal,
-    }), signal, 1);
+    const fbAlt = await readJsonBody(() => post(altUrl, payloadStr), signal);
     if (fbAlt.r.ok || fbAlt.r.status === 400) {
       r = fbAlt.r;
       j = fbAlt.j;
@@ -1483,12 +1600,8 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   // If a custom BYOK key belongs to a different project number (403/404 on project path),
   // fall back automatically to the projectless publisher path.
   if ((r.status === 403 || r.status === 404) && usedUrl !== shortPublisherUrl) {
-    const fb = await readJsonBodyWithRetry(() => providerFetch(shortPublisherUrl, {
-      method: 'POST',
-      headers,
-      body: payloadStr,
-      signal,
-    }), signal, 1);
+    checkDeadline('the projectless publisher endpoint');
+    const fb = await readJsonBody(() => post(shortPublisherUrl, payloadStr), signal);
     if (fb.r.ok || fb.r.status === 400) {
       r = fb.r;
       j = fb.j;
@@ -1497,22 +1610,19 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   }
 
   // Safety net: if a model rejects 2K/4K with HTTP 400, cascade down 4K -> 2K -> 1K.
-  if (r.status === 400 && effectiveSize !== '1K') {
+  // A safety / moderation block is final for this prompt and is never retried smaller.
+  if (r.status === 400 && effectiveSize !== '1K' && !isModerationError(j)) {
     const fallbackOrder = effectiveSize === '4K' ? ['2K', '1K'] : ['1K'];
     for (const fbTier of fallbackOrder) {
-      const retryFb = await readJsonBodyWithRetry(() => providerFetch(usedUrl, {
-        method: 'POST',
-        headers,
-        body: buildPayload(fbTier),
-        signal,
-      }), signal, 1);
+      checkDeadline(`the ${fbTier} fallback`);
+      const retryFb = await readJsonBody(() => post(usedUrl, buildPayload(fbTier)), signal);
       if (retryFb.r.ok) {
         r = retryFb.r;
         j = retryFb.j;
         effectiveSize = fbTier;
         break;
       }
-      if (retryFb.r.status !== 400) {
+      if (retryFb.r.status !== 400 || isModerationError(retryFb.j)) {
         r = retryFb.r;
         j = retryFb.j;
         break;
@@ -1523,7 +1633,9 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const latencyMs = Date.now() - t0;
   if (!r.ok) {
     const errMsg = (j && j.error && j.error.message) || JSON.stringify(j).slice(0, 320);
-    throw new Error(`Vertex AI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
+    const err = new Error(`Vertex AI ${r.status} for "${entry.model}": ${scrubError(errMsg)}`);
+    if (isModerationError(j)) err.code = 'IMAGE_BLOCKED';
+    throw err;
   }
 
   const candidate = (j.candidates && j.candidates[0]) || {};
@@ -1531,8 +1643,20 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const extracted = extractImageResponseParts(parts);
 
   if (!extracted.finalImagePart) {
-    const finishReason = candidate.finishReason || 'NO_IMAGE';
-    throw new Error(`Model "${entry.model}" returned no image (${finishReason})${extracted.text ? ': ' + extracted.text.slice(0, 180) : ''}`);
+    // Say WHY there is no final image: a prompt-level block (promptFeedback), a
+    // candidate-level stop (finishReason / finishMessage), or simply no image part.
+    // A thought-only response is reported here too, never promoted to the result.
+    const pf = (j && j.promptFeedback) || {};
+    const reasons = [];
+    if (pf.blockReason) reasons.push(`prompt blocked: ${String(pf.blockReason)}${pf.blockReasonMessage ? ` - ${String(pf.blockReasonMessage).slice(0, 160)}` : ''}`);
+    if (candidate.finishReason) reasons.push(`finish reason: ${String(candidate.finishReason)}${candidate.finishMessage ? ` - ${String(candidate.finishMessage).slice(0, 160)}` : ''}`);
+    if (extracted.thoughtImagePart) reasons.push('only a visual-thinking draft was produced, no final image');
+    if (!reasons.length) reasons.push('NO_IMAGE');
+    const detail = extracted.text ? `: ${extracted.text.slice(0, 180)}` : '';
+    const err = new Error(`Model "${entry.model}" returned no image (${scrubError(reasons.join('; '))})${scrubError(detail)}`);
+    err.code = 'IMAGE_NOT_RETURNED';
+    if (pf.blockReason || /SAFETY|PROHIBITED|BLOCKLIST|SPII|RECITATION/i.test(String(candidate.finishReason || ''))) err.code = 'IMAGE_BLOCKED';
+    throw err;
   }
 
   const finalMime = extracted.finalImagePart.inlineData.mimeType || 'image/png';

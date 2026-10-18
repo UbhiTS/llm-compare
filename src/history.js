@@ -64,12 +64,16 @@ const LOCAL_SQLITE_PATH = path.join(
 
 // Optional native SQLite (`node:sqlite` in Node 22+)
 let DatabaseSync = null;
+// `backup()` (Node >= 22.16): consistent online copy of the live DB without a main-thread whole-file read
+let sqliteBackup = null;
 try {
   // Suppress experimental warning noise while using built-in SQLite
-  ({ DatabaseSync } = require('node:sqlite'));
+  ({ DatabaseSync, backup: sqliteBackup } = require('node:sqlite'));
 } catch (_) {
   DatabaseSync = null;
+  sqliteBackup = null;
 }
+if (typeof sqliteBackup !== 'function') sqliteBackup = null;
 
 let sqliteDb = null;
 let stmts = null;
@@ -97,11 +101,100 @@ const loadedOwnerKeys = new Set();
 const fullPayloadCache = new Map();
 const MAX_PAYLOAD_CACHE = 300;
 let hadPersistedIndexOnBoot = false;
+// Binary-page recovery of pruned runs runs at most once per process (review finding 7.3)
+let binaryRecoveryApplied = false;
 let lastPersistMtimeMs = 0;
 let lastPersistSize = 0;
 let lastPersistCheckAt = 0;
 
 const SYNTHETIC_TEST_USER_RE = /^(adv_test_user_|adv_other_user_|redeploy_|prune-test-user)/i;
+
+// 90-day audit rows keep at most this much prompt text in SQLite / RAM; the full prompt is
+// fingerprinted (`promptSha256`, `promptChars`) so tampering or truncation stays detectable.
+const MAX_AUDIT_PROMPT_CHARS = 65536;
+// Hard caps for Image Arena history payloads (client POST /api/image-arena/history is untrusted).
+const MAX_IMAGE_RESULTS_PER_RUN = 6;
+const MAX_IMAGE_ATTACHMENTS_PER_RUN = 13;
+const MAX_IMAGE_TEXT_CHARS = 20000;
+const MAX_IMAGE_PROMPT_CHARS = MAX_AUDIT_PROMPT_CHARS;
+const MAX_THUMB_DATA_URL_CHARS = 45000;
+const THUMB_DATA_URL_RE = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]{1,45000}$/;
+const IMAGE_MIME_RE = /^image\/(png|jpe?g|webp|gif)$/i;
+const HEX64_RE = /^[0-9a-f]{64}$/i;
+
+// Only a real base-64 raster data URL (png / jpeg / webp, <= 45,000 base64 chars) is ever stored or
+// echoed as a thumbnail: anything else is a stored-XSS sink in the admin History modal.
+function safeThumbDataUrl(v) {
+  return (typeof v === 'string' && v.length <= MAX_THUMB_DATA_URL_CHARS + 64 && THUMB_DATA_URL_RE.test(v)) ? v : null;
+}
+function safeImageMime(v, fallback = 'image/png') {
+  const s = String(v || '').trim().toLowerCase();
+  if (!IMAGE_MIME_RE.test(s)) return fallback;
+  return s === 'image/jpg' ? 'image/jpeg' : s;
+}
+// Short descriptive strings (labels, model ids, badges, errors): control chars stripped, length capped.
+function cleanShortText(v, max, fallback = '') {
+  if (typeof v !== 'string' && typeof v !== 'number') return fallback;
+  const s = String(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, max);
+  return s || fallback;
+}
+function nonNegNumber(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+function nonNegOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n !== 0 ? n : null;
+}
+function capText(v, max) {
+  return typeof v === 'string' ? (v.length > max ? v.slice(0, max) : v) : '';
+}
+
+// Every full-payload disk write in flight (text + image runs, legacy rewrites) so the server can
+// drain them on SIGTERM (`drainPendingWrites`) instead of losing fire-and-forget saves.
+const pendingWrites = new Set();
+function trackWrite(p) {
+  pendingWrites.add(p);
+  const done = () => pendingWrites.delete(p);
+  p.then(done, done);
+  return p;
+}
+async function drainPendingWrites() {
+  for (let i = 0; i < 10 && pendingWrites.size > 0; i++) {
+    await Promise.allSettled(Array.from(pendingWrites));
+  }
+}
+// Per-id promise chain: concurrent per-slot Image Arena saves for the same run id are serialized so
+// read-merge-write never interleaves and the newest record always lands last on disk.
+const imageSaveChains = new Map();
+
+function atomicTmpPath(fp) {
+  return `${fp}.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+}
+// Durable tmp+rename JSON writes (GCS FUSE safe: falls back to a direct write when an atomic
+// rename over an existing object is rejected, then removes the temp file).
+function writeJsonAtomicSync(fp, obj) {
+  const payload = typeof obj === 'string' ? obj : JSON.stringify(obj);
+  const tmp = atomicTmpPath(fp);
+  try {
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, fp);
+  } catch (_) {
+    fs.writeFileSync(fp, payload);
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
+}
+async function writeJsonAtomicAsync(fp, obj) {
+  const payload = typeof obj === 'string' ? obj : JSON.stringify(obj);
+  const tmp = atomicTmpPath(fp);
+  try {
+    await fsp.writeFile(tmp, payload);
+    await fsp.rename(tmp, fp);
+  } catch (_) {
+    await fsp.writeFile(fp, payload);
+    try { await fsp.unlink(tmp); } catch (_) {}
+  }
+}
 
 function extractBalancedJsonArray(str, startIdx) {
   if (!str || str[startIdx] !== '[') return null;
@@ -306,10 +399,12 @@ function archivedRowToEntry(r) {
   };
 }
 
-function upsertArchivedRunInternal(entry) {
+function upsertArchivedRunInternal(entry, { allowOwnerChange = false } = {}) {
   const clean = metaToArchivedEntry(entry);
-  if (!clean || !clean.id) return;
+  if (!clean || !clean.id) return false;
   const existing = archivedMetaById.get(clean.id);
+  // Ownership is immutable from the ledger's point of view unless an admin explicitly re-owns the run
+  if (existing && existing.userKey && existing.userKey !== clean.userKey && !allowOwnerChange) return false;
   if (existing && existing.costUsd > clean.costUsd) {
     clean.costUsd = existing.costUsd;
   }
@@ -328,6 +423,7 @@ function upsertArchivedRunInternal(entry) {
       );
     } catch (_) {}
   }
+  return true;
 }
 
 function imageMetaToArchivedEntry(meta) {
@@ -377,10 +473,11 @@ function archivedImageRowToEntry(r) {
   };
 }
 
-function upsertArchivedImageRunInternal(entry) {
+function upsertArchivedImageRunInternal(entry, { allowOwnerChange = false } = {}) {
   const clean = imageMetaToArchivedEntry(entry);
-  if (!clean || !clean.id) return;
+  if (!clean || !clean.id) return false;
   const existing = archivedImageMetaById.get(clean.id);
+  if (existing && existing.userKey && existing.userKey !== clean.userKey && !allowOwnerChange) return false;
   if (existing && existing.costUsd > clean.costUsd) {
     clean.costUsd = existing.costUsd;
   }
@@ -401,6 +498,7 @@ function upsertArchivedImageRunInternal(entry) {
       );
     } catch (_) {}
   }
+  return true;
 }
 
 function extractInputVaultHashesList(attachments, extraRefs) {
@@ -448,6 +546,8 @@ function auditRowToEntry(r) {
     taskId: r.task_id || 'custom',
     title: r.title || 'Run',
     prompt: typeof r.prompt === 'string' ? r.prompt : '',
+    promptSha256: (typeof r.prompt_sha256 === 'string' && /^[0-9a-f]{64}$/i.test(r.prompt_sha256)) ? r.prompt_sha256.toLowerCase() : null,
+    promptChars: Number(r.prompt_chars) || (typeof r.prompt === 'string' ? r.prompt.length : 0),
     attachments: cleanAtts,
     inputVaultRefs: cleanRefs,
     models: Array.isArray(models) ? models : [],
@@ -458,7 +558,7 @@ function auditRowToEntry(r) {
   };
 }
 
-function upsertAuditRunInternal(entry, persistDisk = false) {
+function upsertAuditRunInternal(entry, persistDisk = false, { allowOwnerChange = false } = {}) {
   if (!entry || !entry.id) return null;
   const sid = safeId(entry.id);
   if (!sid) return null;
@@ -466,6 +566,8 @@ function upsertAuditRunInternal(entry, persistDisk = false) {
   const u = norm(entry.user || (existing && existing.user) || '');
   if (!u) return null;
   const uKey = entry.userKey || (existing && existing.userKey) || userKey(u);
+  // Audit rows are append-only evidence: a different owner may never rewrite them (admins excepted)
+  if (existing && existing.userKey && existing.userKey !== uKey && !allowOwnerChange) return existing;
   const attachments = (Array.isArray(entry.attachments) && entry.attachments.length > 0)
     ? entry.attachments
     : ((existing && Array.isArray(existing.attachments)) ? existing.attachments : []);
@@ -473,9 +575,21 @@ function upsertAuditRunInternal(entry, persistDisk = false) {
     ...(Array.isArray(entry.inputVaultRefs) ? entry.inputVaultRefs : []),
     ...((existing && Array.isArray(existing.inputVaultRefs)) ? existing.inputVaultRefs : []),
   ]);
+  // Prompt text is capped in SQLite / RAM; the fingerprint of the FULL prompt is kept alongside.
+  const incomingPrompt = (typeof entry.prompt === 'string' && entry.prompt.length > 0) ? entry.prompt : null;
+  const fullPrompt = incomingPrompt != null ? incomingPrompt : ((existing && typeof existing.prompt === 'string') ? existing.prompt : '');
+  const promptChars = Number(entry.promptChars) > 0
+    ? Number(entry.promptChars)
+    : (incomingPrompt != null ? incomingPrompt.length : ((existing && Number(existing.promptChars)) || fullPrompt.length));
+  const promptSha256 = (typeof entry.promptSha256 === 'string' && /^[0-9a-f]{64}$/i.test(entry.promptSha256))
+    ? entry.promptSha256.toLowerCase()
+    : (incomingPrompt != null
+      ? crypto.createHash('sha256').update(incomingPrompt).digest('hex')
+      : ((existing && existing.promptSha256) || (fullPrompt ? crypto.createHash('sha256').update(fullPrompt).digest('hex') : null)));
   const clean = {
     id: sid,
-    at: Number(entry.at) || (existing && existing.at) || Date.now(),
+    // The first (server-side) timestamp is authoritative; later upserts never move it
+    at: (existing && Number(existing.at) > 0) ? Number(existing.at) : (Number(entry.at) || Date.now()),
     arena: entry.arena || (existing && existing.arena) || 'text',
     user: u,
     userKey: uKey,
@@ -485,9 +599,9 @@ function upsertAuditRunInternal(entry, persistDisk = false) {
     userAgent: entry.userAgent !== undefined ? (entry.userAgent || null) : ((existing && existing.userAgent) || null),
     taskId: entry.taskId || (existing && existing.taskId) || 'custom',
     title: entry.title || (existing && existing.title) || 'Run',
-    prompt: (typeof entry.prompt === 'string' && entry.prompt.length > 0)
-      ? entry.prompt
-      : ((existing && typeof existing.prompt === 'string') ? existing.prompt : ''),
+    prompt: capText(fullPrompt, MAX_AUDIT_PROMPT_CHARS),
+    promptSha256,
+    promptChars,
     attachments,
     inputVaultRefs,
     models: (Array.isArray(entry.models) && entry.models.length > 0)
@@ -520,7 +634,9 @@ function upsertAuditRunInternal(entry, persistDisk = false) {
         clean.status,
         clean.error,
         clean.hiddenByUser ? 1 : 0,
-        clean.deletedAt
+        clean.deletedAt,
+        clean.promptSha256,
+        clean.promptChars
       );
     } catch (_) {}
   }
@@ -633,6 +749,14 @@ function initSqlite() {
     // on startup using readFileSync + writeFileSync (avoids copy_file_range FUSE issues and
     // ensures stale /tmp WAL files can never shadow the persistent DB).
     if (DatabaseSync) {
+      if (!globalThis.__ullmActiveHistoryByPath) {
+        globalThis.__ullmActiveHistoryByPath = new Map();
+      }
+      const prevInst = globalThis.__ullmActiveHistoryByPath.get(LOCAL_SQLITE_PATH);
+      if (prevInst && typeof prevInst.prepareForReload === 'function') {
+        try { prevInst.prepareForReload(); } catch (_) {}
+      }
+
       let bootRawSqliteBuf = null;
       if (fs.existsSync(PERSIST_SQLITE_PATH)) {
         try {
@@ -658,6 +782,20 @@ function initSqlite() {
         : { textRuns: [], imageRuns: [] };
 
       sqliteDb = new DatabaseSync(LOCAL_SQLITE_PATH);
+      globalThis.__ullmActiveHistoryByPath.set(LOCAL_SQLITE_PATH, {
+        prepareForReload() {
+          if (snapshotTimer) { clearTimeout(snapshotTimer); snapshotTimer = null; }
+          if (snapshotDirty && sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
+            try { flushSnapshotNow(); } catch (_) {}
+          }
+          if (sqliteDb) {
+            try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
+            try { sqliteDb.close(); } catch (_) {}
+            sqliteDb = null;
+            stmts = null;
+          }
+        },
+      });
       sqliteDb.exec(`
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
@@ -768,7 +906,9 @@ function initSqlite() {
           status TEXT NOT NULL DEFAULT 'started',
           error TEXT,
           hidden_by_user INTEGER NOT NULL DEFAULT 0,
-          deleted_at INTEGER
+          deleted_at INTEGER,
+          prompt_sha256 TEXT,
+          prompt_chars INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_audit_runs_at ON audit_runs(at DESC);
         CREATE INDEX IF NOT EXISTS idx_audit_runs_user_at ON audit_runs(user_key, at DESC);
@@ -777,9 +917,12 @@ function initSqlite() {
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE image_runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE audit_runs ADD COLUMN prompt_sha256 TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE audit_runs ADD COLUMN prompt_chars INTEGER;`); } catch (_) {}
 
-      // Bind per-user vault attachment metadata table (`user_vault_files`) to this SQLite DB
-      // using synchronous snapshot flush so new attachment records immediately persist to /data.
+      // Bind per-user vault attachment metadata table (`user_vault_files`) to this SQLite DB.
+      // Vault record upserts go through the debounced snapshot scheduler (one async flush per 3 s)
+      // instead of a blocking whole-DB copy to /data per attachment.
       vault.bindSqlite(sqliteDb, flushSnapshotSync);
 
       let needsPersistFlush = false;
@@ -793,11 +936,16 @@ function initSqlite() {
       } catch (_) {}
 
       stmts = {
+        // NOTE: `user` / `user_key` are part of every ON CONFLICT update so SQLite can never disagree
+        // with the in-memory index about who owns a row. The JS upsert helpers refuse cross-owner
+        // writes unless an admin explicitly re-owns the record, so this never flips ownership silently.
         upsert: sqliteDb.prepare(`
           INSERT INTO runs (id, at, user, user_key, user_name, task_id, title, kind, models_json, summary_json, starred)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
+            user = excluded.user,
+            user_key = excluded.user_key,
             user_name = excluded.user_name,
             title = excluded.title,
             models_json = excluded.models_json,
@@ -812,6 +960,8 @@ function initSqlite() {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
+            user = excluded.user,
+            user_key = excluded.user_key,
             user_name = excluded.user_name,
             kind = excluded.kind,
             calls_count = MAX(archived_runs.calls_count, excluded.calls_count),
@@ -824,6 +974,8 @@ function initSqlite() {
           VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
+            user = excluded.user,
+            user_key = excluded.user_key,
             user_name = excluded.user_name,
             images_count = MAX(archived_image_runs.images_count, excluded.images_count),
             cost_usd = MAX(archived_image_runs.cost_usd, excluded.cost_usd)
@@ -872,6 +1024,8 @@ function initSqlite() {
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
+            user = excluded.user,
+            user_key = excluded.user_key,
             user_name = excluded.user_name,
             title = excluded.title,
             prompt = excluded.prompt,
@@ -888,12 +1042,14 @@ function initSqlite() {
           INSERT INTO audit_runs (
             id, at, arena, user, user_key, user_name, account_type, ip, user_agent,
             task_id, title, prompt, attachments_json, input_vault_refs_json, models_json,
-            status, error, hidden_by_user, deleted_at
+            status, error, hidden_by_user, deleted_at, prompt_sha256, prompt_chars
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             at = excluded.at,
             arena = excluded.arena,
+            user = excluded.user,
+            user_key = excluded.user_key,
             user_name = excluded.user_name,
             account_type = excluded.account_type,
             ip = COALESCE(excluded.ip, audit_runs.ip),
@@ -901,6 +1057,8 @@ function initSqlite() {
             task_id = excluded.task_id,
             title = excluded.title,
             prompt = CASE WHEN excluded.prompt != '' THEN excluded.prompt ELSE audit_runs.prompt END,
+            prompt_sha256 = COALESCE(excluded.prompt_sha256, audit_runs.prompt_sha256),
+            prompt_chars = CASE WHEN excluded.prompt_chars > 0 THEN excluded.prompt_chars ELSE audit_runs.prompt_chars END,
             attachments_json = CASE WHEN excluded.attachments_json != '[]' THEN excluded.attachments_json ELSE audit_runs.attachments_json END,
             input_vault_refs_json = CASE WHEN excluded.input_vault_refs_json != '[]' THEN excluded.input_vault_refs_json ELSE audit_runs.input_vault_refs_json END,
             models_json = CASE WHEN excluded.models_json != '[]' THEN excluded.models_json ELSE audit_runs.models_json END,
@@ -976,21 +1134,27 @@ function initSqlite() {
         needsPersistFlush = true;
       }
 
-      // Insert any pruned runs recovered from unvacuumed SQLite B-tree pages
+      // Insert any pruned runs recovered from unvacuumed SQLite B-tree pages. Runs once per process
+      // and never resurrects an id that is already a 90-day audit row (judge audits, per-slot image
+      // audits, aborted runs and saved-prompt deletions share the same cell layout and used to be
+      // counted as phantom text runs in the lifetime ledger - review finding 7.3).
       let recoveredTextCount = 0;
-      for (const recRun of recoveredFromBinary.textRuns || []) {
-        if (recRun && recRun.id && !archivedMetaById.has(recRun.id)) {
-          upsertArchivedRunInternal(recRun);
-          recoveredTextCount++;
-          needsPersistFlush = true;
-        }
-      }
       let recoveredImageCount = 0;
-      for (const recImg of recoveredFromBinary.imageRuns || []) {
-        if (recImg && recImg.id && !archivedImageMetaById.has(recImg.id)) {
-          upsertArchivedImageRunInternal(recImg);
-          recoveredImageCount++;
-          needsPersistFlush = true;
+      if (!binaryRecoveryApplied) {
+        binaryRecoveryApplied = true;
+        for (const recRun of recoveredFromBinary.textRuns || []) {
+          if (!recRun || !recRun.id || archivedMetaById.has(recRun.id) || auditMetaById.has(recRun.id)) continue;
+          if (upsertArchivedRunInternal(recRun)) {
+            recoveredTextCount++;
+            needsPersistFlush = true;
+          }
+        }
+        for (const recImg of recoveredFromBinary.imageRuns || []) {
+          if (!recImg || !recImg.id || archivedImageMetaById.has(recImg.id) || auditMetaById.has(recImg.id)) continue;
+          if (upsertArchivedImageRunInternal(recImg)) {
+            recoveredImageCount++;
+            needsPersistFlush = true;
+          }
         }
       }
       if (recoveredTextCount > 0 || recoveredImageCount > 0) {
@@ -1124,7 +1288,7 @@ function initSqlite() {
         }
 
         if (needsPersistFlush) {
-          flushSnapshotSync();
+          flushSnapshotNow();
         }
       } catch (_) {}
     }
@@ -1147,7 +1311,7 @@ function initSqlite() {
             importedLegacyIdx++;
           }
         }
-        if (importedLegacyIdx > 0) flushSnapshotSync();
+        if (importedLegacyIdx > 0) flushSnapshotNow();
       }
       if (sqliteDb && fs.existsSync(PERSIST_SQLITE_PATH)) {
         fsp.unlink(PERSIST_INDEX_JSON).catch(() => {});
@@ -1209,18 +1373,22 @@ function recordToMeta(rec) {
   };
 }
 
-function upsertMetaInternal(meta, persistDisk = true) {
-  if (!meta || !meta.id) return;
+function upsertMetaInternal(meta, persistDisk = true, { allowOwnerChange = false } = {}) {
+  if (!meta || !meta.id) return false;
+  const nextKey = meta.userKey || userKey(meta.user);
+  const prev = metaById.get(meta.id);
+  // A run id can never be re-owned by a different user through an upsert (admins excepted)
+  if (prev && prev.userKey && prev.userKey !== nextKey && !allowOwnerChange) return false;
   meta.starred = Boolean(meta.starred);
   metaById.set(meta.id, meta);
-  upsertArchivedRunInternal(meta);
+  upsertArchivedRunInternal(meta, { allowOwnerChange });
   if (stmts) {
     try {
       stmts.upsert.run(
         meta.id,
         meta.at,
         meta.user,
-        meta.userKey || userKey(meta.user),
+        nextKey,
         meta.userName || meta.user,
         meta.taskId || 'unknown',
         meta.title || 'Run',
@@ -1232,6 +1400,7 @@ function upsertMetaInternal(meta, persistDisk = true) {
     } catch (_) {}
   }
   if (persistDisk) flushSnapshotSync();
+  return true;
 }
 
 function imageRowToMeta(r) {
@@ -1278,18 +1447,22 @@ function imageRecordToMeta(rec) {
   };
 }
 
-function upsertImageMetaInternal(meta, persistDisk = true) {
-  if (!meta || !meta.id) return;
+function upsertImageMetaInternal(meta, persistDisk = true, { allowOwnerChange = false } = {}) {
+  if (!meta || !meta.id) return false;
+  const nextKey = meta.userKey || userKey(meta.user);
+  const prev = imageMetaById.get(meta.id);
+  // A client-chosen id can never replace another user's index entry (review finding 3.5 / 7.7)
+  if (prev && prev.userKey && prev.userKey !== nextKey && !allowOwnerChange) return false;
   meta.starred = Boolean(meta.starred);
   imageMetaById.set(meta.id, meta);
-  upsertArchivedImageRunInternal(meta);
+  upsertArchivedImageRunInternal(meta, { allowOwnerChange });
   if (stmts && stmts.upsertImage) {
     try {
       stmts.upsertImage.run(
         meta.id,
         meta.at,
         meta.user,
-        meta.userKey || userKey(meta.user),
+        nextKey,
         meta.userName || meta.user,
         meta.packId || 'custom',
         meta.scenarioId || 'custom',
@@ -1304,24 +1477,26 @@ function upsertImageMetaInternal(meta, persistDisk = true) {
     } catch (_) {}
   }
   if (persistDisk) flushSnapshotSync();
+  return true;
 }
 
 // Collapse legacy duplicate `mv...` Image Arena rows that were created when `safeId()`
-// stripped underscores from `img_...` IDs during client->server sync. Two rows with the
-// exact same `(userKey, at)` (> 0) and `title` where one has a canonical `img_...` ID
-// and the other has a generated `mv...` ID are merged into the canonical row.
+// stripped underscores from `img_...` IDs during client->server sync. Only rows of the SAME user
+// whose ids are equivalent modulo that legacy mangling (identical after removing `_` / `-`) are
+// merged into the canonical `img_...` row. The old `(userKey, at, title)` signature de-dupe is gone:
+// a client-chosen `at` + title could make it unlink an unrelated sibling run (review finding 7.1).
 function deduplicateImageRunsInternal() {
   let changed = false;
   try {
-    const byKeyAt = new Map();
+    const byEquivId = new Map();
     for (const m of imageMetaById.values()) {
-      if (!m || !m.id || !(Number(m.at) > 0)) continue;
-      const sig = `${m.userKey || userKey(m.user)}|${m.at}|${m.title || ''}`;
-      const list = byKeyAt.get(sig) || [];
+      if (!m || !m.id) continue;
+      const sig = `${m.userKey || userKey(m.user)}|${String(m.id).toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+      const list = byEquivId.get(sig) || [];
       list.push(m);
-      byKeyAt.set(sig, list);
+      byEquivId.set(sig, list);
     }
-    for (const group of byKeyAt.values()) {
+    for (const group of byEquivId.values()) {
       if (group.length < 2) continue;
       group.sort((a, b) => {
         const aCanon = String(a.id).startsWith('img_') ? 1 : 0;
@@ -1359,11 +1534,36 @@ function deduplicateImageRunsInternal() {
   return changed;
 }
 
-// Synchronously checkpoint WAL and flush `/tmp` SQLite DB to `/data/history/history.sqlite`.
-// Uses Buffer write + atomic rename with direct writeFileSync fallback (GCS FUSE safe).
-// Executed BEFORE HTTP responses return on every mutation so Cloud Run CPU throttling or
-// rolling container redeployments can never lose a single saved prompt, preset, or preference.
-function flushSnapshotSync() {
+// ---------------------------------------------------------------------------
+// Snapshot persistence: `/tmp` SQLite -> `/data/history/history.sqlite` (GCS FUSE).
+//
+//   flushSnapshotNow()   synchronous checkpoint + whole-file copy. Used at boot (migrations),
+//                        by the SIGTERM drain and by tests. Never on the request path.
+//   flushSnapshotSync()  SCHEDULER. Every mutation calls it; calls are coalesced into ONE async
+//                        flush at most every SNAPSHOT_DEBOUNCE_MS (leading edge immediately, one
+//                        trailing flush for anything that mutated meanwhile). A preferences POST
+//                        with 500 vault records now costs one GCS round trip instead of 500
+//                        blocking whole-DB copies on the only event loop (review finding 6.2).
+//   flushSnapshotAsync() DRAIN. Awaits any in-flight async flush, then flushes once more
+//                        synchronously (server.js awaits it on shutdown).
+//
+// The async flush produces a consistent image with the node:sqlite online backup API (falls back
+// to VACUUM INTO, then to checkpoint + whole-file read) into a private /tmp file, then copies it to
+// /data with fs.promises (tmp + rename, direct-write fallback for GCS FUSE).
+// ---------------------------------------------------------------------------
+const SNAPSHOT_DEBOUNCE_MS = 3000;
+let snapshotTimer = null;
+let snapshotInFlight = null;
+let snapshotDirty = false;
+let snapshotGeneration = 0;
+let lastSnapshotStartedAt = 0;
+
+function flushSnapshotNow() {
+  snapshotGeneration++;
+  lastSnapshotStartedAt = Date.now();
+  // If an async flush is mid-copy it may land an older image after this one: keep the dirty flag so
+  // its completion schedules one more trailing flush with the newest state.
+  snapshotDirty = Boolean(snapshotInFlight);
   try {
     fs.mkdirSync(BASE_DIR, { recursive: true });
     const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -1400,9 +1600,105 @@ function flushSnapshotSync() {
       return true;
     }
   } catch (e) {
-    console.warn('[history] flushSnapshotSync error:', (e && e.message) || e);
+    console.warn('[history] flushSnapshotNow error:', (e && e.message) || e);
     return false;
   }
+}
+
+// Consistent image of the live local DB, produced without a main-thread whole-file read.
+async function produceSnapshotBuffer() {
+  const tmpLocal = `${LOCAL_SQLITE_PATH}.snap.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  try {
+    if (sqliteBackup) {
+      await sqliteBackup(sqliteDb, tmpLocal, { rate: 256 });
+    } else {
+      sqliteDb.exec(`VACUUM INTO '${tmpLocal.replace(/'/g, "''")}'`);
+    }
+    return await fsp.readFile(tmpLocal);
+  } catch (_) {
+    try { sqliteDb.exec('PRAGMA wal_checkpoint(TRUNCATE);'); } catch (_) {}
+    return fs.readFileSync(LOCAL_SQLITE_PATH);
+  } finally {
+    fsp.unlink(tmpLocal).catch(() => {});
+  }
+}
+
+async function writeSnapshotAsync() {
+  const gen = snapshotGeneration;
+  try {
+    await fsp.mkdir(BASE_DIR, { recursive: true });
+    const suffix = `.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    if (sqliteDb && fs.existsSync(LOCAL_SQLITE_PATH)) {
+      const buf = await produceSnapshotBuffer();
+      if (!buf || buf.length < 100) return false;
+      // A synchronous flush ran meanwhile and already persisted a fresher image: drop this one.
+      if (gen !== snapshotGeneration) { snapshotDirty = true; return false; }
+      const tmpSqlite = PERSIST_SQLITE_PATH + suffix;
+      try {
+        await fsp.writeFile(tmpSqlite, buf);
+        if (gen !== snapshotGeneration) {
+          snapshotDirty = true;
+          await fsp.unlink(tmpSqlite).catch(() => {});
+          return false;
+        }
+        await fsp.rename(tmpSqlite, PERSIST_SQLITE_PATH);
+      } catch (_) {
+        // GCS FUSE fallback when atomic rename over an existing object is rejected
+        await fsp.writeFile(PERSIST_SQLITE_PATH, buf);
+        await fsp.unlink(tmpSqlite).catch(() => {});
+      }
+      try {
+        const st = await fsp.stat(PERSIST_SQLITE_PATH);
+        lastPersistMtimeMs = st.mtimeMs;
+        lastPersistSize = st.size;
+      } catch (_) {}
+      return true;
+    }
+    const allMeta = Array.from(metaById.values()).sort((a, b) => b.at - a.at);
+    const payload = JSON.stringify(allMeta);
+    const tmpIdx = PERSIST_INDEX_JSON + suffix;
+    try {
+      await fsp.writeFile(tmpIdx, payload);
+      await fsp.rename(tmpIdx, PERSIST_INDEX_JSON);
+    } catch (_) {
+      await fsp.writeFile(PERSIST_INDEX_JSON, payload);
+      await fsp.unlink(tmpIdx).catch(() => {});
+    }
+    return true;
+  } catch (e) {
+    console.warn('[history] snapshot flush error:', (e && e.message) || e);
+    return false;
+  }
+}
+
+function runScheduledSnapshot() {
+  if (snapshotInFlight) return snapshotInFlight;
+  snapshotDirty = false;
+  lastSnapshotStartedAt = Date.now();
+  snapshotInFlight = writeSnapshotAsync()
+    .catch(() => false)
+    .then((ok) => {
+      snapshotInFlight = null;
+      // Anything that mutated while we were copying gets one trailing flush at the 3 s mark
+      if (snapshotDirty) flushSnapshotSync();
+      return ok;
+    });
+  return snapshotInFlight;
+}
+
+// Scheduler: marks the index dirty and arms (at most) one timer; returns true when a flush is
+// scheduled or already pending. Callers that need the bytes on /data before continuing must use
+// flushSnapshotNow() / await flushSnapshotAsync() instead.
+function flushSnapshotSync() {
+  snapshotDirty = true;
+  if (snapshotTimer) return true;
+  const delay = Math.max(0, SNAPSHOT_DEBOUNCE_MS - (Date.now() - lastSnapshotStartedAt));
+  snapshotTimer = setTimeout(() => {
+    snapshotTimer = null;
+    runScheduledSnapshot();
+  }, delay);
+  if (snapshotTimer.unref) snapshotTimer.unref();
+  return true;
 }
 
 // If another container instance (e.g. during a Cloud Run rolling deployment overlap)
@@ -1570,17 +1866,19 @@ function syncFromPersistSqliteIfNewer(force = false) {
   } catch (_) {}
 }
 
-let persistTimer = null;
-let snapshotChain = Promise.resolve();
 function schedulePersistSnapshot() {
   flushSnapshotSync();
 }
 
-function flushSnapshotAsync() {
-  snapshotChain = snapshotChain.then(async () => {
-    flushSnapshotSync();
-  });
-  return snapshotChain;
+// Drain for shutdown / tests: wait for the in-flight async flush (if any), cancel the pending
+// timer and persist the final state synchronously so nothing mutated in the last 3 s is lost.
+async function flushSnapshotAsync() {
+  if (snapshotTimer) { clearTimeout(snapshotTimer); snapshotTimer = null; }
+  if (snapshotInFlight) {
+    try { await snapshotInFlight; } catch (_) {}
+  }
+  if (snapshotTimer) { clearTimeout(snapshotTimer); snapshotTimer = null; }
+  return flushSnapshotNow();
 }
 
 let backfillStarted = false;
@@ -1669,7 +1967,9 @@ function ensureOwnerLoadedSync(key) {
                 JSON.stringify(cleanPref.savedPresets || []),
                 cleanPref.updatedAt
               );
-              const flushed = flushSnapshotSync();
+              // One-time legacy migration per user key: flush synchronously so the legacy prefs.json
+              // is only removed once its contents are durable in the persisted SQLite snapshot.
+              const flushed = flushSnapshotNow();
               if (flushed && fs.existsSync(PERSIST_SQLITE_PATH)) {
                 fsp.unlink(pfile).catch(() => {});
               }
@@ -1759,14 +2059,21 @@ function cachePayload(id, rec) {
 
 // Persist one completed run: updates SQLite + in-memory index immediately (<0.2ms)
 // and writes the full payload JSON + index snapshot asynchronously.
+// Server-only entry point (ids are minted by server.js); `await Promise.resolve()` first so a
+// fire-and-forget caller (`history.saveRun(...).catch(...)`) returns to the event loop before any
+// vault / SQLite work happens (review finding 6.2).
 async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge, starred }) {
+  await Promise.resolve();
   try {
-    maybePruneExpiredRuns();
     const id = safeId(passedId) || newId();
     const at = Date.now();
     const u = norm(user);
     const uKey = userKey(u);
     const existingMeta = metaById.get(id);
+    // Defense in depth: a run id never changes hands (ids are server-minted, so this never trips in practice)
+    if (existingMeta && existingMeta.userKey !== uKey) return null;
+    const existingAudit = auditMetaById.get(id);
+    if (existingAudit && existingAudit.userKey && existingAudit.userKey !== uKey) return null;
     const isStarred = starred != null ? Boolean(starred) : Boolean(existingMeta && existingMeta.starred);
     const promptText = (typeof customPrompt === 'string' && customPrompt.trim())
       ? customPrompt
@@ -1775,9 +2082,12 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
     const rawAttachments = (task && Array.isArray(task.attachments)) ? task.attachments : [];
     // Store raw binary attachments in the user's vault (/data/vault/<userKey>/<sha256>.bin)
     // and store only compact ~180-byte vault pointers inside <runId>.json on disk!
-    const attachments = rawAttachments.map((a) => {
-      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
-      return ptr || {
+    // (async: recordPreExecutionAudit already stored the bytes, so this is usually metadata only)
+    const attachments = [];
+    for (const a of rawAttachments) {
+      if (!a || typeof a !== 'object') continue;
+      const ptr = await vault.storeAttachmentInVaultAsync(uKey, a);
+      attachments.push(ptr || {
         name: a.name,
         mimeType: a.mimeType,
         kind: a.kind,
@@ -1790,8 +2100,8 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
         sha256: a.sha256 || null,
         vaultRef: a.sha256 || a.vaultRef || null,
         estimatedTokens: a.estimatedTokens || undefined,
-      };
-    });
+      });
+    }
 
     const record = {
       v: 1, id, at,
@@ -1814,7 +2124,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
 
     // 1. Update SQLite & in-memory metadata index immediately
     const meta = recordToMeta(record);
-    upsertMetaInternal(meta, false);
+    if (!upsertMetaInternal(meta, false)) return null;
     upsertAuditRunInternal({
       id,
       at,
@@ -1849,13 +2159,10 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
       slots: runSlots,
     });
 
-    // 2. Write full record JSON to owner directory for getRun(id) restore
+    // 2. Write full record JSON to owner directory for getRun(id) restore (tracked so a SIGTERM drain can await it)
     const dir = path.join(BASE_DIR, uKey);
     await fsp.mkdir(dir, { recursive: true });
-    const tmp = path.join(dir, id + '.json.tmp');
-    const finalPath = path.join(dir, id + '.json');
-    await fsp.writeFile(tmp, JSON.stringify(record));
-    await fsp.rename(tmp, finalPath);
+    await trackWrite(writeJsonAtomicAsync(path.join(dir, id + '.json'), record));
 
     return listItem(meta);
   } catch (e) {
@@ -2303,6 +2610,7 @@ function saveUserPrompt(username, item) {
     } catch (_) {}
   }
   saveUserPreferences(u, { savedPrompts: updatedList });
+  flushSnapshotNow();
   return { ok: true, saved: metaEntry, prompt: metaEntry, savedPrompts: updatedList };
 }
 
@@ -2345,6 +2653,7 @@ function deleteUserPrompt(username, promptId, opts = {}) {
     }
     saveUserPreferences(u, { savedPrompts: filtered });
     gcOrphanedVaultRefsForUser(uKey, candidateHashes, true);
+    flushSnapshotNow();
   }
   return { ok: true, removed, savedPrompts: filtered };
 }
@@ -2402,6 +2711,7 @@ function saveUserPreset(username, item) {
     } catch (_) {}
   }
   saveUserPreferences(u, { savedPresets: updatedList });
+  flushSnapshotNow();
   return { ok: true, saved: savedEntry, preset: savedEntry, savedPresets: updatedList };
 }
 
@@ -2420,6 +2730,7 @@ function deleteUserPreset(username, presetId) {
       try { stmts.delPreset.run(uKey, sid); } catch (_) {}
     }
     saveUserPreferences(u, { savedPresets: filtered });
+    flushSnapshotNow();
   }
   return { ok: true, removed, savedPresets: filtered };
 }
@@ -2451,8 +2762,8 @@ function lastModels(username) {
 }
 
 // Instant (<0.1ms) list of a single user's runs (newest first).
+// (Expired-run pruning no longer runs inline from read paths: see the 6 h interval at the bottom.)
 function listRuns(username) {
-  maybePruneExpiredRuns();
   const u = norm(username);
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
@@ -2467,7 +2778,6 @@ function listRuns(username) {
 
 // Instant (<0.2ms) list of ALL users' runs for Admins (zero GCS FUSE file reads!).
 function listAllRuns() {
-  maybePruneExpiredRuns();
   const all = [];
   for (const m of metaById.values()) {
     if (isImageRunMeta(m)) continue;
@@ -2479,9 +2789,13 @@ function listAllRuns() {
 
 const MAX_INLINE_RESTORE_BYTES = 10 * 1024 * 1024; // Hydrate attachments up to 10 MB inline on single-run Restore
 
-function hydrateRunAttachmentsForReturn(rec, fp) {
+// `opts.isAdmin` is the ONLY thing that enables the cross-user vault fallback (admin restoring another
+// user's run whose blobs live in the original owner's vault). A regular user's run always resolves
+// against the run owner's own vault (review finding 3.5(b)).
+function hydrateRunAttachmentsForReturn(rec, fp, opts = null) {
   if (!rec || !Array.isArray(rec.attachments) || !rec.attachments.length) return rec;
   const ownerKey = rec.userKey || userKey(rec.user);
+  const fallbackAnyOwner = Boolean(opts && opts.isAdmin);
   let migratedLegacyInline = false;
   const hydrated = rec.attachments.map((a) => {
     if (!a || typeof a !== 'object') return a;
@@ -2496,9 +2810,9 @@ function hydrateRunAttachmentsForReturn(rec, fp) {
         return ptr;
       }
     }
-    // If stored as a vault pointer, hydrate data/textContent from the binary vault (including cross-user admin restores)
+    // If stored as a vault pointer, hydrate data/textContent from the binary vault (cross-user fallback for admin restores only)
     if ((a.vaultRef || a.sha256 || a.sha1) && !a.data) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner: true });
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner });
       if (fromVault) {
         if ((Number(fromVault.size || a.size) || 0) <= MAX_INLINE_RESTORE_BYTES) {
           return {
@@ -2540,7 +2854,8 @@ function hydrateRunAttachmentsForReturn(rec, fp) {
       ...rec,
       attachments: rec.attachments.map((a) => vault.storeAttachmentInVaultSync(ownerKey, a) || a),
     };
-    fsp.writeFile(fp, JSON.stringify(diskRec)).catch(() => {});
+    // tmp + rename (never an in-place rewrite of a live record) and tracked for the SIGTERM drain
+    trackWrite(writeJsonAtomicAsync(fp, diskRec)).catch(() => {});
   }
   return { ...rec, attachments: hydrated };
 }
@@ -2550,6 +2865,7 @@ function getRun(id, { username, isAdmin }) {
   const sid = safeId(id);
   if (!sid) return null;
   const myKey = userKey(username);
+  const hydrateOpts = { isAdmin: Boolean(isAdmin) };
 
   if (fullPayloadCache.has(sid)) {
     const cached = fullPayloadCache.get(sid);
@@ -2564,12 +2880,12 @@ function getRun(id, { username, isAdmin }) {
           if (fresh) {
             fresh._cachedMtime = st.mtimeMs;
             cachePayload(sid, fresh);
-            if (isAdmin || userKey(fresh.user) === myKey) return hydrateRunAttachmentsForReturn(fresh, fp);
+            if (isAdmin || userKey(fresh.user) === myKey) return hydrateRunAttachmentsForReturn(fresh, fp, hydrateOpts);
           }
         }
       }
     } catch (_) {}
-    if (isAdmin || userKey(cached.user) === myKey) return hydrateRunAttachmentsForReturn(cached, fp);
+    if (isAdmin || userKey(cached.user) === myKey) return hydrateRunAttachmentsForReturn(cached, fp, hydrateOpts);
     return null;
   }
 
@@ -2580,7 +2896,7 @@ function getRun(id, { username, isAdmin }) {
     const fp = path.join(BASE_DIR, meta.userKey, sid + '.json');
     try {
       const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-      if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp); }
+      if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp, hydrateOpts); }
     } catch (_) {}
   }
 
@@ -2589,7 +2905,7 @@ function getRun(id, { username, isAdmin }) {
   try {
     if (fs.existsSync(mine)) {
       const own = JSON.parse(fs.readFileSync(mine, 'utf8'));
-      if (own) { cachePayload(sid, own); return hydrateRunAttachmentsForReturn(own, mine); }
+      if (own) { cachePayload(sid, own); return hydrateRunAttachmentsForReturn(own, mine, hydrateOpts); }
     }
   } catch (_) {}
 
@@ -2600,7 +2916,7 @@ function getRun(id, { username, isAdmin }) {
       const fp = path.join(BASE_DIR, k, sid + '.json');
       if (fs.existsSync(fp)) {
         const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
-        if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp); }
+        if (rec) { cachePayload(sid, rec); return hydrateRunAttachmentsForReturn(rec, fp, hydrateOpts); }
       }
     }
   } catch (_) {}
@@ -2757,16 +3073,23 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
   const myKey = userKey(username);
   const meta = metaById.get(sid);
   const arch = archivedMetaById.get(sid);
+  const aud = auditMetaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
   if (!meta && arch && !isAdmin && arch.userKey !== myKey) return false;
+  // No index / ledger row: the 90-day audit row (if any) decides ownership BEFORE anything is touched,
+  // so a caller can never re-key someone else's audit evidence to themselves (review finding 7.2).
+  if (!meta && !arch && aud && !isAdmin && aud.userKey !== myKey) return false;
 
   if (preserveLifetimeStats && meta) {
     upsertArchivedRunInternal(meta);
   }
 
-  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || myKey;
+  // Never derive the owner from the caller while any record of the run still exists
+  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || (aud && aud.userKey) || myKey;
   const candidateHashes = extractRunVaultHashes(meta);
-  const cached = fullPayloadCache.get(sid);
+  const cached0 = fullPayloadCache.get(sid);
+  // A cached payload hydrated for an admin may belong to another user: non-admins never use it
+  const cached = (cached0 && (isAdmin || (cached0.userKey || userKey(cached0.user)) === ownerKey)) ? cached0 : null;
   if (cached) {
     for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
   }
@@ -2809,10 +3132,12 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
   // Soft-hide / 90-day paper trail preservation:
   // When a non-admin user deletes a run (`!isAdmin`) or when 7-day auto-pruning removes outputs (`preserveLifetimeStats`),
   // preserve the input prompt & input attachments in `audit_runs` for 90 days.
+  // Only written when something of this run was actually removed or an audit row already exists
+  // (never materializes an audit row out of a foreign cached payload).
   if (!isAdmin || preserveLifetimeStats || keepAudit) {
     const src = diskRec || meta;
     const existingAudit = auditMetaById.get(sid);
-    if (src || existingAudit) {
+    if ((src || existingAudit) && (removed || meta || existingAudit)) {
       const firstSum = (meta && Array.isArray(meta.summary) && meta.summary[0]) || null;
       const sumInputRefs = (firstSum && Array.isArray(firstSum.inputVaultRefs)) ? firstSum.inputVaultRefs : [];
       upsertAuditRunInternal({
@@ -2831,7 +3156,7 @@ function deleteRun(id, { username, isAdmin, stats, deferFlush = false, deferGc =
         status: existingAudit ? existingAudit.status : 'completed',
         hiddenByUser: !isAdmin ? true : (existingAudit ? existingAudit.hiddenByUser : false),
         deletedAt: !isAdmin ? Date.now() : (existingAudit ? existingAudit.deletedAt : null),
-      }, false);
+      }, false, { allowOwnerChange: Boolean(isAdmin) });
     }
   } else {
     if (auditMetaById.has(sid)) {
@@ -2910,7 +3235,7 @@ function setRunStarred(id, starred, { username, isAdmin }) {
       rec.starred = nextStarred;
       cachePayload(sid, rec);
       if (fs.existsSync(fp)) {
-        fs.writeFileSync(fp, JSON.stringify(rec));
+        writeJsonAtomicSync(fp, rec);
       }
     }
   } catch (_) {}
@@ -2927,7 +3252,6 @@ function setRunStarred(id, starred, { username, isAdmin }) {
 // while keeping the actual prompt text and file contents strictly private to each user.
 function usageSummary(opts = {}) {
   syncFromPersistSqliteIfNewer(false);
-  maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
   const countedRunIds = new Set();
@@ -3106,6 +3430,9 @@ async function attachJudgeToLatestRun(username, taskId, judgeVerdict, runId) {
   }
 }
 
+// Compact per-slot summary stored in `image_runs.summary_json` and returned by the list endpoints.
+// Every string is length-capped / control-char stripped, numbers are clamped >= 0, the thumbnail
+// must be a real raster data URL and mime types are allow-listed (stored-XSS + ledger integrity).
 function summarizeImageResults(slots, results, imageSize, aspectRatio, attachments) {
   const resList = Array.isArray(results) ? results : [];
   const inputVaultRefs = (Array.isArray(attachments) ? attachments : [])
@@ -3114,42 +3441,44 @@ function summarizeImageResults(slots, results, imageSize, aspectRatio, attachmen
   return resList.map((r, idx) => {
     const slotCfg = (Array.isArray(slots) && slots[idx]) || {};
     const costVal = typeof r.costUsd === 'number'
-      ? r.costUsd
-      : (typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : 0);
+      ? nonNegNumber(r.costUsd)
+      : (typeof r.standardPayGoCostUsd === 'number' ? nonNegNumber(r.standardPayGoCostUsd) : 0);
     const out = {
-      slot: r.slot || slotCfg.slot || String.fromCharCode(65 + idx),
-      catalogId: r.catalogId || slotCfg.catalogId || 'nano-banana-2.1',
-      label: r.label || slotCfg.label || 'Nano Banana',
-      shortLabel: r.shortLabel || r.label || slotCfg.label || 'Nano Banana',
-      model: r.model || slotCfg.model || '',
-      thinkingLevel: r.thinkingLevel || slotCfg.thinkingLevel || 'minimal',
-      imageSize: r.imageSize || r.requestedSize || slotCfg.imageSize || imageSize || '1K',
-      requestedSize: r.requestedSize || r.imageSize || slotCfg.imageSize || imageSize || '1K',
-      aspectRatio: r.aspectRatio || slotCfg.aspectRatio || aspectRatio || '16:9',
-      width: Number(r.width) || null,
-      height: Number(r.height) || null,
-      megapixels: Number(r.megapixels) || null,
-      slaBadge: r.slaBadge || null,
-      savingsVsNanoBanana2Pct: Number(r.savingsVsNanoBanana2Pct) || 0,
+      slot: cleanShortText(r.slot || slotCfg.slot, 8, String.fromCharCode(65 + idx)),
+      catalogId: cleanShortText(r.catalogId || slotCfg.catalogId, 80, 'nano-banana-2.1'),
+      label: cleanShortText(r.label || slotCfg.label, 80, 'Nano Banana'),
+      shortLabel: cleanShortText(r.shortLabel || r.label || slotCfg.label, 48, 'Nano Banana'),
+      model: cleanShortText(r.model || slotCfg.model, 120, ''),
+      thinkingLevel: cleanShortText(r.thinkingLevel || slotCfg.thinkingLevel, 24, 'minimal'),
+      imageSize: cleanShortText(r.imageSize || r.requestedSize || slotCfg.imageSize || imageSize, 8, '1K'),
+      requestedSize: cleanShortText(r.requestedSize || r.imageSize || slotCfg.imageSize || imageSize, 8, '1K'),
+      aspectRatio: cleanShortText(r.aspectRatio || slotCfg.aspectRatio || aspectRatio, 8, '16:9'),
+      width: nonNegOrNull(r.width),
+      height: nonNegOrNull(r.height),
+      megapixels: nonNegOrNull(r.megapixels),
+      slaBadge: r.slaBadge ? cleanShortText(r.slaBadge, 40, null) : null,
+      savingsVsNanoBanana2Pct: Number.isFinite(Number(r.savingsVsNanoBanana2Pct)) ? Number(r.savingsVsNanoBanana2Pct) : 0,
       ok: Boolean(r.ok != null ? r.ok : !r.error),
-      error: r.error || null,
-      latencyMs: Number(r.latencyMs) || 0,
+      error: r.error ? cleanShortText(String(r.error), 500, null) : null,
+      latencyMs: nonNegNumber(r.latencyMs),
       costUsd: costVal,
-      standardPayGoCostUsd: typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : costVal,
-      standardPayGoPer1kUsd: Number(r.standardPayGoPer1kUsd) || null,
+      standardPayGoCostUsd: typeof r.standardPayGoCostUsd === 'number' ? nonNegNumber(r.standardPayGoCostUsd) : costVal,
+      standardPayGoPer1kUsd: nonNegOrNull(r.standardPayGoPer1kUsd),
       offPeakSupported: Boolean(r.offPeakSupported),
-      offPeakPayGoCostUsd: typeof r.offPeakPayGoCostUsd === 'number' ? r.offPeakPayGoCostUsd : null,
-      promptTokens: Number(r.promptTokens) || 0,
-      imageOutputTokens: Number(r.imageOutputTokens) || 0,
-      thoughtsTokens: Number(r.thoughtsTokens || r.reasoningTokens) || 0,
-      reasoningTokens: Number(r.reasoningTokens || r.thoughtsTokens) || 0,
-      completionTokens: Number(r.completionTokens) || 0,
-      mimeType: r.mimeType || 'image/png',
+      offPeakPayGoCostUsd: typeof r.offPeakPayGoCostUsd === 'number' ? nonNegNumber(r.offPeakPayGoCostUsd) : null,
+      promptTokens: nonNegNumber(r.promptTokens),
+      imageOutputTokens: nonNegNumber(r.imageOutputTokens),
+      thoughtsTokens: nonNegNumber(r.thoughtsTokens || r.reasoningTokens),
+      reasoningTokens: nonNegNumber(r.reasoningTokens || r.thoughtsTokens),
+      completionTokens: nonNegNumber(r.completionTokens),
+      mimeType: safeImageMime(r.mimeType),
       hasImage: Boolean(r.hasImage || r.imageDataUrl || r.imageVaultRef || r.thumbDataUrl),
-      thumbDataUrl: (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000) ? r.thumbDataUrl : null,
-      imageVaultRef: r.imageVaultRef || null,
-      thoughtVaultRef: r.thoughtVaultRef || null,
+      thumbDataUrl: safeThumbDataUrl(r.thumbDataUrl),
+      imageVaultRef: r.imageVaultRef ? cleanShortText(String(r.imageVaultRef), 80, null) : null,
+      thoughtVaultRef: r.thoughtVaultRef ? cleanShortText(String(r.thoughtVaultRef), 80, null) : null,
     };
+    // Sticky marker: this slot's metrics were written by the server (see saveImageRun)
+    if (r.serverRecorded === true) out.serverRecorded = true;
     if (idx === 0 && inputVaultRefs.length > 0) {
       out.inputVaultRefs = inputVaultRefs;
     }
@@ -3180,8 +3509,30 @@ function imageListItem(meta) {
 // Persist one completed Image & GenMedia Arena run (server-authoritative, SQLite + binary vault).
 // Supports incremental per-slot merging (`mergeSlots` / existing record with the same `id`) so
 // server-side `/api/image-arena/run` and client-side `/api/image-arena/history` converge into a single record.
-async function saveImageRun({
-  id: passedId,
+//
+// Trust model (review findings 3.5 / 7.1 / 7.7):
+//   - `isAdmin: true` (explicit, from server.js only) is the ONLY way to touch or re-own a record,
+//     cached payload, archived ledger row or audit row that belongs to a different user. Everyone
+//     else gets `null` and the foreign record is never read, never seeded from and never rewritten.
+//   - `serverRecorded: true` / `mergeSlots: true` are set only by server.js (POST /api/image-arena/run).
+//     Slots written that way are "server recorded": a later client history POST may add a thumbnail
+//     and text to them but can never change cost / tokens / latency / ok / error / vault refs.
+//   - Client-supplied vault refs are kept only when they resolve inside the caller's own vault.
+//   - `at` is clamped to the server clock and never moves earlier than the existing record.
+//   - All saves for one id are serialized through a per-id promise chain (read-merge-write is atomic
+//     and the newest record always lands last on disk).
+async function saveImageRun(args) {
+  const id = safeId(args && args.id) || newId();
+  const prev = imageSaveChains.get(id) || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => saveImageRunLocked({ ...(args || {}), id }));
+  imageSaveChains.set(id, run);
+  const cleanup = () => { if (imageSaveChains.get(id) === run) imageSaveChains.delete(id); };
+  run.then(cleanup, cleanup);
+  return run;
+}
+
+async function saveImageRunLocked({
+  id,
   at: passedAt,
   user,
   userName,
@@ -3195,45 +3546,103 @@ async function saveImageRun({
   results,
   attachments: rawAttachments,
   starred,
+  isAdmin = false,
+  serverRecorded = false,
+  mergeSlots = false,
 }) {
   try {
-    maybePruneExpiredRuns();
-    const id = safeId(passedId) || newId();
     const u = norm(user);
     if (!u) return null;
     const uKey = userKey(u);
-    const existingMeta = imageMetaById.get(id);
+    const adminCall = isAdmin === true;
+    const serverCall = serverRecorded === true || mergeSlots === true;
+    const ownerOf = (rec) => (rec && (rec.userKey || (rec.user ? userKey(rec.user) : ''))) || '';
+
+    // Ownership guard: a client-chosen id can never attach to, seed from or re-own another user's
+    // text run, image run, archived ledger row, cached payload or 90-day audit row.
+    if (!adminCall) {
+      if (metaById.has(id)) return null;
+      const m0 = imageMetaById.get(id);
+      if (m0 && m0.userKey !== uKey) return null;
+      const a0 = archivedImageMetaById.get(id);
+      if (a0 && a0.userKey !== uKey) return null;
+      const c0 = fullPayloadCache.get(id);
+      if (c0 && ownerOf(c0) !== uKey) return null;
+      const aud0 = auditMetaById.get(id);
+      if (aud0 && aud0.userKey && aud0.userKey !== uKey) return null;
+    }
+    const existingMeta0 = imageMetaById.get(id);
+    const existingMeta = (existingMeta0 && existingMeta0.userKey === uKey) ? existingMeta0 : null;
     let existingRecord = fullPayloadCache.get(id) || null;
-    if (!existingRecord && existingMeta && existingMeta.userKey === uKey) {
+    if (existingRecord && (existingRecord.arena !== 'image' || ownerOf(existingRecord) !== uKey)) existingRecord = null;
+    if (!existingRecord && existingMeta) {
       try {
         const fp = path.join(BASE_DIR, uKey, `${id}.json`);
-        if (fs.existsSync(fp)) existingRecord = JSON.parse(fs.readFileSync(fp, 'utf8'));
+        if (fs.existsSync(fp)) {
+          const diskRec = JSON.parse(fs.readFileSync(fp, 'utf8'));
+          if (diskRec && ownerOf(diskRec) === uKey) existingRecord = diskRec;
+        }
       } catch (_) {}
     }
-    const at = Number(passedAt) > 0
-      ? Number(passedAt)
-      : ((existingMeta && existingMeta.at) || (existingRecord && existingRecord.at) || Date.now());
+    const now = Date.now();
+    const prevAt = Number((existingMeta && existingMeta.at) || (existingRecord && existingRecord.at)) || 0;
+    let at = Number(passedAt) > 0 ? Math.min(Number(passedAt), now) : (prevAt || now);
+    if (prevAt > 0 && at < prevAt) at = prevAt;
     const isStarred = starred != null ? Boolean(starred) : Boolean((existingMeta && existingMeta.starred) || (existingRecord && existingRecord.starred));
-    const promptText = String(prompt || (existingRecord && existingRecord.prompt) || (existingMeta && existingMeta.prompt) || '').trim();
+    const promptText = capText(String(prompt || (existingRecord && existingRecord.prompt) || (existingMeta && existingMeta.prompt) || '').trim(), MAX_IMAGE_PROMPT_CHARS);
     const rawTitle = title || (existingRecord && existingRecord.title) || (existingMeta && existingMeta.title) || promptText.slice(0, 72) || 'Image Arena Run';
-    const runTitle = String(rawTitle).trim().slice(0, 160);
+    const runTitle = cleanShortText(String(rawTitle), 160, 'Image Arena Run');
+
+    // Vault refs coming from a client body are only kept when the blob already lives in the caller's
+    // own vault (SQLite record first, disk probe as a fallback for legacy blobs). Admin / server calls
+    // are trusted (the server wrote those refs into this very vault moments ago).
+    const vaultDir = vault.getUserVaultDir(uKey);
+    const ownBlobCache = new Map();
+    const ownVaultHas = (ref) => {
+      const h = String(ref || '').trim().toLowerCase();
+      if (!HEX64_RE.test(h)) return false;
+      if (ownBlobCache.has(h)) return ownBlobCache.get(h);
+      let ok = false;
+      try {
+        ok = Boolean(vault.getVaultMetaRecordSync(uKey, h)) || (Boolean(vaultDir) && fs.existsSync(path.join(vaultDir, `${h}.bin`)));
+      } catch (_) { ok = false; }
+      ownBlobCache.set(h, ok);
+      return ok;
+    };
+    const refAllowed = (ref) => {
+      if (!ref || typeof ref !== 'string') return false;
+      if (adminCall || serverCall) return true;
+      return ownVaultHas(ref);
+    };
 
     // Store reference input attachments in the user's binary vault (or preserve existing attachments)
-    const incomingAtts = Array.isArray(rawAttachments) && rawAttachments.length
+    const incomingAtts = (Array.isArray(rawAttachments) && rawAttachments.length
       ? rawAttachments
-      : ((existingRecord && Array.isArray(existingRecord.attachments)) ? existingRecord.attachments : []);
-    const attachments = incomingAtts.map((a) => {
-      if (!a || typeof a !== 'object') return null;
-      const ptr = vault.storeAttachmentInVaultSync(uKey, a);
-      return ptr || {
-        name: a.name || 'reference.png',
-        mimeType: a.mimeType || 'image/png',
-        kind: a.kind || 'image',
-        size: Number(a.size) || 0,
-        sha256: a.sha256 || a.vaultRef || null,
-        vaultRef: a.vaultRef || a.sha256 || null,
-      };
-    }).filter(Boolean);
+      : ((existingRecord && Array.isArray(existingRecord.attachments)) ? existingRecord.attachments : [])
+    ).slice(0, MAX_IMAGE_ATTACHMENTS_PER_RUN);
+    const attachments = [];
+    for (const a of incomingAtts) {
+      if (!a || typeof a !== 'object') continue;
+      const hasBytes = (typeof a.data === 'string' && a.data.length > 0)
+        || (typeof a.textContent === 'string' && a.textContent.length > 0)
+        || (Buffer.isBuffer(a.rawBuffer) && a.rawBuffer.length > 0);
+      const ref = a.vaultRef || a.sha256;
+      if (!hasBytes) {
+        // Reference-only pointer: must be a real hash that already resolves in the caller's vault
+        if (!HEX64_RE.test(String(ref || '').trim()) || !refAllowed(ref)) continue;
+      }
+      // Reference images are rasters: allow-list the mime type (anything else is stored as image/png)
+      const cleanAtt = { ...a, mimeType: safeImageMime(a.mimeType), kind: 'image', name: cleanShortText(a.name, 200, 'reference.png') };
+      const ptr = await vault.storeAttachmentInVaultAsync(uKey, cleanAtt);
+      attachments.push(ptr || {
+        name: cleanAtt.name,
+        mimeType: cleanAtt.mimeType,
+        kind: 'image',
+        size: nonNegNumber(a.size),
+        sha256: HEX64_RE.test(String(ref || '').trim()) ? String(ref).trim().toLowerCase() : null,
+        vaultRef: HEX64_RE.test(String(ref || '').trim()) ? String(ref).trim().toLowerCase() : null,
+      });
+    }
 
     const prevResultsBySlot = new Map();
     const prevList = (existingRecord && Array.isArray(existingRecord.results))
@@ -3245,16 +3654,29 @@ async function saveImageRun({
 
     // Offload generated full-resolution images & thought images to the user's binary vault
     // so `/data/history/<uKey>/<id>.json` stays compact and fast while full images restore on click!
-    const incomingStoredResults = (Array.isArray(results) ? results : []).map((r, idx) => {
-      if (!r || typeof r !== 'object') return null;
-      const slotName = r.slot || String.fromCharCode(65 + idx);
+    const replacedRefs = new Set();
+    const incomingResults = (Array.isArray(results) ? results : []).slice(0, MAX_IMAGE_RESULTS_PER_RUN);
+    const incomingStoredResults = [];
+    for (let idx = 0; idx < incomingResults.length; idx++) {
+      const r = incomingResults[idx];
+      if (!r || typeof r !== 'object') continue;
+      const slotName = cleanShortText(r.slot, 8, String.fromCharCode(65 + idx));
       const prev = prevResultsBySlot.get(String(slotName)) || {};
-      let imageVaultRef = r.imageVaultRef || prev.imageVaultRef || null;
-      let mimeType = r.mimeType || prev.mimeType || 'image/png';
-      if (!imageVaultRef && typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:')) {
+      // A slot the server already wrote (sticky `serverRecorded` marker, or a server-issued image ref)
+      // keeps its server-measured cost / tokens / latency / ok / error and its vault refs: a client
+      // history POST may only contribute a thumbnail and the text for such a slot.
+      const prevIsServer = Boolean(prev.serverRecorded || prev.imageVaultRef);
+      const locked = prevIsServer && !serverCall && !adminCall;
+      const p = locked ? prev : r;   // primary source for descriptive fields
+      const s = locked ? r : prev;   // secondary source
+      const prevImageRef = prev.imageVaultRef || null;
+      const prevThoughtRef = prev.thoughtVaultRef || null;
+      let imageVaultRef = locked ? prevImageRef : ((refAllowed(r.imageVaultRef) ? r.imageVaultRef : null) || prevImageRef);
+      let mimeType = safeImageMime(p.mimeType || s.mimeType);
+      if (!imageVaultRef && !locked && typeof r.imageDataUrl === 'string' && r.imageDataUrl.startsWith('data:')) {
         const m = r.imageDataUrl.match(/^data:([^;]+);base64,/i);
-        if (m) mimeType = m[1];
-        const ptr = vault.storeAttachmentInVaultSync(uKey, {
+        if (m) mimeType = safeImageMime(m[1]);
+        const ptr = await vault.storeAttachmentInVaultAsync(uKey, {
           name: `img-${id}-slot-${slotName}.png`,
           mimeType,
           kind: 'image',
@@ -3263,11 +3685,11 @@ async function saveImageRun({
         if (ptr && (ptr.vaultRef || ptr.sha256)) imageVaultRef = ptr.vaultRef || ptr.sha256;
       }
 
-      let thoughtVaultRef = r.thoughtVaultRef || prev.thoughtVaultRef || null;
-      if (!thoughtVaultRef && typeof r.thoughtImageDataUrl === 'string' && r.thoughtImageDataUrl.startsWith('data:')) {
+      let thoughtVaultRef = locked ? prevThoughtRef : ((refAllowed(r.thoughtVaultRef) ? r.thoughtVaultRef : null) || prevThoughtRef);
+      if (!thoughtVaultRef && !locked && typeof r.thoughtImageDataUrl === 'string' && r.thoughtImageDataUrl.startsWith('data:')) {
         const tm = r.thoughtImageDataUrl.match(/^data:([^;]+);base64,/i);
-        const tMime = tm ? tm[1] : 'image/png';
-        const tPtr = vault.storeAttachmentInVaultSync(uKey, {
+        const tMime = safeImageMime(tm ? tm[1] : 'image/png');
+        const tPtr = await vault.storeAttachmentInVaultAsync(uKey, {
           name: `thought-${id}-slot-${slotName}.png`,
           mimeType: tMime,
           kind: 'image',
@@ -3275,51 +3697,77 @@ async function saveImageRun({
         });
         if (tPtr && (tPtr.vaultRef || tPtr.sha256)) thoughtVaultRef = tPtr.vaultRef || tPtr.sha256;
       }
+      if (imageVaultRef) imageVaultRef = cleanShortText(String(imageVaultRef), 80, null);
+      if (thoughtVaultRef) thoughtVaultRef = cleanShortText(String(thoughtVaultRef), 80, null);
+      // A replaced generated image / thought image is reclaimed from the vault after this record is cached (6.6)
+      if (prevImageRef && imageVaultRef !== prevImageRef) replacedRefs.add(prevImageRef);
+      if (prevThoughtRef && thoughtVaultRef !== prevThoughtRef) replacedRefs.add(prevThoughtRef);
 
-      const costVal = typeof r.costUsd === 'number'
-        ? r.costUsd
-        : (typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : (typeof prev.costUsd === 'number' ? prev.costUsd : 0));
-      const thumbDataUrl = (typeof r.thumbDataUrl === 'string' && r.thumbDataUrl.length <= 45000)
-        ? r.thumbDataUrl
-        : ((typeof prev.thumbDataUrl === 'string' && prev.thumbDataUrl.length <= 45000) ? prev.thumbDataUrl : null);
+      const clientCost = typeof r.costUsd === 'number'
+        ? nonNegNumber(r.costUsd)
+        : (typeof r.standardPayGoCostUsd === 'number' ? nonNegNumber(r.standardPayGoCostUsd) : (typeof prev.costUsd === 'number' ? nonNegNumber(prev.costUsd) : 0));
+      const prevCost = typeof prev.costUsd === 'number'
+        ? nonNegNumber(prev.costUsd)
+        : (typeof prev.standardPayGoCostUsd === 'number' ? nonNegNumber(prev.standardPayGoCostUsd) : 0);
+      const costVal = locked ? prevCost : clientCost;
+      const stdCost = locked
+        ? (typeof prev.standardPayGoCostUsd === 'number' ? nonNegNumber(prev.standardPayGoCostUsd) : costVal)
+        : (typeof r.standardPayGoCostUsd === 'number' ? nonNegNumber(r.standardPayGoCostUsd) : costVal);
+      // Thumbnail and text are the only fields a client may contribute to a server-recorded slot
+      const thumbDataUrl = safeThumbDataUrl(r.thumbDataUrl) || safeThumbDataUrl(prev.thumbDataUrl) || null;
+      const text = typeof r.text === 'string' ? capText(r.text, MAX_IMAGE_TEXT_CHARS) : capText(prev.text || '', MAX_IMAGE_TEXT_CHARS);
+      const reasoning = (!locked && typeof r.reasoning === 'string')
+        ? capText(r.reasoning, MAX_IMAGE_TEXT_CHARS)
+        : capText(prev.reasoning || '', MAX_IMAGE_TEXT_CHARS);
+      const okVal = locked
+        ? Boolean(prev.ok != null ? prev.ok : !prev.error)
+        : Boolean(r.ok != null ? r.ok : !r.error);
+      const errVal = locked ? (prev.error || null) : (r.error || null);
+      const tok = (clientVal, prevVal) => (locked ? nonNegNumber(prevVal) : nonNegNumber(clientVal || prevVal));
 
-      return {
+      const stored = {
         slot: slotName,
-        catalogId: r.catalogId || prev.catalogId || 'nano-banana-2.1',
-        label: r.label || prev.label || 'Nano Banana',
-        shortLabel: r.shortLabel || prev.shortLabel || r.label || prev.label || 'Nano Banana',
-        model: r.model || prev.model || '',
-        thinkingLevel: r.thinkingLevel || prev.thinkingLevel || 'minimal',
-        imageSize: r.imageSize || r.requestedSize || prev.imageSize || imageSize || '1K',
-        requestedSize: r.requestedSize || r.imageSize || prev.requestedSize || imageSize || '1K',
-        aspectRatio: r.aspectRatio || prev.aspectRatio || aspectRatio || '16:9',
-        width: Number(r.width || prev.width) || null,
-        height: Number(r.height || prev.height) || null,
-        megapixels: Number(r.megapixels || prev.megapixels) || null,
-        slaBadge: r.slaBadge || prev.slaBadge || null,
-        savingsVsNanoBanana2Pct: Number(r.savingsVsNanoBanana2Pct != null ? r.savingsVsNanoBanana2Pct : prev.savingsVsNanoBanana2Pct) || 0,
-        ok: Boolean(r.ok != null ? r.ok : !r.error),
-        error: r.error || null,
-        latencyMs: Number(r.latencyMs || prev.latencyMs) || 0,
+        catalogId: cleanShortText(p.catalogId || s.catalogId, 80, 'nano-banana-2.1'),
+        label: cleanShortText(p.label || s.label, 80, 'Nano Banana'),
+        shortLabel: cleanShortText(p.shortLabel || s.shortLabel || p.label || s.label, 48, 'Nano Banana'),
+        model: cleanShortText(p.model || s.model, 120, ''),
+        thinkingLevel: cleanShortText(p.thinkingLevel || s.thinkingLevel, 24, 'minimal'),
+        imageSize: cleanShortText(p.imageSize || p.requestedSize || s.imageSize || imageSize, 8, '1K'),
+        requestedSize: cleanShortText(p.requestedSize || p.imageSize || s.requestedSize || imageSize, 8, '1K'),
+        aspectRatio: cleanShortText(p.aspectRatio || s.aspectRatio || aspectRatio, 8, '16:9'),
+        width: nonNegOrNull(p.width || s.width),
+        height: nonNegOrNull(p.height || s.height),
+        megapixels: nonNegOrNull(p.megapixels || s.megapixels),
+        slaBadge: (p.slaBadge || s.slaBadge) ? cleanShortText(p.slaBadge || s.slaBadge, 40, null) : null,
+        savingsVsNanoBanana2Pct: Number.isFinite(Number(p.savingsVsNanoBanana2Pct != null ? p.savingsVsNanoBanana2Pct : s.savingsVsNanoBanana2Pct))
+          ? Number(p.savingsVsNanoBanana2Pct != null ? p.savingsVsNanoBanana2Pct : s.savingsVsNanoBanana2Pct)
+          : 0,
+        ok: okVal,
+        error: errVal ? cleanShortText(String(errVal), 500, null) : null,
+        latencyMs: tok(r.latencyMs, prev.latencyMs),
         costUsd: costVal,
-        standardPayGoCostUsd: typeof r.standardPayGoCostUsd === 'number' ? r.standardPayGoCostUsd : costVal,
-        standardPayGoPer1kUsd: Number(r.standardPayGoPer1kUsd || prev.standardPayGoPer1kUsd) || null,
-        offPeakSupported: Boolean(r.offPeakSupported != null ? r.offPeakSupported : prev.offPeakSupported),
-        offPeakPayGoCostUsd: typeof r.offPeakPayGoCostUsd === 'number' ? r.offPeakPayGoCostUsd : (typeof prev.offPeakPayGoCostUsd === 'number' ? prev.offPeakPayGoCostUsd : null),
-        promptTokens: Number(r.promptTokens || prev.promptTokens) || 0,
-        imageOutputTokens: Number(r.imageOutputTokens || prev.imageOutputTokens) || 0,
-        thoughtsTokens: Number(r.thoughtsTokens || r.reasoningTokens || prev.thoughtsTokens) || 0,
-        reasoningTokens: Number(r.reasoningTokens || r.thoughtsTokens || prev.reasoningTokens) || 0,
-        completionTokens: Number(r.completionTokens || prev.completionTokens) || 0,
-        text: typeof r.text === 'string' ? r.text : (prev.text || ''),
-        reasoning: typeof r.reasoning === 'string' ? r.reasoning : (prev.reasoning || ''),
+        standardPayGoCostUsd: stdCost,
+        standardPayGoPer1kUsd: locked ? nonNegOrNull(prev.standardPayGoPer1kUsd) : nonNegOrNull(r.standardPayGoPer1kUsd || prev.standardPayGoPer1kUsd),
+        offPeakSupported: Boolean(p.offPeakSupported != null ? p.offPeakSupported : s.offPeakSupported),
+        offPeakPayGoCostUsd: locked
+          ? (typeof prev.offPeakPayGoCostUsd === 'number' ? nonNegNumber(prev.offPeakPayGoCostUsd) : null)
+          : (typeof r.offPeakPayGoCostUsd === 'number' ? nonNegNumber(r.offPeakPayGoCostUsd) : (typeof prev.offPeakPayGoCostUsd === 'number' ? nonNegNumber(prev.offPeakPayGoCostUsd) : null)),
+        promptTokens: tok(r.promptTokens, prev.promptTokens),
+        imageOutputTokens: tok(r.imageOutputTokens, prev.imageOutputTokens),
+        thoughtsTokens: tok(r.thoughtsTokens || r.reasoningTokens, prev.thoughtsTokens),
+        reasoningTokens: tok(r.reasoningTokens || r.thoughtsTokens, prev.reasoningTokens),
+        completionTokens: tok(r.completionTokens, prev.completionTokens),
+        text,
+        reasoning,
         mimeType,
-        hasImage: Boolean(r.hasImage || imageVaultRef || r.imageDataUrl || thumbDataUrl || prev.hasImage),
+        hasImage: Boolean(p.hasImage || imageVaultRef || (!locked && r.imageDataUrl) || thumbDataUrl || s.hasImage),
         imageVaultRef,
         thoughtVaultRef,
         thumbDataUrl,
       };
-    }).filter(Boolean);
+      if (serverCall || prev.serverRecorded === true) stored.serverRecorded = true;
+      incomingStoredResults.push(stored);
+    }
 
     // Merge with any previously saved slots for this same `id` (e.g. parallel per-slot requests)
     const mergedResultsMap = new Map(prevResultsBySlot);
@@ -3335,21 +3783,21 @@ async function saveImageRun({
     for (const ps of prevSlots) {
       if (ps && ps.slot) prevSlotsBySlot.set(String(ps.slot), ps);
     }
-    const rawSlotsList = (Array.isArray(slots) && slots.length) ? slots : storedResults;
+    const rawSlotsList = ((Array.isArray(slots) && slots.length) ? slots : storedResults).slice(0, MAX_IMAGE_RESULTS_PER_RUN);
     for (let idx = 0; idx < rawSlotsList.length; idx++) {
       const s = rawSlotsList[idx];
-      if (!s) continue;
-      const sName = s.slot || String.fromCharCode(65 + idx);
+      if (!s || typeof s !== 'object') continue;
+      const sName = cleanShortText(s.slot, 8, String.fromCharCode(65 + idx));
       prevSlotsBySlot.set(String(sName), {
         slot: sName,
-        catalogId: s.catalogId || s.id || 'nano-banana-2.1',
-        label: s.label || s.catalogId || s.id || 'Nano Banana',
-        thinkingLevel: s.thinkingLevel || 'minimal',
-        imageSize: s.imageSize || imageSize || '1K',
-        aspectRatio: s.aspectRatio || aspectRatio || '16:9',
+        catalogId: cleanShortText(s.catalogId || s.id, 80, 'nano-banana-2.1'),
+        label: cleanShortText(s.label || s.catalogId || s.id, 80, 'Nano Banana'),
+        thinkingLevel: cleanShortText(s.thinkingLevel, 24, 'minimal'),
+        imageSize: cleanShortText(s.imageSize || imageSize, 8, '1K'),
+        aspectRatio: cleanShortText(s.aspectRatio || aspectRatio, 8, '16:9'),
       });
     }
-    const cleanSlots = Array.from(prevSlotsBySlot.values()).sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
+    const cleanSlots = Array.from(prevSlotsBySlot.values()).sort((a, b) => String(a.slot).localeCompare(String(b.slot))).slice(0, MAX_IMAGE_RESULTS_PER_RUN);
 
     const summary = summarizeImageResults(cleanSlots, storedResults, imageSize, aspectRatio, attachments);
     const record = {
@@ -3359,13 +3807,13 @@ async function saveImageRun({
       at,
       user: u,
       userKey: uKey,
-      userName: userName || user || u,
-      packId: String(packId || 'custom'),
-      scenarioId: String(scenarioId || 'custom'),
+      userName: cleanShortText(userName || user || u, 160, u),
+      packId: cleanShortText(packId, 80, 'custom'),
+      scenarioId: cleanShortText(scenarioId, 80, 'custom'),
       title: runTitle,
       prompt: promptText,
-      imageSize: String(imageSize || '1K'),
-      aspectRatio: String(aspectRatio || '16:9'),
+      imageSize: cleanShortText(imageSize, 8, '1K'),
+      aspectRatio: cleanShortText(aspectRatio, 8, '16:9'),
       starred: isStarred,
       attachments,
       slots: cleanSlots,
@@ -3374,30 +3822,36 @@ async function saveImageRun({
     };
 
     const meta = imageRecordToMeta(record);
-    upsertImageMetaInternal(meta, false);
-    upsertAuditRunInternal({
-      id,
-      at,
-      arena: 'image',
-      user: u,
-      userKey: uKey,
-      userName: userName || user || u,
-      taskId: record.scenarioId || record.packId || 'image',
-      title: runTitle,
-      prompt: promptText,
-      attachments,
-      inputVaultRefs: extractInputVaultHashesList(attachments),
-      models: cleanSlots,
-      status: 'completed',
-    }, true);
+    if (!upsertImageMetaInternal(meta, false, { allowOwnerChange: adminCall })) return null;
+    // The 90-day audit row is append-only evidence with server timestamps: created once (if the
+    // server-side pre-execution audit did not already cover this id), never rewritten from a client POST.
+    if (!auditMetaById.has(id)) {
+      upsertAuditRunInternal({
+        id,
+        at,
+        arena: 'image',
+        user: u,
+        userKey: uKey,
+        userName: record.userName,
+        taskId: record.scenarioId || record.packId || 'image',
+        title: runTitle,
+        prompt: promptText,
+        attachments,
+        inputVaultRefs: extractInputVaultHashesList(attachments),
+        models: cleanSlots,
+        status: 'completed',
+      }, false);
+    }
     cachePayload(id, record);
+    if (replacedRefs.size > 0) gcReplacedImageRefs(uKey, replacedRefs);
 
+    // Disk write: always the newest cached record for this id, tmp + rename, tracked for the SIGTERM drain
     const dir = path.join(BASE_DIR, uKey);
     await fsp.mkdir(dir, { recursive: true });
-    const tmp = path.join(dir, `${id}.json.tmp.${process.pid}.${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
-    const finalPath = path.join(dir, `${id}.json`);
-    await fsp.writeFile(tmp, JSON.stringify(record));
-    await fsp.rename(tmp, finalPath);
+    const latest = fullPayloadCache.get(id);
+    const diskPayload = JSON.stringify((latest && latest.arena === 'image' && ownerOf(latest) === uKey) ? latest : record);
+    await trackWrite(writeJsonAtomicAsync(path.join(dir, `${id}.json`), diskPayload));
+    flushSnapshotSync();
 
     return imageListItem(meta);
   } catch (e) {
@@ -3406,9 +3860,24 @@ async function saveImageRun({
   }
 }
 
+// 6.6: when a slot re-post replaces a generated image / thought image, reclaim the previous blob
+// unless another run, saved prompt or audit row of this user still references it.
+function gcReplacedImageRefs(uKey, refs) {
+  try {
+    const candidates = new Set();
+    for (const r of refs) {
+      const h = String(r || '').trim().toLowerCase();
+      if (HEX64_RE.test(h)) candidates.add(h);
+    }
+    if (!candidates.size) return { freedFiles: 0, freedBytes: 0 };
+    return gcOrphanedVaultRefsForUser(uKey, candidates, false);
+  } catch (_) {
+    return { freedFiles: 0, freedBytes: 0 };
+  }
+}
+
 function listImageRuns(username) {
   syncFromPersistSqliteIfNewer(false);
-  maybePruneExpiredRuns();
   const key = userKey(username);
   ensureOwnerLoadedSync(key);
   const items = [];
@@ -3421,7 +3890,6 @@ function listImageRuns(username) {
 
 function listAllImageRuns() {
   syncFromPersistSqliteIfNewer(false);
-  maybePruneExpiredRuns();
   const all = [];
   for (const m of imageMetaById.values()) {
     all.push(imageListItem(m));
@@ -3430,14 +3898,18 @@ function listAllImageRuns() {
   return all.slice(0, MAX_LIST_ALL);
 }
 
-function hydrateImageRunForReturn(rec) {
+// `opts.isAdmin` is the ONLY thing that enables the cross-user vault fallback (admin restoring another
+// user's run). A regular user's refs resolve strictly against the run owner's own vault, so a planted
+// `imageVaultRef` / `vaultRef` can never read another user's blob by hash (review finding 3.5(b)).
+function hydrateImageRunForReturn(rec, opts = null) {
   if (!rec || typeof rec !== 'object') return rec;
   const ownerKey = rec.userKey || userKey(rec.user);
+  const fallbackAnyOwner = Boolean(opts && opts.isAdmin);
   const hydratedResults = (Array.isArray(rec.results) ? rec.results : (Array.isArray(rec.summary) ? rec.summary : [])).map((r) => {
     if (!r || typeof r !== 'object') return r;
     const out = { ...r };
     if (!out.imageDataUrl && out.imageVaultRef) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, out.imageVaultRef, { fallbackAnyOwner: true });
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, out.imageVaultRef, { fallbackAnyOwner });
       if (fromVault && fromVault.data) {
         out.imageDataUrl = `data:${fromVault.mimeType || out.mimeType || 'image/png'};base64,${fromVault.data}`;
       }
@@ -3446,7 +3918,7 @@ function hydrateImageRunForReturn(rec) {
       out.imageDataUrl = out.thumbDataUrl;
     }
     if (!out.thoughtImageDataUrl && out.thoughtVaultRef) {
-      const tVault = vault.readAttachmentFromVaultSync(ownerKey, out.thoughtVaultRef, { fallbackAnyOwner: true });
+      const tVault = vault.readAttachmentFromVaultSync(ownerKey, out.thoughtVaultRef, { fallbackAnyOwner });
       if (tVault && tVault.data) {
         out.thoughtImageDataUrl = `data:${tVault.mimeType || 'image/png'};base64,${tVault.data}`;
       }
@@ -3456,7 +3928,7 @@ function hydrateImageRunForReturn(rec) {
   const hydratedAttachments = (Array.isArray(rec.attachments) ? rec.attachments : []).map((a) => {
     if (!a || typeof a !== 'object') return a;
     if (!a.data && (a.vaultRef || a.sha256 || a.sha1)) {
-      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner: true });
+      const fromVault = vault.readAttachmentFromVaultSync(ownerKey, a, { fallbackAnyOwner });
       if (fromVault && fromVault.data) {
         return { ...a, data: fromVault.data, mimeType: fromVault.mimeType || a.mimeType || 'image/png', hasBlob: true };
       }
@@ -3472,11 +3944,12 @@ function getImageRun(id, { username, isAdmin }) {
   const sid = safeId(id);
   if (!sid) return null;
   const myKey = userKey(username);
+  const hydrateOpts = { isAdmin: Boolean(isAdmin) };
 
   if (fullPayloadCache.has(sid)) {
     const cached = fullPayloadCache.get(sid);
     if (cached && cached.arena === 'image') {
-      if (isAdmin || userKey(cached.user) === myKey) return hydrateImageRunForReturn(cached);
+      if (isAdmin || userKey(cached.user) === myKey) return hydrateImageRunForReturn(cached, hydrateOpts);
       return null;
     }
   }
@@ -3490,11 +3963,11 @@ function getImageRun(id, { username, isAdmin }) {
         const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
         if (rec) {
           cachePayload(sid, rec);
-          return hydrateImageRunForReturn(rec);
+          return hydrateImageRunForReturn(rec, hydrateOpts);
         }
       }
     } catch (_) {}
-    return hydrateImageRunForReturn(meta);
+    return hydrateImageRunForReturn(meta, hydrateOpts);
   }
 
   const mine = path.join(BASE_DIR, myKey, `${sid}.json`);
@@ -3503,7 +3976,7 @@ function getImageRun(id, { username, isAdmin }) {
       const own = JSON.parse(fs.readFileSync(mine, 'utf8'));
       if (own && own.arena === 'image') {
         cachePayload(sid, own);
-        return hydrateImageRunForReturn(own);
+        return hydrateImageRunForReturn(own, hydrateOpts);
       }
     }
   } catch (_) {}
@@ -3517,7 +3990,7 @@ function getImageRun(id, { username, isAdmin }) {
         const rec = JSON.parse(fs.readFileSync(fp, 'utf8'));
         if (rec && rec.arena === 'image') {
           cachePayload(sid, rec);
-          return hydrateImageRunForReturn(rec);
+          return hydrateImageRunForReturn(rec, hydrateOpts);
         }
       }
     }
@@ -3531,16 +4004,22 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
   const myKey = userKey(username);
   const meta = imageMetaById.get(sid);
   const arch = archivedImageMetaById.get(sid);
+  const aud = auditMetaById.get(sid);
   if (meta && !isAdmin && meta.userKey !== myKey) return false;
   if (!meta && arch && !isAdmin && arch.userKey !== myKey) return false;
+  // No index / ledger row: the 90-day audit row (if any) decides ownership BEFORE anything is touched (7.2)
+  if (!meta && !arch && aud && !isAdmin && aud.userKey !== myKey) return false;
 
   if (preserveLifetimeStats && meta) {
     upsertArchivedImageRunInternal(meta);
   }
 
-  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || myKey;
+  // Never derive the owner from the caller while any record of the run still exists
+  const ownerKey = (meta && meta.userKey) || (arch && arch.userKey) || (aud && aud.userKey) || myKey;
   const candidateHashes = extractRunVaultHashes(meta);
-  const cached = fullPayloadCache.get(sid);
+  const cached0 = fullPayloadCache.get(sid);
+  // A cached payload hydrated for an admin may belong to another user: non-admins never use it
+  const cached = (cached0 && (isAdmin || (cached0.userKey || userKey(cached0.user)) === ownerKey)) ? cached0 : null;
   if (cached) {
     for (const h of extractRunVaultHashes(cached)) candidateHashes.add(h);
   }
@@ -3586,7 +4065,7 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
   if (!isAdmin || preserveLifetimeStats || keepAudit) {
     const src = diskRec || meta;
     const existingAudit = auditMetaById.get(sid);
-    if (src || existingAudit) {
+    if ((src || existingAudit) && (removed || meta || existingAudit)) {
       const firstSum = (meta && Array.isArray(meta.summary) && meta.summary[0]) || null;
       const sumInputRefs = (firstSum && Array.isArray(firstSum.inputVaultRefs)) ? firstSum.inputVaultRefs : [];
       upsertAuditRunInternal({
@@ -3605,7 +4084,7 @@ function deleteImageRun(id, { username, isAdmin, stats, deferFlush = false, defe
         status: existingAudit ? existingAudit.status : 'completed',
         hiddenByUser: !isAdmin ? true : (existingAudit ? existingAudit.hiddenByUser : false),
         deletedAt: !isAdmin ? Date.now() : (existingAudit ? existingAudit.deletedAt : null),
-      }, false);
+      }, false, { allowOwnerChange: Boolean(isAdmin) });
     }
   } else {
     if (auditMetaById.has(sid)) {
@@ -3684,7 +4163,7 @@ function setImageRunStarred(id, starred, { username, isAdmin }) {
       rec.starred = nextStarred;
       cachePayload(sid, rec);
       if (fs.existsSync(fp)) {
-        fs.writeFileSync(fp, JSON.stringify(rec));
+        writeJsonAtomicSync(fp, rec);
       }
     }
   } catch (_) {}
@@ -3695,7 +4174,6 @@ function setImageRunStarred(id, starred, { username, isAdmin }) {
 
 function imageUsageSummary(opts = {}) {
   syncFromPersistSqliteIfNewer(false);
-  maybePruneExpiredRuns();
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
   const countedRunIds = new Set();
@@ -3928,7 +4406,6 @@ async function finalizeAuditRun(id, { status = 'completed', error = null } = {})
 
 function listAuditRuns({ limit = 500, arena = null, user = null, externalOnly = false, includeHidden = true } = {}) {
   syncFromPersistSqliteIfNewer(false);
-  maybePruneExpiredRuns();
   const maxItems = Math.max(1, Math.min(2000, Number(limit) || 500));
   const filterUser = user ? norm(user) : null;
   const filterArena = arena ? String(arena).trim().toLowerCase() : null;
@@ -4118,7 +4595,9 @@ module.exports = {
   saveUserPreset,
   deleteUserPreset,
   flushSnapshotSync,
+  flushSnapshotNow,
   flushSnapshotAsync,
+  drainPendingWrites,
   syncFromPersistSqliteIfNewer,
   PERSIST_SQLITE_PATH,
   LOCAL_SQLITE_PATH,
