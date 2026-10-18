@@ -10198,12 +10198,242 @@ async function runCadModification() {
   }
 }
 
+function requestStepTextFromSlot(slot, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    const st = CAD_SLOT_STATE[slot];
+    if (!st || !st.iframe || !st.iframe.contentWindow) {
+      resolve((st && st.stepText) || '');
+      return;
+    }
+    const curRev = st.revisions && st.revisions[st.activeRevIndex];
+    if (curRev && typeof curRev.stepText === 'string' && curRev.stepText.includes('ISO-10303-21;')) {
+      resolve(curRev.stepText);
+      return;
+    }
+    let settled = false;
+    const reqId = `step-mcp-${slot}-${Date.now()}`;
+    const onMsg = (ev) => {
+      const m = ev && ev.data;
+      if (!m || !isTrustedCadMessageEvent(ev) || cadSlotForSource(ev.source) !== slot) return;
+      if (m.type === 'CAD_STEP_TEXT_READY' && (!m.reqId || m.reqId === reqId)) {
+        if (!settled) {
+          settled = true;
+          window.removeEventListener('message', onMsg);
+          const txt = typeof m.stepText === 'string' ? m.stepText : '';
+          if (txt.includes('ISO-10303-21;')) {
+            st.stepText = txt;
+            if (curRev) curRev.stepText = txt;
+          }
+          resolve(txt);
+        }
+      }
+    };
+    window.addEventListener('message', onMsg);
+    try {
+      st.iframe.contentWindow.postMessage({ type: 'CAD_EXPORT_STEP_TEXT', reqId }, '*');
+    } catch (_) { /* ignore */ }
+    setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        window.removeEventListener('message', onMsg);
+        resolve((st && st.stepText) || '');
+      }
+    }, timeoutMs);
+  });
+}
+
+function parseMcpHttpResponseText(rawText) {
+  const txt = String(rawText || '').trim();
+  if (!txt) return {};
+  try {
+    return JSON.parse(txt);
+  } catch (_) { /* check SSE */ }
+  let lastObj = null;
+  for (const line of txt.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('data:')) {
+      const payload = trimmed.slice(5).trim();
+      if (payload) {
+        try { lastObj = JSON.parse(payload); } catch (_) { /* ignore */ }
+      }
+    }
+  }
+  return lastObj || { raw: txt };
+}
+
+async function pushToBrowserLocalMcp(endpointUrl, payload) {
+  const cleanUrl = String(endpointUrl || 'http://127.0.0.1:27182/mcp').trim() || 'http://127.0.0.1:27182/mcp';
+  const fusionScript = payload.fusionScript || '';
+
+  const mcpPost = async (url, bodyObj, sessionId = null, timeoutMs = 20000) => {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+    };
+    if (sessionId) {
+      headers['Mcp-Session-Id'] = sessionId;
+    }
+    const resp = await fetch(url, {
+      method: 'POST',
+      mode: 'cors',
+      headers,
+      body: JSON.stringify(bodyObj),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const newSid = resp.headers.get('Mcp-Session-Id') || resp.headers.get('mcp-session-id') || sessionId;
+    const text = await resp.text();
+    const parsed = parseMcpHttpResponseText(text);
+    return { ok: resp.ok, status: resp.status, sessionId: newSid, data: parsed };
+  };
+
+  // 1. Try direct browser -> local MCP endpoint (Streamable HTTP JSON-RPC 2.0 or REST)
+  try {
+    const initRes = await mcpPost(cleanUrl, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'llm-compare-3d-arena', version: '1.0.56' },
+      },
+    }, null, 10000);
+
+    // Non-JSON-RPC local REST bridge (e.g. LLMCompareFusionMCP Add-In direct POST)
+    if (initRes.ok && initRes.data && !initRes.data.jsonrpc && initRes.data.ok) {
+      const directRes = await mcpPost(cleanUrl, {
+        tool: 'fusion360_import_model',
+        slot: payload.slot,
+        title: payload.title,
+        modelLabel: payload.modelLabel,
+        stepText: payload.stepText || '',
+        params: payload.params || {},
+        fusionScript,
+        telemetry: payload.telemetry || null,
+      }, null, 25000);
+      if (directRes.ok && (!directRes.data || directRes.data.ok !== false)) {
+        return { ok: true, pushed: true, endpointUrl: cleanUrl, status: directRes.status, tool: 'fusion360_import_model' };
+      }
+    }
+
+    const sid = initRes.sessionId;
+    try {
+      await mcpPost(cleanUrl, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} }, sid, 4000);
+    } catch (_) { /* best effort */ }
+
+    let toolName = 'fusion_mcp_execute';
+    let argKey = 'script';
+    try {
+      const listRes = await mcpPost(cleanUrl, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, sid, 8000);
+      const tools = (listRes.data && listRes.data.result && Array.isArray(listRes.data.result.tools))
+        ? listRes.data.result.tools
+        : [];
+      let chosen = tools.find((t) => t && ['fusion_mcp_execute', 'execute_script', 'run_script', 'run_python_script', 'fusion360_import_model'].includes(t.name))
+        || tools.find((t) => t && /exec|script|python|run|code|import/i.test(String(t.name || '')))
+        || tools[0];
+      if (chosen && chosen.name) {
+        toolName = chosen.name;
+        const props = (chosen.inputSchema && chosen.inputSchema.properties) || {};
+        const reqKeys = (chosen.inputSchema && Array.isArray(chosen.inputSchema.required)) ? chosen.inputSchema.required : [];
+        const propNames = Object.keys(props);
+        if (propNames.length === 1) {
+          argKey = propNames[0];
+        } else {
+          const matchKey = ['script', 'code', 'python_code', 'source', 'command', 'fusionScript'].find((k) => k in props);
+          if (matchKey) argKey = matchKey;
+          else if (reqKeys.length) argKey = reqKeys[0];
+        }
+      }
+    } catch (_) { /* fallback to fusion_mcp_execute */ }
+
+    const args = { [argKey]: fusionScript };
+    if (toolName === 'fusion360_import_model') {
+      args.title = payload.title;
+      args.slot = payload.slot;
+      args.stepText = payload.stepText || '';
+      args.params = payload.params || {};
+      args.fusionScript = fusionScript;
+    }
+    const callRes = await mcpPost(cleanUrl, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'tools/call',
+      params: { name: toolName, arguments: args },
+    }, sid, 25000);
+
+    const isErr = Boolean((callRes.data && callRes.data.error) || (callRes.data && callRes.data.result && callRes.data.result.isError));
+    if (callRes.ok && !isErr) {
+      return { ok: true, pushed: true, endpointUrl: cleanUrl, status: callRes.status, tool: toolName };
+    }
+    const errDetail = (callRes.data && callRes.data.error && callRes.data.error.message)
+      || (callRes.data && callRes.data.error)
+      || `HTTP ${callRes.status}`;
+    return { ok: false, pushed: false, endpointUrl: cleanUrl, status: callRes.status, error: String(errDetail) };
+  } catch (directErr) {
+    // 2. If direct fetch to :27182 was blocked by browser CORS preflight (or missing Mcp-Session-Id CORS header),
+    // automatically try the local Mac CORS-to-Fusion-MCP proxy on http://127.0.0.1:27183/mcp!
+    try {
+      const proxyUrl = 'http://127.0.0.1:27183/mcp';
+      const proxyResp = await fetch(proxyUrl, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetUrl: cleanUrl,
+          slot: payload.slot,
+          title: payload.title,
+          modelLabel: payload.modelLabel,
+          fusionScript,
+          stepText: payload.stepText || '',
+          params: payload.params || {},
+          telemetry: payload.telemetry || null,
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+      const proxyData = await proxyResp.json().catch(() => ({}));
+      if (proxyResp.ok && proxyData && proxyData.ok) {
+        return {
+          ok: true,
+          pushed: true,
+          endpointUrl: `${cleanUrl} (via Mac CORS bridge :27183)`,
+          status: proxyResp.status,
+          tool: proxyData.tool || 'fusion_mcp_execute',
+        };
+      }
+      if (proxyData && proxyData.error) {
+        return { ok: false, pushed: false, endpointUrl: cleanUrl, error: proxyData.error };
+      }
+    } catch (_) { /* proxy not running on :27183 */ }
+
+    return {
+      ok: false,
+      pushed: false,
+      corsOrOffline: true,
+      endpointUrl: cleanUrl,
+      error: directErr && directErr.message ? directErr.message : String(directErr),
+    };
+  }
+}
+
 async function openCadMcpModal(preferredSlot) {
   const modal = $('#cadMcpModal');
   const slotSel = $('#cadMcpSlotSelect');
   const codePre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
   const statusEl = $('#cadMcpStatusBadge') || $('#cadMcpPushStatus');
+  const endpointInp = $('#cadMcpEndpointInput');
+  const corsHelp = $('#cadMcpCorsHelp');
   if (!modal || !slotSel || !codePre) return;
+
+  if (endpointInp) {
+    try {
+      const savedEp = localStorage.getItem('llmc_cad_mcp_endpoint');
+      if (savedEp) endpointInp.value = savedEp;
+      else if (!endpointInp.value) endpointInp.value = 'http://127.0.0.1:27182/mcp';
+    } catch (_) {
+      if (!endpointInp.value) endpointInp.value = 'http://127.0.0.1:27182/mcp';
+    }
+  }
+  if (corsHelp) corsHelp.classList.add('hidden');
 
   slotSel.innerHTML = MODELS.map((m) => `<option value="${esc(m.slot)}">Slot ${esc(m.slot)} - ${esc(m.label || m.catalogId)}</option>`).join('');
   if (preferredSlot && MODELS.some((m) => m.slot === preferredSlot)) {
@@ -10215,9 +10445,10 @@ async function openCadMcpModal(preferredSlot) {
     const st = CAD_SLOT_STATE[slot];
     const jsCode = (st && st.code) || extractCadJsCode(($(`#code-${slot}`) || {}).textContent || '');
     const title = currentTask().title || 'LLMCompare_3D_Component';
-    if (statusEl) statusEl.textContent = 'Browser STEP AP214 + Fusion Python Ready';
-    codePre.textContent = 'Generating Autodesk Fusion 360 Python API script…';
+    if (statusEl) statusEl.textContent = 'Exporting watertight STEP AP214 & generating Fusion 360 script…';
+    codePre.textContent = 'Generating Autodesk Fusion 360 Python API script with embedded STEP AP214 solid…';
     try {
+      const stepText = await requestStepTextFromSlot(slot, 8000);
       const resp = await fetch('/api/cad-mcp/fusion360-script', {
         method: 'POST',
         credentials: 'same-origin',
@@ -10227,15 +10458,23 @@ async function openCadMcpModal(preferredSlot) {
           slot,
           modelLabel: (() => { const m = MODELS.find((x) => x.slot === slot); return (m && (m.label || m.catalogId)) || ''; })(),
           code: jsCode,
+          params: (st && st.params) || {},
           telemetry: (st && st.telemetry) || null,
+          stepText: stepText || '',
         }),
       });
       if (resp.status === 401) { window.location.replace('/login'); return; }
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok || !data || !data.ok) throw new Error((data && data.error) || 'Failed to generate script');
       codePre.textContent = data.script || data.fusionScript || '';
+      if (statusEl) {
+        statusEl.textContent = stepText
+          ? '✓ Embedded Watertight STEP AP214 + Parametric Fusion 360 Ready'
+          : '✓ Parametric Fusion 360 Script Ready';
+      }
     } catch (e) {
       codePre.textContent = '# Error generating script: ' + e.message;
+      if (statusEl) statusEl.textContent = '⚠ Script generation error';
     }
   };
 
@@ -10348,19 +10587,76 @@ function initCadArenaBindings() {
       setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 300);
     });
   }
+  const mcpCopyProxyBtn = $('#cadMcpCopyProxyCmdBtn');
+  if (mcpCopyProxyBtn) {
+    mcpCopyProxyBtn.addEventListener('click', async () => {
+      const cmd = `curl -fsSL ${window.location.origin}/fusion-mcp-cors-proxy.py | python3 -`;
+      try {
+        await navigator.clipboard.writeText(cmd);
+        mcpCopyProxyBtn.textContent = '✓ Copied! Paste in Mac Terminal';
+        setTimeout(() => { mcpCopyProxyBtn.textContent = '📋 Copy Mac Bridge Command'; }, 2200);
+      } catch (_) { /* ignore */ }
+    });
+  }
+
   if (mcpPushBtn) {
     mcpPushBtn.addEventListener('click', async () => {
       const pre = $('#cadMcpCodePreview') || $('#cadMcpScriptPre');
       const statusEl = $('#cadMcpStatusBadge') || $('#cadMcpPushStatus');
       const slotSel = $('#cadMcpSlotSelect');
+      const endpointInp = $('#cadMcpEndpointInput');
+      const corsHelp = $('#cadMcpCorsHelp');
       if (!pre || !statusEl) return;
       const slot = (slotSel && slotSel.value) || 'A';
       const st = CAD_SLOT_STATE[slot];
       const slotModel = MODELS.find((m) => m.slot === slot) || null;
-      statusEl.textContent = 'Pushing to the server-configured MCP bridge…';
+      const localEndpoint = String((endpointInp && endpointInp.value) || 'http://127.0.0.1:27182/mcp').trim() || 'http://127.0.0.1:27182/mcp';
+      try { localStorage.setItem('llmc_cad_mcp_endpoint', localEndpoint); } catch (_) { /* ignore */ }
+
+      statusEl.textContent = `Pushing Slot ${slot} to ${localEndpoint}…`;
       try {
-        // SECURITY (3.7): the bridge URL is server-side config only (CAD_MCP_URL); the
-        // optional endpoint input in the modal is informational and is never sent.
+        const stepText = await requestStepTextFromSlot(slot, 8000);
+        let fusionScript = String(pre.textContent || '').trim();
+        if (!fusionScript || fusionScript.startsWith('Generating') || fusionScript.startsWith('# Error')) {
+          const genResp = await fetch('/api/cad-mcp/fusion360-script', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              slot,
+              modelLabel: (slotModel && (slotModel.label || slotModel.catalogId)) || '',
+              title: `${currentTask().title || 'CAD_Model'}_Slot_${slot}`,
+              code: (st && st.code) || '',
+              params: (st && st.params) || {},
+              telemetry: (st && st.telemetry) || null,
+              stepText: stepText || '',
+            }),
+          });
+          const genData = await genResp.json().catch(() => ({}));
+          if (genData && genData.script) {
+            fusionScript = genData.script;
+            pre.textContent = fusionScript;
+          }
+        }
+
+        // 1. Push directly from the browser on the user's machine to their local Fusion 360 MCP server
+        const browserPush = await pushToBrowserLocalMcp(localEndpoint, {
+          slot,
+          title: `${currentTask().title || 'CAD_Model'}_Slot_${slot}`,
+          modelLabel: (slotModel && (slotModel.label || slotModel.catalogId)) || '',
+          fusionScript,
+          stepText: stepText || '',
+          params: (st && st.params) || {},
+          telemetry: (st && st.telemetry) || null,
+        });
+
+        if (browserPush.pushed) {
+          if (corsHelp) corsHelp.classList.add('hidden');
+          statusEl.textContent = `✓ Pushed to ${browserPush.endpointUrl} (${browserPush.tool || 'MCP'} · HTTP ${browserPush.status || 200})`;
+          return;
+        }
+
+        // 2. Fallback: check if the server has a server-side CAD_MCP_URL configured
         const resp = await fetch('/api/cad-mcp/push', {
           method: 'POST',
           credentials: 'same-origin',
@@ -10370,22 +10666,24 @@ function initCadArenaBindings() {
             modelLabel: (slotModel && (slotModel.label || slotModel.catalogId)) || '',
             title: `${currentTask().title || 'CAD_Model'}_Slot_${slot}`,
             code: (st && st.code) || '',
+            params: (st && st.params) || {},
             telemetry: (st && st.telemetry) || null,
+            stepText: stepText || '',
           }),
         });
         if (resp.status === 401) { window.location.replace('/login'); return; }
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || !data || !data.ok) throw new Error((data && data.error) || `MCP push failed (HTTP ${resp.status})`);
-        if (data.pushed) {
+        if (resp.ok && data && data.pushed) {
+          if (corsHelp) corsHelp.classList.add('hidden');
           statusEl.textContent = `✓ Pushed to ${data.endpointUrl || 'the configured bridge'} (HTTP ${data.upstreamStatus != null ? data.upstreamStatus : 'ok'})`;
+          return;
+        }
+
+        if (browserPush.corsOrOffline) {
+          if (corsHelp) corsHelp.classList.remove('hidden');
+          statusEl.textContent = `⚠ Browser could not reach ${localEndpoint} directly (CORS preflight or Fusion MCP offline). Run the 1-line Mac Bridge Command below, then click Push again.`;
         } else {
-          // Not an exception: the script was generated, but no bridge accepted it.
-          const why = data.reason === 'bridge_not_configured'
-            ? 'No CAD MCP bridge is configured on the server (CAD_MCP_URL). Copy or download the script instead.'
-            : data.reason === 'bridge_unreachable'
-              ? `The configured CAD MCP bridge${data.endpointUrl ? ' at ' + data.endpointUrl : ''} is unreachable. Copy or download the script instead.`
-              : `The configured CAD MCP bridge rejected the script${data.upstreamStatus != null ? ' (HTTP ' + data.upstreamStatus + ')' : ''}. Copy or download the script instead.`;
-          statusEl.textContent = `⚠ Not pushed: ${why}`;
+          statusEl.textContent = `⚠ Fusion MCP (${localEndpoint}) returned: ${browserPush.error || 'rejected'}`;
         }
       } catch (e) {
         statusEl.textContent = `⚠ ${e.message}`;

@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.55"></script>
+  <script src="theme-init.js?v=1.0.56"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.55" />
+  <link rel="stylesheet" href="styles.css?v=1.0.56" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.55" defer></script>
+  <script src="app.js?v=1.0.56" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -598,15 +598,19 @@
           Directly addresses the Autodesk Fusion 360 Assistant limitation (where native Fusion Assistant can only build a spur gear or a basic vase, not complex editable parametric scripts). Transpiles the selected slot's parametric model into an <code>adsk.core</code> / <code>adsk.fusion</code> Python script or pushes it to a local Fusion 360 / Blender MCP server.
         </p>
         <div class="cad-mcp-endpoint-row">
-          <label for="cadMcpEndpointInput">Local MCP Endpoint (optional):</label>
-          <input type="text" id="cadMcpEndpointInput" class="cad-modify-input" placeholder="http://127.0.0.1:8765/mcp (Fusion 360 / Blender MCP loopback)" />
+          <label for="cadMcpEndpointInput">Local MCP Endpoint (on your machine):</label>
+          <input type="text" id="cadMcpEndpointInput" class="cad-modify-input" value="http://127.0.0.1:27182/mcp" placeholder="http://127.0.0.1:27182/mcp (Autodesk Fusion 360 MCP Server)" />
           <span id="cadMcpStatusBadge" class="quota-badge">Browser STEP AP214 + Fusion Python Ready</span>
+        </div>
+        <div id="cadMcpCorsHelp" class="cad-mcp-cors-help hidden" style="margin:6px 0 8px 0;padding:8px 12px;border-radius:8px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.3);font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <span id="cadMcpCorsHelpText" style="color:var(--fg)">💡 Running Fusion 360 on your Mac while browsing a remote LLM Compare server? Run this 1-line CORS bridge in Mac Terminal so Chrome can reach <code>127.0.0.1:27182/mcp</code>:</span>
+          <button type="button" id="cadMcpCopyProxyCmdBtn" class="bar-btn" style="white-space:nowrap">📋 Copy Mac Bridge Command</button>
         </div>
         <pre id="cadMcpCodePreview" class="cad-mcp-code-preview"></pre>
       </div>
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.55</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-18T21:28:00Z">Last updated Oct 18, 2026, 2:28 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.56</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-18T22:08:00Z">Last updated Oct 18, 2026, 3:08 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>
