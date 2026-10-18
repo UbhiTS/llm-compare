@@ -646,7 +646,18 @@
     // 3-Axis Gimbal Tumbling Spin state (rotates modelRoot around modelCenter on X, Y, Z simultaneously, ON by default)
     let spin3AxisEnabled = true;
     let spin3AxisAngles = { x: 0, y: 0, z: 0 };
+    let spinSyncEpochMs = Number(urlParams.get('spinEpoch')) || 0;
     let lastAnimFrameMs = performance.now();
+
+    function computeSyncedSpin3AxisAngles(nowEpochMs = Date.now()) {
+      const refEpoch = Number.isFinite(spinSyncEpochMs) && spinSyncEpochMs > 0 ? spinSyncEpochMs : 0;
+      const elapsedSec = Math.max(0, (nowEpochMs - refEpoch) / 1000);
+      return {
+        x: (elapsedSec * 0.65) % (Math.PI * 2),
+        y: (elapsedSec * 1.05) % (Math.PI * 2),
+        z: (elapsedSec * 0.42) % (Math.PI * 2),
+      };
+    }
 
     function applySpin3AxisTransform(rx, ry, rz) {
       spin3AxisAngles.x = Number(rx) || 0;
@@ -678,7 +689,10 @@
       gridGroup.updateMatrixWorld(true);
     }
 
-    function setSpin3AxisState(enabled, broadcast = true, angles = null) {
+    function setSpin3AxisState(enabled, broadcast = true, angles = null, epochMs = null) {
+      if (Number.isFinite(epochMs) && epochMs > 0) {
+        spinSyncEpochMs = epochMs;
+      }
       spin3AxisEnabled = Boolean(enabled);
       setPressed(document.getElementById('hudSpin3AxisBtn'), spin3AxisEnabled);
       if (spin3AxisEnabled) {
@@ -686,7 +700,10 @@
           controls.autoRotate = false;
           setPressed(document.getElementById('hudSpinBtn'), false);
         }
-        if (angles && typeof angles.x === 'number') {
+        if (cameraSyncEnabled) {
+          const synced = computeSyncedSpin3AxisAngles(Date.now());
+          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        } else if (angles && typeof angles.x === 'number') {
           applySpin3AxisTransform(angles.x, angles.y || 0, angles.z || 0);
         }
         lastAnimFrameMs = performance.now();
@@ -699,6 +716,23 @@
           slot: slotId,
           enabled: spin3AxisEnabled,
           angles: { ...spin3AxisAngles },
+          spinEpochMs: spinSyncEpochMs,
+        });
+      }
+    }
+
+    function setTurntableState(enabled, broadcast = true) {
+      controls.autoRotate = Boolean(enabled);
+      controls.autoRotateSpeed = 2.0;
+      setPressed(document.getElementById('hudSpinBtn'), controls.autoRotate);
+      if (controls.autoRotate && spin3AxisEnabled) {
+        setSpin3AxisState(false, false);
+      }
+      if (broadcast) {
+        postToParent({
+          type: 'CAD_TURNTABLE_CHANGE',
+          slot: slotId,
+          enabled: controls.autoRotate,
         });
       }
     }
@@ -760,7 +794,10 @@
         const offset = new THREE.Vector3().setFromSpherical(spherical);
         camera.position.copy(controls.target).add(offset);
         camera.lookAt(controls.target);
+        const savedAutoRotate = controls.autoRotate;
+        controls.autoRotate = false;
         controls.update();
+        controls.autoRotate = savedAutoRotate;
       } finally {
         setTimeout(() => {
           isApplyingExternalCamera = false;
@@ -834,8 +871,13 @@
     }
 
     function setCameraPreset(preset, broadcast = true, pauseSpin = false) {
-      if (pauseSpin && (spin3AxisEnabled || spin3AxisAngles.x || spin3AxisAngles.y || spin3AxisAngles.z)) {
-        setSpin3AxisState(false, broadcast);
+      if (pauseSpin) {
+        if (spin3AxisEnabled || spin3AxisAngles.x || spin3AxisAngles.y || spin3AxisAngles.z) {
+          setSpin3AxisState(false, broadcast);
+        }
+        if (controls.autoRotate) {
+          setTurntableState(false, broadcast);
+        }
       }
       isApplyingExternalCamera = !broadcast;
       controls.target.copy(modelCenter);
@@ -1372,7 +1414,12 @@
         latestTelemetry = telemetry;
         updateTelemetryBarUI(latestTelemetry, null);
         if (spin3AxisEnabled) {
-          applySpin3AxisTransform(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z);
+          if (cameraSyncEnabled) {
+            const synced = computeSyncedSpin3AxisAngles(Date.now());
+            applySpin3AxisTransform(synced.x, synced.y, synced.z);
+          } else {
+            applySpin3AxisTransform(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z);
+          }
         }
         // Render an immediate initial frame while shadowMap.autoUpdate is true so shadow maps
         // and PBR material shaders are compiled and the canvas buffer is populated even if
@@ -1773,13 +1820,8 @@
       });
     });
 
-    document.getElementById('hudSpinBtn')?.addEventListener('click', (e) => {
-      controls.autoRotate = !controls.autoRotate;
-      controls.autoRotateSpeed = 2.0;
-      setPressed(e.currentTarget, controls.autoRotate);
-      if (controls.autoRotate && spin3AxisEnabled) {
-        setSpin3AxisState(false, true);
-      }
+    document.getElementById('hudSpinBtn')?.addEventListener('click', () => {
+      setTurntableState(!controls.autoRotate, true);
     });
 
     document.getElementById('hudSpin3AxisBtn')?.addEventListener('click', () => {
@@ -1789,6 +1831,10 @@
     document.getElementById('hudSyncBtn')?.addEventListener('click', () => {
       cameraSyncEnabled = !cameraSyncEnabled;
       updateSyncButtonUI();
+      if (cameraSyncEnabled && spin3AxisEnabled && modelRoot) {
+        const synced = computeSyncedSpin3AxisAngles(Date.now());
+        applySpin3AxisTransform(synced.x, synced.y, synced.z);
+      }
       postToParent({
         type: 'CAD_TOGGLE_SYNC_REQUEST',
         slot: slotId,
@@ -1878,23 +1924,60 @@
       if (msg.type === 'CAD_RUN_CODE') {
         if (msg.slot) slotId = String(msg.slot).slice(0, 8);
         if (msg.label) modelLabel = String(msg.label).slice(0, 120);
+        if (Number.isFinite(msg.spinEpochMs) && msg.spinEpochMs > 0) {
+          spinSyncEpochMs = msg.spinEpochMs;
+        }
         if (typeof msg.sync === 'boolean') {
           cameraSyncEnabled = msg.sync;
           updateSyncButtonUI();
         }
+        if (typeof msg.spin3Axis === 'boolean') {
+          setSpin3AxisState(msg.spin3Axis, false, msg.angles || null, spinSyncEpochMs);
+        }
+        if (typeof msg.turntable === 'boolean') {
+          setTurntableState(msg.turntable, false);
+        }
         loadAndRunCadCode(msg.code || '', { preserveCamera: Boolean(msg.preserveCamera) });
+        const sharedCam = msg.cameraState || msg.camera;
+        if (cameraSyncEnabled && sharedCam) {
+          applyNormalizedCameraState(sharedCam);
+        }
       } else if (msg.type === 'CAD_APPLY_CAMERA') {
         const camState = msg.cameraState || msg.camera;
         if (cameraSyncEnabled && camState) {
           applyNormalizedCameraState(camState);
         }
       } else if (msg.type === 'CAD_SET_SYNC_STATE') {
+        if (Number.isFinite(msg.spinEpochMs) && msg.spinEpochMs > 0) {
+          spinSyncEpochMs = msg.spinEpochMs;
+        }
         cameraSyncEnabled = Boolean(msg.enabled !== undefined ? msg.enabled : msg.sync);
         updateSyncButtonUI();
+        if (cameraSyncEnabled && spin3AxisEnabled && modelRoot) {
+          const synced = computeSyncedSpin3AxisAngles(Date.now());
+          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        }
       } else if (msg.type === 'CAD_SET_PRESET' || msg.type === 'CAD_SET_CAMERA_PRESET') {
-        setCameraPreset(msg.preset || 'iso', false, true);
+        setCameraPreset(msg.preset || 'iso', Boolean(msg.broadcast), true);
       } else if (msg.type === 'CAD_SET_SPIN_3AXIS') {
-        setSpin3AxisState(Boolean(msg.enabled), false, msg.angles || null);
+        setSpin3AxisState(Boolean(msg.enabled), false, msg.angles || null, msg.spinEpochMs || null);
+      } else if (msg.type === 'CAD_SET_TURNTABLE') {
+        setTurntableState(Boolean(msg.enabled), false);
+      } else if (msg.type === 'CAD_GET_SPIN_STATE') {
+        const synced = cameraSyncEnabled ? computeSyncedSpin3AxisAngles(Date.now()) : spin3AxisAngles;
+        if (spin3AxisEnabled && cameraSyncEnabled && modelRoot) {
+          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        }
+        postToParent({
+          type: 'CAD_SPIN_STATE_REPORT',
+          slot: slotId,
+          reqId: msg.reqId || '',
+          cameraSyncEnabled,
+          spin3AxisEnabled,
+          spinEpochMs: spinSyncEpochMs,
+          angles: { x: synced.x, y: synced.y, z: synced.z },
+          modelRotation: modelRoot ? { x: modelRoot.rotation.x, y: modelRoot.rotation.y, z: modelRoot.rotation.z } : null,
+        });
       } else if (msg.type === 'CAD_CAPTURE_FOUR_VIEW' || msg.type === 'CAD_REQUEST_4VIEW') {
         const dataUrl = captureFourAngleCompositeDataUrl();
         postToParent({
@@ -1957,10 +2040,15 @@
         const dt = Math.min(0.1, Math.max(0, (now - lastAnimFrameMs) / 1000));
         lastAnimFrameMs = now;
         if (spin3AxisEnabled && modelRoot) {
-          const nx = (spin3AxisAngles.x + dt * 0.65) % (Math.PI * 2);
-          const ny = (spin3AxisAngles.y + dt * 1.05) % (Math.PI * 2);
-          const nz = (spin3AxisAngles.z + dt * 0.42) % (Math.PI * 2);
-          applySpin3AxisTransform(nx, ny, nz);
+          if (cameraSyncEnabled) {
+            const synced = computeSyncedSpin3AxisAngles(Date.now());
+            applySpin3AxisTransform(synced.x, synced.y, synced.z);
+          } else {
+            const nx = (spin3AxisAngles.x + dt * 0.65) % (Math.PI * 2);
+            const ny = (spin3AxisAngles.y + dt * 1.05) % (Math.PI * 2);
+            const nz = (spin3AxisAngles.z + dt * 0.42) % (Math.PI * 2);
+            applySpin3AxisTransform(nx, ny, nz);
+          }
         }
         controls.update();
         renderer.render(scene, camera);
@@ -1987,6 +2075,10 @@
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
         if (modelRoot) {
+          if (spin3AxisEnabled && cameraSyncEnabled) {
+            const synced = computeSyncedSpin3AxisAngles(Date.now());
+            applySpin3AxisTransform(synced.x, synced.y, synced.z);
+          }
           applyRenderModeToModel();
           renderer.render(scene, camera);
         }

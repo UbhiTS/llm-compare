@@ -9459,6 +9459,8 @@ function initImageArenaBindings() {
 
 let CAD_CAMERA_SYNC_ON = true; // Lockstep synced camera across slots ON by default
 let CAD_SPIN_3AXIS_ON = true; // Simultaneous X+Y+Z 3-axis gimbal spin across slots (ON by default)
+let CAD_TURNTABLE_ON = false; // Horizontal turntable spin across slots
+let CAD_SPIN_EPOCH_MS = Date.now(); // Shared wall-clock epoch (ms) so slots finishing at different times spin in exact phase
 let CAD_LAST_SHARED_CAMERA = null;
 const CAD_SLOT_STATE = {}; // slot -> { code, telemetry, fourViewDataUrl, revisions: [{rev, code, telemetry, fourViewDataUrl, note, at}], activeRevIndex, targetPartName, iframe, ready }
 
@@ -9483,6 +9485,8 @@ function resetAllCadSlotStates() {
   Object.keys(CAD_SLOT_STATE).forEach((s) => {
     delete CAD_SLOT_STATE[s];
   });
+  CAD_SPIN_EPOCH_MS = Date.now();
+  CAD_TURNTABLE_ON = false;
   CAD_LAST_SHARED_CAMERA = null;
   updateCadTargetChip('');
   syncCadModifyBarVisibility();
@@ -9582,6 +9586,10 @@ function postCadRunCode(slot, code, extra) {
       slot,
       label: modelLabel(slot),
       sync: CAD_CAMERA_SYNC_ON,
+      spinEpochMs: CAD_SPIN_EPOCH_MS,
+      spin3Axis: CAD_SPIN_3AXIS_ON,
+      turntable: CAD_TURNTABLE_ON,
+      cameraState: CAD_CAMERA_SYNC_ON ? CAD_LAST_SHARED_CAMERA : null,
       code,
       autoCapture4View: true,
     }, extra || {}), '*');
@@ -9681,6 +9689,7 @@ function updateCadSyncCamButtonUi() {
           type: 'CAD_SET_SYNC_STATE',
           enabled: CAD_CAMERA_SYNC_ON,
           sync: CAD_CAMERA_SYNC_ON,
+          spinEpochMs: CAD_SPIN_EPOCH_MS,
         }, '*');
       }
     } catch (_) { /* ignore */ }
@@ -9690,14 +9699,21 @@ function updateCadSyncCamButtonUi() {
 function setCadCameraSyncState(nextSync) {
   CAD_CAMERA_SYNC_ON = Boolean(nextSync);
   updateCadSyncCamButtonUi();
-  if (CAD_CAMERA_SYNC_ON && CAD_LAST_SHARED_CAMERA) {
+  if (CAD_CAMERA_SYNC_ON) {
     document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
       try {
         if (ifr.contentWindow) {
+          if (CAD_LAST_SHARED_CAMERA) {
+            ifr.contentWindow.postMessage({
+              type: 'CAD_APPLY_CAMERA',
+              cameraState: CAD_LAST_SHARED_CAMERA,
+              camera: CAD_LAST_SHARED_CAMERA,
+            }, '*');
+          }
           ifr.contentWindow.postMessage({
-            type: 'CAD_APPLY_CAMERA',
-            cameraState: CAD_LAST_SHARED_CAMERA,
-            camera: CAD_LAST_SHARED_CAMERA,
+            type: 'CAD_SET_SPIN_3AXIS',
+            enabled: CAD_SPIN_3AXIS_ON,
+            spinEpochMs: CAD_SPIN_EPOCH_MS,
           }, '*');
         }
       } catch (_) { /* ignore */ }
@@ -9716,6 +9732,9 @@ function updateCadSpin3AxisButtonUi() {
 
 function setCadSpin3AxisState(nextSpin, angles = null, sourceWin = null) {
   CAD_SPIN_3AXIS_ON = Boolean(nextSpin);
+  if (CAD_SPIN_3AXIS_ON) {
+    CAD_TURNTABLE_ON = false;
+  }
   updateCadSpin3AxisButtonUi();
   document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
     try {
@@ -9724,6 +9743,7 @@ function setCadSpin3AxisState(nextSpin, angles = null, sourceWin = null) {
           type: 'CAD_SET_SPIN_3AXIS',
           enabled: CAD_SPIN_3AXIS_ON,
           angles: angles || null,
+          spinEpochMs: CAD_SPIN_EPOCH_MS,
         }, '*');
       }
     } catch (_) { /* ignore */ }
@@ -9818,7 +9838,7 @@ async function runCad3dViewport(slot, rawCodeText, btnOrOpts, outEl, vizEl) {
     const cadBust = (CONFIG && (CONFIG.assetVersion || CONFIG.version)) || Date.now();
     viz.innerHTML =
       `<div class="cad-viz-wrap">` +
-        `<iframe class="cad-frame" src="/cad-runner.html?slot=${encodeURIComponent(slot)}&label=${encodeURIComponent(label)}&sync=${CAD_CAMERA_SYNC_ON ? '1' : '0'}&v=${encodeURIComponent(cadBust)}" ` +
+        `<iframe class="cad-frame" src="/cad-runner.html?slot=${encodeURIComponent(slot)}&label=${encodeURIComponent(label)}&sync=${CAD_CAMERA_SYNC_ON ? '1' : '0'}&spinEpoch=${encodeURIComponent(CAD_SPIN_EPOCH_MS)}&v=${encodeURIComponent(cadBust)}" ` +
           `title="3D CAD Viewport - ${esc(label)}" sandbox="allow-scripts allow-same-origin allow-downloads"></iframe>` +
       `</div>` +
       `<div class="cad-bar">` +
@@ -9870,6 +9890,7 @@ function handleCadViewportMessage(ev) {
         type: 'CAD_SET_SYNC_STATE',
         enabled: CAD_CAMERA_SYNC_ON,
         sync: CAD_CAMERA_SYNC_ON,
+        spinEpochMs: CAD_SPIN_EPOCH_MS,
       }, '*');
       if (st.code) {
         postCadRunCode(slot, st.code);
@@ -9877,7 +9898,14 @@ function handleCadViewportMessage(ev) {
       st.iframe.contentWindow.postMessage({
         type: 'CAD_SET_SPIN_3AXIS',
         enabled: CAD_SPIN_3AXIS_ON,
+        spinEpochMs: CAD_SPIN_EPOCH_MS,
       }, '*');
+      if (CAD_TURNTABLE_ON) {
+        st.iframe.contentWindow.postMessage({
+          type: 'CAD_SET_TURNTABLE',
+          enabled: CAD_TURNTABLE_ON,
+        }, '*');
+      }
     }
     return;
   }
@@ -9889,6 +9917,28 @@ function handleCadViewportMessage(ev) {
     } else {
       CAD_SPIN_3AXIS_ON = nextSpin;
       updateCadSpin3AxisButtonUi();
+    }
+    return;
+  }
+
+  if (msg.type === 'CAD_TURNTABLE_CHANGE') {
+    const nextTurntable = Boolean(msg.enabled);
+    if (CAD_CAMERA_SYNC_ON) {
+      CAD_TURNTABLE_ON = nextTurntable;
+      if (nextTurntable) {
+        CAD_SPIN_3AXIS_ON = false;
+        updateCadSpin3AxisButtonUi();
+      }
+      document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+        try {
+          if (ifr.contentWindow && ifr.contentWindow !== ev.source) {
+            ifr.contentWindow.postMessage({
+              type: 'CAD_SET_TURNTABLE',
+              enabled: nextTurntable,
+            }, '*');
+          }
+        } catch (_) { /* ignore */ }
+      });
     }
     return;
   }
@@ -10219,10 +10269,13 @@ function initCadArenaBindings() {
       if (CAD_SPIN_3AXIS_ON) {
         setCadSpin3AxisState(false);
       }
-      document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+      if (CAD_TURNTABLE_ON) {
+        CAD_TURNTABLE_ON = false;
+      }
+      document.querySelectorAll('iframe.cad-frame').forEach((ifr, idx) => {
         try {
           if (ifr.contentWindow) {
-            ifr.contentWindow.postMessage({ type: 'CAD_SET_CAMERA_PRESET', preset }, '*');
+            ifr.contentWindow.postMessage({ type: 'CAD_SET_CAMERA_PRESET', preset, broadcast: idx === 0 }, '*');
           }
         } catch (_) { /* ignore */ }
       });

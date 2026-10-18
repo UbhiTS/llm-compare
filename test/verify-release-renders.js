@@ -308,7 +308,10 @@ function httpRequest(port, method, urlPath, bodyObj) {
             const codeB = ${JSON.stringify(gearboxCode)};
             document.getElementById('code-A').textContent = codeA;
             document.getElementById('code-B').textContent = codeB;
+            // Intentionally stagger Slot A and Slot B completion by 700ms so we verify
+            // that 3-Axis Spin stays phase-locked even when models finish at different times.
             await runCad3dViewport('A', codeA);
+            await new Promise((r) => setTimeout(r, 700));
             await runCad3dViewport('B', codeB);
 
             // Wait up to 12s for both slots to report CAD_TELEMETRY
@@ -319,6 +322,24 @@ function httpRequest(port, method, urlPath, bodyObj) {
               if (stA.telemetry && stB.telemetry) break;
               await new Promise((r) => setTimeout(r, 150));
             }
+            // Query spin state from both slots simultaneously after staggered completion
+            const getSlotSpinState = (slot) => new Promise((resolve) => {
+              const st = CAD_SLOT_STATE[slot];
+              if (!st || !st.iframe || !st.iframe.contentWindow) return resolve(null);
+              const reqId = 'spin-' + slot + '-' + Date.now();
+              const onMsg = (ev) => {
+                const m = ev && ev.data;
+                if (m && m.type === 'CAD_SPIN_STATE_REPORT' && m.reqId === reqId) {
+                  window.removeEventListener('message', onMsg);
+                  resolve(m);
+                }
+              };
+              window.addEventListener('message', onMsg);
+              st.iframe.contentWindow.postMessage({ type: 'CAD_GET_SPIN_STATE', reqId }, '*');
+              setTimeout(() => { window.removeEventListener('message', onMsg); resolve(null); }, 2000);
+            });
+            const [spinStateA, spinStateB] = await Promise.all([getSlotSpinState('A'), getSlotSpinState('B')]);
+
             // Ensure both slots capture their 4-angle composite PNG (either via deferred timer or explicit request)
             if (!CAD_SLOT_STATE['A']?.fourViewDataUrl) {
               await requestFresh4ViewFromSlot('A', 6000);
@@ -365,6 +386,8 @@ function httpRequest(port, method, urlPath, bodyObj) {
 
             return {
               cadSlots,
+              spinStateA,
+              spinStateB,
               hanoiOk,
               hanoiDisks,
               hanoiVisible: Boolean(hanoiViz && !hanoiViz.classList.contains('hidden')),
@@ -387,6 +410,11 @@ function httpRequest(port, method, urlPath, bodyObj) {
           assert(cs.has4View, `Slot ${cs.slot} 3D CAD viewport must capture deferred 4-angle composite PNG`);
           assert(cs.stripText.includes('Watertight') && cs.stripText.includes('tris'), `Slot ${cs.slot} telemetry strip must render mesh stats (got "${cs.stripText}")`);
         }
+        assert(val.spinStateA && val.spinStateB, 'Both staggered 3D slots must report CAD_SPIN_STATE_REPORT');
+        assert.strictEqual(val.spinStateA.spinEpochMs, val.spinStateB.spinEpochMs, 'Staggered 3D slots must share identical spinEpochMs');
+        const dy = Math.abs(val.spinStateA.modelRotation.y - val.spinStateB.modelRotation.y);
+        const wrappedDy = Math.min(dy, Math.abs(dy - Math.PI * 2));
+        assert(wrappedDy < 0.08, `Staggered 3D slots (700ms apart) must be phase-locked in 3-Axis Spin when Synced is ON (got Δy=${wrappedDy.toFixed(4)} rad)`);
         assert(val.hanoiOk && val.hanoiVisible && val.hanoiDisks === 8, `Towers of Hanoi must render 8 animated disks in #exec-viz-A (got hanoiDisks=${val.hanoiDisks})`);
         assert(val.imgProvCount >= 2 && val.imgModCount >= 2, `Image & GenMedia Arena must render Provider ▸ Model selects for each slot (got ${val.imgProvCount} provider selects, ${val.imgModCount} model selects)`);
         assert(Array.isArray(val.provOptionsA) && val.provOptionsA.includes('google') && val.provOptionsA.includes('openai'), 'Image Arena Provider select must include Google and OpenAI');
