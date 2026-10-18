@@ -299,13 +299,20 @@ function httpRequest(port, method, urlPath, bodyObj) {
             await runCad3dViewport('A', codeA);
             await runCad3dViewport('B', codeB);
 
-            // Wait up to 8s for both slots to report CAD_TELEMETRY and deferred CAD_4VIEW_SNAPSHOT
-            const deadline = Date.now() + 8000;
+            // Wait up to 12s for both slots to report CAD_TELEMETRY
+            const deadline = Date.now() + 12000;
             while (Date.now() < deadline) {
               const stA = CAD_SLOT_STATE['A'] || {};
               const stB = CAD_SLOT_STATE['B'] || {};
-              if (stA.telemetry && stB.telemetry && stA.fourViewDataUrl && stB.fourViewDataUrl) break;
+              if (stA.telemetry && stB.telemetry) break;
               await new Promise((r) => setTimeout(r, 150));
+            }
+            // Ensure both slots capture their 4-angle composite PNG (either via deferred timer or explicit request)
+            if (!CAD_SLOT_STATE['A']?.fourViewDataUrl) {
+              await requestFresh4ViewFromSlot('A', 6000);
+            }
+            if (!CAD_SLOT_STATE['B']?.fourViewDataUrl) {
+              await requestFresh4ViewFromSlot('B', 6000);
             }
             const cadSlots = ['A', 'B'].map((s) => {
               const st = CAD_SLOT_STATE[s] || {};
