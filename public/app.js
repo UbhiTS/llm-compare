@@ -10265,6 +10265,53 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
   const cleanUrl = String(endpointUrl || 'http://127.0.0.1:27182/mcp').trim() || 'http://127.0.0.1:27182/mcp';
   const fusionScript = payload.fusionScript || '';
 
+  // 1. First try the local Mac CORS-to-Fusion-MCP bridge on http://127.0.0.1:27183/mcp.
+  // Because the Python bridge runs natively on macOS, it is unaffected by browser CORS
+  // preflights or missing Access-Control-Expose-Headers: Mcp-Session-Id on :27182, and
+  // also installs the script directly into Fusion 360's API/Scripts directory.
+  try {
+    const proxyUrl = 'http://127.0.0.1:27183/mcp';
+    const proxyResp = await fetch(proxyUrl, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        targetUrl: cleanUrl,
+        slot: payload.slot,
+        title: payload.title,
+        modelLabel: payload.modelLabel,
+        fusionScript,
+        stepText: payload.stepText || '',
+        params: payload.params || {},
+        telemetry: payload.telemetry || null,
+      }),
+      signal: AbortSignal.timeout(35000),
+    });
+    const proxyData = await proxyResp.json().catch(() => ({}));
+    if (proxyResp.ok && proxyData && proxyData.ok) {
+      return {
+        ok: true,
+        pushed: true,
+        endpointUrl: `${ proxyData.endpointUrl || cleanUrl } (via Mac Bridge :27183)`,
+        status: proxyResp.status,
+        tool: proxyData.tool || 'execute_python',
+        savedPaths: proxyData.savedPaths || null,
+      };
+    }
+    if (proxyData && proxyData.error) {
+      return {
+        ok: false,
+        pushed: false,
+        proxyReachable: true,
+        endpointUrl: cleanUrl,
+        error: proxyData.error,
+        savedPaths: proxyData.savedPaths || null,
+      };
+    }
+  } catch (_) {
+    // Proxy on :27183 is not running yet; fall through to direct browser connection to cleanUrl.
+  }
+
   const mcpPost = async (url, bodyObj, sessionId = null, timeoutMs = 20000) => {
     const headers = {
       'Content-Type': 'application/json',
@@ -10286,7 +10333,7 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
     return { ok: resp.ok, status: resp.status, sessionId: newSid, data: parsed };
   };
 
-  // 1. Try direct browser -> local MCP endpoint (Streamable HTTP JSON-RPC 2.0 or REST)
+  // 2. Try direct browser -> local MCP endpoint (Streamable HTTP JSON-RPC 2.0 or REST)
   try {
     const initRes = await mcpPost(cleanUrl, {
       jsonrpc: '2.0',
@@ -10295,7 +10342,7 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
       params: {
         protocolVersion: '2024-11-05',
         capabilities: {},
-        clientInfo: { name: 'llm-compare-3d-arena', version: '1.0.56' },
+        clientInfo: { name: 'llm-compare-3d-arena', version: '1.0.57' },
       },
     }, null, 10000);
 
@@ -10321,15 +10368,15 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
       await mcpPost(cleanUrl, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} }, sid, 4000);
     } catch (_) { /* best effort */ }
 
-    let toolName = 'fusion_mcp_execute';
+    let toolName = 'execute_python';
     let argKey = 'script';
     try {
       const listRes = await mcpPost(cleanUrl, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, sid, 8000);
       const tools = (listRes.data && listRes.data.result && Array.isArray(listRes.data.result.tools))
         ? listRes.data.result.tools
         : [];
-      let chosen = tools.find((t) => t && ['fusion_mcp_execute', 'execute_script', 'run_script', 'run_python_script', 'fusion360_import_model'].includes(t.name))
-        || tools.find((t) => t && /exec|script|python|run|code|import/i.test(String(t.name || '')))
+      let chosen = tools.find((t) => t && ['execute_python', 'fusion_mcp_execute', 'execute_script', 'run_script', 'run_python_script', 'run_python', 'eval_python', 'fusion360_import_model'].includes(t.name))
+        || tools.find((t) => t && /python|exec|script|run|code|eval|import/i.test(String(t.name || '')))
         || tools[0];
       if (chosen && chosen.name) {
         toolName = chosen.name;
@@ -10339,12 +10386,12 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
         if (propNames.length === 1) {
           argKey = propNames[0];
         } else {
-          const matchKey = ['script', 'code', 'python_code', 'source', 'command', 'fusionScript'].find((k) => k in props);
+          const matchKey = ['code', 'script', 'python_code', 'python', 'source', 'command', 'fusionScript'].find((k) => k in props);
           if (matchKey) argKey = matchKey;
           else if (reqKeys.length) argKey = reqKeys[0];
         }
       }
-    } catch (_) { /* fallback to fusion_mcp_execute */ }
+    } catch (_) { /* fallback to execute_python */ }
 
     const args = { [argKey]: fusionScript };
     if (toolName === 'fusion360_import_model') {
@@ -10368,43 +10415,8 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
     const errDetail = (callRes.data && callRes.data.error && callRes.data.error.message)
       || (callRes.data && callRes.data.error)
       || `HTTP ${callRes.status}`;
-    return { ok: false, pushed: false, endpointUrl: cleanUrl, status: callRes.status, error: String(errDetail) };
+    return { ok: false, pushed: false, corsOrOffline: !sid, endpointUrl: cleanUrl, status: callRes.status, error: String(errDetail) };
   } catch (directErr) {
-    // 2. If direct fetch to :27182 was blocked by browser CORS preflight (or missing Mcp-Session-Id CORS header),
-    // automatically try the local Mac CORS-to-Fusion-MCP proxy on http://127.0.0.1:27183/mcp!
-    try {
-      const proxyUrl = 'http://127.0.0.1:27183/mcp';
-      const proxyResp = await fetch(proxyUrl, {
-        method: 'POST',
-        mode: 'cors',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetUrl: cleanUrl,
-          slot: payload.slot,
-          title: payload.title,
-          modelLabel: payload.modelLabel,
-          fusionScript,
-          stepText: payload.stepText || '',
-          params: payload.params || {},
-          telemetry: payload.telemetry || null,
-        }),
-        signal: AbortSignal.timeout(25000),
-      });
-      const proxyData = await proxyResp.json().catch(() => ({}));
-      if (proxyResp.ok && proxyData && proxyData.ok) {
-        return {
-          ok: true,
-          pushed: true,
-          endpointUrl: `${cleanUrl} (via Mac CORS bridge :27183)`,
-          status: proxyResp.status,
-          tool: proxyData.tool || 'fusion_mcp_execute',
-        };
-      }
-      if (proxyData && proxyData.error) {
-        return { ok: false, pushed: false, endpointUrl: cleanUrl, error: proxyData.error };
-      }
-    } catch (_) { /* proxy not running on :27183 */ }
-
     return {
       ok: false,
       pushed: false,
@@ -10683,7 +10695,10 @@ function initCadArenaBindings() {
           if (corsHelp) corsHelp.classList.remove('hidden');
           statusEl.textContent = `⚠ Browser could not reach ${localEndpoint} directly (CORS preflight or Fusion MCP offline). Run the 1-line Mac Bridge Command below, then click Push again.`;
         } else {
-          statusEl.textContent = `⚠ Fusion MCP (${localEndpoint}) returned: ${browserPush.error || 'rejected'}`;
+          const savedNote = (browserPush.savedPaths && browserPush.savedPaths.fusionScriptPath)
+            ? ' · Script & STEP also saved to your Mac Fusion 360 Scripts folder'
+            : '';
+          statusEl.textContent = `⚠ Fusion MCP (${localEndpoint}) returned: ${browserPush.error || 'rejected'}${savedNote}`;
         }
       } catch (e) {
         statusEl.textContent = `⚠ ${e.message}`;

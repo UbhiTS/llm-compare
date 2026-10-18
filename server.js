@@ -459,6 +459,17 @@ app.get(['/cad-kernel.js', '/cad-step-worker.js'], (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, file));
 });
 
+// Serve the local macOS Fusion 360 MCP CORS proxy and installer script before the auth
+// gate so `curl -fsSL <origin>/fusion-mcp-cors-proxy.py | python3 -` works in Mac Terminal
+// without requiring browser session cookies.
+app.get(['/fusion-mcp-cors-proxy.py', '/cad-mcp-mac-install.sh'], (req, res) => {
+  const file = req.path === '/cad-mcp-mac-install.sh' ? 'cad-mcp-mac-install.sh' : 'fusion-mcp-cors-proxy.py';
+  setSandboxAssetHeaders(res);
+  setNoCacheHeaders(res);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.sendFile(path.join(PUBLIC_DIR, file));
+});
+
 // Serve the sandboxed 3D & CAD Studio iframe (/cad-runner.html) with SAMEORIGIN
 // framing and a scoped CSP that permits Three.js ESM importmap + Function evaluation
 // inside the isolated CAD sandbox (which shadows storage/cookies and blocks fetch).

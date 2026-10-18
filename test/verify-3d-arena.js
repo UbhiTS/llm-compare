@@ -390,6 +390,13 @@ function httpRequest(port, method, urlPath, bodyObj) {
     const rKernel = await httpRequest(port, 'GET', '/cad-kernel.js');
     assert.strictEqual(rKernel.status, 200, 'GET /cad-kernel.js must return 200');
 
+    const rProxy = await httpRequest(port, 'GET', '/fusion-mcp-cors-proxy.py');
+    assert.strictEqual(rProxy.status, 200, 'GET /fusion-mcp-cors-proxy.py must return 200 before auth gate');
+    assert(rProxy.text.includes('#!/usr/bin/env python3') && !rProxy.text.includes('<title>Sign in'), '/fusion-mcp-cors-proxy.py must return valid Python script, never login HTML');
+
+    const rMacSh = await httpRequest(port, 'GET', '/cad-mcp-mac-install.sh');
+    assert.strictEqual(rMacSh.status, 200, 'GET /cad-mcp-mac-install.sh must return 200 before auth gate');
+
     const rMcp = await httpRequest(port, 'POST', '/api/cad-mcp/fusion360-script', {
       title: 'TestGear_Slot_A',
       code: CAD_REFERENCE_SOLUTIONS['cad-planetary-gearbox'],
