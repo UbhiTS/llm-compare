@@ -2552,7 +2552,7 @@ function addSlot() {
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
+    'gemini-4-argon', 'gemini-3.8-flash', 'claude-fable-5-1', 'gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
     'grok-4.20-reasoning', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
@@ -2600,8 +2600,8 @@ function builtinPresetSlots(presetName) {
   } else if (presetName === 'frontier') {
     target = [
       { id: 'gemini-4-argon',      effort: null },
-      { id: 'claude-opus-5-5',     effort: null },
-      { id: 'gpt-6-sol',           effort: null },
+      { id: 'claude-fable-5-1',    effort: null },
+      { id: 'gpt-6.1-sol',         effort: null },
     ];
   } else if (presetName === 'fast') {
     const fastThird = catalog().find((x) => x.id === 'gpt-6-luna' && modelAvailability(x).ok)
@@ -4074,38 +4074,9 @@ function renderModelEditors() {
     const cid = SLOT_ASSIGN[slot];
     const c = catalog().find((x) => x.id === cid) || catalog()[0];
     if (!c) return;
-    const curFamily = providerFamilyOf(c);
     const curEffort = SLOT_EFFORT[slot] || '';
-
-    const familyOptions = PROVIDER_FAMILIES.map((pf) => {
-      const runnableCount = catalog().filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
-      const totalCount = catalog().filter((x) => providerFamilyOf(x) === pf.id).length;
-      if (!totalCount) return '';
-      const shortFam = pf.label.replace(/\s*\(.*\)/, '');
-      return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(shortFam)}</option>`;
-    }).join('');
-
-    const modelsInFamily = catalog().filter((x) => providerFamilyOf(x) === curFamily);
-    const seenSiblingGroups = new Set();
-    const modelOptions = modelsInFamily.map((mc) => {
-      const siblings = REASONING_SIBLING_PAIRS[mc.id];
-      if (siblings && siblings.length) {
-        const primaryId = siblings[0].id;
-        if (seenSiblingGroups.has(primaryId)) return '';
-        seenSiblingGroups.add(primaryId);
-        const isGroupActive = siblings.some((s) => s.id === c.id);
-        const optVal = isGroupActive ? c.id : primaryId;
-        const groupLabel = siblings[0].groupLabel || mc.label.replace(/\s*\((Reasoning|Standard|Thinking|Instruct)\)\s*$/i, '');
-        const av = modelAvailability(mc);
-        const suffix = !av.ok ? ' (No Key)' : '';
-        return `<option value="${esc(optVal)}"${isGroupActive ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(groupLabel)}${esc(suffix)}</option>`;
-      }
-      const av = modelAvailability(mc);
-      const suffix = !av.ok ? ' (No Key)' : '';
-      return `<option value="${esc(mc.id)}"${mc.id === c.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
-    }).join('');
-
     const thinkOptions = buildThinkingDropdownOptions(c, curEffort);
+    const thinkSelectHtml = `<select class="slot-think-select col-inline-select col-thk-sel" data-slot="${esc(slot)}" title="Thinking / reasoning mode" aria-label="Thinking mode for Slot ${esc(slot)}">${thinkOptions}</select>`;
 
     const card = el('div', 'slot-cfg-card');
     card.style.setProperty('--slot-accent', slotColor(slot));
@@ -4118,12 +4089,13 @@ function renderModelEditors() {
         <span class="scc-price">${priceTag(c)}/1M</span>
         ${SLOT_IDS.length > MIN_SLOTS ? `<button type="button" class="scc-remove" data-slot="${esc(slot)}" title="Remove Slot ${esc(slot)}">&times;</button>` : ''}
       </div>
-      <div class="scc-inline-controls">
-        <select class="slot-provider-select col-inline-select col-prov-sel" data-slot="${esc(slot)}" title="Provider family" aria-label="Provider for Slot ${esc(slot)}">${familyOptions}</select>
-        <span class="col-sel-sep">▸</span>
-        <select class="slot-model-select col-inline-select col-mod-sel" data-slot="${esc(slot)}" title="Model for Slot ${esc(slot)}" aria-label="Model for Slot ${esc(slot)}">${modelOptions}</select>
-        <select class="slot-think-select col-inline-select col-thk-sel" data-slot="${esc(slot)}" title="Thinking / reasoning mode" aria-label="Thinking mode for Slot ${esc(slot)}">${thinkOptions}</select>
-      </div>
+      ${buildProviderModelCascadingControlsHtml({
+        slot,
+        currentItem: c,
+        catalogItems: catalog(),
+        extraControlsHtml: thinkSelectHtml,
+        useSiblingGroups: true,
+      })}
     `;
     grid.appendChild(card);
   });
@@ -4132,6 +4104,55 @@ function renderModelEditors() {
   grid.querySelectorAll('.scc-remove').forEach((btn) => {
     btn.addEventListener('click', () => clearSlot(btn.dataset.slot));
   });
+}
+
+// Canonical Provider ▸ Model cascading selector markup used as the default UX across all arenas
+// (Text & Code Arena, 3D & CAD Arena, Image & GenMedia Arena, and future arenas).
+function buildProviderModelCascadingControlsHtml({
+  slot,
+  currentItem,
+  catalogItems,
+  providerSelectClass = 'slot-provider-select col-inline-select col-prov-sel',
+  modelSelectClass = 'slot-model-select col-inline-select col-mod-sel',
+  extraControlsHtml = '',
+  useSiblingGroups = false,
+}) {
+  const items = Array.isArray(catalogItems) ? catalogItems : [];
+  const curFamily = providerFamilyOf(currentItem);
+  const familyOptions = PROVIDER_FAMILIES.map((pf) => {
+    const runnableCount = items.filter((x) => providerFamilyOf(x) === pf.id && modelAvailability(x).ok).length;
+    const totalCount = items.filter((x) => providerFamilyOf(x) === pf.id).length;
+    if (!totalCount) return '';
+    const shortFam = pf.label.replace(/\s*\(.*\)/, '');
+    return `<option value="${esc(pf.id)}"${pf.id === curFamily ? ' selected' : ''}${!runnableCount ? ' disabled' : ''}>${esc(shortFam)}</option>`;
+  }).join('');
+
+  const modelsInFamily = items.filter((x) => providerFamilyOf(x) === curFamily);
+  const seenSiblingGroups = new Set();
+  const modelOptions = modelsInFamily.map((mc) => {
+    const siblings = useSiblingGroups ? REASONING_SIBLING_PAIRS[mc.id] : null;
+    if (siblings && siblings.length) {
+      const primaryId = siblings[0].id;
+      if (seenSiblingGroups.has(primaryId)) return '';
+      seenSiblingGroups.add(primaryId);
+      const isGroupActive = siblings.some((s) => s.id === currentItem.id);
+      const optVal = isGroupActive ? currentItem.id : primaryId;
+      const groupLabel = siblings[0].groupLabel || mc.label.replace(/\s*\((Reasoning|Standard|Thinking|Instruct)\)\s*$/i, '');
+      const av = modelAvailability(mc);
+      const suffix = !av.ok ? ' (No Key)' : '';
+      return `<option value="${esc(optVal)}"${isGroupActive ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(groupLabel)}${esc(suffix)}</option>`;
+    }
+    const av = modelAvailability(mc);
+    const suffix = !av.ok ? ' (No Key)' : '';
+    return `<option value="${esc(mc.id)}"${mc.id === currentItem.id ? ' selected' : ''}${!av.ok ? ' disabled' : ''}>${esc(mc.label)}${esc(suffix)}</option>`;
+  }).join('');
+
+  return `<div class="scc-inline-controls">
+    <select class="${providerSelectClass}" data-slot="${esc(slot)}" title="Provider family" aria-label="Provider for Slot ${esc(slot)}">${familyOptions}</select>
+    <span class="col-sel-sep">▸</span>
+    <select class="${modelSelectClass}" data-slot="${esc(slot)}" title="Model for Slot ${esc(slot)}" aria-label="Model for Slot ${esc(slot)}">${modelOptions}</select>
+    ${extraControlsHtml}
+  </div>`;
 }
 
 // Track per-slot raw vs formatted view preference for non-executable prose tasks
@@ -7389,19 +7410,42 @@ function renderImageSlotsConfigurator() {
 
   IMG_SLOTS.forEach((slotObj, idx) => {
     const entry = getImgCatalogItem(slotObj.catalogId) || catalog[0];
+    if (!entry) return;
     const color = slotColor(slotObj.slot);
-    const card = el('div', 'img-slot-card');
+    const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
+    const offPeakPrice = entry.pricing && entry.pricing.offPeakDiscount > 0
+      ? refPrice * (1 - entry.pricing.offPeakDiscount)
+      : null;
+    const slaCls = entry.slaPct >= 99.5 ? 'is-sla-995' : 'is-sla-95';
+
+    const card = el('div', 'slot-cfg-card img-slot-card');
     card.style.setProperty('--slot-accent', color);
+    card.innerHTML = `
+      <div class="scc-head">
+        <span class="scc-slot-badge" style="background:${color}22;color:${color};border-color:${color}55">Slot ${esc(slotObj.slot)}</span>
+        <span class="scc-ic">${modelIconSvg(entry)}</span>
+        <strong class="scc-name">${esc(entry.label)}</strong>
+        ${providerBadgeHtml(entry)}
+        <span class="scc-price">~${fmtCost(refPrice)}/img</span>
+        ${IMG_SLOTS.length > 1 ? `<button type="button" class="scc-remove ca-remove" data-slot="${esc(slotObj.slot)}" title="Remove Slot ${esc(slotObj.slot)}">&times;</button>` : ''}
+      </div>
+      ${buildProviderModelCascadingControlsHtml({
+        slot: slotObj.slot,
+        currentItem: entry,
+        catalogItems: catalog,
+        providerSelectClass: 'slot-provider-select col-inline-select col-prov-sel img-provider-select',
+        modelSelectClass: 'slot-model-select col-inline-select col-mod-sel img-slot-select',
+      })}
+      <div class="img-slot-badges">
+        <span class="img-mini-pill ${slaCls}">${esc(entry.slaBadge)}</span>
+        <span class="img-mini-pill">${esc(entry.endpointBadge)}</span>
+        <span class="img-mini-pill">PayGo ~${fmtCost(refPrice)}/img</span>
+        ${offPeakPrice != null ? `<span class="img-mini-pill is-save">Off-Peak ~${fmtCost(offPeakPrice)}/img (-50%)</span>` : ''}
+      </div>
+    `;
 
-    const top = el('div', 'img-slot-top');
-    const left = el('div', 'mc-slot-id');
-    left.innerHTML = `<span class="mc-dot" style="background:${color}"></span><strong>Slot ${esc(slotObj.slot)}</strong>`;
-    top.appendChild(left);
-
-    if (IMG_SLOTS.length > 1) {
-      const rm = el('button', 'ca-remove', '✕');
-      rm.type = 'button';
-      rm.title = `Remove Slot ${slotObj.slot}`;
+    const rm = card.querySelector('.scc-remove');
+    if (rm) {
       rm.addEventListener('click', () => {
         if (IMG_RUNNING) return; // lineup is frozen while images are generating (1.5)
         IMG_SLOTS.splice(idx, 1);
@@ -7413,43 +7457,40 @@ function renderImageSlotsConfigurator() {
         renderImageMetricComparison();
         renderImageEconomicsModeler();
       });
-      top.appendChild(rm);
     }
-    card.appendChild(top);
 
-    const sel = el('select', 'img-slot-select');
-    catalog.forEach((c) => {
-      const opt = el('option');
-      opt.value = c.id;
-      opt.textContent = c.label;
-      if (c.id === entry.id) opt.selected = true;
-      sel.appendChild(opt);
-    });
-    sel.addEventListener('change', () => {
-      if (IMG_RUNNING) { sel.value = slotObj.catalogId; return; } // frozen during a run (1.5)
-      slotObj.catalogId = sel.value;
-      IMG_LAST_RESULTS = [];
-      renderImageSlotsConfigurator();
-      renderImageArenaPlaceholderCards();
-      updateSplitCurtainView();
-      renderImageMetricComparison();
-      renderImageEconomicsModeler();
-    });
-    card.appendChild(sel);
+    const provSel = card.querySelector('.img-provider-select');
+    if (provSel) {
+      provSel.addEventListener('change', () => {
+        if (IMG_RUNNING) { provSel.value = providerFamilyOf(entry); return; } // frozen during a run (1.5)
+        const fam = provSel.value;
+        const firstModel = catalog.find((x) => providerFamilyOf(x) === fam && modelAvailability(x).ok)
+          || catalog.find((x) => providerFamilyOf(x) === fam);
+        if (firstModel) {
+          slotObj.catalogId = firstModel.id;
+          IMG_LAST_RESULTS = [];
+          renderImageSlotsConfigurator();
+          renderImageArenaPlaceholderCards();
+          updateSplitCurtainView();
+          renderImageMetricComparison();
+          renderImageEconomicsModeler();
+        }
+      });
+    }
 
-    const refPrice = (entry.pricing && entry.pricing.referenceCostBySize && entry.pricing.referenceCostBySize[IMG_SELECTED_SIZE]) || 0.05;
-    const offPeakPrice = entry.pricing && entry.pricing.offPeakDiscount > 0
-      ? refPrice * (1 - entry.pricing.offPeakDiscount)
-      : null;
-
-    const badges = el('div', 'img-slot-badges');
-    const slaCls = entry.slaPct >= 99.5 ? 'is-sla-995' : 'is-sla-95';
-    badges.innerHTML =
-      `<span class="img-mini-pill ${slaCls}">${esc(entry.slaBadge)}</span>` +
-      `<span class="img-mini-pill">${esc(entry.endpointBadge)}</span>` +
-      `<span class="img-mini-pill">PayGo ~${fmtCost(refPrice)}/img</span>` +
-      (offPeakPrice != null ? `<span class="img-mini-pill is-save">Off-Peak ~${fmtCost(offPeakPrice)}/img (-50%)</span>` : '');
-    card.appendChild(badges);
+    const sel = card.querySelector('.img-slot-select');
+    if (sel) {
+      sel.addEventListener('change', () => {
+        if (IMG_RUNNING) { sel.value = slotObj.catalogId; return; } // frozen during a run (1.5)
+        slotObj.catalogId = sel.value;
+        IMG_LAST_RESULTS = [];
+        renderImageSlotsConfigurator();
+        renderImageArenaPlaceholderCards();
+        updateSplitCurtainView();
+        renderImageMetricComparison();
+        renderImageEconomicsModeler();
+      });
+    }
 
     grid.appendChild(card);
   });

@@ -956,7 +956,6 @@
         gridGroup.position.set(0, 0, 0);
         gridGroup.updateMatrixWorld(true);
 
-        renderer.shadowMap.autoUpdate = false;
         renderer.setPixelRatio(1);
         renderer.setSize(halfW, halfH, false);
         camera.aspect = halfW / halfH;
@@ -995,7 +994,16 @@
           },
         ];
 
-        for (const v of views) {
+        for (let vi = 0; vi < views.length; vi++) {
+          const v = views[vi];
+          // IMPORTANT: Keep shadowMap.autoUpdate enabled on the first quadrant (vi === 0)
+          // so that if captureFourAngleCompositeDataUrl() runs in a background tab before
+          // animate() has ever rendered a frame, Three.js allocates keyLight.shadow.map
+          // (sampler2DShadow) BEFORE compiling MeshStandardMaterial shaders. Compiling
+          // materials while keyLight.shadow.map is null and shadowMap.autoUpdate is false
+          // binds a non-compare sampler2D to a depth compare texture and causes WebGL2
+          // GL_INVALID_OPERATION (1282), leaving only the unlit origin grid visible.
+          renderer.shadowMap.autoUpdate = vi === 0 ? savedShadowAutoUpdate : false;
           controls.target.copy(modelCenter);
           camera.position.copy(v.pos);
           camera.lookAt(modelCenter);
@@ -1366,6 +1374,10 @@
         if (spin3AxisEnabled) {
           applySpin3AxisTransform(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z);
         }
+        // Render an immediate initial frame while shadowMap.autoUpdate is true so shadow maps
+        // and PBR material shaders are compiled and the canvas buffer is populated even if
+        // the comparison finishes while this browser tab is in the background.
+        renderer.render(scene, camera);
         ok = true;
       } catch (err) {
         // A failed rebuild must not leave the previous model's telemetry / 4-view around:
@@ -1967,7 +1979,18 @@
       }
     }
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') lastAnimFrameMs = performance.now();
+      if (document.visibilityState === 'visible') {
+        lastAnimFrameMs = performance.now();
+        const w = Math.max(1, window.innerWidth);
+        const h = Math.max(1, window.innerHeight);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+        if (modelRoot) {
+          applyRenderModeToModel();
+          renderer.render(scene, camera);
+        }
+      }
     });
     animate();
 

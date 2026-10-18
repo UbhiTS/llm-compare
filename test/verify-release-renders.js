@@ -119,10 +119,19 @@ function httpRequest(port, method, urlPath, bodyObj) {
     appJs.includes('runCad3dViewport(slot, r.code);') &&
     appJs.includes('function isCadHistoryRun(r)') &&
     appJs.includes("'🧊 3D & CAD Arena Run History'") &&
-    appJs.includes("if (presetName === 'gemini')"),
-    'public/app.js must isolate 3D & CAD Arena history, switch to 3d mode on CAD history restore, and provide the Gemini Models preset'
+    appJs.includes("if (presetName === 'gemini')") &&
+    appJs.includes("{ id: 'claude-fable-5-1',    effort: null }") &&
+    appJs.includes("{ id: 'gpt-6.1-sol',         effort: null }") &&
+    appJs.includes('function buildProviderModelCascadingControlsHtml(') &&
+    appJs.includes("providerSelectClass: 'slot-provider-select col-inline-select col-prov-sel img-provider-select'"),
+    'public/app.js must isolate 3D & CAD Arena history, use Gemini 4 Argon + Fable 5.1 + Sol 6.1 in Flagships preset, and use Provider ▸ Model cascading controls across all arenas including Image & GenMedia Arena'
   );
-  console.log('✓ 1. Source invariants verified (multi-slot concurrency, UberProxy iframe sandboxes, Hanoi fallback, CAD telemetry, 3D history isolation & Gemini preset)');
+  assert(
+    cadRunnerHtml.includes('renderer.shadowMap.autoUpdate = vi === 0 ? savedShadowAutoUpdate : false;') &&
+    cadRunnerHtml.includes("document.addEventListener('visibilitychange', () => {"),
+    'public/cad-runner.html must initialize PCFShadowMap depth compare texture before compiling MeshStandardMaterial shaders in background tabs'
+  );
+  console.log('✓ 1. Source invariants verified (multi-slot concurrency, UberProxy iframe sandboxes, Hanoi fallback, CAD background-tab shadow sampler, 3D history isolation, Flagships preset & Provider ▸ Model UX)');
 
   // ---------------------------------------------------------------------------
   // 2. Spawned HTTP Server: Zero-Cache Headers & Parallel Multi-Slot Requests
@@ -341,7 +350,29 @@ function httpRequest(port, method, urlPath, bodyObj) {
             const hanoiViz = document.getElementById('exec-viz-A');
             const hanoiDisks = hanoiViz ? hanoiViz.querySelectorAll('.hanoi-disk').length : 0;
 
-            return { cadSlots, hanoiOk, hanoiDisks, hanoiVisible: Boolean(hanoiViz && !hanoiViz.classList.contains('hidden')) };
+            // 3. Test Image & GenMedia Arena Provider ▸ Model cascading selector UX
+            await ensureImageArenaLoaded();
+            switchArenaMode('image', { skipInterruptCheck: true });
+            const imgProvSelects = Array.from(document.querySelectorAll('#imgSlotGrid .img-provider-select'));
+            const imgModSelects = Array.from(document.querySelectorAll('#imgSlotGrid .img-slot-select'));
+            const provOptionsA = imgProvSelects[0] ? Array.from(imgProvSelects[0].options).map((o) => o.value) : [];
+            if (imgProvSelects[0]) {
+              imgProvSelects[0].value = 'openai';
+              imgProvSelects[0].dispatchEvent(new Event('change'));
+            }
+            const afterSwitchModSelA = document.querySelector('#imgSlotGrid .img-slot-select');
+            const openaiModOptionsA = afterSwitchModSelA ? Array.from(afterSwitchModSelA.options).map((o) => o.value) : [];
+
+            return {
+              cadSlots,
+              hanoiOk,
+              hanoiDisks,
+              hanoiVisible: Boolean(hanoiViz && !hanoiViz.classList.contains('hidden')),
+              imgProvCount: imgProvSelects.length,
+              imgModCount: imgModSelects.length,
+              provOptionsA,
+              openaiModOptionsA,
+            };
           })()`,
           awaitPromise: true,
           returnByValue: true,
@@ -357,8 +388,11 @@ function httpRequest(port, method, urlPath, bodyObj) {
           assert(cs.stripText.includes('Watertight') && cs.stripText.includes('tris'), `Slot ${cs.slot} telemetry strip must render mesh stats (got "${cs.stripText}")`);
         }
         assert(val.hanoiOk && val.hanoiVisible && val.hanoiDisks === 8, `Towers of Hanoi must render 8 animated disks in #exec-viz-A (got hanoiDisks=${val.hanoiDisks})`);
+        assert(val.imgProvCount >= 2 && val.imgModCount >= 2, `Image & GenMedia Arena must render Provider ▸ Model selects for each slot (got ${val.imgProvCount} provider selects, ${val.imgModCount} model selects)`);
+        assert(Array.isArray(val.provOptionsA) && val.provOptionsA.includes('google') && val.provOptionsA.includes('openai'), 'Image Arena Provider select must include Google and OpenAI');
+        assert(Array.isArray(val.openaiModOptionsA) && val.openaiModOptionsA[0] === 'gpt-image-2.5-sunburst', `Selecting OpenAI in Image Arena Provider dropdown must cascade to OpenAI image models (got ${JSON.stringify(val.openaiModOptionsA)})`);
         ws.close();
-        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi animation');
+        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector');
       } finally {
         try { chrome.kill('SIGKILL'); } catch (_) {}
         try { fs.rmSync(chromeProfile, { recursive: true, force: true }); } catch (_) {}

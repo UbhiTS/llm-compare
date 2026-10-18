@@ -2586,24 +2586,6 @@ a.ud-item[hidden] { display: none; }
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 11px 13px;
-  border: 1px solid var(--border-hi);
-  border-top: 3px solid var(--slot-accent, var(--accent));
-  background: var(--well);
-}
-
-.img-slot-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.img-slot-select {
-  width: 100%;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 7px 10px;
 }
 
 .img-slot-badges {
