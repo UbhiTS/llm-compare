@@ -277,45 +277,51 @@ function patchIndexHtml(idxPath) {
       html = html.replace(/<style id="ullm-game-css">[\s\S]*?<\/style>/, gameCss);
     }
 
-    if (html.indexOf('<script id="ullm-cdn-fix">') < 0) {
-      const headPatch = [
-        gameCss,
-        '<script id="ullm-cdn-fix">(function(){',
-        // Capture parent postMessage before shadowing window.parent/top
-        'var rawParent=(window.parent&&window.parent!==window)?window.parent:null;',
-        'var postUp=rawParent?rawParent.postMessage.bind(rawParent):function(){};',
-        'var origin=window.location.origin;',
-        'Object.defineProperty(window,"__ullmPost",{value:function(msg){try{postUp(msg,origin);}catch(e){}},writable:false,configurable:false});',
-        // Defense in depth only (see the function comment): shadow storage and parent-frame
-        // access in this realm. The sandboxed opaque-origin iframe is the real boundary.
-        'function memStore(){var d=Object.create(null);return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[k]=String(v);},removeItem:function(k){delete d[k];},clear:function(){d=Object.create(null);},key:function(i){return Object.keys(d)[i]||null;},get length(){return Object.keys(d).length;}};}',
-        'try{Object.defineProperty(window,"localStorage",{value:memStore(),configurable:false});}catch(e){}',
-        'try{Object.defineProperty(window,"sessionStorage",{value:memStore(),configurable:false});}catch(e){}',
-        'try{Object.defineProperty(window,"indexedDB",{get:function(){return null;},configurable:false});}catch(e){}',
-        'try{Object.defineProperty(window,"parent",{get:function(){return window;},configurable:false});}catch(e){}',
-        'try{Object.defineProperty(window,"top",{get:function(){return window;},configurable:false});}catch(e){}',
-        'try{Object.defineProperty(window,"frameElement",{get:function(){return null;},configurable:false});}catch(e){}',
-        // Rewrite localhost:8000 wheel URLs and block same-origin /api/* or /auth/* requests
-        'var BAD=["http://localhost:8000/","https://localhost:8000/"];',
-        'var GOOD="https://pygame-web.github.io/";',
-        'function fx(u){u=String(u);for(var i=0;i<BAD.length;i++){',
-        'if(u.slice(0,BAD[i].length)===BAD[i])return GOOD+u.slice(BAD[i].length);}',
-        'return u;}',
-        'function blocked(u){try{var p=new URL(String(u),window.location.href);if(p.origin===origin&&(/^\\/(api|auth)(\\/|$)/i.test(p.pathname)))return true;}catch(e){}return false;}',
-        'var of=window.fetch;',
-        'window.fetch=function(i,o){',
-        'var u=(typeof i==="string")?i:(i&&i.url)||"";',
-        'if(blocked(u))return Promise.reject(new Error("Blocked by sandbox"));',
-        'if(typeof i==="string")i=fx(i);',
-        'else if(i&&i.url){var n=fx(i.url);if(n!==i.url)i=new Request(n,i);}',
-        'return of.call(this,i,o);};',
-        'var oo=XMLHttpRequest.prototype.open;',
-        'XMLHttpRequest.prototype.open=function(m,u){',
-        'if(blocked(u))throw new Error("Blocked by sandbox");',
-        'var a=[].slice.call(arguments);a[1]=fx(u);return oo.apply(this,a);};',
-        '})();<' + '/script>',
-      ].join('');
-      html = html.replace(/<head>/i, '<head>' + headPatch);
+    const cdnFixScript = [
+      '<script id="ullm-cdn-fix">(function(){',
+      // Capture parent postMessage before shadowing window.parent/top.
+      // Because the game iframe uses sandbox="allow-scripts" (opaque origin),
+      // window.location.origin is "null" while window.location.href still carries
+      // the HTTP origin. Derive targetOrigin from document.referrer / href with "*" fallback.
+      'var rawParent=(window.parent&&window.parent!==window)?window.parent:null;',
+      'var postUp=rawParent?rawParent.postMessage.bind(rawParent):function(){};',
+      'var docOrigin="";try{docOrigin=new URL(window.location.href).origin;}catch(e){}',
+      'var targetOrigin="*";try{if(document.referrer)targetOrigin=new URL(document.referrer).origin;}catch(e){}if((!targetOrigin||targetOrigin==="null")&&docOrigin&&docOrigin!=="null")targetOrigin=docOrigin;',
+      'Object.defineProperty(window,"__ullmPost",{value:function(msg){try{postUp(msg,targetOrigin);}catch(e){try{postUp(msg,"*");}catch(_){}}},writable:false,configurable:false});',
+      // Defense in depth only (see the function comment): shadow storage and parent-frame
+      // access in this realm. The sandboxed opaque-origin iframe is the real boundary.
+      'function memStore(){var d=Object.create(null);return{getItem:function(k){return Object.prototype.hasOwnProperty.call(d,k)?d[k]:null;},setItem:function(k,v){d[k]=String(v);},removeItem:function(k){delete d[k];},clear:function(){d=Object.create(null);},key:function(i){return Object.keys(d)[i]||null;},get length(){return Object.keys(d).length;}};}',
+      'try{Object.defineProperty(window,"localStorage",{value:memStore(),configurable:false});}catch(e){}',
+      'try{Object.defineProperty(window,"sessionStorage",{value:memStore(),configurable:false});}catch(e){}',
+      'try{Object.defineProperty(window,"indexedDB",{get:function(){return null;},configurable:false});}catch(e){}',
+      'try{Object.defineProperty(window,"parent",{get:function(){return window;},configurable:false});}catch(e){}',
+      'try{Object.defineProperty(window,"top",{get:function(){return window;},configurable:false});}catch(e){}',
+      'try{Object.defineProperty(window,"frameElement",{get:function(){return null;},configurable:false});}catch(e){}',
+      // Rewrite localhost:8000 wheel URLs and block same-origin /api/* or /auth/* requests
+      'var BAD=["http://localhost:8000/","https://localhost:8000/"];',
+      'var GOOD="https://pygame-web.github.io/";',
+      'function fx(u){u=String(u);for(var i=0;i<BAD.length;i++){',
+      'if(u.slice(0,BAD[i].length)===BAD[i])return GOOD+u.slice(BAD[i].length);}',
+      'return u;}',
+      'function blocked(u){try{var p=new URL(String(u),window.location.href);if(docOrigin&&p.origin===docOrigin&&(/^\\/(api|auth)(\\/|$)/i.test(p.pathname)))return true;}catch(e){}return false;}',
+      'var of=window.fetch;',
+      'window.fetch=function(i,o){',
+      'var u=(typeof i==="string")?i:(i&&i.url)||"";',
+      'if(blocked(u))return Promise.reject(new Error("Blocked by sandbox"));',
+      'if(typeof i==="string")i=fx(i);',
+      'else if(i&&i.url){var n=fx(i.url);if(n!==i.url)i=new Request(n,i);}',
+      'return of.call(this,i,o);};',
+      'var oo=XMLHttpRequest.prototype.open;',
+      'XMLHttpRequest.prototype.open=function(m,u){',
+      'if(blocked(u))throw new Error("Blocked by sandbox");',
+      'var a=[].slice.call(arguments);a[1]=fx(u);return oo.apply(this,a);};',
+      '})();<' + '/script>',
+    ].join('');
+
+    if (html.indexOf('<script id="ullm-cdn-fix">') >= 0) {
+      html = html.replace(/<script id="ullm-cdn-fix">[\s\S]*?<\/script>/, cdnFixScript);
+    } else {
+      html = html.replace(/<head>/i, '<head>' + gameCss + cdnFixScript);
     }
 
     const diag = [

@@ -39,13 +39,13 @@ function parseTaskFile(raw) {
   const metaBlock = m ? m[1] : '';
   const body = m ? m[2] : raw;
 
-  const task = {};
+  const task = Object.create(null);
   const lines = metaBlock.split(/\r?\n/);
   let currentKey = null;
   let currentRaw = '';
 
   const flush = () => {
-    if (currentKey) {
+    if (currentKey && currentKey !== '__proto__' && currentKey !== 'constructor' && currentKey !== 'prototype') {
       task[currentKey] = parseValue(currentRaw);
       currentKey = null;
       currentRaw = '';
@@ -77,7 +77,7 @@ function loadTasks() {
   try {
     files = fs.readdirSync(PROMPTS_DIR)
       .filter((f) => /\.md$/i.test(f) && !f.startsWith('_') && f.toLowerCase() !== 'readme.md')
-      .sort();
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   } catch (e) {
     console.error('[tasks] could not read prompts dir (' + PROMPTS_DIR + '): ' + e.message);
     return [];

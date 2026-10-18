@@ -123,7 +123,10 @@ const LOGIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'login.html'),
 
 // ---------- security headers (applied to every response) ----------
 app.use((req, res, next) => {
-  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || req.hostname === '::1' || !!process.env.ANTIGRAVITY_SIDECAR_WEB_PORT;
+  const peer = (req.socket && req.socket.remoteAddress) || '';
+  const isLoopbackPeer = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  const isLocal = req.hostname === 'localhost' || req.hostname === '127.0.0.1' || req.hostname === '::1'
+    || (isLoopbackPeer && !!process.env.ANTIGRAVITY_SIDECAR_WEB_PORT);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (!isLocal) res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'no-referrer');
@@ -1124,11 +1127,12 @@ app.get('/api/history/:id/pdf', (req, res) => {
   if (!rec) return res.status(404).json({ error: 'Run not found.' });
   try {
     const foundTask = TASKS.find((t) => t.id === rec.taskId);
+    const capped = capPdfExportBody(rec);
     const pdfBuf = buildComparisonPdf({
-      ...rec,
+      ...capped,
       task: foundTask || null,
-      taskTitle: rec.title || (foundTask && foundTask.title) || 'Comparison Report',
-      prompt: rec.prompt || (foundTask && foundTask.prompt) || '',
+      taskTitle: String(rec.title || (foundTask && foundTask.title) || 'Comparison Report').slice(0, 200),
+      prompt: String(rec.prompt || (foundTask && foundTask.prompt) || '').slice(0, 100000),
     });
     const filename = pdfFilename(rec.title || rec.taskId || 'comparison', rec.at);
     res.setHeader('Content-Type', 'application/pdf');
@@ -1203,6 +1207,10 @@ app.post('/api/export-pdf', (req, res) => {
     const savedRec = (!body.judge && (body.runId || body.id))
       ? history.getRun(body.runId || body.id, { username: req.user.username, isAdmin: req.user.role === 'admin' })
       : null;
+    const rawJudge = body.judge || (savedRec && savedRec.judge) || null;
+    const cappedJudge = (rawJudge && typeof rawJudge === 'object')
+      ? capPdfExportBody({ judge: rawJudge }).judge
+      : null;
     const pdfBuf = buildComparisonPdf({
       taskId: body.taskId || (foundTask && foundTask.id) || 'custom',
       taskTitle: title,
@@ -1211,7 +1219,7 @@ app.post('/api/export-pdf', (req, res) => {
       models: Array.isArray(body.models) ? body.models : [],
       results: body.results,
       slots: body.slots,
-      judge: body.judge || (savedRec && savedRec.judge) || null,
+      judge: cappedJudge,
       execOutputs: body.execOutputs && typeof body.execOutputs === 'object' ? body.execOutputs : null,
       at: Number(body.at) || Date.now(),
       user: req.user && req.user.username,
@@ -2017,7 +2025,7 @@ app.post('/api/attachments/upload',
       // Claude when the original image exceeds Anthropic's 5 MB cap (validated in
       // attachments.js exactly like the JSON path's claudeDataBase64/claudeMimeType).
       // A part named "fit_scaled" (same filename) is the OpenAI patch-budget copy.
-      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS * 3 });
+      const { files } = parseMultipart(req.body, req.headers['content-type'], { maxFiles: MAX_ATTACHMENTS * 3, maxFileBytes: 25 * 1024 * 1024 });
       const originals = files.filter((f) => f.field !== 'claude_scaled' && f.field !== 'fit_scaled');
       if (originals.length > MAX_ATTACHMENTS) return res.status(400).json({ ok: false, error: `Too many files (max ${MAX_ATTACHMENTS}).` });
       if (!originals.length) return res.status(400).json({ ok: false, error: 'No files in upload.' });

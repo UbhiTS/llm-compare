@@ -1656,6 +1656,9 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     const err = new Error(`Model "${entry.model}" returned no image (${scrubError(reasons.join('; '))})${scrubError(detail)}`);
     err.code = 'IMAGE_NOT_RETURNED';
     if (pf.blockReason || /SAFETY|PROHIBITED|BLOCKLIST|SPII|RECITATION/i.test(String(candidate.finishReason || ''))) err.code = 'IMAGE_BLOCKED';
+    if (j && j.usageMetadata) {
+      err.economics = computeImageSlotEconomics(entry, j.usageMetadata, effectiveSize);
+    }
     throw err;
   }
 
@@ -1757,6 +1760,7 @@ async function runImageArenaComparison({ slots, prompt, aspectRatio = '16:9', im
           providerFamily: entry ? entry.providerFamily : '',
           slaBadge: entry ? entry.slaBadge : '',
           endpointBadge: entry ? entry.endpointBadge : '',
+          ...(e && e.economics ? { economics: e.economics } : {}),
           error: scrubError(String((e && e.message) || e)),
         };
       }

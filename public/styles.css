@@ -16,7 +16,7 @@
   --border-hi: rgba(160, 185, 230, 0.30);
   --text: #eef2fb;
   --muted: #98a6c0;
-  --faint: #5f6e8a;
+  --faint: #7f8da8;
   --good: #34e0a1;
   --warn: #ffcb5e;
   --bad: #ff7a85;
@@ -38,7 +38,7 @@
   --surface: rgba(40, 49, 68, 0.55); --surface-2: rgba(50, 61, 82, 0.50);
   --well: rgba(13, 18, 28, 0.72); --well-2: rgba(10, 14, 22, 0.82);
   --border: rgba(165, 185, 220, 0.16); --border-hi: rgba(175, 200, 240, 0.32);
-  --text: #eef2fb; --muted: #a6b3cb; --faint: #6e7d99;
+  --text: #eef2fb; --muted: #a6b3cb; --faint: #8d9ab5;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.40);
   --grid: rgba(165, 185, 220, 0.05);
 }
@@ -49,7 +49,7 @@
   --surface: rgba(255, 255, 255, 0.66); --surface-2: rgba(255, 255, 255, 0.52);
   --well: rgba(244, 247, 252, 0.85); --well-2: rgba(235, 239, 247, 0.94);
   --border: rgba(35, 50, 80, 0.16); --border-hi: rgba(35, 50, 80, 0.30);
-  --text: #18202e; --muted: #56627c; --faint: #8a94a8;
+  --text: #18202e; --muted: #56627c; --faint: #5b6780;
   --good: #128a5c; --warn: #936400; --bad: #d23a4d; --gold: #b4830c;
   --shadow: 0 18px 44px rgba(40, 55, 90, 0.16);
   --grid: rgba(40, 60, 95, 0.06);
@@ -1192,7 +1192,9 @@ a.ud-item[hidden] { display: none; }
 /* ---------- reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   .aurora::before, .aurora::after { animation: none; }
-  .col.is-live::after, .col.is-live .progress-fill, .metric.flash .v, .bar-fill { animation: none; }
+  .col.is-live::after, .col.is-live .progress-fill, .metric.flash .v, .bar-fill,
+  .status-pill.run, .exec-btn.running, .spinner, .rerun-btn.running { animation: none; }
+  .col, .bar-fill { transition: none; }
 }
 
 /* ---------- 3-Dropdown Cascading Model Selector (Provider > Model > Thinking Mode) ---------- */
@@ -2632,6 +2634,11 @@ a.ud-item[hidden] { display: none; }
 .img-mini-pill.is-save {
   color: #38bdf8;
   border-color: rgba(56, 189, 248, 0.4);
+}
+:root[data-theme="light"] .img-mini-pill.is-save {
+  color: #0369a1;
+  border-color: rgba(2, 132, 199, 0.35);
+  background: rgba(2, 132, 199, 0.10);
 }
 
 /* ---------- Image Arena Comparison Cards & Synchronized 4K Loupe ---------- */

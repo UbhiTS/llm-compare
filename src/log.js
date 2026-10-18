@@ -50,10 +50,16 @@ function write(severity, fields, args) {
   // Extra fields go through the same redaction as the message (3.17): a stack, URL or
   // error text passed as a field must not carry a key/token into Cloud Logging verbatim.
   let extra = {};
-  if (fields) {
-    try { extra = JSON.parse(redact(JSON.stringify(fields))) || {}; } catch (_) { extra = { fieldsError: 'unserializable log fields' }; }
+  if (fields && typeof fields === 'object') {
+    try {
+      const secretKeyRe = /^(?:password|secret|client_secret|apiKey|api_key|token|access_token)$/i;
+      extra = JSON.parse(JSON.stringify(fields, (k, v) => {
+        if (k && secretKeyRe.test(k) && typeof v === 'string') return '[REDACTED]';
+        return typeof v === 'string' ? redact(v) : v;
+      })) || {};
+    } catch (_) { extra = { fieldsError: 'unserializable log fields' }; }
   }
-  const entry = { severity, message, ...extra };
+  const entry = { ...extra, severity, message };
   const line = JSON.stringify(entry);
   if (severity === 'ERROR' || severity === 'WARNING') process.stderr.write(line + '\n');
   else process.stdout.write(line + '\n');

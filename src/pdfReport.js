@@ -309,19 +309,19 @@ function wrapText(text, maxWidth, fontSize, opts = {}) {
         if (/^\s+$/.test(token)) continue;
       }
 
-      // If the single word itself exceeds maxWidth, hard-break it by character
+      // If the single word itself exceeds maxWidth, slice by estimated character budget
+      // (avoiding O(L^2) per-character width measurement on long base64/minified strings - 6.4).
       if (measureTextWidth(indent + token, fontSize, opts) > maxWidth) {
-        let chunk = indent;
-        for (let i = 0; i < token.length; i++) {
-          const nextChunk = chunk + token[i];
-          if (measureTextWidth(nextChunk, fontSize, opts) > maxWidth && chunk.length > indent.length) {
-            result.push(chunk);
-            chunk = indent + token[i];
-          } else {
-            chunk = nextChunk;
-          }
+        const isMono = opts && opts.font === 'F3';
+        const indentW = indent ? measureTextWidth(indent, fontSize, opts) : 0;
+        const availW = Math.max(fontSize * 2, maxWidth - indentW);
+        const step = Math.max(4, Math.floor(availW / (fontSize * (isMono ? 0.6 : 0.55))));
+        let pos = 0;
+        while (pos + step < token.length) {
+          result.push(indent + token.slice(pos, pos + step));
+          pos += step;
         }
-        current = chunk;
+        current = indent + token.slice(pos);
       } else {
         current = indent + token;
       }
@@ -1638,7 +1638,7 @@ function renderMetricsTableAndJudge(doc, r) {
       const rH = Math.max(22, 8 + noteLines.length * 9.5);
       return { res, noteLines, rH };
     });
-    const whyLines = j.why ? wrapText(`Judge Rationale: ${j.why}`, CONTENT_W - 16, 7.6) : [];
+    const whyLines = j.why ? wrapText(`Judge Rationale: ${String(j.why).slice(0, 4000)}`, CONTENT_W - 16, 7.6).slice(0, 30) : [];
     const whyH = whyLines.length ? (8 + whyLines.length * 10) : 0;
     const totalRowsH = rowItems.reduce((acc, x) => acc + x.rH, 0);
     const maxSinglePageH = PAGE_H - M_TOP - M_BOTTOM - 20;

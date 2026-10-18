@@ -82,7 +82,11 @@ function shortLabel(label) {
 function applyTheme(t) {
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem('ullm.theme', t); } catch (e) { /* ignore */ }
-  document.querySelectorAll('#themeSwitch button').forEach((b) => b.classList.toggle('active', b.dataset.theme === t));
+  document.querySelectorAll('#themeSwitch button').forEach((b) => {
+    const on = b.dataset.theme === t;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
 }
 function initTheme() {
   let t = 'medium';
@@ -191,11 +195,7 @@ function filterCadTasksByCategoryAndSubcategory(catKey, subcatOverride) {
   const allCad = ((CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [])
     .filter((t) => (t.category || 'general') === 'cad3d');
   let verticalFiltered = allCad;
-  if (catKey === 'cad3d-simple') {
-    verticalFiltered = allCad.filter((t) => t.subcategory === 'simple');
-  } else if (catKey === 'cad3d-complex') {
-    verticalFiltered = allCad.filter((t) => t.subcategory !== 'simple');
-  } else if (String(catKey || '').startsWith('cad3d-') && catKey !== 'cad3d-all') {
+  if (String(catKey || '').startsWith('cad3d-') && catKey !== 'cad3d-all') {
     const vert = String(catKey).replace(/^cad3d-/, '');
     verticalFiltered = allCad.filter((t) => (t.vertical || 'industrial') === vert);
   }
@@ -203,10 +203,10 @@ function filterCadTasksByCategoryAndSubcategory(catKey, subcatOverride) {
   const subVal = subcatOverride !== undefined
     ? subcatOverride
     : ((subSel && subSel.value === 'complex') ? 'complex' : 'simple');
-  if (subVal === 'simple' && catKey !== 'cad3d-simple' && catKey !== 'cad3d-complex') {
+  if (subVal === 'simple') {
     return verticalFiltered.filter((t) => t.subcategory === 'simple');
   }
-  if (subVal === 'complex' && catKey !== 'cad3d-simple' && catKey !== 'cad3d-complex') {
+  if (subVal === 'complex') {
     return verticalFiltered.filter((t) => t.subcategory !== 'simple');
   }
   return verticalFiltered;
@@ -275,10 +275,6 @@ function populateSubcategorySelect(catKey, preferredSubcat) {
 
   subSel.classList.add('hidden');
   if (subSep) subSep.classList.add('hidden');
-}
-
-function syncSubcategorySelectVisibility(catKey, preferredSubcat) {
-  populateSubcategorySelect(catKey, preferredSubcat);
 }
 
 function isCadActiveTask(t) {
@@ -377,7 +373,7 @@ function populateTaskSelect(catKey, preferredTaskId) {
   const ts = $('#taskSelect');
   if (!ts) return;
   ts.innerHTML = '';
-  syncSubcategorySelectVisibility(catKey);
+  populateSubcategorySelect(catKey);
 
   if (!catKey || catKey === 'custom') {
     const customOpt = el('option');
@@ -587,7 +583,11 @@ async function onSavePromptClick() {
   const rawTitle = window.prompt('Name this prompt for your Saved Prompts library:', defaultTitle);
   if (rawTitle === null) return; // cancelled
   const title = rawTitle.trim() || defaultTitle || 'Saved Prompt';
-  const updateSameId = existing && existing.title.toLowerCase() === title.toLowerCase() ? existing.id : undefined;
+  const sameNameExisting = SAVED_PROMPTS.find((p) => p && p.title && p.title.toLowerCase() === title.toLowerCase());
+  if (sameNameExisting && (!existing || sameNameExisting.id !== existing.id)) {
+    if (!window.confirm(`Overwrite saved prompt "${sameNameExisting.title}"?`)) return;
+  }
+  const updateSameId = sameNameExisting ? sameNameExisting.id : (existing ? existing.id : undefined);
 
   const saveBtn = $('#savePromptBtn');
   const origHtml = saveBtn ? saveBtn.innerHTML : '🔖 Save prompt';
@@ -1066,7 +1066,10 @@ async function init() {
     closeModal();
     closeAuthModal();
     const mcp = $('#cadMcpModal'); // 2.1: the CAD MCP dialog ignored Escape
-    if (mcp && !mcp.classList.contains('hidden')) mcp.classList.add('hidden');
+    if (mcp && !mcp.classList.contains('hidden')) {
+      mcp.classList.add('hidden');
+      deactivateModalFocus();
+    }
   });
 }
 
@@ -1119,7 +1122,6 @@ function saveKeys(k) {
     localStorage.setItem('ullm.keys.' + u, JSON.stringify(k));
   } catch (e) { /* ignore */ }
 }
-function hasOwnKeys() { const k = loadKeys(); return !!(k.agentplatform || k.gemini || k.openai || k.anthropic || k.claudeBearerToken || k.moonshot); }
 
 // Which credential each selected model will actually run on. Mirrors
 // credentialFamily()/modelUsesOwnKey() in src/byok.js - the quota is only
@@ -1295,6 +1297,49 @@ async function logout() {
   window.location.replace('/login');
 }
 
+let _modalReturnFocus = null;
+function activateModalFocus(modalEl, initialSelector) {
+  if (!modalEl) return;
+  if (!_modalReturnFocus && document.activeElement && document.activeElement !== document.body) {
+    _modalReturnFocus = document.activeElement;
+  }
+  requestAnimationFrame(() => {
+    if (modalEl.classList.contains('hidden')) return;
+    const target = (initialSelector && modalEl.querySelector(initialSelector))
+      || modalEl.querySelector('input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])');
+    if (target && typeof target.focus === 'function') {
+      try { target.focus(); } catch (_) {}
+    }
+  });
+}
+function deactivateModalFocus() {
+  const prev = _modalReturnFocus;
+  _modalReturnFocus = null;
+  if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+    try { prev.focus(); } catch (_) {}
+  }
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab') return;
+  const activeModal = ['#authModal', '#mdModal', '#imgLightboxModal', '#cadMcpModal']
+    .map((sel) => $(sel))
+    .find((m) => m && !m.classList.contains('hidden'));
+  if (!activeModal) return;
+  const focusables = Array.from(
+    activeModal.querySelectorAll('a[href], button:not([disabled]):not([hidden]), input:not([disabled]):not([hidden]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])')
+  ).filter((node) => node.offsetParent !== null);
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (e.shiftKey && (document.activeElement === first || !activeModal.contains(document.activeElement))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (document.activeElement === last || !activeModal.contains(document.activeElement))) {
+    e.preventDefault();
+    first.focus();
+  }
+});
+
 // Minimal modal used by the account/user dialogs (separate from the markdown one).
 function ensureAuthModal() {
   let m = $('#authModal');
@@ -1316,9 +1361,10 @@ function ensureAuthModal() {
 }
 function closeAuthModal(opts) {
   const m = $('#authModal');
-  if (!m) return;
+  if (!m || m.classList.contains('hidden')) return;
   if (m.dataset.locked === '1' && !(opts && opts.force)) return;
   m.classList.add('hidden');
+  deactivateModalFocus();
 }
 function openAuthModal(title, opts) {
   const m = ensureAuthModal();
@@ -1330,6 +1376,7 @@ function openAuthModal(title, opts) {
   const panel = m.querySelector('.auth-panel');
   if (panel) panel.classList.toggle('wide', !!(opts && opts.wide));
   m.classList.remove('hidden');
+  activateModalFocus(m);
   return $('#authModalBody');
 }
 
@@ -2723,9 +2770,10 @@ async function onSavePresetClick() {
   if (rawTitle === null) return; // cancelled
   const title = rawTitle.trim() || defaultTitle || 'Saved Lineup';
   const sameNameExisting = SAVED_PRESETS.find((p) => p && p.title && p.title.toLowerCase() === title.toLowerCase());
-  const updateId = (existing && existing.title.toLowerCase() === title.toLowerCase())
-    ? existing.id
-    : (sameNameExisting ? sameNameExisting.id : undefined);
+  if (sameNameExisting && (!existing || sameNameExisting.id !== existing.id)) {
+    if (!window.confirm(`Overwrite saved preset "${sameNameExisting.title}"?`)) return;
+  }
+  const updateId = sameNameExisting ? sameNameExisting.id : (existing ? existing.id : undefined);
 
   const saveBtn = $('#savePresetBtn');
   const origHtml = saveBtn ? saveBtn.innerHTML : '🔖 Save preset';
@@ -4207,12 +4255,17 @@ function setupJudgePanel(scored, isCustom) {
   const sel = $('#judgeModel');
   const contestants = new Set(entries.map((e) => e.label));
   const usable = catalog().filter((c) => modelAvailability(c).ok);
-  if (sel && !sel.options.length) {
+  if (sel) {
+    const prev = sel.value;
     sel.innerHTML = usable.map((c) =>
       `<option value="${esc(c.id)}">${esc(c.label)}${contestants.has(c.label) ? ' — also competing' : ''}</option>`).join('');
-    // Prefer a judge that is NOT one of the models being judged.
-    const neutral = usable.find((c) => !contestants.has(c.label));
-    if (neutral) sel.value = neutral.id;
+    if (prev && usable.some((c) => c.id === prev)) {
+      sel.value = prev;
+    } else {
+      // Prefer a judge that is NOT one of the models being judged.
+      const neutral = usable.find((c) => !contestants.has(c.label)) || usable[0];
+      if (neutral) sel.value = neutral.id;
+    }
   }
   paintJudgeWarning(contestants);
   if (sel && !sel._wired) {
@@ -4323,7 +4376,6 @@ function renderJudge(r) {
     `<p class="jp-fine">Scores are one model’s opinion, not a measurement. ${best ? '' : ''}The judge saw the answers in a shuffled order with all model names removed.</p>`;
 }
 
-const onJudgeClick = runJudge;
 const renderJudgeVerdict = renderJudge;
 
 // ---------- crash detection & repair ----------------------------------------
@@ -5619,7 +5671,11 @@ function renderMetricGrid(scored, isCustom) {
   const toggle = $('#metricViewToggle');
   if (toggle) {
     toggle.classList.toggle('hidden', scored.length < 2);
-    toggle.querySelectorAll('.mv-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+    toggle.querySelectorAll('.mv-btn').forEach((b) => {
+      const on = b.dataset.view === view;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
   }
   wrap.innerHTML = metricList(isCustom).map((m) => {
     const vals = scored.map((r) => ({ r, v: m.get(r) }));
@@ -6706,7 +6762,13 @@ function ensureModal() {
   modal.querySelector('.md-modal-close').addEventListener('click', closeModal);
   return modal;
 }
-function closeModal() { const m = $('#mdModal'); if (m) m.classList.add('hidden'); }
+function closeModal() {
+  const m = $('#mdModal');
+  if (m && !m.classList.contains('hidden')) {
+    m.classList.add('hidden');
+    deactivateModalFocus();
+  }
+}
 
 let mdState = { text: '', markdown: false, rendered: true };
 function renderModalBody() {
@@ -6737,6 +6799,7 @@ function openContentModal(title, text, asMarkdown) {
   modal.querySelector('.md-toggle').onclick = () => { mdState.rendered = !mdState.rendered; renderModalBody(); };
   renderModalBody();
   modal.classList.remove('hidden');
+  activateModalFocus(modal, '.md-modal-close');
 }
 function openMagnify(slot, kind) {
   if (kind === 'think') openContentModal('Thinking — ' + modelLabel(slot), ($(`#think-${slot}`) || {}).textContent || '', true);
@@ -6947,11 +7010,15 @@ function openImageLightbox(items, startIndex = 0) {
   IMG_LIGHTBOX_ACTUAL_SIZE = false;
   modal.classList.remove('hidden');
   renderImageLightboxCurrent();
+  activateModalFocus(modal, '#imgLightboxCloseBtn');
 }
 
 function closeImageLightbox() {
   const modal = $('#imgLightboxModal');
-  if (modal) modal.classList.add('hidden');
+  if (modal && !modal.classList.contains('hidden')) {
+    modal.classList.add('hidden');
+    deactivateModalFocus();
+  }
 }
 
 function stepImageLightbox(delta) {
@@ -8784,7 +8851,11 @@ function renderImageMetricComparison() {
   const view = scored.length < 2 ? 'bars' : metricView();
   if (toggleEl) {
     toggleEl.classList.toggle('hidden', scored.length < 2);
-    toggleEl.querySelectorAll('.mv-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
+    toggleEl.querySelectorAll('.mv-btn').forEach((b) => {
+      const on = b.dataset.view === view;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-pressed', String(on));
+    });
   }
 
   const metrics = [
@@ -9965,6 +10036,7 @@ async function openCadMcpModal(preferredSlot) {
 
   slotSel.onchange = refreshScript;
   modal.classList.remove('hidden');
+  activateModalFocus(modal, '#cadMcpSlotSelect');
   await refreshScript();
 }
 
@@ -10032,10 +10104,13 @@ function initCadArenaBindings() {
   const mcpPushBtn = $('#cadMcpPushBtn');
 
   if (mcpOpenBtn) mcpOpenBtn.addEventListener('click', () => openCadMcpModal());
-  if (mcpCloseBtn && mcpModal) mcpCloseBtn.addEventListener('click', () => mcpModal.classList.add('hidden'));
+  if (mcpCloseBtn && mcpModal) mcpCloseBtn.addEventListener('click', () => { mcpModal.classList.add('hidden'); deactivateModalFocus(); });
   if (mcpModal) {
     mcpModal.addEventListener('click', (e) => {
-      if (e.target === mcpModal) mcpModal.classList.add('hidden');
+      if (e.target === mcpModal) {
+        mcpModal.classList.add('hidden');
+        deactivateModalFocus();
+      }
     });
   }
   if (mcpCopyBtn) {

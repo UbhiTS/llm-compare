@@ -41,6 +41,7 @@
     .hint { color: var(--muted); font-size: 11.5px; margin-top: 7px; line-height: 1.45; }
     .code-box { background: var(--well); border: 1px dashed var(--border-hi); padding: 9px 11px; font-size: 12px; color: var(--muted); margin-top: 14px; line-height: 1.5; }
     .foot { text-align: center; color: var(--muted); font-size: 11px; margin-top: 18px; }
+    .foot a { color: inherit; text-decoration: underline; }
     .spin { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: r .7s linear infinite; vertical-align: -2px; margin-right: 6px; }
     @keyframes r { to { transform: rotate(360deg); } }
     .hide { display: none; }  /* hide via class (the strict login CSP blocks inline style="" attributes) */
@@ -95,7 +96,7 @@
     </form>
 
     <div class="foot">
-      Protected demo · <a href="/privacy" style="color:inherit;text-decoration:underline">Privacy Policy</a> · <a href="/terms" style="color:inherit;text-decoration:underline">Terms</a>
+      Protected demo · <a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms</a>
     </div>
   </main>
 
@@ -110,7 +111,28 @@
       // Surface an error passed back from the OAuth callback (e.g. domain not allowed).
       try {
         var qerr = new URLSearchParams(window.location.search).get('error');
-        if (qerr) setMsg(qerr, 'err');
+        if (qerr) {
+          var KNOWN_OAUTH_ERRORS = new Set([
+            'Google sign-in is not configured.',
+            'Google sign-in was cancelled or failed.',
+            'Google sign-in could not be verified (state cookie missing or expired). Please try signing in again.',
+            'Google token exchange failed.',
+            'Could not read the Google identity token.',
+            'Unexpected token issuer.',
+            'Token was not issued for this app.',
+            'The sign-in token has expired. Please try again.',
+            'Your Google email address is not verified.',
+            'Sign-in could not be verified (nonce mismatch). Please try again.'
+          ]);
+          var isDomainRestriction = /^Access is restricted to [A-Za-z0-9., @_+-]+\. The account [A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+ is not permitted\.$/.test(qerr);
+          var safeErr = (KNOWN_OAUTH_ERRORS.has(qerr) || isDomainRestriction)
+            ? qerr
+            : 'Sign-in failed or was cancelled. Please try again.';
+          setMsg(safeErr, 'err');
+          if (window.history && window.history.replaceState) {
+            window.history.replaceState(null, '', '/login');
+          }
+        }
       } catch (e) { /* ignore */ }
 
       function render() {

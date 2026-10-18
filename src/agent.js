@@ -29,9 +29,17 @@ const CODE_SYSTEM_PROMPT =
 function extractCode(text) {
   if (!text) return '';
   // Prefer a fenced code block of any language (```python, ```js, ```, …).
-  const fenced = text.match(/```[a-zA-Z0-9+#.-]*[ \t]*\r?\n?([\s\S]*?)```/);
-  if (fenced) return fenced[1].trim();
-  return text.trim();
+  // When multiple fenced blocks exist (e.g. a prose/JSON block before a CAD script),
+  // prefer the block that defines `buildModel`.
+  const blocks = [...String(text).matchAll(/```[a-zA-Z0-9+#.-]*[ \t]*\r?\n?([\s\S]*?)```/g)]
+    .map((m) => m[1].trim())
+    .filter(Boolean);
+  if (blocks.length > 1) {
+    const cadBlock = blocks.find((b) => /\bfunction\s+buildModel\b|\bbuildModel\s*=/.test(b));
+    if (cadBlock) return cadBlock;
+  }
+  if (blocks.length) return blocks[0];
+  return String(text).trim();
 }
 
 function buildInitialMessages(task) {

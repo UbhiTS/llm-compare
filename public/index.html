@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.50"></script>
+  <script src="theme-init.js?v=1.0.51"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.50" />
+  <link rel="stylesheet" href="styles.css?v=1.0.51" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.50" defer></script>
+  <script src="app.js?v=1.0.51" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -35,7 +35,7 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.50</span>
+          <span id="headerAppVersion" class="head-version">v1.0.51</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -61,10 +61,10 @@
       </button>
     </nav>
     <div class="topbar-right">
-      <div class="theme-switch" id="themeSwitch" title="Theme">
-        <button type="button" data-theme="light" title="Light theme">☀</button>
-        <button type="button" data-theme="medium" title="Medium theme">◐</button>
-        <button type="button" data-theme="dark" title="Dark theme">☾</button>
+      <div class="theme-switch" id="themeSwitch" role="group" aria-label="Color theme" title="Theme">
+        <button type="button" data-theme="light" title="Light theme" aria-label="Light theme" aria-pressed="true">☀</button>
+        <button type="button" data-theme="medium" title="Medium theme" aria-label="Medium theme" aria-pressed="false">◐</button>
+        <button type="button" data-theme="dark" title="Dark theme" aria-label="Dark theme" aria-pressed="false">☾</button>
       </div>
       <div class="user-menu" id="userMenu" hidden>
         <button type="button" class="user-chip" id="userChip" aria-haspopup="true" aria-expanded="false">
@@ -227,7 +227,7 @@
         class="cad-modify-input"
         placeholder="Follow-up 3D modification (e.g., 'Increase gear teeth from 24 to 32, thicken vase wall to 4.5 mm, and add 6 radial mounting holes')... (4-angle Iso/Front/Top/Right render attached automatically)"
       />
-      <select id="cadModifyScopeSelect" class="cad-modify-scope" title="Choose whether to modify all active slots in parallel or a single slot">
+      <select id="cadModifyScopeSelect" class="cad-modify-scope" aria-label="Modification target slots" title="Choose whether to modify all active slots in parallel or a single slot">
         <option value="all">Modify All Active Slots</option>
       </select>
       <button type="button" id="cadModifySubmitBtn" class="ctl-btn primary cad-modify-submit" title="Send follow-up modification prompt + 4-angle viewport vision render + current CAD code to selected model(s)">
@@ -255,8 +255,8 @@
       </div>
       <div class="sc-head-actions">
         <div id="metricViewToggle" class="mv-toggle hidden" role="group" aria-label="Chart style">
-          <button type="button" class="mv-btn active" data-view="bars" title="Vertical bars — height shows the value">▮ Bars</button>
-          <button type="button" class="mv-btn" data-view="scale" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
+          <button type="button" class="mv-btn active" data-view="bars" aria-pressed="true" title="Vertical bars — height shows the value">▮ Bars</button>
+          <button type="button" class="mv-btn" data-view="scale" aria-pressed="false" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
         </div>
       </div>
     </div>
@@ -375,12 +375,12 @@
 
         <div class="img-config-bar">
           <div class="img-cfg-group">
-            <label class="img-cfg-label" for="imgResolutionSelect">Output Resolution</label>
-            <div id="imgSizePills" class="img-seg-group" role="group" aria-label="Output resolution"></div>
+            <span class="img-cfg-label" id="imgResolutionLabel">Output Resolution</span>
+            <div id="imgSizePills" class="img-seg-group" role="group" aria-labelledby="imgResolutionLabel"></div>
           </div>
           <div class="img-cfg-group">
-            <label class="img-cfg-label" for="imgAspectSelect">Aspect Ratio</label>
-            <div id="imgAspectPills" class="img-seg-group" role="group" aria-label="Aspect ratio"></div>
+            <span class="img-cfg-label" id="imgAspectLabel">Aspect Ratio</span>
+            <div id="imgAspectPills" class="img-seg-group" role="group" aria-labelledby="imgAspectLabel"></div>
           </div>
         </div>
 
@@ -451,9 +451,9 @@
           <p class="sc-sub" id="imgScorecardSub">Each panel has its own scale; the green zone marks the better end.</p>
         </div>
         <div class="sc-head-actions">
-          <div id="imgMetricViewToggle" class="mv-toggle" role="tablist" aria-label="Image chart style">
-            <button type="button" class="mv-btn active" data-view="bars" title="Vertical bars — height shows the value">▮ Bars</button>
-            <button type="button" class="mv-btn" data-view="scale" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
+          <div id="imgMetricViewToggle" class="mv-toggle" role="group" aria-label="Image chart style">
+            <button type="button" class="mv-btn active" data-view="bars" aria-pressed="true" title="Vertical bars — height shows the value">▮ Bars</button>
+            <button type="button" class="mv-btn" data-view="scale" aria-pressed="false" title="Shared best→worst scale — position shows the ranking">⇥ Scale</button>
           </div>
         </div>
       </div>
@@ -606,6 +606,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.50</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-18T17:45:00Z">Last updated Oct 18, 2026, 10:45 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.51</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-18T18:30:00Z">Last updated Oct 18, 2026, 11:30 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

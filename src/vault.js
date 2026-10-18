@@ -260,10 +260,14 @@ function mergeFromExternalDb(extDb) {
   if (!extDb) return 0;
   let merged = 0;
   try {
+    const baseDir = getVaultBaseDir();
     const rows = extDb.prepare(`SELECT * FROM user_vault_files`).all();
     for (const r of rows) {
       const rec = rowToRecord(r);
       if (!rec || !rec.userKey || !rec.sha256) continue;
+      // Do not resurrect a vault row whose backing binary file has already been deleted/GC'd on disk (7.10).
+      const binPath = path.join(baseDir, rec.userKey, `${rec.sha256}.bin`);
+      if (!fs.existsSync(binPath)) continue;
       const cacheKey = `${rec.userKey}:${rec.sha256}`;
       const existing = metaCache.get(cacheKey);
       if (!existing || (rec.updatedAt || 0) > (existing.updatedAt || 0)) {
