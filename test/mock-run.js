@@ -26,11 +26,10 @@ const fence = (code) => '```javascript\n' + code + '\n```';
 assert.deepStrictEqual(
   DEFAULT_MODELS.map((m) => ({ slot: m.slot, catalogId: m.catalogId })),
   [
-    { slot: 'A', catalogId: 'gemini-4-argon' },
-    { slot: 'B', catalogId: 'claude-opus-5-5' },
-    { slot: 'C', catalogId: 'gpt-6-sol' },
+    { slot: 'A', catalogId: 'gemini-3.8-flash' },
+    { slot: 'B', catalogId: 'gemini-4-argon' },
   ],
-  'default slots should use the 3-model verified frontier lineup in the configured order'
+  'default slots should use the 2-model Gemini Models preset (Gemini 3.8 Flash + Gemini 4 Argon) across all arenas'
 );
 
 const gemini4Argon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');

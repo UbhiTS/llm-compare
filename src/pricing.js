@@ -66,6 +66,7 @@ const MODEL_CATALOG = [
   { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash Lite', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.1-flash-lite', price: { input: 0.25, output: 1.50 }, context: 1000000 },
 
   // --- 2. Anthropic (Claude — Vertex AI Partner, verified live quota) ---
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-1', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5', price: { input: 4.00, output: 20.00 }, context: 1000000 },
   { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-sonnet-5-5', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'claude-opus-5', label: 'Claude Opus 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5', price: { input: 5.00, output: 25.00 }, context: 1000000 },
@@ -134,7 +135,6 @@ const RETIRED_CATALOG = [
   { id: 'claude-opus-5-5-fast', label: 'Claude Opus 5.5 Fast', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-5-5-fast', price: { input: 4.00, output: 20.00 }, context: 1000000 },
   { id: 'claude-fable-5-5', label: 'Claude Fable 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-mythos-5-5', label: 'Claude Mythos 5.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
-  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5-1', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-fable-5', label: 'Claude Fable 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-fable-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-mythos-5', label: 'Claude Mythos 5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-mythos-5', price: { input: 10.00, output: 50.00 }, context: 1000000 },
   { id: 'claude-opus-4-5', label: 'Claude Opus 4.5', provider: 'agentplatform', publisher: 'anthropic', providerFamily: 'anthropic', providerLabel: 'Anthropic (Claude)', model: 'claude-opus-4-5', price: { input: 5.00, output: 25.00 }, context: 200000 },
@@ -149,7 +149,6 @@ const RETIRED_REPLACEMENT = {
   'claude-opus-5-5-fast': 'claude-opus-5-5',
   'claude-fable-5-5': 'claude-sonnet-5-5',
   'claude-mythos-5-5': 'claude-opus-5-5',
-  'claude-fable-5-1': 'claude-sonnet-5',
   'claude-fable-5': 'claude-sonnet-5',
   'claude-mythos-5': 'claude-opus-5-5',
   'claude-opus-4-5': 'claude-opus-4-7',
@@ -195,11 +194,10 @@ function modelFromCatalog(slot, id) {
   };
 }
 
-// The default 3 slots shown in the UI on first load (verified frontier models).
+// The default 2 slots shown in the UI on first load (Gemini Models preset across all arenas).
 const DEFAULT_MODELS = [
-  modelFromCatalog('A', 'gemini-4-argon'),
-  modelFromCatalog('B', 'claude-opus-5-5'),
-  modelFromCatalog('C', 'gpt-6-sol'),
+  modelFromCatalog('A', 'gemini-3.8-flash'),
+  modelFromCatalog('B', 'gemini-4-argon'),
 ];
 
 // Server-authoritative model resolution for a run. Takes whatever the client

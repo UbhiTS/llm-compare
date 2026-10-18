@@ -52,6 +52,15 @@ function isImageRunMeta(m) {
   }
   return false;
 }
+function isCadRunMeta(m) {
+  if (!m || typeof m !== 'object') return false;
+  if (m.arena === '3d' || m.kind === '3d' || m.kind === '3d_single' || m.category === 'cad3d') return true;
+  if (String(m.taskId || '').startsWith('cad-')) return true;
+  const t = String(m.title || '');
+  if (/^3D CAD:/i.test(t) || /Custom 3D\s*[\/&]\s*CAD/i.test(t)) return true;
+  if (Array.isArray(m.summary) && m.summary.some((s) => s && s.arena === '3d')) return true;
+  return false;
+}
 function newId() { return `${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`; }
 
 // Paths for persistent snapshot on /data (GCS FUSE) and fast local SQLite in /tmp
@@ -372,13 +381,17 @@ function metaToArchivedEntry(meta) {
     Array.isArray(meta.models) ? meta.models.length : 0,
     1
   );
+  const isCad = isCadRunMeta(meta);
+  const rawKind = String(meta.kind || '');
+  const isSingle = rawKind === 'single' || rawKind === '3d_single';
   return {
     id: meta.id,
     at: Number(meta.at) || Date.now(),
     user: u,
     userKey: meta.userKey || userKey(u),
     userName: meta.userName || meta.user || u,
-    kind: meta.kind === 'single' ? 'single' : 'compare',
+    kind: isCad ? (isSingle ? '3d_single' : '3d') : (isSingle ? 'single' : 'compare'),
+    arena: isCad ? '3d' : 'text',
     callsCount,
     costUsd,
   };
@@ -387,13 +400,17 @@ function metaToArchivedEntry(meta) {
 function archivedRowToEntry(r) {
   if (!r || !r.id) return null;
   const u = norm(r.user);
+  const rawKind = String(r.kind || '');
+  const isCad = rawKind === '3d' || rawKind === '3d_single';
+  const isSingle = rawKind === 'single' || rawKind === '3d_single';
   return {
     id: r.id,
     at: Number(r.at) || 0,
     user: u,
     userKey: r.user_key || userKey(u),
     userName: r.user_name || r.user || u,
-    kind: r.kind === 'single' ? 'single' : 'compare',
+    kind: isCad ? (isSingle ? '3d_single' : '3d') : (isSingle ? 'single' : 'compare'),
+    arena: isCad ? '3d' : 'text',
     callsCount: Math.max(1, Number(r.calls_count) || 1),
     costUsd: Number(r.cost_usd) || 0,
   };
@@ -1328,7 +1345,7 @@ function rowToMeta(r) {
   let models = [], summary = [];
   try { models = JSON.parse(r.models_json || '[]'); } catch (_) {}
   try { summary = JSON.parse(r.summary_json || '[]'); } catch (_) {}
-  return {
+  const meta = {
     id: r.id,
     at: Number(r.at) || 0,
     user: r.user,
@@ -1341,24 +1358,31 @@ function rowToMeta(r) {
     summary,
     starred: Boolean(r.starred),
   };
+  meta.arena = isCadRunMeta(meta) ? '3d' : 'text';
+  return meta;
 }
 
 function recordToMeta(rec) {
   const u = norm(rec.user);
   const rawSummary = Array.isArray(rec.summary) ? rec.summary.slice() : [];
-  if (rawSummary.length > 0 && Array.isArray(rec.attachments) && rec.attachments.length > 0) {
+  const isCad = isCadRunMeta(rec);
+  if (rawSummary.length > 0) {
     const first = rawSummary[0];
-    if (first && typeof first === 'object' && !Array.isArray(first.inputVaultRefs)) {
-      const inputVaultRefs = rec.attachments
-        .map((a) => a && (a.vaultRef || a.sha256))
-        .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
-      if (inputVaultRefs.length > 0) {
-        rawSummary[0] = { ...first, inputVaultRefs };
+    if (first && typeof first === 'object') {
+      const nextFirst = { ...first };
+      if (isCad && !nextFirst.arena) nextFirst.arena = '3d';
+      if (Array.isArray(rec.attachments) && rec.attachments.length > 0 && !Array.isArray(nextFirst.inputVaultRefs)) {
+        const inputVaultRefs = rec.attachments
+          .map((a) => a && (a.vaultRef || a.sha256))
+          .filter((v) => typeof v === 'string' && /^[0-9a-f]{64}$/i.test(v));
+        if (inputVaultRefs.length > 0) nextFirst.inputVaultRefs = inputVaultRefs;
       }
+      rawSummary[0] = nextFirst;
     }
   }
   return {
     id: rec.id,
+    arena: isCad ? '3d' : 'text',
     at: Number(rec.at) || Date.now(),
     user: u,
     userKey: rec.userKey || userKey(u),
@@ -2012,7 +2036,7 @@ function ensureOwnerLoadedSync(key) {
 }
 
 // Derive the compact per-slot summary shown in lists / usage (no code/reasoning).
-function summarize(models, results, attachments) {
+function summarize(models, results, attachments, arena) {
   const byslot = {};
   (results || []).forEach((r) => { if (r && r.slot != null) byslot[r.slot] = r; });
   const inputVaultRefs = (Array.isArray(attachments) ? attachments : [])
@@ -2027,8 +2051,9 @@ function summarize(models, results, attachments) {
       answerTokens: Math.max(0, (r.completionTokens || 0) - (r.reasoningTokens || 0)),
       costUsd: r.costUsd, wallMs: r.wallMs,
     };
-    if (idx === 0 && inputVaultRefs.length > 0) {
-      out.inputVaultRefs = inputVaultRefs;
+    if (idx === 0) {
+      if (arena === '3d') out.arena = '3d';
+      if (inputVaultRefs.length > 0) out.inputVaultRefs = inputVaultRefs;
     }
     return out;
   });
@@ -2037,6 +2062,7 @@ function summarize(models, results, attachments) {
 function listItem(meta) {
   return {
     id: meta.id,
+    arena: isCadRunMeta(meta) ? '3d' : 'text',
     at: meta.at,
     user: meta.user,
     userName: meta.userName,
@@ -2062,7 +2088,7 @@ function cachePayload(id, rec) {
 // Server-only entry point (ids are minted by server.js); `await Promise.resolve()` first so a
 // fire-and-forget caller (`history.saveRun(...).catch(...)`) returns to the event loop before any
 // vault / SQLite work happens (review finding 6.2).
-async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, judge, starred }) {
+async function saveRun({ id: passedId, user, userName, task, customPrompt, models, results, kind, arena, judge, starred }) {
   await Promise.resolve();
   try {
     const id = safeId(passedId) || newId();
@@ -2103,8 +2129,11 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
       });
     }
 
+    const isCad = arena === '3d' || Boolean(task && (task.category === 'cad3d' || task.visualizer === 'cad3d' || String(task.id || '').startsWith('cad-')));
+    const runArena = isCad ? '3d' : 'text';
     const record = {
       v: 1, id, at,
+      arena: runArena,
       user: u, userKey: uKey, userName: userName || user,
       taskId: (task && task.id) || 'unknown',
       title: (task && task.title) || (task && task.id) || 'Run',
@@ -2118,7 +2147,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
         effort: m.effort || null,
       })),
       slots: (models || []).map((m) => ({ slot: m.slot, data: (results || []).find((r) => r && r.slot === m.slot) || null })),
-      summary: summarize(models, results, attachments),
+      summary: summarize(models, results, attachments, runArena),
       judge: judge || null,
     };
 
@@ -2128,7 +2157,7 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
     upsertAuditRunInternal({
       id,
       at,
-      arena: 'text',
+      arena: runArena,
       user: u,
       userKey: uKey,
       userName: userName || user || u,
@@ -2763,13 +2792,16 @@ function lastModels(username) {
 
 // Instant (<0.1ms) list of a single user's runs (newest first).
 // (Expired-run pruning no longer runs inline from read paths: see the 6 h interval at the bottom.)
-function listRuns(username) {
+function listRuns(username, opts = {}) {
   const u = norm(username);
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
+  const arenaFilter = opts && opts.arena ? String(opts.arena).trim().toLowerCase() : null;
   const out = [];
   for (const m of metaById.values()) {
     if (isImageRunMeta(m)) continue;
+    if (arenaFilter === '3d' && !isCadRunMeta(m)) continue;
+    if (arenaFilter === 'text' && isCadRunMeta(m)) continue;
     if (m.userKey === key && (!m.user || norm(m.user) === u)) out.push(listItem(m));
   }
   out.sort((a, b) => b.at - a.at);
@@ -2777,10 +2809,13 @@ function listRuns(username) {
 }
 
 // Instant (<0.2ms) list of ALL users' runs for Admins (zero GCS FUSE file reads!).
-function listAllRuns() {
+function listAllRuns(opts = {}) {
+  const arenaFilter = opts && opts.arena ? String(opts.arena).trim().toLowerCase() : null;
   const all = [];
   for (const m of metaById.values()) {
     if (isImageRunMeta(m)) continue;
+    if (arenaFilter === '3d' && !isCadRunMeta(m)) continue;
+    if (arenaFilter === 'text' && isCadRunMeta(m)) continue;
     all.push(listItem(m));
   }
   all.sort((a, b) => b.at - a.at);
@@ -3252,6 +3287,7 @@ function setRunStarred(id, starred, { username, isAdmin }) {
 // while keeping the actual prompt text and file contents strictly private to each user.
 function usageSummary(opts = {}) {
   syncFromPersistSqliteIfNewer(false);
+  const arenaFilter = opts && opts.arena ? String(opts.arena).trim().toLowerCase() : null;
   const startOfDay = (() => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()); })();
   const byUser = new Map();
   const countedRunIds = new Set();
@@ -3264,6 +3300,8 @@ function usageSummary(opts = {}) {
   // 1. Count all active (unpruned 7-day + starred) runs first
   for (const rec of metaById.values()) {
     if (!rec || !rec.id) continue;
+    if (arenaFilter === '3d' && !isCadRunMeta(rec)) continue;
+    if (arenaFilter === 'text' && isCadRunMeta(rec)) continue;
     countedRunIds.add(rec.id);
     totalRuns++;
     activeRuns++;
@@ -3303,6 +3341,10 @@ function usageSummary(opts = {}) {
   // 2. Include all pruned historical runs from `archivedMetaById` (skipping any ID already counted above)
   for (const arch of archivedMetaById.values()) {
     if (!arch || !arch.id || countedRunIds.has(arch.id)) continue;
+    const archAudit = auditMetaById.get(arch.id);
+    const archIsCad = isCadRunMeta(arch) || (archAudit && isCadRunMeta(archAudit));
+    if (arenaFilter === '3d' && !archIsCad) continue;
+    if (arenaFilter === 'text' && archIsCad) continue;
     countedRunIds.add(arch.id);
     totalRuns++;
     const today = arch.at >= startOfDay;

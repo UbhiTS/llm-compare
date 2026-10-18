@@ -1106,11 +1106,12 @@ app.delete('/api/me/presets/:id', (req, res) => {
 // usage summary. History is written server-side after each run (see /api/run),
 // so the browser cannot forge or tamper with it.
 app.get('/api/history', (req, res) => {
+  const arena = req.query.arena ? String(req.query.arena).trim().toLowerCase() : null;
   if (req.query.scope === 'all') {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin access required.' });
-    return res.json({ scope: 'all', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listAllRuns() });
+    return res.json({ scope: 'all', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listAllRuns({ arena }) });
   }
-  res.json({ scope: 'me', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listRuns(req.user.username) });
+  res.json({ scope: 'me', retentionDays: history.RUN_RETENTION_DAYS, runs: history.listRuns(req.user.username, { arena }) });
 });
 
 app.get('/api/history/:id', (req, res) => {
@@ -1247,7 +1248,8 @@ app.post('/api/history/:id/star', (req, res) => {
 
 // Admin at-a-glance usage: who's active, runs today, totals.
 app.get('/api/usage', requireAdmin, (req, res) => {
-  res.json(history.usageSummary({ registeredUsers: auth.listUsers() }));
+  const arena = req.query.arena ? String(req.query.arena).trim().toLowerCase() : null;
+  res.json(history.usageSummary({ registeredUsers: auth.listUsers(), arena }));
 });
 
 // Admin 90-day security & compliance audit trail (input prompts + input attachments).
@@ -2330,6 +2332,7 @@ async function handleRun(req, res) {
   const runId = history.newId();
   const isExt = auth.isExternalAccount(req.user);
   const auditUser = { username: req.user.username, isExternal: isExt };
+  const runArena = (arenaMode === '3d' || isCadTask(task)) ? '3d' : 'text';
 
   // Pre-execution 90-day security & compliance audit log: written BEFORE upstream
   // model APIs are called so aborted or safety-blocked prompts/attachments are still recorded.
@@ -2341,7 +2344,7 @@ async function handleRun(req, res) {
     isExternal: isExt,
     ip: isExt ? req.ip : null,
     userAgent: isExt ? req.headers['user-agent'] : null,
-    arena: 'text',
+    arena: runArena,
     taskId: task.id,
     title: task.title,
     prompt: typeof customPrompt === 'string' && customPrompt.trim() ? customPrompt : task.prompt,
@@ -2442,6 +2445,7 @@ async function handleRun(req, res) {
       models: chosenModels,
       results,
       kind,
+      arena: runArena,
       ip: isExt ? req.ip : null,
       userAgent: isExt ? req.headers['user-agent'] : null,
       isExternal: isExt,

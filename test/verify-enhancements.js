@@ -479,11 +479,13 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(argonEntry.provider, 'agentplatform', 'Gemini 4 Argon must use Vertex AI Agent Platform');
   assert.strictEqual(argonEntry.region, 'global', 'Gemini 4 Argon must route to global region');
   assert.deepStrictEqual(argonEntry.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Argon pricing must be $2.00 / $10.00');
-  assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-4-argon', 'Slot A default must be gemini-4-argon');
+  assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-3.8-flash', 'Slot A default must be gemini-3.8-flash');
+  assert.strictEqual(DEFAULT_MODELS[1].catalogId, 'gemini-4-argon', 'Slot B default must be gemini-4-argon');
   assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high']);
   assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'medium');
 
   for (const [id, expectedIn, expectedOut] of [
+    ['claude-fable-5-1', 10.00, 50.00],
     ['claude-opus-5-5', 4.00, 20.00],
     ['claude-sonnet-5-5', 2.00, 10.00],
     ['claude-haiku-5-5', 0.10, 0.50],
@@ -627,11 +629,38 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   historyMod.deleteImageRun('img_1792000000_v1036', { username: 'ubhi@google.com', isAdmin: true });
 
   assert(
-    appJs.includes("$('#historyBtn').addEventListener('click', () => openHistoryModal({ arenaTab: 'text' }));") &&
+    appJs.includes("$('#historyBtn').addEventListener('click', () => openHistoryModal());") &&
     appJs.includes("imgHistBtn.addEventListener('click', () => openHistoryModal({ arenaTab: 'image' }));") &&
+    appJs.includes("ACTIVE_ARENA_MODE === '3d'") &&
     !appJs.includes('class="hist-arena-tabs"'),
-    'Text Arena (#historyBtn) must open only Text history and Image Arena (#imgHistoryBtn) must open only Image history without cross-arena tabs'
+    '#historyBtn must open 3D history in 3D & CAD Arena and Text history in Text Arena, while #imgHistoryBtn opens Image history'
   );
+
+  // Verify 3D & CAD Arena vs Text Arena history isolation in src/history.js
+  await historyMod.saveRun({
+    id: 'test-cad-hist-run-1',
+    user: 'cad-hist-tester@google.com',
+    userName: 'cad-hist-tester',
+    arena: '3d',
+    task: { id: 'cad-planetary-gearbox', title: '3D CAD: Planetary Gearbox', category: 'cad3d', visualizer: 'cad3d' },
+    models: [{ slot: 'A', catalogId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' }],
+    results: [{ slot: 'A', label: 'Gemini 3.8 Flash', code: 'function buildModel(){}', costUsd: 0.002 }],
+  });
+  await historyMod.saveRun({
+    id: 'test-text-hist-run-1',
+    user: 'cad-hist-tester@google.com',
+    userName: 'cad-hist-tester',
+    arena: 'text',
+    task: { id: 'custom', title: 'Custom prompt' },
+    models: [{ slot: 'A', catalogId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' }],
+    results: [{ slot: 'A', label: 'Gemini 3.8 Flash', code: 'hello', costUsd: 0.001 }],
+  });
+  const cadOnlyRuns = historyMod.listRuns('cad-hist-tester@google.com', { arena: '3d' });
+  const textOnlyRuns = historyMod.listRuns('cad-hist-tester@google.com', { arena: 'text' });
+  assert(cadOnlyRuns.some((r) => r.id === 'test-cad-hist-run-1') && !cadOnlyRuns.some((r) => r.id === 'test-text-hist-run-1'), 'listRuns({ arena: "3d" }) must return 3D CAD runs and exclude Text runs');
+  assert(textOnlyRuns.some((r) => r.id === 'test-text-hist-run-1') && !textOnlyRuns.some((r) => r.id === 'test-cad-hist-run-1'), 'listRuns({ arena: "text" }) must return Text runs and exclude 3D CAD runs');
+  historyMod.deleteRun('test-cad-hist-run-1', { username: 'cad-hist-tester@google.com', isAdmin: true });
+  historyMod.deleteRun('test-text-hist-run-1', { username: 'cad-hist-tester@google.com', isAdmin: true });
   assert(
     appJs.includes('let _imgConfigPromise = null;') &&
     appJs.includes('if (_imgConfigPromise) return _imgConfigPromise;'),

@@ -323,7 +323,7 @@ const { TASKS } = require('../src/tasks');
   assert(johnImgRow && johnImgRow.runs >= 1 && johnImgRow.imagesGenerated >= 2, 'john row in imageUsageSummary must reflect his merged run and 2 generated images');
 
   // Verify server.js passes registeredUsers to both usage endpoints and saves image runs server-authoritatively
-  assert(serverJs.includes('history.usageSummary({ registeredUsers: auth.listUsers() })'), 'server.js /api/usage must pass auth.listUsers()');
+  assert(serverJs.includes('history.usageSummary({ registeredUsers: auth.listUsers()'), 'server.js /api/usage must pass auth.listUsers()');
   assert(serverJs.includes('history.imageUsageSummary({ registeredUsers: auth.listUsers() })'), 'server.js /api/image-arena/usage must pass auth.listUsers()');
   assert(serverJs.includes('await history.saveImageRun({') && serverJs.includes('mergeSlots: true,'), 'server.js POST /api/image-arena/run must save image runs server-authoritatively with mergeSlots: true');
   console.log('✓ 3. Arena-specific runs >= 1 History roster filtering & server-authoritative per-slot merging verified');

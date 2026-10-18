@@ -1059,7 +1059,7 @@ async function init() {
     setMetricView(b.dataset.view);
     renderMetricGrid(_lastScored.scored, _lastScored.isCustom);
   }); }
-  $('#historyBtn').addEventListener('click', () => openHistoryModal({ arenaTab: 'text' }));
+  $('#historyBtn').addEventListener('click', () => openHistoryModal());
   updateQuotaBadge();
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -2187,7 +2187,7 @@ function catalog() { return (CONFIG && CONFIG.catalog) || []; }
 
 // ---------- 3-Dropdown Cascading Slot Selector (Provider > Model > Thinking Mode) ----------
 const ALL_SLOT_IDS = ['A', 'B', 'C', 'D', 'E', 'F'].slice(0, MAX_SLOTS);
-let SLOT_IDS = ['A', 'B', 'C'];          // active slots (1 .. 6)
+let SLOT_IDS = ['A', 'B'];               // active slots (1 .. 6)
 const SLOT_ASSIGN = {};                  // slot -> catalogId | null
 const SLOT_EFFORT = {};                  // slot -> chosen thinking level | null
 const SLOT_PROVIDER_FILTER = {};         // slot -> chosen provider filter in Dropdown 1
@@ -2387,7 +2387,6 @@ function saveUserPreferencesImmediate() {
 // while never overwriting valid saved models (such as gemini-3.7-flash or claude-opus-4-7).
 const RETIRED_MODEL_MAP = {
   'claude-opus-5-5-fast': 'claude-opus-5-5', // not enabled in the project's Model Garden (404, 2026-10-15)
-  'claude-fable-5-1': 'claude-sonnet-5',
   'claude-fable-5': 'claude-sonnet-5',
   'claude-mythos-5': 'claude-opus-5-5',
   'claude-opus-4-5': 'claude-opus-4-7',
@@ -2405,16 +2404,37 @@ function seedSlots() {
   let rawList = (Array.isArray(userSlots) && userSlots.length) ? userSlots : CONFIG.models;
 
   // If the user's saved slots match the old 4-slot default that had zero-quota
-  // `claude-fable-5-1` in Slot C, drop `claude-fable-5-1` so they cleanly get the 3-slot default.
+  // `claude-fable-5` in Slot C, drop `claude-fable-5` so they cleanly get the default.
   if (Array.isArray(rawList) && rawList.length === 4) {
     const ids = rawList.map((m) => m && (m.catalogId || m.id));
-    if (ids.includes('claude-fable-5-1') || ids.includes('claude-fable-5')) {
+    if (ids.includes('claude-fable-5')) {
       rawList = rawList.filter((m) => {
         const id = m && (m.catalogId || m.id);
-        return id !== 'claude-fable-5-1' && id !== 'claude-fable-5';
+        return id !== 'claude-fable-5';
       });
     }
   }
+
+  // Migrate legacy 3-model default (`gemini-4-argon` / `gemini-3.8-flash`, `claude-opus-5-5`, `gpt-6-sol`)
+  // to the new 2-model Gemini Models default (`gemini-3.8-flash` + `gemini-4-argon`) once per user
+  // unless the user subsequently selects a different lineup.
+  let migratedToGeminiDefault = false;
+  try {
+    const migKey = 'ullm.geminiDefaultV1.' + getUsername();
+    if (!localStorage.getItem(migKey) && Array.isArray(rawList)) {
+      const ids = rawList.map((m) => m && (m.catalogId || m.id));
+      const isLegacyThreeSlotDefault = ids.length === 3
+        && (ids[0] === 'gemini-4-argon' || ids[0] === 'gemini-3.8-flash')
+        && (ids[1] === 'claude-opus-5-5' || ids[1] === 'claude-opus-5')
+        && ids[2] === 'gpt-6-sol'
+        && rawList.every((m) => !m || !m.effort);
+      if (isLegacyThreeSlotDefault) {
+        rawList = CONFIG.models;
+        migratedToGeminiDefault = true;
+      }
+      localStorage.setItem(migKey, '1');
+    }
+  } catch (_) {}
 
   const usable = (list) => (list || [])
     .map((m) => {
@@ -2435,18 +2455,20 @@ function seedSlots() {
   // hardcoded `effort: 'high'` instead of their documented `medium` defaults.
   const hasLegacyFlagshipHigh = list.some((m) => m.id === 'gemini-3.8-flash' && m.effort === 'high')
     && list.some((m) => m.id === 'gpt-6-sol' && m.effort === 'high');
-  if (hasLegacyFlagshipHigh) {
-    list = list.map((m) => ({
-      ...m,
-      id: m.id === 'claude-opus-5' ? 'claude-opus-5-5' : m.id,
-      effort: null,
-    }));
+  if (hasLegacyFlagshipHigh || migratedToGeminiDefault) {
+    if (hasLegacyFlagshipHigh) {
+      list = list.map((m) => ({
+        ...m,
+        id: m.id === 'claude-opus-5' ? 'claude-opus-5-5' : m.id,
+        effort: null,
+      }));
+    }
     setTimeout(() => {
       if (typeof saveUserPreferencesDebounced === 'function') saveUserPreferencesDebounced();
     }, 50);
   }
 
-  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 3));
+  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 2));
   SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
   ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
   list.forEach((m, i) => {
@@ -2570,7 +2592,12 @@ function clearSlot(slot) {
 
 function builtinPresetSlots(presetName) {
   let target = [];
-  if (presetName === 'frontier') {
+  if (presetName === 'gemini') {
+    target = [
+      { id: 'gemini-3.8-flash',    effort: null },
+      { id: 'gemini-4-argon',      effort: null },
+    ];
+  } else if (presetName === 'frontier') {
     target = [
       { id: 'gemini-4-argon',      effort: null },
       { id: 'claude-opus-5-5',     effort: null },
@@ -5919,17 +5946,33 @@ async function syncLocalImageRunsToServer(localRuns, serverRuns) {
   }
 }
 
+function isCadHistoryRun(r) {
+  if (!r || typeof r !== 'object') return false;
+  if (r.arena === '3d' || r.kind === '3d' || r.kind === '3d_single' || r.category === 'cad3d') return true;
+  if (String(r.taskId || '').startsWith('cad-')) return true;
+  const t = String(r.title || '');
+  if (/^3D CAD:/i.test(t) || /Custom 3D\s*[\/&]\s*CAD/i.test(t)) return true;
+  if (Array.isArray(r.summary) && r.summary.some((s) => s && s.arena === '3d')) return true;
+  return false;
+}
+
 async function openHistoryModal(opts = {}) {
   const isAdmin = ME && ME.role === 'admin';
   historyScope = isAdmin ? 'all' : 'me';
-  if (opts && (opts.arenaTab === 'image' || opts.arenaTab === 'text')) {
+  if (opts && (opts.arenaTab === 'image' || opts.arenaTab === '3d' || opts.arenaTab === 'text')) {
     historyArenaTab = opts.arenaTab;
+  } else if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === 'image') {
+    historyArenaTab = 'image';
+  } else if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d') {
+    historyArenaTab = '3d';
   } else {
-    historyArenaTab = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === 'image') ? 'image' : 'text';
+    historyArenaTab = 'text';
   }
   const modalTitle = historyArenaTab === 'image'
     ? '🎨 Image & GenMedia Run History'
-    : '⚡ Text, Code & Agent Run History';
+    : (historyArenaTab === '3d'
+        ? '🧊 3D & CAD Arena Run History'
+        : '⚡ Text, Code & Agent Run History');
   const body = openAuthModal(modalTitle, { wide: true });
   body.innerHTML = '<p class="auth-loading">Loading…</p>';
   try {
@@ -5993,21 +6036,23 @@ async function openHistoryModal(opts = {}) {
         retentionDays: Number(srvImgData && srvImgData.retentionDays) || 7,
       };
     } else {
+      const targetArena = historyArenaTab === '3d' ? '3d' : 'text';
       const [histResp, usage] = await Promise.all([
-        fetch('/api/history?scope=' + historyScope, { credentials: 'same-origin' }),
-        isAdmin ? fetch('/api/usage', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
+        fetch('/api/history?scope=' + historyScope + '&arena=' + encodeURIComponent(targetArena), { credentials: 'same-origin' }),
+        isAdmin ? fetch('/api/usage?arena=' + encodeURIComponent(targetArena), { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).catch(() => null) : Promise.resolve(null),
       ]);
       if (histResp.status === 401) { window.location.replace('/login'); return; }
       const data = await histResp.json();
       if (!histResp.ok) throw new Error(data.error || 'Failed to load history.');
 
-      const textRuns = (data.runs || []).filter(
-        (r) => !(r && (r.arena === 'image' || String(r.id || '').startsWith('img_')))
-      );
+      const filteredRuns = (data.runs || []).filter((r) => {
+        if (!r || r.arena === 'image' || String(r.id || '').startsWith('img_')) return false;
+        return targetArena === '3d' ? isCadHistoryRun(r) : !isCadHistoryRun(r);
+      });
 
       _histState = {
         body,
-        runs: textRuns,
+        runs: filteredRuns,
         imgRuns: [],
         usage,
         imgUsage: null,
@@ -6027,7 +6072,7 @@ function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
   const cols = [
     { key: 'at', label: 'Date / Time', defaultDir: 'desc' },
     { key: 'starred', label: '★ Starred', defaultDir: 'desc' },
-    { key: 'title', label: mode === 'image' ? 'Scenario / Prompt' : 'Task / Prompt', defaultDir: 'asc' },
+    { key: 'title', label: mode === 'image' ? 'Scenario / Prompt' : (mode === '3d' ? '3D Part / Prompt' : 'Task / Prompt'), defaultDir: 'asc' },
   ];
   if (historyScope === 'all' && !historyUserFilter) {
     cols.push({ key: 'user', label: 'User', defaultDir: 'asc' });
@@ -6035,7 +6080,7 @@ function renderRunsSortToolbar(totalCount, mode = 'text', starredCount = 0) {
   cols.push({ key: 'cost', label: 'Run Cost', defaultDir: 'desc' });
   if (mode === 'image') {
     cols.push({ key: 'resolution', label: 'Resolution', defaultDir: 'desc' });
-  } else {
+  } else if (mode !== '3d') {
     cols.push({ key: 'correctness', label: 'Test Score', defaultDir: 'desc' });
   }
   const btns = cols.map((c) => {
@@ -6220,16 +6265,19 @@ function paintHistoryModal() {
   historyPage = Math.min(Math.max(0, historyPage), pageCount - 1);   // clamp (e.g. after deleting the last row on a page)
   const start = historyPage * HIST_PAGE_SIZE;
   const pageRuns = runs_.slice(start, start + HIST_PAGE_SIZE);
+  const isCadTab = historyArenaTab === '3d';
   const sortToolbar = (byUserRuns.length > 0 || historyStarredOnly)
-    ? renderRunsSortToolbar(total, 'text', starredCount)
+    ? renderRunsSortToolbar(total, isCadTab ? '3d' : 'text', starredCount)
     : '';
   const rows = total
     ? pageRuns.map((h) => histRowHtml(h)).join('')
     : (historyStarredOnly
-        ? '<p class="auth-loading">No starred runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>'
+        ? `<p class="auth-loading">No starred ${isCadTab ? '3D &amp; CAD ' : ''}runs yet — click the ☆ icon on any run to keep it forever (exempt from 7-day auto-pruning).</p>`
         : (historyUserFilter
-            ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred run payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
-            : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>'));
+            ? `<p class="auth-loading">No recent (last ${(_histState && _histState.retentionDays) || 7} days) or ★ starred ${isCadTab ? '3D &amp; CAD ' : ''}run payloads for <b>${esc(activeName)}</b> — older unstarred payloads were auto-pruned while lifetime user &amp; run counts are preserved above.</p>`
+            : (isCadTab
+                ? '<p class="auth-loading">No 3D &amp; CAD runs yet — run a 3D model comparison in the <b>🧊 3D &amp; CAD Arena</b> and it will appear here for 1-click restore.</p>'
+                : '<p class="auth-loading">No runs yet — run a comparison and it will appear here so you can revisit or re-showcase it.</p>')));
   const pager = total > HIST_PAGE_SIZE ? histPagerHtml(historyPage, pageCount, total, start, pageRuns.length) : '';
   body.innerHTML = usagePanel + filterChip + sortToolbar + `<div class="hist-list">${rows}</div>` + pager;
   // click a column header in the admin usage table → sort users by that column
@@ -6294,8 +6342,9 @@ function histPagerHtml(page, pageCount, total, start, shown) {
 
 function histRowHtml(h) {
   const isStarred = Boolean(h && h.starred);
+  const isCad = isCadHistoryRun(h);
   const chips = (h.summary || []).map((s) => {
-    const stat = s.error ? '<span class="hc-err">error</span>' : (s.total ? esc(s.correctness + '%') : 'done');
+    const stat = s.error ? '<span class="hc-err">error</span>' : (isCad ? '3D CAD' : (s.total ? esc(s.correctness + '%') : 'done'));
     const cost = s.costUsd != null ? ' · ' + esc(fmtCost(s.costUsd)) : '';
     return `<span class="hist-chip"><b>${esc(s.label)}</b> ${stat}${cost}</span>`;
   }).join('');
@@ -6305,7 +6354,7 @@ function histRowHtml(h) {
   return `<div class="hist-row${isStarred ? ' is-starred' : ''}">
     <div class="hist-main"><div class="hist-title">${esc(h.title)}</div><div class="hist-when"><span>${esc(fmtWhen(h.at))}</span>${who}${keptBadge}</div><div class="hist-chips">${chips}</div></div>
     <div class="hist-act">
-      <button class="hist-btn hist-icon-btn hist-star-btn${isStarred ? ' is-starred' : ''}" type="button" data-id="${esc(h.id)}" data-arena="text" title="${isStarred ? 'Starred (kept forever) — click to unstar' : 'Star this run to keep it forever (exempt from 7-day auto-pruning)'}" aria-label="Star run">${isStarred ? ICON_STAR_ON : ICON_STAR_OFF}</button>
+      <button class="hist-btn hist-icon-btn hist-star-btn${isStarred ? ' is-starred' : ''}" type="button" data-id="${esc(h.id)}" data-arena="${isCad ? '3d' : 'text'}" title="${isStarred ? 'Starred (kept forever) — click to unstar' : 'Star this run to keep it forever (exempt from 7-day auto-pruning)'}" aria-label="Star run">${isStarred ? ICON_STAR_ON : ICON_STAR_OFF}</button>
       <button class="hist-btn hist-restore" type="button" data-id="${esc(h.id)}" title="Restore this comparison to the arena">Restore ▸</button>
       <button class="hist-btn hist-icon-btn hist-pdf-btn" type="button" data-id="${esc(h.id)}" title="Export PDF report for this run" aria-label="Export PDF report">${ICON_PDF}</button>
       <button class="hist-btn hist-icon-btn hist-del" type="button" data-id="${esc(h.id)}" title="Delete this run from history" aria-label="Delete run">${ICON_TRASH}</button>
@@ -6471,9 +6520,7 @@ async function restoreHistory(id) {
     const fullTask = (CONFIG && Array.isArray(CONFIG.tasks) ? CONFIG.tasks.find((t) => t.id === snap.taskId) : null) || null;
     const isCadSnap = Boolean(
       (fullTask && (fullTask.category === 'cad3d' || fullTask.visualizer === 'cad3d')) ||
-      String(snap.taskId || '').startsWith('cad-') ||
-      snap.category === 'cad3d' ||
-      snap.kind === '3d'
+      isCadHistoryRun(snap)
     );
     const targetMode = isCadSnap ? '3d' : 'text';
     if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== targetMode) {
@@ -6504,6 +6551,13 @@ async function deleteHistoryRun(id) {
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error((j && j.error) || 'Could not delete.');
     _histState.runs = _histState.runs.filter((h) => h.id !== id);   // drop locally + repaint (keeps the current page)
+    if (_histState.isAdmin) {
+      try {
+        const targetArena = historyArenaTab === '3d' ? '3d' : 'text';
+        const uResp = await fetch('/api/usage?arena=' + encodeURIComponent(targetArena), { credentials: 'same-origin' });
+        if (uResp.ok) _histState.usage = await uResp.json();
+      } catch (_) {}
+    }
     paintHistoryModal();
   } catch (e) { window.alert(e.message); }
 }
@@ -6892,6 +6946,21 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
   // Leaving the 3D arena: forget per-slot CAD code / telemetry / 4-view renders so
   // they can never be attached to a later text run or a restored run (1.7).
   if (prevMode === '3d' && target !== '3d' && typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
+  // Switching between Text Arena and 3D & CAD Arena: clear stale results, scorecard, and judge output
+  // from the previous arena so they never bleed into the newly selected arena.
+  if (!initialBoot && prevMode !== target && (prevMode === 'text' || prevMode === '3d') && (target === 'text' || target === '3d')) {
+    LAST_RESULTS = {};
+    _lastScored = null;
+    _judgeScored = null;
+    const sc = $('#scorecard');
+    if (sc) sc.classList.add('hidden');
+    const jb = $('#jumpScorecardBtn');
+    if (jb) jb.classList.add('hidden');
+    const pb = $('#exportPdfTopBtn');
+    if (pb) pb.classList.add('hidden');
+    const jo = $('#judgeOut');
+    if (jo) jo.innerHTML = '';
+  }
 
   const textBtn = $('#modeBtnText');
   const cadBtn = $('#modeBtn3d');
@@ -6951,9 +7020,9 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
           cs.value = 'custom';
           populateSubcategorySelect('custom');
           populateTaskSelect('custom', 'custom');
-          renderTaskPrompt();
-          buildArena();
         }
+        renderTaskPrompt();
+        buildArena();
       }
     }
     if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();

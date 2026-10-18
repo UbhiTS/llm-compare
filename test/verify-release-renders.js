@@ -116,10 +116,13 @@ function httpRequest(port, method, urlPath, bodyObj) {
   assert(
     appJs.includes("const targetMode = isCadSnap ? '3d' : 'text';") &&
     appJs.includes('if (isCadActiveTask() && r.code)') &&
-    appJs.includes('runCad3dViewport(slot, r.code);'),
-    'public/app.js must switch to 3d mode on CAD history restore and render 3D viewports automatically'
+    appJs.includes('runCad3dViewport(slot, r.code);') &&
+    appJs.includes('function isCadHistoryRun(r)') &&
+    appJs.includes("'🧊 3D & CAD Arena Run History'") &&
+    appJs.includes("if (presetName === 'gemini')"),
+    'public/app.js must isolate 3D & CAD Arena history, switch to 3d mode on CAD history restore, and provide the Gemini Models preset'
   );
-  console.log('✓ 1. Source invariants verified (multi-slot concurrency, UberProxy iframe sandboxes, Hanoi fallback, CAD telemetry & restore)');
+  console.log('✓ 1. Source invariants verified (multi-slot concurrency, UberProxy iframe sandboxes, Hanoi fallback, CAD telemetry, 3D history isolation & Gemini preset)');
 
   // ---------------------------------------------------------------------------
   // 2. Spawned HTTP Server: Zero-Cache Headers & Parallel Multi-Slot Requests
