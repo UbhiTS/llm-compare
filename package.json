@@ -1,16 +1,19 @@
 {
   "name": "llm-compare",
-  "version": "1.0.51",
-  "lastUpdated": "2026-10-18T17:45:00Z",
+  "version": "1.0.52",
+  "lastUpdated": "2026-10-18T19:25:00Z",
   "description": "LLM Compare — race the same agentic task across multiple LLMs and compare correctness, speed, tokens and cost.",
   "license": "MIT",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js && node test/verify-user-preferences.js && node test/verify-pdf-export.js && node test/verify-saved-prompts-and-games.js && node test/verify-byok-strict.js && node test/verify-run-budgets.js && node test/verify-spend-budgets.js && node test/verify-budget-enforcement.js && node test/verify-arena-polish-and-regressions.js && node test/verify-3d-arena.js && node test/verify-auth-hardening.js",
+    "test": "node test/mock-run.js && node test/verify-enhancements.js && node test/verify-local-e2e.js && node test/verify-followup.js && node test/verify-claude-scaled.js && node test/verify-image-policy.js && node test/verify-user-preferences.js && node test/verify-pdf-export.js && node test/verify-saved-prompts-and-games.js && node test/verify-byok-strict.js && node test/verify-run-budgets.js && node test/verify-spend-budgets.js && node test/verify-budget-enforcement.js && node test/verify-arena-polish-and-regressions.js && node test/verify-3d-arena.js && node test/verify-auth-hardening.js && node test/verify-release-renders.js",
     "test:auth": "node test/verify-auth-hardening.js",
+    "test:release": "node test/verify-release-renders.js",
     "test:all": "node test/run-all.js",
-    "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js && node test/smoke-secrets.js && node test/smoke-secondary.js"
+    "test:smoke": "node test/smoke-http.js && node test/smoke-followup.js && node test/smoke-secrets.js && node test/smoke-secondary.js",
+    "cloud:status": "CLOUDSDK_ACTIVE_CONFIG_NAME=argolis gcloud run services describe llm-compare --project=llm-compare-ubhits --region=us-central1 --format='table(status.traffic.revisionName,status.traffic.percent,status.traffic.tag,status.traffic.url)'",
+    "cloud:promote-beta": "CLOUDSDK_ACTIVE_CONFIG_NAME=argolis gcloud run services update-traffic llm-compare --project=llm-compare-ubhits --region=us-central1 --to-tags=beta=100"
   },
   "engines": {
     "node": ">=22.13"

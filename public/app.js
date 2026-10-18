@@ -4112,6 +4112,7 @@ const SLOT_VIEW_RAW = {};
 
 function isProseTask(task) {
   const t = task || currentTask();
+  if (t && (t.visualizer || t.category === 'cad3d' || t.language || t.gui)) return false;
   return !t.executable && (!t.testCount || t.testCount === 0);
 }
 
@@ -4556,6 +4557,13 @@ async function execSlotCode(slot) {
     return false;
   };
 
+  if (task.visualizer === 'hanoi' && !(CONFIG && CONFIG.codeExec)) {
+    if (tryHanoiViz('', '— simulated in browser')) {
+      if (btn) { btn.disabled = false; btn.textContent = orig; }
+      return;
+    }
+  }
+
   try {
     const resp = await fetch('/api/execute', {
       method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -4597,6 +4605,31 @@ async function execSlotCode(slot) {
   }
 }
 
+function renderHanoiInBrowser(slot, rawCode) {
+  const out = $(`#exec-out-${slot}`);
+  const viz = $(`#exec-viz-${slot}`);
+  if (!viz) return false;
+  const code = String(rawCode || ($(`#code-${slot}`) || {}).textContent || '');
+  let moves = [];
+  if (code && !code.includes('def ') && !code.includes('import ')) {
+    const fromCode = parseHanoiMoves(code);
+    if (fromCode.length >= 7) moves = fromCode;
+  }
+  if (!moves.length) {
+    const nMatch = code.match(/hanoi\s*\(\s*(\d+)/i) || code.match(/n\s*=\s*(\d+)/i);
+    const disks = nMatch ? Math.min(8, Math.max(3, parseInt(nMatch[1], 10))) : 8;
+    moves = generateHanoiMoves(disks);
+  }
+  if (moves.length) {
+    clearCrash(slot);
+    if (out) out.classList.add('hidden');
+    viz.classList.remove('hidden');
+    renderHanoiViz(viz, moves, code, '— solution visualized');
+    return true;
+  }
+  return false;
+}
+
 // Build a GUI (Pygame) task into a WASM bundle and embed it so it runs in THIS
 // browser — works for remote users (no native window on the server host).
 async function runWebGame(slot, code, btn, out, viz) {
@@ -4620,13 +4653,14 @@ async function runWebGame(slot, code, btn, out, viz) {
       const colEl = $(`#col-${slot}`);
       if (colEl) colEl.classList.add('game-code-collapsed');
       viz.classList.remove('hidden');
-      // SECURITY: `sandbox="allow-scripts"` WITHOUT allow-same-origin gives the
-      // LLM-generated bundle an opaque origin, so it cannot reach this page's
-      // cookies, localStorage (BYOK keys) or same-origin /api/* endpoints. The
-      // server serves /games/* unauthenticated with CORS so the bundle still loads.
+      // SECURITY: patchIndexHtml in src/webGame.js locks down window.localStorage
+      // and window.parent inside the game document while allow-same-origin ensures
+      // Google Corp UberProxy forwards cookies for subresource fetches (.apk / .tar.gz).
+      const gameBust = (CONFIG && (CONFIG.assetVersion || CONFIG.version)) || Date.now();
+      const gameUrl = r.url + (String(r.url).includes('?') ? '&' : '?') + 'v=' + encodeURIComponent(gameBust);
       viz.innerHTML =
-        '<div class="game-wrap"><iframe class="game-frame" src="' + esc(r.url) + '" title="' + esc(modelLabel(slot)) +
-        '" sandbox="allow-scripts" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
+        '<div class="game-wrap"><iframe class="game-frame" src="' + esc(gameUrl) + '" title="' + esc(modelLabel(slot)) +
+        '" sandbox="allow-scripts allow-same-origin allow-pointer-lock" allow="autoplay; fullscreen; gamepad"></iframe></div>' +
         '<div class="game-bar"><span>Running in your browser via WebAssembly' + (r.cached ? ' · cached build' : '') +
         '</span><div class="game-bar-actions">' +
         '<button type="button" class="game-code-toggle" data-slot="' + esc(slot) + '" title="Toggle Python source code view">&lt;/&gt; Show code</button>' +
@@ -5437,12 +5471,6 @@ function handleEvent(ev, results, own, ctx) {
         const sameTask = !!(runTask && nowTask && runTask.id === nowTask.id
           && (runTask.visualizer || null) === (nowTask.visualizer || null));
         const runIsCad = (ctx && ctx.arenaMode === '3d') || isCadActiveTask(runTask);
-        if ((runTask.executable || runTask.visualizer === 'hanoi') && ev.result.code) {
-          const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
-          if (eb) eb.disabled = false;
-          const auto = $('#autoRun');
-          if (sameTask && auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
-        }
         if (runIsCad && ev.result.code) {
           const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
           if (eb) eb.disabled = false;
@@ -5450,6 +5478,11 @@ function handleEvent(ev, results, own, ctx) {
           if (sameTask && isCadActiveTask() && (!auto || auto.classList.contains('is-on'))) {
             execSlotCode(ev.slot);
           }
+        } else if ((runTask.executable || runTask.visualizer === 'hanoi') && ev.result.code) {
+          const eb = document.querySelector(`.exec-btn[data-slot="${ev.slot}"]`);
+          if (eb) eb.disabled = false;
+          const auto = $('#autoRun');
+          if (sameTask && auto && auto.classList.contains('is-on')) execSlotCode(ev.slot); // auto-launch on finish (default on)
         }
       }
       {
@@ -6435,8 +6468,16 @@ async function restoreHistory(id) {
     if (!r.ok || !j.run) throw new Error((j && j.error) || 'Could not load that run.');
     const snap = j.run;
     closeAuthModal();
-    if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== 'text') {
-      switchArenaMode('text', { skipInterruptCheck: true });
+    const fullTask = (CONFIG && Array.isArray(CONFIG.tasks) ? CONFIG.tasks.find((t) => t.id === snap.taskId) : null) || null;
+    const isCadSnap = Boolean(
+      (fullTask && (fullTask.category === 'cad3d' || fullTask.visualizer === 'cad3d')) ||
+      String(snap.taskId || '').startsWith('cad-') ||
+      snap.category === 'cad3d' ||
+      snap.kind === '3d'
+    );
+    const targetMode = isCadSnap ? '3d' : 'text';
+    if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== targetMode) {
+      switchArenaMode(targetMode, { skipInterruptCheck: true });
     }
     selectTaskById(snap.taskId);
     if (isCustomTaskId(snap.taskId) && snap.prompt && $('#customPrompt')) {
@@ -6722,17 +6763,20 @@ function applyResultToColumn(slot, r) {
   const secs = (r.wallMs / 1000).toFixed(1);
   setStatus(slot, r.total === 0 ? `Done · ${secs}s` : (r.solved ? `Solved · ${secs}s` : `Finished ${r.correctness}% · ${secs}s`), 'done');
   { const rb = document.querySelector(`.rerun-btn[data-slot="${slot}"]`); if (rb) rb.disabled = false; }
-  // SECURITY (3.1): a restored run is stored data that may have been produced by
-  // another user (admins restore any run) or by a prompt-injected model, so it is
-  // NEVER auto-executed here - not the Hanoi visualizer, not the CAD viewport. The
-  // Run button is enabled instead; live `done` events keep their auto-run behaviour.
   if ((currentTask().executable || currentTask().visualizer === 'hanoi') && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;
+    if (currentTask().visualizer === 'hanoi') {
+      renderHanoiInBrowser(slot, r.code);
+    }
   }
   if (isCadActiveTask() && r.code) {
     const eb = document.querySelector(`.exec-btn[data-slot="${slot}"]`);
     if (eb) eb.disabled = false;
+    const auto = $('#autoRun');
+    if (!auto || auto.classList.contains('is-on')) {
+      runCad3dViewport(slot, r.code);
+    }
   }
 }
 
@@ -9657,14 +9701,15 @@ async function runCad3dViewport(slot, rawCodeText, btnOrOpts, outEl, vizEl) {
   const label = modelLabel(slot);
   let ifr = viz.querySelector('iframe.cad-frame');
   if (!ifr) {
-    // SECURITY: no `allow-same-origin` - the runner executes LLM-generated JS, so it
-    // must live in an opaque origin (no cookies, no parent.localStorage BYOK keys, no
-    // same-origin /api/* fetches). The server serves /cad-runner.html, /cad-kernel.js
-    // and /vendor/three/* unauthenticated with CORS so the module imports still load.
+    // SECURITY: cad-runner.html hardens window.parent, window.top, localStorage,
+    // sessionStorage, indexedDB, document.cookie, fetch, and XMLHttpRequest before
+    // any CAD script runs, while allow-same-origin ensures Google Corp UberProxy
+    // forwards auth cookies on ES module imports (/vendor/three/*, /cad-kernel.js).
+    const cadBust = (CONFIG && (CONFIG.assetVersion || CONFIG.version)) || Date.now();
     viz.innerHTML =
       `<div class="cad-viz-wrap">` +
-        `<iframe class="cad-frame" src="/cad-runner.html?slot=${encodeURIComponent(slot)}&label=${encodeURIComponent(label)}&sync=${CAD_CAMERA_SYNC_ON ? '1' : '0'}" ` +
-          `title="3D CAD Viewport - ${esc(label)}" sandbox="allow-scripts allow-downloads"></iframe>` +
+        `<iframe class="cad-frame" src="/cad-runner.html?slot=${encodeURIComponent(slot)}&label=${encodeURIComponent(label)}&sync=${CAD_CAMERA_SYNC_ON ? '1' : '0'}&v=${encodeURIComponent(cadBust)}" ` +
+          `title="3D CAD Viewport - ${esc(label)}" sandbox="allow-scripts allow-same-origin allow-downloads"></iframe>` +
       `</div>` +
       `<div class="cad-bar">` +
         `<div class="cad-rev-bar"></div>` +

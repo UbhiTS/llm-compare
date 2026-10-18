@@ -33,6 +33,7 @@ const LAST_UPDATED_ISO = (() => {
     return new Date().toISOString();
   }
 })();
+const BOOT_ID = crypto.randomBytes(4).toString('hex');
 
 const { runComparison } = require('./src/orchestrator');
 const { thinkingProfile, thinkingOptions } = require('./src/providers');
@@ -76,10 +77,10 @@ const TOO_MANY_CONCURRENT = 'Too many concurrent requests, wait for the current 
 // as a wrong password / lockout strike (3.11).
 const isAuthBusy = (e) => typeof auth.isBusyError === 'function' && auth.isBusyError(e);
 const MAX_CONCURRENT_RUNS_PER_USER = 3;        // /api/run NDJSON streams
-const MAX_CONCURRENT_IMAGE_PER_USER = 1;       // /api/image-arena/run requests
-const MAX_CONCURRENT_IMAGE_GLOBAL = 3;
-const MAX_CONCURRENT_WEB_GAME_PER_USER = 1;    // pygbag builds
-const MAX_CONCURRENT_WEB_GAME_GLOBAL = 2;
+const MAX_CONCURRENT_IMAGE_PER_USER = 6;       // /api/image-arena/run requests (up to 6 parallel slots)
+const MAX_CONCURRENT_IMAGE_GLOBAL = 18;
+const MAX_CONCURRENT_WEB_GAME_PER_USER = 6;    // pygbag builds (up to 6 parallel slots)
+const MAX_CONCURRENT_WEB_GAME_GLOBAL = 12;
 const MAX_CONCURRENT_LARGE_UPLOADS_PER_USER = 2; // multipart bodies over 1 MB
 const LARGE_UPLOAD_BYTES = 1024 * 1024;
 
@@ -256,7 +257,7 @@ const FAVICON_SVG = Buffer.from(
 );
 app.get('/favicon.ico', (_req, res) => {
   res.setHeader('Content-Type', 'image/svg+xml');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  setNoCacheHeaders(res);
   res.setHeader('Content-Length', String(FAVICON_SVG.length));
   res.end(FAVICON_SVG);
 });
@@ -441,7 +442,7 @@ const threeStaticOpts = {
   lastModified: false,
   setHeaders: (res) => {
     setSandboxAssetHeaders(res);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
+    setNoCacheHeaders(res);
   },
 };
 app.use('/vendor/three', express.static(THREE_VENDOR_DIR, threeStaticOpts));
@@ -489,6 +490,7 @@ app.get('/games/:id/*', (req, res) => {
   const fp = path.normalize(path.join(dir, rel));
   if (fp !== dir && !fp.startsWith(dir + path.sep)) return res.status(400).end(); // no path traversal
   setSandboxAssetHeaders(res);
+  setNoCacheHeaders(res);
   // Cross-origin isolation for the game document itself. Verified: with these
   // headers the Tetris bundle runs and the page stays responsive; without them
   // the identical bundle hard-freezes the renderer.
@@ -843,24 +845,22 @@ function getCachedStaticAsset(fileRel) {
   const fp = path.join(PUBLIC_DIR, fileRel);
   try {
     const prev = staticMemCache.get(fileRel);
-    // In production, serve directly from memory without event-loop blocking statSync I/O
-    if (process.env.NODE_ENV === 'production' && prev) return prev;
     const st = fs.statSync(fp);
     if (fileRel === 'index.html') {
       const themeAsset = getCachedStaticAsset('theme-init.js');
       const cssAsset = getCachedStaticAsset('styles.css');
       const jsAsset = getCachedStaticAsset('app.js');
-      const compositeKey = `${st.mtimeMs}|${pkg.version}|${themeAsset ? themeAsset.hash : ''}|${cssAsset ? cssAsset.hash : ''}|${jsAsset ? jsAsset.hash : ''}`;
+      const compositeKey = `${st.mtimeMs}|${pkg.version}|${BOOT_ID}|${themeAsset ? themeAsset.hash : ''}|${cssAsset ? cssAsset.hash : ''}|${jsAsset ? jsAsset.hash : ''}`;
       if (prev && prev.compositeKey === compositeKey) return prev;
       let htmlStr = fs.readFileSync(fp, 'utf8');
       if (themeAsset && themeAsset.hash) {
-        htmlStr = htmlStr.replace(/theme-init\.js(\?v=[^"']*)?/g, `theme-init.js?v=${pkg.version}-${themeAsset.hash}`);
+        htmlStr = htmlStr.replace(/theme-init\.js(\?v=[^"']*)?/g, `theme-init.js?v=${pkg.version}-${themeAsset.hash}-${BOOT_ID}`);
       }
       if (cssAsset && cssAsset.hash) {
-        htmlStr = htmlStr.replace(/styles\.css(\?v=[^"']*)?/g, `styles.css?v=${pkg.version}-${cssAsset.hash}`);
+        htmlStr = htmlStr.replace(/styles\.css(\?v=[^"']*)?/g, `styles.css?v=${pkg.version}-${cssAsset.hash}-${BOOT_ID}`);
       }
       if (jsAsset && jsAsset.hash) {
-        htmlStr = htmlStr.replace(/app\.js(\?v=[^"']*)?/g, `app.js?v=${pkg.version}-${jsAsset.hash}`);
+        htmlStr = htmlStr.replace(/app\.js(\?v=[^"']*)?/g, `app.js?v=${pkg.version}-${jsAsset.hash}-${BOOT_ID}`);
       }
       const raw = Buffer.from(htmlStr, 'utf8');
       const gz = zlib.gzipSync(raw, { level: 6 });
@@ -934,12 +934,8 @@ app.use((req, res, next) => {
 app.use(express.static(PUBLIC_DIR, {
   etag: false,
   lastModified: false,
-  setHeaders: (res, filePath) => {
-    if (/\.(ico|png|jpg|jpeg|svg|woff2?|ttf|eot)$/i.test(filePath)) {
-      res.setHeader('Cache-Control', 'public, max-age=86400');
-    } else {
-      setNoCacheHeaders(res);
-    }
+  setHeaders: (res) => {
+    setNoCacheHeaders(res);
   },
 }));
 
@@ -968,6 +964,7 @@ app.get('/api/config', (req, res) => {
   const prefs = history.getUserPreferences(req.user.username);
   res.json({
     version: pkg.version,
+    assetVersion: `${pkg.version}-${BOOT_ID}`,
     lastUpdated: LAST_UPDATED_ISO,
     models: DEFAULT_MODELS,
     catalog: CATALOG_CONFIG,

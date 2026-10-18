@@ -460,14 +460,12 @@
     import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
     import { createCadKernel, analyzeModelTelemetry, buildStepExport, collectStepMeshes } from '/cad-kernel.js';
 
-    // ---- 1. Sandbox Hardening (defense in depth ONLY) ----
-    // The real security boundary is the parent's iframe sandbox WITHOUT allow-same-origin:
-    // this document runs from an opaque origin, so it has no cookies, no storage, no
-    // same-origin access to the app and no credentialed fetch to begin with. The shims below
-    // merely make accidental use of those APIs by LLM-generated model code fail fast and
-    // loudly instead of silently; they are NOT what keeps the session safe and must never be
-    // relied upon as such. Nothing in this runner depends on localStorage, cookies or fetch
-    // (the import map uses absolute-path specifiers that resolve fine from an opaque origin).
+    // ---- 1. Sandbox Hardening & Same-Origin Privilege Isolation ----
+    // Capture the real embedding parent reference once at module boot, then shadow
+    // window.parent, window.top, storage, cookies, and network APIs so LLM-generated
+    // CAD scripts cannot reach parent DOM/storage even when allow-same-origin is set
+    // (required so Google Corp UberProxy forwards cookies on ES module imports).
+    const _parentWin = window.parent;
     (function hardenCadSandbox() {
       const dummyStorage = {
         getItem: () => null,
@@ -481,18 +479,28 @@
       try { Object.defineProperty(window, 'sessionStorage', { value: dummyStorage, configurable: false }); } catch (_) {}
       try { Object.defineProperty(window, 'indexedDB', { value: null, configurable: false }); } catch (_) {}
       try { Object.defineProperty(document, 'cookie', { get: () => '', set: () => true, configurable: false }); } catch (_) {}
+      try { Object.defineProperty(window, 'parent', { get: () => window, configurable: false }); } catch (_) {}
+      try { Object.defineProperty(window, 'top', { get: () => window, configurable: false }); } catch (_) {}
       const blockedFetch = async (input) => {
         const url = String(typeof input === 'string' ? input : (input && input.url) || '');
         throw new Error(`Network fetch is disabled inside the 3D CAD sandbox (${url}).`);
       };
       try { window.fetch = blockedFetch; } catch (_) {}
+      try {
+        window.XMLHttpRequest = function BlockedXHR() {
+          throw new Error('XMLHttpRequest is disabled inside the 3D CAD sandbox.');
+        };
+      } catch (_) {}
+      try {
+        if (navigator && typeof navigator.sendBeacon === 'function') {
+          navigator.sendBeacon = () => false;
+        }
+      } catch (_) {}
     })();
 
-    // Messages go ONLY to the embedding parent. From an opaque origin our own origin is
-    // 'null', so the target origin is derived from document.referrer (the parent page) and
-    // falls back to '*' only when the referrer is unavailable (e.g. opened top-level).
     const PARENT_ORIGIN = (() => {
       try {
+        if (window.location.origin && window.location.origin !== 'null') return window.location.origin;
         return new URL(document.referrer).origin;
       } catch {
         return '*';
@@ -500,7 +508,7 @@
     })();
     function postToParent(message) {
       try {
-        window.parent.postMessage(message, PARENT_ORIGIN);
+        _parentWin.postMessage(message, PARENT_ORIGIN);
       } catch (err) {
         console.warn('postMessage to parent failed:', err);
       }
@@ -564,6 +572,8 @@
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     const roomEnv = new RoomEnvironment();
     scene.environment = pmremGenerator.fromScene(roomEnv, 0.04).texture;
+    roomEnv.dispose();
+    pmremGenerator.dispose();
 
     const camera = new THREE.PerspectiveCamera(
       38,
@@ -587,8 +597,8 @@
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.65);
     keyLight.position.set(180, 260, 160);
     keyLight.castShadow = true;
-    keyLight.shadow.mapSize.width = 2048;
-    keyLight.shadow.mapSize.height = 2048;
+    keyLight.shadow.mapSize.width = 1024;
+    keyLight.shadow.mapSize.height = 1024;
     scene.add(keyLight);
 
     const fillLight = new THREE.DirectionalLight(0x93c5fd, 0.75);
@@ -910,8 +920,8 @@
     let offscreenCanvas = null;
     function captureFourAngleCompositeDataUrl() {
       if (!modelRoot) return '';
-      const W = 1200;
-      const H = 900;
+      const W = 960;
+      const H = 720;
       const halfW = W / 2;
       const halfH = H / 2;
 
@@ -931,6 +941,7 @@
       const savedSize = new THREE.Vector2();
       renderer.getSize(savedSize);
       const savedPixelRatio = renderer.getPixelRatio();
+      const savedShadowAutoUpdate = renderer.shadowMap.autoUpdate;
       const savedModelPos = modelRoot.position.clone();
       const savedModelRot = modelRoot.rotation.clone();
       const savedGridPos = gridGroup.position.clone();
@@ -945,6 +956,7 @@
         gridGroup.position.set(0, 0, 0);
         gridGroup.updateMatrixWorld(true);
 
+        renderer.shadowMap.autoUpdate = false;
         renderer.setPixelRatio(1);
         renderer.setSize(halfW, halfH, false);
         camera.aspect = halfW / halfH;
@@ -1031,6 +1043,7 @@
         }
       } finally {
         // Restore 3-axis model transform, grid transform, user camera & viewport dimensions
+        renderer.shadowMap.autoUpdate = savedShadowAutoUpdate;
         modelRoot.rotation.copy(savedModelRot);
         modelRoot.position.copy(savedModelPos);
         modelRoot.updateMatrixWorld(true);
@@ -1127,6 +1140,16 @@
         'CAD',
         'CSG',
         'scene',
+        'window',
+        'document',
+        'parent',
+        'top',
+        'globalThis',
+        'self',
+        'frames',
+        'opener',
+        'fetch',
+        'XMLHttpRequest',
         `
         "use strict";
         ${cleaned}
@@ -1259,9 +1282,10 @@
           rebuildTimer = setTimeout(flushRebuild, 150);
         });
         input.addEventListener('change', () => {
-          // Update 4-view composite and telemetry when user finishes dragging slider
+          // Update telemetry immediately and refresh 4-view sheet asynchronously when user finishes dragging slider
           flushRebuild();
-          emitTelemetryToParent(true);
+          emitTelemetryToParent(false);
+          scheduleDeferredFourViewCapture();
         });
         container.appendChild(row);
       }
@@ -1397,7 +1421,32 @@
       }
     }
 
-    function emitTelemetryToParent(includeFourView = true) {
+    let deferredFourViewTimer = 0;
+    function scheduleDeferredFourViewCapture() {
+      if (deferredFourViewTimer) clearTimeout(deferredFourViewTimer);
+      const slotIdx = Math.max(0, 'ABCDEF'.indexOf(String(slotId || 'A').toUpperCase()));
+      const delayMs = 600 + slotIdx * 250;
+      deferredFourViewTimer = setTimeout(() => {
+        deferredFourViewTimer = 0;
+        if (!modelRoot || !latestTelemetry) return;
+        try {
+          const dataUrl = captureFourAngleCompositeDataUrl();
+          if (dataUrl) {
+            postToParent({
+              type: 'CAD_4VIEW_SNAPSHOT',
+              slot: slotId,
+              dataUrl,
+              fourViewDataUrl: dataUrl,
+              telemetry: latestTelemetry,
+            });
+          }
+        } catch (err) {
+          console.warn('Deferred 4-view capture failed:', err);
+        }
+      }, delayMs);
+    }
+
+    function emitTelemetryToParent(includeFourView = false) {
       if (!latestTelemetry) return;
       if (includeFourView) {
         captureFourAngleCompositeDataUrl();
@@ -1425,10 +1474,11 @@
 
         buildParamSlidersUI();
         // Build errors are reported by rebuildGeometryFromCurrentParams itself (CAD_ERROR);
-        // telemetry is only emitted after a successful build so the parent never receives
-        // a stale 4-view / telemetry pair for a model that failed to build.
+        // telemetry is emitted immediately (<50 ms) after a successful build so the viewport
+        // starts spinning right away, while the 4-view composite PNG is captured asynchronously.
         if (rebuildGeometryFromCurrentParams(!preserveCamera)) {
-          emitTelemetryToParent(true);
+          emitTelemetryToParent(false);
+          scheduleDeferredFourViewCapture();
         }
       } catch (err) {
         currentBuildFn = null;
@@ -1809,7 +1859,7 @@
     // Pygame game) could otherwise post CAD_RUN_CODE / CAD_APPLY_CAMERA here; event.source
     // is the only unforgeable sender identity, so everything else is ignored outright.
     window.addEventListener('message', (event) => {
-      if (event.source !== window.parent) return;
+      if (event.source !== _parentWin) return;
       const msg = event.data || {};
       if (!msg || typeof msg.type !== 'string') return;
 

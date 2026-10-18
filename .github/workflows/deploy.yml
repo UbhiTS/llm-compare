@@ -22,9 +22,18 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
   pull_request:
   workflow_dispatch:
+    inputs:
+      deploy_mode:
+        description: 'beta = deploy to https://beta---... with 0% prod traffic (existing users stay on current version); production = deploy & route 100% prod traffic'
+        required: false
+        default: 'beta'
+        type: choice
+        options:
+          - beta
+          - production
 
 permissions:
   contents: read
@@ -128,8 +137,37 @@ jobs:
       # slow pre-auth bodies and hour-long streams exhaust the single instance); the
       # liveness probe restarts a wedged process (/healthz answers 503 while draining).
       # ENABLE_CODE_EXEC=0: LLM-generated Python never runs in the production container.
-      - name: Deploy to Cloud Run
+      # Side-by-side online testing: by default, deploys with --no-traffic --tag=beta so
+      # existing users on https://llm-compare-fb36wekvmq-uc.a.run.app stay on the current
+      # stable revision while https://beta---llm-compare-fb36wekvmq-uc.a.run.app serves the
+      # new version. Pass deploy_mode=production or include [prod]/[promote] in the commit
+      # message (or run `npm run cloud:promote-beta`) to shift 100% prod traffic.
+      - name: Deploy to Cloud Run (Side-by-Side Beta or Production)
+        env:
+          DEPLOY_MODE: ${{ github.event.inputs.deploy_mode || 'beta' }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || '' }}
         run: |
+          PROMOTE_PROD=0
+          if [ "$DEPLOY_MODE" = "production" ] || echo "$COMMIT_MSG" | grep -qiE '\[(prod|promote)\]'; then
+            PROMOTE_PROD=1
+          fi
+
+          if [ "$PROMOTE_PROD" = "0" ]; then
+            CURRENT_REV="$(gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
+              --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+              --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
+            if [ -n "$CURRENT_REV" ]; then
+              echo "Pinning 100% production traffic to current active revision: $CURRENT_REV"
+              gcloud run services update-traffic "${{ vars.CLOUD_RUN_SERVICE }}" \
+                --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+                --to-revisions="${CURRENT_REV}=100"
+            fi
+            TRAFFIC_FLAGS="--no-traffic --tag=beta"
+          else
+            echo "Deploying and routing 100% production traffic to new revision"
+            TRAFFIC_FLAGS="--tag=beta"
+          fi
+
           gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
             --image "$IMAGE" \
             --project "${{ vars.GCP_PROJECT_ID }}" \
@@ -139,6 +177,7 @@ jobs:
             --min-instances=1 --max-instances=1 \
             --concurrency=40 \
             --cpu=2 --memory=2Gi --cpu-boost --no-cpu-throttling --timeout=3600 \
+            $TRAFFIC_FLAGS \
             --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@AGENT_PLATFORM_PROJECT_NUMBER=419460847694@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
             --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest" \
             --add-volume="name=appdata,type=cloud-storage,bucket=${{ vars.APP_DATA_BUCKET }}" \
@@ -146,8 +185,14 @@ jobs:
             --startup-probe="httpGet.path=/api/health,httpGet.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=48" \
             --liveness-probe="httpGet.path=/healthz,httpGet.port=8080,periodSeconds=30,failureThreshold=3"
 
-      - name: Show service URL
+          if [ "$PROMOTE_PROD" = "1" ]; then
+            gcloud run services update-traffic "${{ vars.CLOUD_RUN_SERVICE }}" \
+              --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+              --to-latest
+          fi
+
+      - name: Show Production & Beta URLs
         run: |
           gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
             --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
-            --format='value(status.url)'
+            --format='table(status.traffic.revisionName,status.traffic.percent,status.traffic.tag,status.traffic.url)'
