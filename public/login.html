@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex, nofollow" />
   <title>Sign in · LLM Compare</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
   <style nonce="__NONCE__">
     :root {
       --bg: #0a0c12; --panel: #12151f; --well: #0c0f17; --border: #232a3a; --border-hi: #34405c;
@@ -22,8 +23,8 @@
     .card { position: relative; z-index: 1; width: min(400px, 92vw); background: var(--panel);
       border: 1px solid var(--border-hi); padding: 30px 28px 26px; box-shadow: 0 30px 80px -30px rgba(0,0,0,.8); }
     .brand { display: flex; align-items: center; gap: 11px; margin-bottom: 4px; }
-    .logo { width: 30px; height: 30px; display: grid; place-items: center; color: #fff; font-size: 15px;
-      background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+    .logo { width: 34px; height: 34px; display: grid; place-items: center; flex-shrink: 0; }
+    .logo svg { width: 100%; height: 100%; display: block; }
     h1 { font-size: 17px; margin: 0; letter-spacing: .01em; }
     .sub { color: var(--muted); font-size: 12.5px; margin: 14px 0 18px; line-height: 1.5; }
     label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 14px 0 6px; }
@@ -57,7 +58,7 @@
 <body>
   <div class="bg" aria-hidden="true"></div>
   <main class="card">
-    <div class="brand"><div class="logo">◆</div><h1>LLM Compare</h1></div>
+    <div class="brand"><div class="logo" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><defs><linearGradient id="llmc-login-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0d1324"/><stop offset="0.55" stop-color="#131b31"/><stop offset="1" stop-color="#090d18"/></linearGradient><linearGradient id="llmc-login-rim" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2fd9a6" stop-opacity="0.75"/><stop offset="0.5" stop-color="#5e8bff" stop-opacity="0.55"/><stop offset="1" stop-color="#ff8a65" stop-opacity="0.75"/></linearGradient><linearGradient id="llmc-login-lt" x1="12" y1="12" x2="30" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2fd9a6"/><stop offset="1" stop-color="#3b82f6"/></linearGradient><linearGradient id="llmc-login-lb" x1="12" y1="30" x2="30" y2="52" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient><linearGradient id="llmc-login-rt" x1="52" y1="12" x2="34" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ff9e6d"/><stop offset="1" stop-color="#ec4899"/></linearGradient><linearGradient id="llmc-login-rb" x1="52" y1="30" x2="34" y2="52" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#a855f7"/><stop offset="1" stop-color="#6d5bd0"/></linearGradient><linearGradient id="llmc-login-core" x1="25" y1="24" x2="39" y2="40" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="0.45" stop-color="#b9f6ca"/><stop offset="1" stop-color="#5e8bff"/></linearGradient></defs><rect x="2" y="2" width="60" height="60" rx="14" fill="url(#llmc-login-bg)" stroke="url(#llmc-login-rim)" stroke-width="1.75"/><polygon points="32,7 53,19 53,45 32,57 11,45 11,19" fill="none" stroke="#5e8bff" stroke-opacity="0.22" stroke-width="1"/><polygon points="13,20 29,11 29,30 13,32" fill="url(#llmc-login-lt)"/><polygon points="13,32 29,30 29,53 13,44" fill="url(#llmc-login-lb)"/><polyline points="13,32 29,30 29,11" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1"/><polygon points="51,20 35,11 35,30 51,32" fill="url(#llmc-login-rt)"/><polygon points="51,32 35,30 35,53 51,44" fill="url(#llmc-login-rb)"/><polyline points="51,32 35,30 35,11" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1"/><line x1="32" y1="7" x2="32" y2="57" stroke="#cfe0ff" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="2 2"/><polygon points="32,20 42,32 32,44 22,32" fill="#0b101d" stroke="#5e8bff" stroke-opacity="0.65" stroke-width="1.25"/><polygon points="32,24.5 38.2,32 32,39.5 25.8,32" fill="url(#llmc-login-core)"/></svg></div><h1>LLM Compare</h1></div>
     <p class="sub" id="sub">Sign in to continue.</p>
 
     <div id="googleBox" class="hide">

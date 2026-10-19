@@ -147,6 +147,7 @@ const TEXT_SUBCATEGORY_LABELS = {
 };
 
 const CAD_VERTICAL_CATEGORIES = [
+  ['custom',            '✏️ Custom 3D / CAD Prompt',               null],
   ['cad3d-automotive',  '🚗 Automotive & Powertrain',              'automotive'],
   ['cad3d-medical',     '🏥 Medical & Biotech Devices',            'medical'],
   ['cad3d-electronics', '🔌 Electronics, Thermal & Semiconductor', 'electronics'],
@@ -154,7 +155,6 @@ const CAD_VERTICAL_CATEGORIES = [
   ['cad3d-robotics',    '🤖 Robotics & Motion Control',            'robotics'],
   ['cad3d-industrial',  '🏭 Industrial Hardware, Piping & Tooling','industrial'],
   ['cad3d-all',         '🧊 All Manufacturing Verticals',          null],
-  ['custom',            '✏️ Custom 3D / CAD Prompt',               null],
 ];
 
 const CAD_VERTICAL_LABELS = {
@@ -376,11 +376,12 @@ function populateTaskSelect(catKey, preferredTaskId) {
   populateSubcategorySelect(catKey);
 
   if (!catKey || catKey === 'custom') {
+    const is3d = typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d';
     const customOpt = el('option');
     customOpt.value = 'custom';
     customOpt.textContent = SAVED_PROMPTS.length > 0
-      ? '✏️ New / Freeform Custom Prompt & File Attachments'
-      : 'Custom Prompt - Freeform & File Attachments';
+      ? (is3d ? '✏️ New / Freeform Custom 3D / CAD Prompt & File Attachments' : '✏️ New / Freeform Custom Prompt & File Attachments')
+      : (is3d ? 'Custom 3D / CAD Prompt - Freeform & File Attachments' : 'Custom Prompt - Freeform & File Attachments');
     ts.appendChild(customOpt);
 
     if (SAVED_PROMPTS.length > 0) {
@@ -3887,7 +3888,13 @@ function renderTaskPrompt() {
       tp.textContent = '';
       tp.classList.add('hidden');
     }
-    if (ta) ta.classList.remove('hidden');
+    if (ta) {
+      const is3d = typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d';
+      ta.placeholder = is3d
+        ? 'Describe any 3D part, assembly, mechanism, or attach an engineering sketch/spec… (Paste images with ⌘V, press ⌘↵ to run)'
+        : 'Ask anything, compare code, or analyze attached files… (Paste images with ⌘V, press ⌘↵ to run)';
+      ta.classList.remove('hidden');
+    }
     if (attWrap) attWrap.classList.remove('hidden');
   } else {
     if (tp) {
@@ -7025,22 +7032,22 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
       const cs = $('#categorySelect');
       const curTask = currentTask();
       if (target === '3d') {
-        if (curTask.category !== 'cad3d' && (!isCustomTaskSelected() || prevMode !== '3d' || initialBoot)) {
-          const defCat = 'cad3d-automotive';
-          if (cs) cs.value = defCat;
-          populateSubcategorySelect(defCat, 'complex');
-          populateTaskSelect(defCat, 'cad-planetary-gearbox');
-          renderTaskPrompt();
-          buildArena();
-        } else {
-          renderTaskPrompt();
-          buildArena();
+        if (isCustomTaskSelected() || curTask.category !== 'cad3d') {
+          const tsNow = $('#taskSelect');
+          const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
+          if (cs) cs.value = 'custom';
+          populateSubcategorySelect('custom');
+          populateTaskSelect('custom', curVal);
         }
+        renderTaskPrompt();
+        buildArena();
       } else if (target === 'text' && prevMode === '3d') {
-        if (cs && isCadCategoryKey(cs.value)) {
+        if (cs && (isCadCategoryKey(cs.value) || isCustomTaskSelected())) {
+          const tsNow = $('#taskSelect');
+          const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
           cs.value = 'custom';
           populateSubcategorySelect('custom');
-          populateTaskSelect('custom', 'custom');
+          populateTaskSelect('custom', curVal);
         }
         renderTaskPrompt();
         buildArena();
@@ -7596,7 +7603,11 @@ function populateImagePacksAndScenarios() {
     if (sc) applyImageScenario(pack, sc);
   };
 
-  updateScenariosForPack(packs[0] && packs[0].id);
+  const defaultImgPack = packs.find((p) => p.id === 'custom-image-prompt') || packs[0];
+  if (defaultImgPack) {
+    packSel.value = defaultImgPack.id;
+    updateScenariosForPack(defaultImgPack.id);
+  }
 }
 
 function applyImageScenario(pack, sc) {

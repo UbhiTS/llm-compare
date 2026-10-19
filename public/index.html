@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.60"></script>
+  <script src="theme-init.js?v=1.0.61"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.60" />
+  <link rel="stylesheet" href="styles.css?v=1.0.61" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.60" defer></script>
+  <script src="app.js?v=1.0.61" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -31,11 +31,58 @@
 
   <header class="topbar">
     <div class="brand">
-      <div class="logo">◆</div>
+      <div class="logo" aria-hidden="true">
+        <svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+          <defs>
+            <linearGradient id="llmc-bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#0d1324"/>
+              <stop offset="0.55" stop-color="#131b31"/>
+              <stop offset="1" stop-color="#090d18"/>
+            </linearGradient>
+            <linearGradient id="llmc-rim" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#2fd9a6" stop-opacity="0.75"/>
+              <stop offset="0.5" stop-color="#5e8bff" stop-opacity="0.55"/>
+              <stop offset="1" stop-color="#ff8a65" stop-opacity="0.75"/>
+            </linearGradient>
+            <linearGradient id="llmc-left-top" x1="12" y1="12" x2="30" y2="32" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#2fd9a6"/>
+              <stop offset="1" stop-color="#3b82f6"/>
+            </linearGradient>
+            <linearGradient id="llmc-left-bot" x1="12" y1="30" x2="30" y2="52" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#3b82f6"/>
+              <stop offset="1" stop-color="#1d4ed8"/>
+            </linearGradient>
+            <linearGradient id="llmc-right-top" x1="52" y1="12" x2="34" y2="32" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#ff9e6d"/>
+              <stop offset="1" stop-color="#ec4899"/>
+            </linearGradient>
+            <linearGradient id="llmc-right-bot" x1="52" y1="30" x2="34" y2="52" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#a855f7"/>
+              <stop offset="1" stop-color="#6d5bd0"/>
+            </linearGradient>
+            <linearGradient id="llmc-core" x1="25" y1="24" x2="39" y2="40" gradientUnits="userSpaceOnUse">
+              <stop offset="0" stop-color="#ffffff"/>
+              <stop offset="0.45" stop-color="#b9f6ca"/>
+              <stop offset="1" stop-color="#5e8bff"/>
+            </linearGradient>
+          </defs>
+          <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#llmc-bg)" stroke="url(#llmc-rim)" stroke-width="1.75"/>
+          <polygon points="32,7 53,19 53,45 32,57 11,45 11,19" fill="none" stroke="#5e8bff" stroke-opacity="0.22" stroke-width="1"/>
+          <polygon points="13,20 29,11 29,30 13,32" fill="url(#llmc-left-top)"/>
+          <polygon points="13,32 29,30 29,53 13,44" fill="url(#llmc-left-bot)"/>
+          <polyline points="13,32 29,30 29,11" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1"/>
+          <polygon points="51,20 35,11 35,30 51,32" fill="url(#llmc-right-top)"/>
+          <polygon points="51,32 35,30 35,53 51,44" fill="url(#llmc-right-bot)"/>
+          <polyline points="51,32 35,30 35,11" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1"/>
+          <line x1="32" y1="7" x2="32" y2="57" stroke="#cfe0ff" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="2 2"/>
+          <polygon points="32,20 42,32 32,44 22,32" fill="#0b101d" stroke="#5e8bff" stroke-opacity="0.65" stroke-width="1.25"/>
+          <polygon points="32,24.5 38.2,32 32,39.5 25.8,32" fill="url(#llmc-core)"/>
+        </svg>
+      </div>
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.60</span>
+          <span id="headerAppVersion" class="head-version">v1.0.61</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -611,6 +658,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.60</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T00:45:30Z">Last updated Oct 18, 2026, 5:45 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.61</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T02:50:00Z">Last updated Oct 18, 2026, 7:50 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

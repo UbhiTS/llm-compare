@@ -758,6 +758,24 @@ const SAMPLE_REFERENCE_ASSETS = (() => {
 // ---------------------------------------------------------------------------
 const IMAGE_USE_CASE_PACKS = [
   {
+    id: 'custom-image-prompt',
+    title: '✏️ Custom Image Prompt',
+    badge: 'Custom Studio',
+    subcategories: [],
+    scenarios: [
+      {
+        id: 'custom-freeform',
+        title: 'Custom Generation or Multi-Image Edit',
+        badge: 'Custom Prompt',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '16:9',
+        prompt: '',
+        whyItMatters: 'Write any custom generation, upscaling, outpainting, restoration, or recoloring prompt and attach up to 13 reference images.',
+        sampleAttachments: [],
+      },
+    ],
+  },
+  {
     id: 'upscaling-resampling',
     title: '🔍 Super-Resolution & Outpainting',
     badge: 'Super-Resolution & Outpainting',
@@ -1039,24 +1057,6 @@ const IMAGE_USE_CASE_PACKS = [
         recommendedAspectRatio: '3:4',
         prompt: 'Cinematic sci-fi theatrical movie poster showing a lone astronaut standing on a crystalline ridge overlooking a ringed gas giant in deep teal and amber anamorphic lighting. Render bold metallic title typography at the top reading "HORIZON OF TITAN" and a crisp subtitle at the bottom reading "EXPERIENCE IT IN IMAX · NOVEMBER 2026".',
         whyItMatters: 'Benchmarks dramatic lighting composition paired with multi-line display typography.',
-        sampleAttachments: [],
-      },
-    ],
-  },
-  {
-    id: 'custom-image-prompt',
-    title: '✏️ Custom Image Prompt',
-    badge: 'Custom Studio',
-    subcategories: [],
-    scenarios: [
-      {
-        id: 'custom-freeform',
-        title: 'Custom Generation or Multi-Image Edit',
-        badge: 'Custom Prompt',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '16:9',
-        prompt: '',
-        whyItMatters: 'Write any custom generation, upscaling, outpainting, restoration, or recoloring prompt and attach up to 13 reference images.',
         sampleAttachments: [],
       },
     ],

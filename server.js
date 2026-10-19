@@ -252,7 +252,26 @@ app.get(['/healthz', '/api/health'], (_req, res) => {
 });
 
 const FAVICON_SVG = Buffer.from(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#0f1523"/><path d="M32 10 L50 32 L32 54 L14 32 Z" fill="#5e8bff"/></svg>',
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">' +
+  '<defs>' +
+  '<linearGradient id="bg" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#0d1324"/><stop offset="0.55" stop-color="#131b31"/><stop offset="1" stop-color="#090d18"/></linearGradient>' +
+  '<linearGradient id="rim" x1="6" y1="6" x2="58" y2="58" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2fd9a6" stop-opacity="0.8"/><stop offset="0.5" stop-color="#5e8bff" stop-opacity="0.6"/><stop offset="1" stop-color="#ff8a65" stop-opacity="0.8"/></linearGradient>' +
+  '<linearGradient id="lt" x1="12" y1="12" x2="30" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2fd9a6"/><stop offset="1" stop-color="#3b82f6"/></linearGradient>' +
+  '<linearGradient id="lb" x1="12" y1="30" x2="30" y2="52" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#1d4ed8"/></linearGradient>' +
+  '<linearGradient id="rt" x1="52" y1="12" x2="34" y2="32" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ff9e6d"/><stop offset="1" stop-color="#ec4899"/></linearGradient>' +
+  '<linearGradient id="rb" x1="52" y1="30" x2="34" y2="52" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#a855f7"/><stop offset="1" stop-color="#6d5bd0"/></linearGradient>' +
+  '<linearGradient id="core" x1="25" y1="24" x2="39" y2="40" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ffffff"/><stop offset="0.45" stop-color="#b9f6ca"/><stop offset="1" stop-color="#5e8bff"/></linearGradient>' +
+  '</defs>' +
+  '<rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)" stroke="url(#rim)" stroke-width="2"/>' +
+  '<polygon points="32,7 53,19 53,45 32,57 11,45 11,19" fill="none" stroke="#5e8bff" stroke-opacity="0.24" stroke-width="1"/>' +
+  '<polygon points="13,20 29,11 29,30 13,32" fill="url(#lt)"/>' +
+  '<polygon points="13,32 29,30 29,53 13,44" fill="url(#lb)"/>' +
+  '<polygon points="51,20 35,11 35,30 51,32" fill="url(#rt)"/>' +
+  '<polygon points="51,32 35,30 35,53 51,44" fill="url(#rb)"/>' +
+  '<line x1="32" y1="7" x2="32" y2="57" stroke="#cfe0ff" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="2 2"/>' +
+  '<polygon points="32,20 42,32 32,44 22,32" fill="#0b101d" stroke="#5e8bff" stroke-opacity="0.7" stroke-width="1.25"/>' +
+  '<polygon points="32,24.5 38.2,32 32,39.5 25.8,32" fill="url(#core)"/>' +
+  '</svg>',
   'utf8'
 );
 app.get('/favicon.ico', (_req, res) => {
