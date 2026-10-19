@@ -265,6 +265,7 @@ function httpRequest(port, method, urlPath, bodyObj) {
       const chrome = spawn('/usr/bin/google-chrome', [
         '--headless=new',
         '--no-sandbox',
+        '--disable-dev-shm-usage',
         '--disable-gpu-sandbox',
         '--enable-unsafe-swiftshader',
         '--use-gl=angle',
@@ -279,7 +280,7 @@ function httpRequest(port, method, urlPath, bodyObj) {
       try {
         // Wait for Chrome DevTools Protocol endpoint
         let pageWsUrl = null;
-        for (let attempt = 0; attempt < 30; attempt++) {
+        for (let attempt = 0; attempt < 90; attempt++) {
           await new Promise((r) => setTimeout(r, 200));
           try {
             const listRes = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
