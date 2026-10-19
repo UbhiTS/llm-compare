@@ -1,7 +1,7 @@
 {
   "name": "llm-compare",
-  "version": "1.0.65",
-  "lastUpdated": "2026-10-19T16:39:00Z",
+  "version": "1.0.66",
+  "lastUpdated": "2026-10-19T17:00:00Z",
   "description": "LLM Compare — race the same agentic task across multiple LLMs and compare correctness, speed, tokens and cost.",
   "license": "MIT",
   "main": "server.js",

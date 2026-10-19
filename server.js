@@ -862,9 +862,77 @@ app.delete('/api/auth/users/:username', requireAdmin, (req, res) => {
 
 // ---------- fast in-memory static asset cache + gzip compression ----------
 // (PUBLIC_DIR is defined with the pre-gate sandbox routes above.)
+const ARENA_PAGE_TITLES = {
+  text: 'LLM Compare · Text, Code & Agent Arena',
+  image: 'LLM Compare · Image & GenMedia Arena',
+  '3d': 'LLM Compare · 3D & CAD Arena',
+  video: 'LLM Compare · Video Generation Arena',
+};
+
+function stripArenaBlock(html, blockName) {
+  const re = new RegExp(`<!-- \\[ARENA_BLOCK:${blockName}_START\\] -->[\\s\\S]*?<!-- \\[ARENA_BLOCK:${blockName}_END\\] -->\\s*`, 'g');
+  return html.replace(re, '');
+}
+
+function buildArenaPageHtml(baseHtml, arenaMode) {
+  if (!arenaMode || !ARENA_PAGE_TITLES[arenaMode]) return baseHtml;
+  let html = baseHtml;
+  html = html.replace(/<title>[\s\S]*?<\/title>/, `<title>${ARENA_PAGE_TITLES[arenaMode]}</title>`);
+  html = html.replace(/<body([^>]*)>/, `<body$1 data-arena-mode="${arenaMode}" data-arena-page="${arenaMode}">`);
+  html = html.replace(/class="arena-mode-btn active"/g, 'class="arena-mode-btn"');
+  html = html.replace(
+    new RegExp(`class="arena-mode-btn"(\\s+data-arena-mode="${arenaMode}")`),
+    'class="arena-mode-btn active"$1'
+  );
+  if (arenaMode === 'text') {
+    html = stripArenaBlock(html, 'CAD_STUDIO');
+    html = stripArenaBlock(html, 'CAD_MODAL');
+    html = stripArenaBlock(html, 'IMAGE_ARENA');
+    html = stripArenaBlock(html, 'VIDEO_ARENA');
+  } else if (arenaMode === '3d') {
+    html = stripArenaBlock(html, 'IMAGE_ARENA');
+    html = stripArenaBlock(html, 'VIDEO_ARENA');
+    html = html.replace(
+      'id="cadModifyBar" class="cad-modify-bar glass hidden"',
+      'id="cadModifyBar" class="cad-modify-bar glass"'
+    );
+  } else if (arenaMode === 'image') {
+    html = stripArenaBlock(html, 'TEXT_3D_CONTROLS');
+    html = stripArenaBlock(html, 'CAD_STUDIO');
+    html = stripArenaBlock(html, 'TEXT_3D_STAGE');
+    html = stripArenaBlock(html, 'CAD_MODAL');
+    html = stripArenaBlock(html, 'VIDEO_ARENA');
+    html = html.replace(
+      'id="imageArenaSection" class="image-arena-wrap hidden"',
+      'id="imageArenaSection" class="image-arena-wrap"'
+    );
+  } else if (arenaMode === 'video') {
+    html = stripArenaBlock(html, 'TEXT_3D_CONTROLS');
+    html = stripArenaBlock(html, 'CAD_STUDIO');
+    html = stripArenaBlock(html, 'TEXT_3D_STAGE');
+    html = stripArenaBlock(html, 'CAD_MODAL');
+    html = stripArenaBlock(html, 'IMAGE_ARENA');
+    html = html.replace(
+      'id="videoArenaSection" class="video-arena-wrap hidden"',
+      'id="videoArenaSection" class="video-arena-wrap"'
+    );
+  }
+  return html;
+}
+
 const STATIC_ASSET_MIMES = {
   '/': { file: 'index.html', type: 'text/html; charset=utf-8' },
   '/index.html': { file: 'index.html', type: 'text/html; charset=utf-8' },
+  '/text': { file: 'index.html:text', type: 'text/html; charset=utf-8' },
+  '/text/': { file: 'index.html:text', type: 'text/html; charset=utf-8' },
+  '/image': { file: 'index.html:image', type: 'text/html; charset=utf-8' },
+  '/image/': { file: 'index.html:image', type: 'text/html; charset=utf-8' },
+  '/3d': { file: 'index.html:3d', type: 'text/html; charset=utf-8' },
+  '/3d/': { file: 'index.html:3d', type: 'text/html; charset=utf-8' },
+  '/cad': { file: 'index.html:3d', type: 'text/html; charset=utf-8' },
+  '/cad/': { file: 'index.html:3d', type: 'text/html; charset=utf-8' },
+  '/video': { file: 'index.html:video', type: 'text/html; charset=utf-8' },
+  '/video/': { file: 'index.html:video', type: 'text/html; charset=utf-8' },
   '/theme-init.js': { file: 'theme-init.js', type: 'application/javascript; charset=utf-8' },
   '/app.js': { file: 'app.js', type: 'application/javascript; charset=utf-8' },
   '/styles.css': { file: 'styles.css', type: 'text/css; charset=utf-8' },
@@ -872,15 +940,18 @@ const STATIC_ASSET_MIMES = {
 const staticMemCache = new Map();
 
 function getCachedStaticAsset(fileRel) {
-  const fp = path.join(PUBLIC_DIR, fileRel);
+  const isArenaVariant = fileRel.startsWith('index.html:');
+  const arenaMode = isArenaVariant ? fileRel.slice('index.html:'.length) : null;
+  const diskRel = isArenaVariant ? 'index.html' : fileRel;
+  const fp = path.join(PUBLIC_DIR, diskRel);
   try {
     const prev = staticMemCache.get(fileRel);
     const st = fs.statSync(fp);
-    if (fileRel === 'index.html') {
+    if (diskRel === 'index.html') {
       const themeAsset = getCachedStaticAsset('theme-init.js');
       const cssAsset = getCachedStaticAsset('styles.css');
       const jsAsset = getCachedStaticAsset('app.js');
-      const compositeKey = `${st.mtimeMs}|${pkg.version}|${BOOT_ID}|${themeAsset ? themeAsset.hash : ''}|${cssAsset ? cssAsset.hash : ''}|${jsAsset ? jsAsset.hash : ''}`;
+      const compositeKey = `${st.mtimeMs}|${pkg.version}|${BOOT_ID}|${arenaMode || 'all'}|${themeAsset ? themeAsset.hash : ''}|${cssAsset ? cssAsset.hash : ''}|${jsAsset ? jsAsset.hash : ''}`;
       if (prev && prev.compositeKey === compositeKey) return prev;
       let htmlStr = fs.readFileSync(fp, 'utf8');
       if (themeAsset && themeAsset.hash) {
@@ -891,6 +962,9 @@ function getCachedStaticAsset(fileRel) {
       }
       if (jsAsset && jsAsset.hash) {
         htmlStr = htmlStr.replace(/app\.js(\?v=[^"']*)?/g, `app.js?v=${pkg.version}-${jsAsset.hash}-${BOOT_ID}`);
+      }
+      if (arenaMode) {
+        htmlStr = buildArenaPageHtml(htmlStr, arenaMode);
       }
       const raw = Buffer.from(htmlStr, 'utf8');
       const gz = zlib.gzipSync(raw, { level: 6 });
@@ -910,8 +984,8 @@ function getCachedStaticAsset(fileRel) {
     return null;
   }
 }
-// Warm static asset cache on boot (sub-assets first so index.html injects their content hashes)
-['theme-init.js', 'styles.css', 'app.js', 'index.html'].forEach((f) => getCachedStaticAsset(f));
+// Warm static asset cache on boot (sub-assets first so index.html and all 4 isolated arena pages inject their content hashes)
+['theme-init.js', 'styles.css', 'app.js', 'index.html', 'index.html:text', 'index.html:image', 'index.html:3d', 'index.html:video'].forEach((f) => getCachedStaticAsset(f));
 
 // Automatically gzip JSON responses > 1 KB when the client accepts gzip. The JSON
 // text is run through the secret scrubber BEFORE compression (3.8): the /api
@@ -944,7 +1018,22 @@ app.use((req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return next();
   const hit = STATIC_ASSET_MIMES[req.path];
   if (!hit) return next();
-  const entry = getCachedStaticAsset(hit.file);
+  let assetKey = hit.file;
+  if (req.path === '/') {
+    const qTab = req.query && (req.query.tab || req.query.mode);
+    if (!qTab) {
+      let mode = 'text';
+      try {
+        const prefs = req.user && req.user.username ? history.getUserPreferences(req.user.username) : null;
+        const savedArena = prefs && prefs.workspaceState && prefs.workspaceState.lastArena;
+        if (['text', 'image', '3d', 'video'].includes(savedArena)) {
+          mode = savedArena;
+        }
+      } catch (_) {}
+      assetKey = `index.html:${mode}`;
+    }
+  }
+  const entry = getCachedStaticAsset(assetKey);
   if (!entry) return next();
   res.setHeader('Content-Type', hit.type);
   setNoCacheHeaders(res);

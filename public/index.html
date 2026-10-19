@@ -82,26 +82,26 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.65</span>
+          <span id="headerAppVersion" class="head-version">v1.0.66</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
     </div>
     <nav class="arena-mode-switch" id="arenaModeSwitch" aria-label="Arena Mode">
-      <button type="button" class="arena-mode-btn active" data-arena-mode="text" id="modeBtnText">
+      <button type="button" class="arena-mode-btn active" data-arena-mode="text" data-arena-href="/text" id="modeBtnText">
         <span class="am-icon">⚡</span>
         <span>Text, Code &amp; Agent Arena</span>
       </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="image" id="modeBtnImage">
+      <button type="button" class="arena-mode-btn" data-arena-mode="image" data-arena-href="/image" id="modeBtnImage">
         <span class="am-icon">🎨</span>
         <span>Image &amp; GenMedia Arena</span>
       </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="3d" id="modeBtn3d">
+      <button type="button" class="arena-mode-btn" data-arena-mode="3d" data-arena-href="/3d" id="modeBtn3d">
         <span class="am-icon">🧊</span>
         <span>3D &amp; CAD Arena</span>
         <span class="am-badge is-live">NEW</span>
       </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="video" id="modeBtnVideo">
+      <button type="button" class="arena-mode-btn" data-arena-mode="video" data-arena-href="/video" id="modeBtnVideo">
         <span class="am-icon">🎬</span>
         <span>Video Generation</span>
         <span class="am-badge">Coming soon...</span>
@@ -132,6 +132,7 @@
     </div>
   </header>
 
+  <!-- [ARENA_BLOCK:TEXT_3D_CONTROLS_START] -->
   <section class="controls glass">
     <!-- ==================== STEP 1: SELECT TASK & PROMPT ==================== -->
     <div class="step-block step-task">
@@ -237,7 +238,9 @@
       </div>
     </div>
   </section>
+  <!-- [ARENA_BLOCK:TEXT_3D_CONTROLS_END] -->
 
+  <!-- [ARENA_BLOCK:CAD_STUDIO_START] -->
   <!-- ==================== 3D & CAD STUDIO TOOLBAR + FOLLOW-UP MODIFY LOOP ==================== -->
   <section id="cadModifyBar" class="cad-modify-bar glass hidden" aria-label="3D and CAD Studio Controls and Follow-Up Modification">
     <div class="cad-modify-top">
@@ -296,7 +299,9 @@
       <button type="button" class="bar-btn cad-chip-btn" data-cad-edit="Add 12 helical sculptural flutes/ribs along the outer body and chamfer the top rim for 3D printing without overhangs.">🌀 Add 12 Helical Flutes</button>
     </div>
   </section>
+  <!-- [ARENA_BLOCK:CAD_STUDIO_END] -->
 
+  <!-- [ARENA_BLOCK:TEXT_3D_STAGE_START] -->
   <section id="arena" class="arena"></section>
 
   <section id="scorecard" class="scorecard glass hidden">
@@ -354,7 +359,9 @@
       </div>
     </details>
   </section>
+  <!-- [ARENA_BLOCK:TEXT_3D_STAGE_END] -->
 
+  <!-- [ARENA_BLOCK:IMAGE_ARENA_START] -->
   <!-- ==================== IMAGE & GENMEDIA ARENA (NANO BANANA 2 vs 2.1) ==================== -->
   <section id="imageArenaSection" class="image-arena-wrap hidden" aria-label="Image and GenMedia Arena">
     <div class="controls glass image-controls-panel">
@@ -564,7 +571,9 @@
       </div>
     </section>
   </section>
+  <!-- [ARENA_BLOCK:IMAGE_ARENA_END] -->
 
+  <!-- [ARENA_BLOCK:VIDEO_ARENA_START] -->
   <!-- ==================== VIDEO GENERATION ARENA (COMING SOON...) ==================== -->
   <section id="videoArenaSection" class="video-arena-wrap hidden" aria-label="Video Generation Arena">
     <div class="controls glass video-coming-soon-card">
@@ -602,6 +611,7 @@
       </div>
     </div>
   </section>
+  <!-- [ARENA_BLOCK:VIDEO_ARENA_END] -->
 
   <!-- FULL-SCREEN IMAGE LIGHTBOX MODAL (INPUT REFERENCE & GENERATED OUTPUT INSPECTION) -->
   <div id="imgLightboxModal" class="img-lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Enlarged image preview">
@@ -628,6 +638,7 @@
     </div>
   </div>
 
+  <!-- [ARENA_BLOCK:CAD_MODAL_START] -->
   <!-- AUTODESK FUSION 360 & HEADLESS CAD MCP BRIDGE MODAL -->
   <div id="cadMcpModal" class="img-lightbox-backdrop hidden" role="dialog" aria-modal="true" aria-label="Autodesk Fusion 360 and Headless CAD MCP Bridge">
     <div class="img-lightbox-dialog glass cad-mcp-dialog">
@@ -662,7 +673,8 @@
       </div>
     </div>
   </div>
+  <!-- [ARENA_BLOCK:CAD_MODAL_END] -->
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.65</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T16:39:00Z">Last updated Oct 19, 2026, 9:39 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.66</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T17:00:00Z">Last updated Oct 19, 2026, 10:00 AM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

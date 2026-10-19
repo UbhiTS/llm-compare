@@ -957,7 +957,7 @@ async function init() {
     syncSavedPromptButtons();
     renderTaskPrompt();
     if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
-    $('#scorecard').classList.add('hidden');
+    if ($('#scorecard')) $('#scorecard').classList.add('hidden');
     { const jb = $('#jumpScorecardBtn'); if (jb) jb.classList.add('hidden'); }
     { const pb = $('#exportPdfTopBtn'); if (pb) pb.classList.add('hidden'); }
     buildArena();
@@ -1065,6 +1065,12 @@ async function init() {
   buildArena();
   updateRunButton();
   switchArenaMode(initialArena, { updateUrl: Boolean(urlTab), initialBoot: true });
+  {
+    const pageMode = document.body && document.body.dataset && document.body.dataset.arenaPage;
+    if (pageMode && window.location.pathname === '/' && !window.location.search && window.history && typeof window.history.replaceState === 'function') {
+      try { window.history.replaceState({}, '', '/' + pageMode); } catch (_) {}
+    }
+  }
   if ((initialArena === 'text' || initialArena === '3d') && bootArenaSt.lastRunId && !bootArenaSt.prunedToDefault) {
     hydrateArenaRunFromServer(initialArena, bootArenaSt.lastRunId);
   }
@@ -1080,7 +1086,7 @@ async function init() {
     }
   });
 
-  $('#runBtn').addEventListener('click', run);
+  if ($('#runBtn')) $('#runBtn').addEventListener('click', run);
   {
     const jb = $('#jumpScorecardBtn');
     if (jb) {
@@ -1108,7 +1114,7 @@ async function init() {
     setMetricView(b.dataset.view);
     renderMetricGrid(_lastScored.scored, _lastScored.isCustom);
   }); }
-  $('#historyBtn').addEventListener('click', () => openHistoryModal());
+  if ($('#historyBtn')) $('#historyBtn').addEventListener('click', () => openHistoryModal());
   updateQuotaBadge();
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
@@ -2414,12 +2420,12 @@ function initWorkspaceStateFromConfig() {
     const def = base.arenas[key];
     const s = (srvWs && srvWs.arenas && srvWs.arenas[key]) || null;
     const l = (locWs && locWs.arenas && locWs.arenas[key]) || null;
-    if (s && s.prunedToDefault) {
-      return { ...def, ...s };
-    }
     const sAt = (s && Number(s.updatedAt)) || 0;
     const lAt = (l && Number(l.updatedAt)) || 0;
     const lFresh = lAt > 0 && (now - lAt <= WORKSPACE_RETENTION_MS);
+    if (s && s.prunedToDefault && !(lFresh && lAt > sAt && l && !l.prunedToDefault)) {
+      return { ...def, ...s };
+    }
     const chosen = (lFresh && lAt > sAt) ? { ...def, ...(s || {}), ...l } : { ...def, ...(lFresh ? l : {}), ...(s || {}) };
     if (chosen.updatedAt > 0 && (now - Number(chosen.updatedAt) > WORKSPACE_RETENTION_MS)) {
       if (key === 'image') {
@@ -2462,6 +2468,7 @@ function captureCurrentArenaState(modeOverride) {
   if (!CONFIG || !CONFIG.me) return;
   if (!ARENA_WORKSPACE_STATE) initWorkspaceStateFromConfig();
   const mode = modeOverride || (typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text');
+  if (mode === 'video') return;
   if (mode === 'text' || mode === '3d' || mode === 'image') {
     ARENA_WORKSPACE_STATE.lastArena = mode;
   }
@@ -2532,10 +2539,13 @@ function saveUserPreferencesImmediate(opts) {
     _prefSaveTimer = null;
   }
   if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
-  captureCurrentArenaState();
+  if (!(opts && opts.skipCapture)) captureCurrentArenaState();
   const uname = CONFIG.me.username;
   const taskSelectEl = $('#taskSelect');
-  const taskId = (taskSelectEl && taskSelectEl.value) || 'custom';
+  const fallbackTaskId = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.text && ARENA_WORKSPACE_STATE.arenas.text.taskId)
+    || (CONFIG.me.preferences && CONFIG.me.preferences.taskId)
+    || 'custom';
+  const taskId = (taskSelectEl && taskSelectEl.value) || fallbackTaskId;
   const slots = SLOT_IDS.map((s) => ({
     slot: s,
     catalogId: SLOT_ASSIGN[s] || null,
@@ -4381,6 +4391,7 @@ function isProseTask(task) {
 // ---------- arena scaffolding ----------
 function buildArena(models) {
   const arena = $('#arena');
+  if (!arena) return;
   arena.innerHTML = '';
   const task = currentTask();
   const hasTests = (task.testCount || 0) > 0;
@@ -5409,6 +5420,7 @@ async function run() {
   if (!MODELS.length) return;   // nothing selected — the button is disabled anyway
   if (_fullRun) return;         // not re-entrant: a second click / timer while streaming is ignored (1.4)
   const btn = $('#runBtn');
+  if (!btn) return;
   btn.disabled = true;
   btn.textContent = 'Running…';
   _busy = true; _fullRun = true;   // set synchronously, before the first await
@@ -5421,7 +5433,7 @@ async function run() {
   _currentRunId = null;
   { const jo = $('#judgeOut'); if (jo) jo.innerHTML = ''; }
   Object.keys(CRASH).forEach((k) => clearCrash(k));
-  $('#scorecard').classList.add('hidden');
+  if ($('#scorecard')) $('#scorecard').classList.add('hidden');
   const jumpBtn = $('#jumpScorecardBtn');
   if (jumpBtn) jumpBtn.classList.add('hidden');
   { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.add('hidden'); }
@@ -5812,10 +5824,10 @@ function finalize(resultsMap, slots) {
 function buildScorecard(results) {
   const inTextOr3d = (typeof ACTIVE_ARENA_MODE === 'undefined') || ACTIVE_ARENA_MODE === 'text' || ACTIVE_ARENA_MODE === '3d';
   if (inTextOr3d) {
-    $('#scorecard').classList.remove('hidden');
+    if ($('#scorecard')) $('#scorecard').classList.remove('hidden');
     { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.remove('hidden'); }
   } else {
-    $('#scorecard').classList.add('hidden');
+    if ($('#scorecard')) $('#scorecard').classList.add('hidden');
   }
 
   const minCost = Math.min(...results.map((r) => Math.max(r.costUsd, 1e-9)));
@@ -6765,6 +6777,28 @@ async function restoreHistory(id) {
       isCadHistoryRun(snap)
     );
     const targetMode = isCadSnap ? '3d' : 'text';
+    const pageMode = document.body && document.body.dataset && document.body.dataset.arenaPage;
+    if (pageMode && pageMode !== targetMode) {
+      captureCurrentArenaState(pageMode);
+      if (!ARENA_WORKSPACE_STATE) initWorkspaceStateFromConfig();
+      ARENA_WORKSPACE_STATE.lastArena = targetMode;
+      if (!ARENA_WORKSPACE_STATE.arenas) ARENA_WORKSPACE_STATE.arenas = {};
+      ARENA_WORKSPACE_STATE.arenas[targetMode] = {
+        ...(ARENA_WORKSPACE_STATE.arenas[targetMode] || {}),
+        taskId: snap.taskId || 'custom',
+        draftPrompt: isCustomTaskId(snap.taskId) ? String(snap.prompt || '').slice(0, COMPOSER_DRAFT_MAX_CHARS) : '',
+        slots: Array.isArray(snap.models) && snap.models.length
+          ? snap.models.map((m, idx) => ({ slot: m.slot || String.fromCharCode(65 + idx), catalogId: m.catalogId || m.id, effort: m.effort || null }))
+          : ((ARENA_WORKSPACE_STATE.arenas[targetMode] && ARENA_WORKSPACE_STATE.arenas[targetMode].slots) || null),
+        lastRunId: snap.id || id,
+        prunedToDefault: false,
+        updatedAt: Date.now(),
+      };
+      saveComposerDraft();
+      saveUserPreferencesImmediate({ useBeacon: true, skipCapture: true });
+      window.location.assign('/' + targetMode);
+      return;
+    }
     if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== targetMode) {
       switchArenaMode(targetMode, { skipInterruptCheck: true });
     }
@@ -6783,7 +6817,7 @@ async function restoreHistory(id) {
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
     captureCurrentArenaState(targetMode);
     saveUserPreferencesDebounced();
-    $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if ($('#arena')) $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) { window.alert(e.message); }
 }
 
@@ -7254,12 +7288,21 @@ let IMG_TIMER_ID = null;
 
 function getExplicitUrlArenaTab() {
   try {
+    const pathClean = String(window.location.pathname || '').replace(/\/+$/, '').toLowerCase();
+    if (pathClean === '/text') return 'text';
+    if (pathClean === '/image') return 'image';
+    if (pathClean === '/3d' || pathClean === '/cad') return '3d';
+    if (pathClean === '/video') return 'video';
     const params = new URLSearchParams(window.location.search);
     const tabParam = params.get('tab') || params.get('mode');
     if (tabParam === 'image' || window.location.hash === '#image-arena') return 'image';
     if (tabParam === 'video' || window.location.hash === '#video-arena') return 'video';
     if (tabParam === '3d' || tabParam === 'cad' || window.location.hash === '#3d-arena') return '3d';
     if (tabParam === 'text') return 'text';
+    const bodyPage = document.body && document.body.dataset && document.body.dataset.arenaPage;
+    if (bodyPage === 'text' || bodyPage === 'image' || bodyPage === '3d' || bodyPage === 'video') {
+      return bodyPage;
+    }
   } catch (_) {}
   return null;
 }
@@ -7267,10 +7310,27 @@ function getExplicitUrlArenaTab() {
 function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInterruptCheck = false } = {}) {
   const target = (mode === 'image' || mode === 'video' || mode === '3d') ? mode : 'text';
   const prevMode = ACTIVE_ARENA_MODE;
+  const pageMode = document.body && document.body.dataset && document.body.dataset.arenaPage;
   // Switching tabs rebuilds the text arena (and drops CAD viewport state): a
   // comparison still streaming has to be stopped explicitly first (1.1).
   if (!skipInterruptCheck && !initialBoot && (prevMode === 'text' || prevMode === '3d') && target !== prevMode) {
     if (!confirmInterruptRun('A comparison is still running. Stop it and switch arenas?')) return;
+  }
+  if (!skipInterruptCheck && !initialBoot && prevMode === 'image' && target !== 'image' && IMG_RUNNING) {
+    if (!window.confirm('An image generation is still running. Leave this arena anyway?')) return;
+  }
+  // On isolated sub-path pages (/text, /image, /3d, /video), switching arenas saves the
+  // current workspace state and navigates the browser directly to the target sub-path page
+  // so only one arena's DOM ever exists in the document.
+  if (pageMode && !initialBoot && target !== pageMode) {
+    captureCurrentArenaState(prevMode);
+    if (ARENA_WORKSPACE_STATE && (target === 'text' || target === '3d' || target === 'image')) {
+      ARENA_WORKSPACE_STATE.lastArena = target;
+    }
+    saveComposerDraft();
+    saveUserPreferencesImmediate({ useBeacon: true, skipCapture: true });
+    window.location.assign('/' + target);
+    return;
   }
   _arenaHydrateSeq++;
   if (!initialBoot && prevMode !== target) {
@@ -7432,10 +7492,17 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
 
   if (updateUrl && window.history && typeof window.history.replaceState === 'function') {
     try {
-      const url = new URL(window.location.href);
-      if (target === 'image' || target === 'video' || target === '3d') url.searchParams.set('tab', target);
-      else url.searchParams.delete('tab');
-      window.history.replaceState({}, '', url.toString());
+      if (pageMode) {
+        const nextPath = '/' + target;
+        if (window.location.pathname !== nextPath || window.location.search) {
+          window.history.replaceState({}, '', nextPath);
+        }
+      } else {
+        const url = new URL(window.location.href);
+        if (target === 'image' || target === 'video' || target === '3d') url.searchParams.set('tab', target);
+        else url.searchParams.delete('tab');
+        window.history.replaceState({}, '', url.toString());
+      }
     } catch (_) { /* ignore */ }
   }
 }
@@ -8757,6 +8824,23 @@ async function restoreImageArenaRun(runId) {
     return;
   }
   if (!silentAutoRestore && imageComposerIsDirty() && !window.confirm('Replace your current prompt and reference images with this saved run?')) return;
+  const pageMode = document.body && document.body.dataset && document.body.dataset.arenaPage;
+  if (!silentAutoRestore && pageMode && pageMode !== 'image') {
+    captureCurrentArenaState(pageMode);
+    if (!ARENA_WORKSPACE_STATE) initWorkspaceStateFromConfig();
+    ARENA_WORKSPACE_STATE.lastArena = 'image';
+    if (!ARENA_WORKSPACE_STATE.arenas) ARENA_WORKSPACE_STATE.arenas = {};
+    ARENA_WORKSPACE_STATE.arenas.image = {
+      ...(ARENA_WORKSPACE_STATE.arenas.image || {}),
+      lastRunId: runId,
+      prunedToDefault: false,
+      updatedAt: Date.now(),
+    };
+    saveComposerDraft();
+    saveUserPreferencesImmediate({ useBeacon: true, skipCapture: true });
+    window.location.assign('/image');
+    return;
+  }
   await ensureImageArenaLoaded({ skipAutoRestore: true });
   if (!silentAutoRestore && ACTIVE_ARENA_MODE !== 'image') {
     switchArenaMode('image', { skipInterruptCheck: true });

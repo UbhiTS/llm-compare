@@ -170,10 +170,15 @@ function httpRequest(port, method, urlPath, bodyObj) {
       });
     });
 
-    // 2a. Verify strict no-cache headers on all UI & asset routes
+    // 2a. Verify strict no-cache headers on all UI & asset routes (including 4 isolated arena sub-paths)
     const uiRoutes = [
       '/',
       '/index.html',
+      '/text',
+      '/image',
+      '/3d',
+      '/cad',
+      '/video',
       '/app.js',
       '/styles.css',
       '/theme-init.js',
@@ -194,6 +199,25 @@ function httpRequest(port, method, urlPath, bodyObj) {
         `GET ${route} must return no-store/no-cache/max-age=0 Cache-Control header (got "${cc}")`
       );
     }
+
+    // 2a-ii. Verify server-side DOM stripping on the 4 isolated sub-path pages (/text, /image, /3d, /video)
+    const [rTextPage, rImgPage, r3dPage, rVidPage] = await Promise.all([
+      httpRequest(port, 'GET', '/text'),
+      httpRequest(port, 'GET', '/image'),
+      httpRequest(port, 'GET', '/3d'),
+      httpRequest(port, 'GET', '/video'),
+    ]);
+    assert(rTextPage.text.includes('data-arena-page="text"') && rTextPage.text.includes('id="arena"'), '/text must serve isolated Text Arena DOM');
+    assert(!rTextPage.text.includes('id="cadModifyBar"') && !rTextPage.text.includes('id="imageArenaSection"') && !rTextPage.text.includes('id="videoArenaSection"') && !rTextPage.text.includes('id="cadMcpModal"'), '/text must strip 3D CAD Studio, Image Arena, Video Arena, and CAD MCP modal from HTML');
+
+    assert(rImgPage.text.includes('data-arena-page="image"') && rImgPage.text.includes('id="imageArenaSection"'), '/image must serve isolated Image Arena DOM');
+    assert(!rImgPage.text.includes('id="cadModifyBar"') && !rImgPage.text.includes('id="arena"') && !rImgPage.text.includes('id="scorecard"') && !rImgPage.text.includes('id="videoArenaSection"') && !rImgPage.text.includes('id="cadMcpModal"'), '/image must strip 3D CAD Studio, Text/3D stage, Scorecard, Video Arena, and CAD MCP modal from HTML');
+
+    assert(r3dPage.text.includes('data-arena-page="3d"') && r3dPage.text.includes('id="cadModifyBar"') && r3dPage.text.includes('id="arena"') && r3dPage.text.includes('id="cadMcpModal"'), '/3d must serve isolated 3D & CAD Arena DOM');
+    assert(!r3dPage.text.includes('id="imageArenaSection"') && !r3dPage.text.includes('id="videoArenaSection"'), '/3d must strip Image Arena and Video Arena from HTML');
+
+    assert(rVidPage.text.includes('data-arena-page="video"') && rVidPage.text.includes('id="videoArenaSection"'), '/video must serve isolated Video Arena DOM');
+    assert(!rVidPage.text.includes('id="cadModifyBar"') && !rVidPage.text.includes('id="arena"') && !rVidPage.text.includes('id="scorecard"') && !rVidPage.text.includes('id="imageArenaSection"') && !rVidPage.text.includes('id="cadMcpModal"'), '/video must strip 3D CAD Studio, Text/3D stage, Scorecard, Image Arena, and CAD MCP modal from HTML');
 
     const rRoot = await httpRequest(port, 'GET', '/');
     assert(
@@ -553,8 +577,36 @@ function httpRequest(port, method, urlPath, bodyObj) {
         assert(val.visIn3dReturn.cadBarShown && val.visIn3dReturn.textControlsShown && val.visIn3dReturn.arenaShown, 'Returning to 3D Arena must show #cadModifyBar, controls, and #arena');
         assert(val.visIn3dReturn.imgSecHidden && val.visIn3dReturn.vidSecHidden, 'Returning to 3D Arena must hide #imageArenaSection and #videoArenaSection');
 
+        // 6. Verify Isolated Sub-Path Pages (/3d, /image, /video, /text) in Live Headless Chrome
+        await cdpSend('Page.enable');
+        for (const subSpec of [
+          { path: '/3d', mode: '3d', present: ['cadModifyBar', 'arena', 'cadMcpModal'], absent: ['imageArenaSection', 'videoArenaSection'] },
+          { path: '/image', mode: 'image', present: ['imageArenaSection'], absent: ['cadModifyBar', 'arena', 'scorecard', 'videoArenaSection', 'cadMcpModal'] },
+          { path: '/video', mode: 'video', present: ['videoArenaSection'], absent: ['cadModifyBar', 'arena', 'scorecard', 'imageArenaSection', 'cadMcpModal'] },
+          { path: '/text', mode: 'text', present: ['arena', 'scorecard'], absent: ['cadModifyBar', 'imageArenaSection', 'videoArenaSection', 'cadMcpModal'] },
+        ]) {
+          await cdpSend('Page.navigate', { url: `http://127.0.0.1:${port}${subSpec.path}` });
+          await new Promise((r) => setTimeout(r, 600));
+          const subCheck = await cdpSend('Runtime.evaluate', {
+            expression: `(() => ({
+              pathname: window.location.pathname,
+              arenaPage: document.body.dataset.arenaPage || '',
+              arenaMode: document.body.dataset.arenaMode || '',
+              presentOk: ${JSON.stringify(subSpec.present)}.every((id) => document.getElementById(id) !== null),
+              absentOk: ${JSON.stringify(subSpec.absent)}.every((id) => document.getElementById(id) === null),
+            }))()`,
+            returnByValue: true,
+          });
+          const sv = subCheck && subCheck.result && subCheck.result.value;
+          assert(sv && sv.pathname === subSpec.path, `Sub-path navigation to ${subSpec.path} must load ${subSpec.path} (got ${sv && sv.pathname})`);
+          assert.strictEqual(sv.arenaPage, subSpec.mode, `${subSpec.path} must set body[data-arena-page="${subSpec.mode}"]`);
+          assert.strictEqual(sv.arenaMode, subSpec.mode, `${subSpec.path} must boot into ACTIVE_ARENA_MODE="${subSpec.mode}"`);
+          assert.strictEqual(sv.presentOk, true, `${subSpec.path} must contain expected active arena DOM nodes (${subSpec.present.join(', ')})`);
+          assert.strictEqual(sv.absentOk, true, `${subSpec.path} must NOT contain any non-active arena DOM nodes (${subSpec.absent.join(', ')})`);
+        }
+
         ws.close();
-        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector + Workspace State Continuity + Cross-Arena UI Isolation Matrix');
+        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector + Workspace State Continuity + Cross-Arena UI Isolation Matrix + 4 Isolated Sub-Path Pages (/text, /image, /3d, /video)');
       } finally {
         try { chrome.kill('SIGKILL'); } catch (_) {}
         try { fs.rmSync(chromeProfile, { recursive: true, force: true }); } catch (_) {}
