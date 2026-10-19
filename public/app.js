@@ -8137,6 +8137,9 @@ function applyImageScenario(pack, sc, opts) {
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
+  if (typeof syncPrintStudioForScenario === 'function') {
+    syncPrintStudioForScenario(sc, isInitialRestore);
+  }
   if (!isInitialRestore) {
     saveUserPreferencesDebounced();
   }
@@ -8383,6 +8386,7 @@ function renderImageArenaPlaceholderCards() {
           <span class="img-mode-chip">${esc(modeLabel)}</span>
         </div>
         <div class="img-card-actions-right">
+          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to explode into 5 prepress printing plates">💥 Explode Layers</button>
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to view full size">🔍 Full Size</button>
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to download PNG">⬇ Save PNG</button>
         </div>
@@ -9401,6 +9405,16 @@ function applyImageResultToCard(r) {
       leftWrap.appendChild(chip);
     }
 
+    const explodeBtn = el('button', 'bar-btn img-thought-toggle', '💥 Explode Layers');
+    explodeBtn.type = 'button';
+    explodeBtn.title = `Explode Slot ${r.slot} (${r.label}) into 5 prepress printing plates (Die-Cut, CMYK Base, Photo Window, Metallic Foil Spot Plate, and Emboss Relief Map)`;
+    explodeBtn.addEventListener('click', () => {
+      if (typeof explodeModelResultInPrintStudio === 'function') {
+        explodeModelResultInPrintStudio(r.slot);
+      }
+    });
+    rightWrap.appendChild(explodeBtn);
+
     const enlargeBtn = el('button', 'bar-btn img-thought-toggle', '🔍 Full Size');
     enlargeBtn.type = 'button';
     enlargeBtn.title = `Click to view full-size output (${dimsStr})`;
@@ -9449,6 +9463,9 @@ function applyImageResultToCard(r) {
     offPeakTile.textContent = r.offPeakSupported
       ? `${fmtCost(r.offPeakPayGoCostUsd)} (-50% Off-Peak)`
       : 'Standard / PTU';
+  }
+  if (typeof refreshPrintStudioSourceOptions === 'function') {
+    refreshPrintStudioSourceOptions();
   }
 }
 
@@ -9772,6 +9789,1512 @@ function clearAndResetImageArena() {
   saveUserPreferencesImmediate();
 }
 
+// ============================================================================
+// ✨ Stationery Customizer & Prepress 5-Layer Print Separation Studio
+// Modeled on Shutterfly Deco Botanical Holiday Card:
+//   - 6 structured customization dimensions (Cardstock Color, Die-Cut Trim Shape,
+//     Metallic Foil Stamping, Tactile Emboss/Deboss, Photo Layout, Greeting/Sign-Off)
+//   - Live RGB Customer Composite Proof with specular foil reflection & die-line
+//   - Interactive 3D Isometric Exploded Prepress Stack (5 physical plates)
+//   - 5 Individual Prepress Production Plates with Visual vs 100% K Factory RIP toggle
+//   - Supports both the parametric Deco Botanical Designer Template AND exploding
+//     any generated AI model output (Slot A / B / C / D) into 5 print layers
+// ============================================================================
+
+const PLS_COLOR_CATALOG = {
+  emerald: { id: 'emerald', label: 'Emerald Pine', hex: '#123528', darkHex: '#0a1f17', inkHex: '#e9dfc7', meta: 'Emerald Pine (#123528 · PMS 3435 C)' },
+  navy: { id: 'navy', label: 'Midnight Navy', hex: '#14233c', darkHex: '#0b1424', inkHex: '#eae3d2', meta: 'Midnight Navy (#14233c · PMS 289 C)' },
+  cranberry: { id: 'cranberry', label: 'Cranberry Red', hex: '#5c1624', darkHex: '#3a0c15', inkHex: '#f5ead8', meta: 'Cranberry Red (#5c1624 · PMS 7427 C)' },
+  cream: { id: 'cream', label: 'Warm Cream', hex: '#f4efe4', darkHex: '#dfd6c3', inkHex: '#1c3329', meta: 'Warm Cream (#f4efe4 · Mohawk Natural)' },
+  charcoal: { id: 'charcoal', label: 'Charcoal Slate', hex: '#23272e', darkHex: '#14171c', inkHex: '#ece7dc', meta: 'Charcoal Slate (#23272e · PMS 432 C)' },
+  blush: { id: 'blush', label: 'Winter Blush', hex: '#ecd8d4', darkHex: '#d5b9b3', inkHex: '#3b2322', meta: 'Winter Blush (#ecd8d4 · PMS 7604 C)' },
+};
+
+const PLS_TRIM_CATALOG = {
+  scalloped: { id: 'scalloped', label: 'Scalloped Edge', meta: 'Scalloped Edge (Rotary Die #SC-507)' },
+  bracket: { id: 'bracket', label: 'Bracket Trim', meta: 'Bracket Trim (Rotary Die #BR-507)' },
+  ticket: { id: 'ticket', label: 'Ticket Corner', meta: 'Ticket Corner (Rotary Die #TK-507)' },
+  arch: { id: 'arch', label: 'Arch Top', meta: 'Arch Top (Rotary Die #AR-507)' },
+  rounded: { id: 'rounded', label: 'Rounded (1/4")', meta: 'Rounded 1/4" Radius (Rotary Die #RD-507)' },
+  square: { id: 'square', label: 'Classic Square', meta: 'Classic Square 90° Guillotine Trim' },
+};
+
+const PLS_FOIL_CATALOG = {
+  gold: {
+    id: 'gold',
+    label: 'Gold Foil',
+    meta: 'Gold Foil (Kurz LUXOR® 220 Metallic)',
+    stops: ['#9a6b16', '#e5b842', '#fff6b3', '#d49b27', '#7c510d', '#f5d061'],
+    flatHex: '#d4af37',
+  },
+  silver: {
+    id: 'silver',
+    label: 'Silver Foil',
+    meta: 'Silver Foil (Kurz ALUFIN® Satin)',
+    stops: ['#64748b', '#cbd5e1', '#ffffff', '#94a3b8', '#475569', '#e2e8f0'],
+    flatHex: '#cbd5e1',
+  },
+  rosegold: {
+    id: 'rosegold',
+    label: 'Rose Gold Foil',
+    meta: 'Rose Gold (Kurz LUXOR® Rose Champagne)',
+    stops: ['#8c4643', '#dca09b', '#ffe8e5', '#c87d77', '#6e322f', '#eebbb6'],
+    flatHex: '#dca09b',
+  },
+  copper: {
+    id: 'copper',
+    label: 'Copper Foil',
+    meta: 'Copper Foil (Kurz LUXOR® Burnished Copper)',
+    stops: ['#7c2d12', '#ea580c', '#ffedd5', '#c2410c', '#5c1f0b', '#fb923c'],
+    flatHex: '#ea580c',
+  },
+  none: {
+    id: 'none',
+    label: 'Flat CMYK Ink (No Foil)',
+    meta: 'Flat CMYK Ink (Printed on Plate 2 · No Foil Stamp)',
+    stops: null,
+    flatHex: null,
+  },
+};
+
+const PLS_EMBOSS_CATALOG = {
+  'raised-emboss': { id: 'raised-emboss', label: 'Raised Emboss (+0.35mm)', meta: '+0.35mm Raised Foil & Botanical Relief (Scodix / Brass Die)', depthMm: '+0.35mm', dir: 1 },
+  'letterpress-deboss': { id: 'letterpress-deboss', label: 'Letterpress Deboss (-0.25mm)', meta: '-0.25mm Letterpress Blind Deboss Impression', depthMm: '-0.25mm', dir: -1 },
+  flat: { id: 'flat', label: 'Flat Smooth (0.00mm)', meta: '0.00mm Flat Signature Smooth Cardstock', depthMm: '0.00mm', dir: 0 },
+};
+
+const PLS_LAYOUT_CATALOG = {
+  '3-photo-strip': { id: '3-photo-strip', label: '3-Photo Top Strip', meta: '3-Photo Top Strip · 5×7" Flat' },
+  'hero-arch': { id: 'hero-arch', label: 'Hero Arch Cutout', meta: 'Single Hero Arch Window · 5×7" Flat' },
+  '2-photo-duo': { id: '2-photo-duo', label: '2-Photo Editorial Duo', meta: '2-Photo Asymmetrical Duo · 5×7" Flat' },
+};
+
+const PLS_STATE = {
+  open: false,
+  color: 'emerald',
+  trim: 'scalloped',
+  foil: 'gold',
+  emboss: 'raised-emboss',
+  layout: '3-photo-strip',
+  greeting: 'MERRY CHRISTMAS',
+  signoff: 'with love, The Miller Family · 2026',
+  source: 'designer-template',
+  foilSheen: 38,
+  showTrimGuide: false,
+  cam: 'iso',
+  spread: 76,
+  layerVis: [true, true, true, true, true],
+  highlightedPlate: null,
+  plateMode: 'visual',
+  cachedSourceImage: null,
+  cachedSourceKey: '',
+};
+
+const PLS_PLATE_DEFS = [
+  {
+    idx: 0,
+    num: 'Plate 1',
+    name: 'Die-Cut & Bleed Mask',
+    channel: 'CutContour Spot Vector',
+    spec: '<strong>Rotary Die-Line:</strong> 0.25pt Magenta <code>CutContour</code> spot path + 0.125" outer bleed &amp; inner safe margin.',
+    fileSlug: '01-diecut-cutcontour-mask',
+  },
+  {
+    idx: 1,
+    num: 'Plate 2',
+    name: 'Base Cardstock & CMYK + Knockouts',
+    channel: 'HP Indigo CMYK Pass',
+    spec: '<strong>Substrate &amp; Ink:</strong> 130 lb cotton stock + non-foil ink with <strong>0% white knockouts</strong> under Photo &amp; Foil.',
+    fileSlug: '02-base-cmyk-with-knockouts',
+  },
+  {
+    idx: 2,
+    num: 'Plate 3',
+    name: 'Customer Photo Aperture Layer',
+    channel: '300 DPI Clipped Photo',
+    spec: '<strong>Variable Data Photo:</strong> Clipped to aperture geometry with 2mm bleed trap under metallic foil frame.',
+    fileSlug: '03-customer-photo-aperture',
+  },
+  {
+    idx: 3,
+    num: 'Plate 4',
+    name: 'Metallic Foil Stamping Plate',
+    channel: 'SPOT_FOIL_100K Overprint',
+    spec: '<strong>Foil Stamp Die:</strong> Isolated Art Deco botanical sprigs, geometric frame &amp; greeting (<code>Overprint = TRUE</code>).',
+    fileSlug: '04-metallic-foil-spot-plate',
+  },
+  {
+    idx: 4,
+    num: 'Plate 5',
+    name: 'Emboss / Deboss Relief Map',
+    channel: '8-Bit Tactile Height Map',
+    spec: '<strong>Tactile Relief:</strong> Grayscale height map (<code>255 = Peak Relief</code>, <code>0 = Flat</code>) for polymer jet or brass die.',
+    fileSlug: '05-emboss-tactile-height-map',
+  },
+];
+
+function buildDieCutContourPath(ctx, x, y, w, h, trimId) {
+  ctx.beginPath();
+  if (trimId === 'rounded') {
+    const r = Math.min(w, h) * 0.065;
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+  } else if (trimId === 'ticket') {
+    const r = Math.min(w, h) * 0.068;
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.arc(x + w, y, r, Math.PI, Math.PI * 0.5, true);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.arc(x + w, y + h, r, Math.PI * 1.5, Math.PI, true);
+    ctx.lineTo(x + r, y + h);
+    ctx.arc(x, y + h, r, 0, Math.PI * 1.5, true);
+    ctx.lineTo(x, y + r);
+    ctx.arc(x, y, r, Math.PI * 0.5, 0, true);
+  } else if (trimId === 'arch') {
+    const rx = w * 0.5;
+    const ry = Math.min(h * 0.34, w * 0.46);
+    const rBot = Math.min(w, h) * 0.025;
+    ctx.moveTo(x, y + ry);
+    ctx.ellipse(x + rx, y + ry, rx, ry, 0, Math.PI, 0, false);
+    ctx.lineTo(x + w, y + h - rBot);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rBot, y + h);
+    ctx.lineTo(x + rBot, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rBot);
+  } else if (trimId === 'bracket') {
+    const c = Math.min(w, h) * 0.068;
+    const dip = Math.min(w, h) * 0.024;
+    ctx.moveTo(x + c, y + dip);
+    ctx.lineTo(x + w * 0.32, y + dip);
+    ctx.quadraticCurveTo(x + w * 0.5, y - dip * 0.8, x + w * 0.68, y + dip);
+    ctx.lineTo(x + w - c, y + dip);
+    ctx.quadraticCurveTo(x + w - c, y + c, x + w - dip, y + c);
+    ctx.lineTo(x + w - dip, y + h - c);
+    ctx.quadraticCurveTo(x + w - c, y + h - c, x + w - c, y + h - dip);
+    ctx.lineTo(x + w * 0.68, y + h - dip);
+    ctx.quadraticCurveTo(x + w * 0.5, y + h + dip * 0.8, x + w * 0.32, y + h - dip);
+    ctx.lineTo(x + c, y + h - dip);
+    ctx.quadraticCurveTo(x + c, y + h - c, x + dip, y + h - c);
+    ctx.lineTo(x + dip, y + c);
+    ctx.quadraticCurveTo(x + c, y + c, x + c, y + dip);
+  } else if (trimId === 'scalloped') {
+    const nx = 9;
+    const ny = 13;
+    const dx = w / nx;
+    const dy = h / ny;
+    const amp = Math.min(dx, dy) * 0.24;
+    ctx.moveTo(x, y);
+    for (let i = 0; i < nx; i++) {
+      const x0 = x + i * dx;
+      const x1 = x0 + dx;
+      ctx.quadraticCurveTo((x0 + x1) * 0.5, y - amp, x1, y);
+    }
+    for (let j = 0; j < ny; j++) {
+      const y0 = y + j * dy;
+      const y1 = y0 + dy;
+      ctx.quadraticCurveTo(x + w + amp, (y0 + y1) * 0.5, x + w, y1);
+    }
+    for (let i = nx; i > 0; i--) {
+      const x0 = x + i * dx;
+      const x1 = x0 - dx;
+      ctx.quadraticCurveTo((x0 + x1) * 0.5, y + h + amp, x1, y + h);
+    }
+    for (let j = ny; j > 0; j--) {
+      const y0 = y + j * dy;
+      const y1 = y0 - dy;
+      ctx.quadraticCurveTo(x - amp, (y0 + y1) * 0.5, x, y1);
+    }
+  } else {
+    // Classic Square
+    ctx.rect(x, y, w, h);
+  }
+  ctx.closePath();
+}
+
+function getCardPhotoRects(cardX, cardY, cardW, cardH, layoutId) {
+  if (layoutId === 'hero-arch') {
+    const pw = cardW * 0.72;
+    const ph = cardH * 0.48;
+    const px = cardX + (cardW - pw) * 0.5;
+    const py = cardY + cardH * 0.085;
+    return [{ x: px, y: py, w: pw, h: ph, arch: true }];
+  }
+  if (layoutId === '2-photo-duo') {
+    const gap = cardW * 0.032;
+    const totalW = cardW * 0.80;
+    const pw = (totalW - gap) * 0.5;
+    const ph = cardH * 0.44;
+    const startX = cardX + (cardW - totalW) * 0.5;
+    const py = cardY + cardH * 0.095;
+    return [
+      { x: startX, y: py, w: pw, h: ph, arch: false },
+      { x: startX + pw + gap, y: py + cardH * 0.025, w: pw, h: ph, arch: false },
+    ];
+  }
+  // Default: 3-photo-strip (matches Shutterfly Deco Botanical Holiday Card)
+  const gap = cardW * 0.024;
+  const totalW = cardW * 0.82;
+  const pw = (totalW - gap * 2) / 3;
+  const ph = cardH * 0.42;
+  const startX = cardX + (cardW - totalW) * 0.5;
+  const py = cardY + cardH * 0.088;
+  return [
+    { x: startX, y: py, w: pw, h: ph, arch: false },
+    { x: startX + pw + gap, y: py, w: pw, h: ph, arch: false },
+    { x: startX + (pw + gap) * 2, y: py, w: pw, h: ph, arch: false },
+  ];
+}
+
+function tracePhotoWindowPath(ctx, win, inflate = 0) {
+  const x = win.x - inflate;
+  const y = win.y - inflate;
+  const w = win.w + inflate * 2;
+  const h = win.h + inflate * 2;
+  if (win.arch) {
+    const rx = w * 0.5;
+    const ry = Math.min(h * 0.42, w * 0.48);
+    ctx.moveTo(x, y + ry);
+    ctx.ellipse(x + rx, y + ry, rx, ry, 0, Math.PI, 0, false);
+    ctx.lineTo(x + w, y + h);
+    ctx.lineTo(x, y + h);
+    ctx.closePath();
+  } else {
+    ctx.rect(x, y, w, h);
+  }
+}
+
+function drawStylizedHolidayFamilyScene(ctx, win, idx) {
+  ctx.save();
+  ctx.beginPath();
+  tracePhotoWindowPath(ctx, win, 0);
+  ctx.clip();
+
+  // If the user explicitly uploaded a custom family photo (not the built-in 2025 card template), crop it into the windows
+  const ref0 = (Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS[0]) || null;
+  const isCustomUserPhoto = Boolean(ref0 && !String(ref0.id || '').startsWith('sample-'));
+  const refImg = PLS_STATE.cachedSourceImage;
+  if (isCustomUserPhoto && refImg && refImg.complete && refImg.naturalWidth > 0 && PLS_STATE.source === 'designer-template') {
+    const sw = refImg.naturalWidth;
+    const sh = refImg.naturalHeight;
+    const sliceFactor = idx === 0 ? 0.15 : (idx === 1 ? 0.5 : 0.82);
+    const cropW = sw * 0.58;
+    const cropH = sh * 0.72;
+    const sx = Math.max(0, Math.min(sw - cropW, (sw - cropW) * sliceFactor));
+    const sy = sh * 0.08;
+    ctx.drawImage(refImg, sx, sy, cropW, cropH, win.x, win.y, win.w, win.h);
+    // Warm editorial film grade
+    const grad = ctx.createLinearGradient(win.x, win.y, win.x, win.y + win.h);
+    grad.addColorStop(0, 'rgba(255, 244, 214, 0.12)');
+    grad.addColorStop(1, 'rgba(15, 23, 42, 0.24)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(win.x, win.y, win.w, win.h);
+    ctx.restore();
+    return;
+  }
+
+  // Otherwise render a crisp, warm editorial winter family portrait illustration
+  const skyGrad = ctx.createLinearGradient(win.x, win.y, win.x, win.y + win.h);
+  if (idx === 0) {
+    skyGrad.addColorStop(0, '#f7e6c4');
+    skyGrad.addColorStop(0.55, '#e8c496');
+    skyGrad.addColorStop(1, '#4b5d4e');
+  } else if (idx === 1) {
+    skyGrad.addColorStop(0, '#fcecd2');
+    skyGrad.addColorStop(0.55, '#dfb685');
+    skyGrad.addColorStop(1, '#334a3d');
+  } else {
+    skyGrad.addColorStop(0, '#f3dfc1');
+    skyGrad.addColorStop(0.55, '#d7ad7e');
+    skyGrad.addColorStop(1, '#3e5244');
+  }
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(win.x, win.y, win.w, win.h);
+
+  // Soft golden-hour sun bokeh
+  ctx.fillStyle = 'rgba(255, 250, 230, 0.42)';
+  ctx.beginPath();
+  ctx.arc(win.x + win.w * (0.28 + idx * 0.22), win.y + win.h * 0.24, win.w * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Snowy evergreen trees in background
+  const drawPine = (tx, ty, tw, th, col) => {
+    ctx.fillStyle = col;
+    for (let t = 0; t < 3; t++) {
+      ctx.beginPath();
+      ctx.moveTo(tx, ty + t * th * 0.22);
+      ctx.lineTo(tx - tw * (0.36 + t * 0.14), ty + th * (0.48 + t * 0.22));
+      ctx.lineTo(tx + tw * (0.36 + t * 0.14), ty + th * (0.48 + t * 0.22));
+      ctx.closePath();
+      ctx.fill();
+    }
+  };
+  drawPine(win.x + win.w * 0.22, win.y + win.h * 0.24, win.w * 0.34, win.h * 0.56, '#274235');
+  drawPine(win.x + win.w * 0.78, win.y + win.h * 0.28, win.w * 0.32, win.h * 0.52, '#1f362b');
+
+  // Snowy hill foreground
+  ctx.fillStyle = '#f8f5ee';
+  ctx.beginPath();
+  ctx.moveTo(win.x, win.y + win.h * 0.76);
+  ctx.quadraticCurveTo(win.x + win.w * 0.5, win.y + win.h * 0.68, win.x + win.w, win.y + win.h * 0.78);
+  ctx.lineTo(win.x + win.w, win.y + win.h);
+  ctx.lineTo(win.x, win.y + win.h);
+  ctx.closePath();
+  ctx.fill();
+
+  // Stylized family figures in winter coats & scarves
+  const drawPerson = (px, py, scale, coatColor, scarfColor) => {
+    const r = win.w * 0.085 * scale;
+    // Coat torso
+    ctx.fillStyle = coatColor;
+    ctx.beginPath();
+    ctx.moveTo(px - r * 1.45, py + r * 4.2);
+    ctx.quadraticCurveTo(px - r * 1.3, py + r * 1.1, px, py + r * 1.1);
+    ctx.quadraticCurveTo(px + r * 1.3, py + r * 1.1, px + r * 1.45, py + r * 4.2);
+    ctx.closePath();
+    ctx.fill();
+    // Head
+    ctx.fillStyle = '#f1c7a6';
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fill();
+    // Hair / beanie
+    ctx.fillStyle = '#3b281e';
+    ctx.beginPath();
+    ctx.arc(px, py - r * 0.15, r * 0.98, Math.PI, 0, false);
+    ctx.fill();
+    // Scarf
+    ctx.fillStyle = scarfColor;
+    ctx.fillRect(px - r * 0.95, py + r * 0.82, r * 1.9, r * 0.48);
+  };
+
+  const cy = win.y + win.h * 0.52;
+  if (idx === 0) {
+    drawPerson(win.x + win.w * 0.38, cy, 0.95, '#7c1d26', '#e6c267');
+    drawPerson(win.x + win.w * 0.64, cy + win.h * 0.04, 0.86, '#1e3a5f', '#f4efe4');
+  } else if (idx === 1) {
+    drawPerson(win.x + win.w * 0.32, cy + win.h * 0.02, 0.92, '#1e3a5f', '#d4a338');
+    drawPerson(win.x + win.w * 0.52, cy + win.h * 0.10, 0.68, '#8c232c', '#f4efe4');
+    drawPerson(win.x + win.w * 0.71, cy, 0.96, '#274937', '#d97757');
+  } else {
+    drawPerson(win.x + win.w * 0.42, cy + win.h * 0.04, 0.88, '#2b4c3b', '#f3d078');
+    drawPerson(win.x + win.w * 0.62, cy + win.h * 0.09, 0.72, '#7c1d26', '#f4efe4');
+  }
+
+  ctx.restore();
+}
+
+// Draws the isolated Art Deco Botanical & Typography vector artwork onto `ctx`
+// using the supplied `strokeAndFillStyle` (metallic gradient, flat CMYK ink, or 100% K black)
+function renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, styleFill, opts = {}) {
+  const layoutId = opts.layout || PLS_STATE.layout;
+  const greeting = opts.greeting != null ? opts.greeting : PLS_STATE.greeting;
+  const signoff = opts.signoff != null ? opts.signoff : PLS_STATE.signoff;
+  const photoWins = getCardPhotoRects(cardX, cardY, cardW, cardH, layoutId);
+
+  ctx.save();
+  ctx.fillStyle = styleFill;
+  ctx.strokeStyle = styleFill;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  // 1. Outer Art Deco double geometric frame
+  const inset1 = cardW * 0.048;
+  const inset2 = cardW * 0.062;
+  ctx.lineWidth = Math.max(1.8, cardW * 0.0045);
+  ctx.strokeRect(cardX + inset1, cardY + inset1, cardW - inset1 * 2, cardH - inset1 * 2);
+  ctx.lineWidth = Math.max(1.1, cardW * 0.0024);
+  ctx.strokeRect(cardX + inset2, cardY + inset2, cardW - inset2 * 2, cardH - inset2 * 2);
+
+  // Corner Art Deco stepped fan ornaments
+  const corners = [
+    [cardX + inset1, cardY + inset1, 1, 1],
+    [cardX + cardW - inset1, cardY + inset1, -1, 1],
+    [cardX + inset1, cardY + cardH - inset1, 1, -1],
+    [cardX + cardW - inset1, cardY + cardH - inset1, -1, -1],
+  ];
+  const stepSz = cardW * 0.032;
+  corners.forEach(([cx, cy, sx, sy]) => {
+    ctx.lineWidth = Math.max(1.4, cardW * 0.0032);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + sy * stepSz);
+    ctx.lineTo(cx + sx * stepSz, cy + sy * stepSz);
+    ctx.lineTo(cx + sx * stepSz, cy);
+    ctx.stroke();
+    // Corner diamond stud
+    const dx = cx + sx * stepSz * 0.52;
+    const dy = cy + sy * stepSz * 0.52;
+    const dr = cardW * 0.008;
+    ctx.beginPath();
+    ctx.moveTo(dx, dy - dr);
+    ctx.lineTo(dx + dr, dy);
+    ctx.lineTo(dx, dy + dr);
+    ctx.lineTo(dx - dr, dy);
+    ctx.closePath();
+    ctx.fill();
+  });
+
+  // 2. Metallic Foil frames around each Photo Window
+  ctx.lineWidth = Math.max(2.0, cardW * 0.0048);
+  photoWins.forEach((win) => {
+    ctx.beginPath();
+    tracePhotoWindowPath(ctx, win, 0);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.0, cardW * 0.0022);
+    ctx.beginPath();
+    tracePhotoWindowPath(ctx, win, cardW * 0.009);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(2.0, cardW * 0.0048);
+  });
+
+  // 3. Art Deco Botanical Pine, Eucalyptus & Winter Berry Sprigs (modeled on Shutterfly Deco Botanical Card)
+  const drawBotanicalBranch = (originX, originY, dirX, dirY, len, curveAmt) => {
+    ctx.save();
+    ctx.lineWidth = Math.max(1.6, cardW * 0.0038);
+    const endX = originX + dirX * len;
+    const endY = originY + dirY * len;
+    const ctrlX = (originX + endX) * 0.5 + curveAmt * len * 0.25;
+    const ctrlY = (originY + endY) * 0.5 - Math.abs(curveAmt) * len * 0.16;
+
+    // Main stem
+    ctx.beginPath();
+    ctx.moveTo(originX, originY);
+    ctx.quadraticCurveTo(ctrlX, ctrlY, endX, endY);
+    ctx.stroke();
+
+    // Paired botanical leaves along stem
+    const pairs = 6;
+    for (let i = 1; i <= pairs; i++) {
+      const t = i / (pairs + 0.6);
+      const u = 1 - t;
+      const bx = u * u * originX + 2 * u * t * ctrlX + t * t * endX;
+      const by = u * u * originY + 2 * u * t * ctrlY + t * t * endY;
+      const leafLen = cardW * (0.042 * (1 - t * 0.42));
+      const leafWid = leafLen * 0.34;
+      const baseAngle = Math.atan2(endY - originY, endX - originX);
+
+      [-1, 1].forEach((side) => {
+        const ang = baseAngle + side * 0.68;
+        ctx.save();
+        ctx.translate(bx, by);
+        ctx.rotate(ang);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.quadraticCurveTo(leafLen * 0.5, -leafWid, leafLen, 0);
+        ctx.quadraticCurveTo(leafLen * 0.5, leafWid, 0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      });
+
+      // Winter holly berries on alternating nodes
+      if (i % 2 === 0) {
+        const bAng = baseAngle - 0.95 * (i % 4 === 0 ? 1 : -1);
+        const berryX = bx + Math.cos(bAng) * (leafLen * 0.82);
+        const berryY = by + Math.sin(bAng) * (leafLen * 0.82);
+        ctx.beginPath();
+        ctx.arc(berryX, berryY, cardW * 0.0085, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Terminal leaf tip
+    const tipAngle = Math.atan2(endY - ctrlY, endX - ctrlX);
+    const tipLen = cardW * 0.032;
+    ctx.save();
+    ctx.translate(endX, endY);
+    ctx.rotate(tipAngle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.quadraticCurveTo(tipLen * 0.5, -tipLen * 0.3, tipLen, 0);
+    ctx.quadraticCurveTo(tipLen * 0.5, tipLen * 0.3, 0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    ctx.restore();
+  };
+
+  const botCenterY = cardY + cardH * 0.615;
+  const centerX = cardX + cardW * 0.5;
+
+  // Left & Right sweeping botanical boughs (top above greeting, bottom below family sign-off)
+  drawBotanicalBranch(centerX - cardW * 0.07, botCenterY, -1, -0.18, cardW * 0.31, 0.35);
+  drawBotanicalBranch(centerX + cardW * 0.07, botCenterY, 1, -0.18, cardW * 0.31, -0.35);
+  drawBotanicalBranch(centerX - cardW * 0.16, cardY + cardH * 0.885, -0.95, 0.08, cardW * 0.22, -0.22);
+  drawBotanicalBranch(centerX + cardW * 0.16, cardY + cardH * 0.885, 0.95, 0.08, cardW * 0.22, 0.22);
+
+  // Center Art Deco sunburst / diamond medallion divider above greeting
+  const medY = botCenterY;
+  const medR = cardW * 0.022;
+  ctx.beginPath();
+  ctx.moveTo(centerX, medY - medR);
+  ctx.lineTo(centerX + medR, medY);
+  ctx.lineTo(centerX, medY + medR);
+  ctx.lineTo(centerX - medR, medY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Radiating Art Deco sunburst ticks
+  for (let a = -3; a <= 3; a++) {
+    if (a === 0) continue;
+    const ang = -Math.PI * 0.5 + a * 0.28;
+    const r0 = medR * 1.35;
+    const r1 = medR * (a % 2 === 0 ? 2.15 : 1.75);
+    ctx.lineWidth = Math.max(1.2, cardW * 0.0028);
+    ctx.beginPath();
+    ctx.moveTo(centerX + Math.cos(ang) * r0, medY + Math.sin(ang) * r0);
+    ctx.lineTo(centerX + Math.cos(ang) * r1, medY + Math.sin(ang) * r1);
+    ctx.stroke();
+  }
+
+  // 4. Art Deco Display Greeting Typography
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const greetFontPx = Math.round(cardW * (greeting.length > 15 ? 0.068 : 0.076));
+  ctx.font = `700 ${greetFontPx}px "Cinzel", "Playfair Display", "Didot", "Bodoni MT", Georgia, serif`;
+  const greetY = cardY + cardH * 0.715;
+  ctx.fillText(greeting, centerX, greetY);
+
+  // Art Deco geometric rule under greeting
+  const ruleY = cardY + cardH * 0.772;
+  const ruleHalfW = cardW * 0.26;
+  ctx.lineWidth = Math.max(1.4, cardW * 0.003);
+  ctx.beginPath();
+  ctx.moveTo(centerX - ruleHalfW, ruleY);
+  ctx.lineTo(centerX - cardW * 0.025, ruleY);
+  ctx.moveTo(centerX + cardW * 0.025, ruleY);
+  ctx.lineTo(centerX + ruleHalfW, ruleY);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(centerX, ruleY, cardW * 0.007, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 5. Custom Family Sign-Off
+  const signFontPx = Math.round(cardW * 0.036);
+  ctx.font = `italic 600 ${signFontPx}px "Cormorant Garamond", "Playfair Display", Georgia, serif`;
+  const signY = cardY + cardH * 0.822;
+  ctx.fillText(signoff || 'with love, The Miller Family · 2026', centerX, signY);
+
+  // Bottom Art Deco crest
+  const crestY = cardY + cardH * 0.892;
+  ctx.font = `700 ${Math.round(cardW * 0.024)}px "JetBrains Mono", Georgia, serif`;
+  ctx.fillText('✦  SEASON’S GREETINGS  ✦', centerX, crestY);
+
+  ctx.restore();
+}
+
+function createFoilLinearGradient(ctx, w, h, foilId, sheenPct) {
+  const foil = PLS_FOIL_CATALOG[foilId] || PLS_FOIL_CATALOG.gold;
+  if (!foil.stops) {
+    const col = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.emerald;
+    return col.inkHex;
+  }
+  const shift = ((Number(sheenPct) || 38) - 50) / 100;
+  const x0 = w * (0.05 + shift * 0.35);
+  const y0 = h * 0.05;
+  const x1 = w * (0.95 + shift * 0.35);
+  const y1 = h * 0.95;
+  const g = ctx.createLinearGradient(x0, y0, x1, y1);
+  const stops = foil.stops;
+  stops.forEach((hex, i) => {
+    g.addColorStop(i / (stops.length - 1), hex);
+  });
+  return g;
+}
+
+function drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, darkBg = false) {
+  ctx.save();
+  const markColor = darkBg ? 'rgba(226, 232, 240, 0.72)' : 'rgba(15, 23, 42, 0.82)';
+  ctx.strokeStyle = markColor;
+  ctx.fillStyle = markColor;
+  ctx.lineWidth = 1.25;
+
+  const len = Math.max(10, w * 0.028);
+  const off = Math.max(5, w * 0.012);
+  const corners = [
+    [cardX, cardY, -1, -1],
+    [cardX + cardW, cardY, 1, -1],
+    [cardX, cardY + cardH, -1, 1],
+    [cardX + cardW, cardY + cardH, 1, 1],
+  ];
+  corners.forEach(([cx, cy, sx, sy]) => {
+    ctx.beginPath();
+    ctx.moveTo(cx + sx * off, cy);
+    ctx.lineTo(cx + sx * (off + len), cy);
+    ctx.moveTo(cx, cy + sy * off);
+    ctx.lineTo(cx, cy + sy * (off + len));
+    ctx.stroke();
+  });
+
+  // Top & Bottom registration bullseyes
+  [cardY * 0.46, cardY + cardH + (h - (cardY + cardH)) * 0.54].forEach((by) => {
+    const bx = w * 0.5;
+    const r = Math.max(4, w * 0.009);
+    ctx.beginPath();
+    ctx.arc(bx, by, r, 0, Math.PI * 2);
+    ctx.moveTo(bx - r * 1.6, by);
+    ctx.lineTo(bx + r * 1.6, by);
+    ctx.moveTo(bx, by - r * 1.6);
+    ctx.lineTo(bx, by + r * 1.6);
+    ctx.stroke();
+  });
+  ctx.restore();
+}
+
+// Renders any of the 5 individual prepress plates (or 'composite' proof) onto a target canvas
+function renderSinglePrintPlateCanvas(canvas, plateType, mode = 'visual') {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const cardX = Math.round(w * 0.085);
+  const cardY = Math.round(h * 0.075);
+  const cardW = Math.round(w * 0.83);
+  const cardH = Math.round(h * 0.85);
+
+  const colorObj = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.emerald;
+  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG.gold;
+  const embossObj = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
+  const photoWins = getCardPhotoRects(cardX, cardY, cardW, cardH, PLS_STATE.layout);
+  const isModelSource = PLS_STATE.source.startsWith('slot-') && PLS_STATE.cachedSourceImage && PLS_STATE.cachedSourceImage.complete;
+
+  // ==================== COMPOSITE CUSTOMER PROOF ====================
+  if (plateType === 'composite') {
+    // Subtle studio shadow under the die-cut card
+    ctx.save();
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+    ctx.shadowBlur = w * 0.04;
+    ctx.shadowOffsetY = h * 0.015;
+    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+    ctx.fillStyle = colorObj.hex;
+    ctx.fill();
+    ctx.restore();
+
+    // Clip to Die-Cut Contour
+    ctx.save();
+    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+    ctx.clip();
+
+    if (isModelSource) {
+      // Draw the AI model's generated card output inside the selected die-cut trim
+      ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
+      // Overlay metallic foil shimmer & customized greeting/botanical layer if foil is enabled
+      if (PLS_STATE.foil !== 'none') {
+        if (embossObj.dir !== 0) {
+          ctx.save();
+          ctx.translate(embossObj.dir * -1.5, embossObj.dir * -1.5);
+          renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, 'rgba(255,255,255,0.42)');
+          ctx.restore();
+        }
+        const foilGrad = createFoilLinearGradient(ctx, w, h, PLS_STATE.foil, PLS_STATE.foilSheen);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, foilGrad);
+      }
+    } else {
+      // 1. Cardstock base color + subtle cotton texture
+      const bgGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
+      bgGrad.addColorStop(0, colorObj.hex);
+      bgGrad.addColorStop(1, colorObj.darkHex);
+      ctx.fillStyle = bgGrad;
+      ctx.fillRect(cardX, cardY, cardW, cardH);
+
+      // Subtle cotton paper weave lines
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+      ctx.lineWidth = 1;
+      for (let py = cardY; py < cardY + cardH; py += 5) {
+        ctx.beginPath();
+        ctx.moveTo(cardX, py);
+        ctx.lineTo(cardX + cardW, py);
+        ctx.stroke();
+      }
+
+      // 2. Customer Photo Aperture Windows
+      photoWins.forEach((win, idx) => drawStylizedHolidayFamilyScene(ctx, win, idx));
+
+      // 3. Tactile Emboss / Deboss Bevel Shadow & Highlight
+      if (embossObj.dir !== 0) {
+        ctx.save();
+        ctx.translate(embossObj.dir * 2.1, embossObj.dir * 2.4);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, 'rgba(0, 0, 0, 0.52)');
+        ctx.restore();
+        ctx.save();
+        ctx.translate(embossObj.dir * -1.4, embossObj.dir * -1.4);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, 'rgba(255, 255, 255, 0.45)');
+        ctx.restore();
+      }
+
+      // 4. Metallic Foil Stamping (or Flat CMYK Ink)
+      const foilStyle = createFoilLinearGradient(ctx, w, h, PLS_STATE.foil, PLS_STATE.foilSheen);
+      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, foilStyle);
+    }
+    ctx.restore();
+
+    // Optional CutContour Magenta Die-Line Overlay
+    if (PLS_STATE.showTrimGuide) {
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+      ctx.save();
+      ctx.strokeStyle = '#ec4899';
+      ctx.lineWidth = 2.2;
+      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+      ctx.stroke();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(cardX - 10, cardY - 10, cardW + 20, cardH + 20);
+      ctx.restore();
+    }
+    return;
+  }
+
+  // ==================== PLATE 0: DIE-CUT & BLEED MASK (CutContour) ====================
+  if (plateType === 0) {
+    if (mode === 'factory') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
+      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+      ctx.fillStyle = '#000000';
+      ctx.fill();
+      ctx.strokeStyle = '#ec4899';
+      ctx.lineWidth = 2.2;
+      ctx.stroke();
+    } else {
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+      // Outer 0.125" bleed dashed cyan rectangle
+      ctx.save();
+      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+      ctx.lineWidth = 1.4;
+      ctx.strokeRect(cardX - 8, cardY - 8, cardW + 16, cardH + 16);
+      ctx.restore();
+
+      // Die-cut interior silhouette + Magenta CutContour spot stroke
+      ctx.save();
+      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+      ctx.fillStyle = 'rgba(236, 72, 153, 0.14)';
+      ctx.fill();
+      ctx.strokeStyle = '#ec4899';
+      ctx.lineWidth = 2.6;
+      ctx.stroke();
+      ctx.restore();
+
+      // Inner photo aperture die/knockout outlines
+      ctx.save();
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.75)';
+      ctx.lineWidth = 1.3;
+      photoWins.forEach((win) => {
+        ctx.beginPath();
+        tracePhotoWindowPath(ctx, win, 0);
+        ctx.stroke();
+      });
+      ctx.restore();
+    }
+    return;
+  }
+
+  // ==================== PLATE 1: BASE CARDSTOCK & CMYK + FOIL/PHOTO KNOCKOUTS ====================
+  if (plateType === 1) {
+    if (mode === 'factory') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
+    } else {
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+    }
+
+    ctx.save();
+    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+    ctx.clip();
+
+    if (isModelSource && mode === 'visual') {
+      ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
+    } else {
+      ctx.fillStyle = mode === 'factory' ? '#1e293b' : colorObj.hex;
+      ctx.fillRect(cardX, cardY, cardW, cardH);
+    }
+
+    // Knock out Photo Windows to pure 0% white so CMYK cardstock ink doesn't muddy photos
+    ctx.fillStyle = '#ffffff';
+    photoWins.forEach((win) => {
+      ctx.beginPath();
+      tracePhotoWindowPath(ctx, win, 0);
+      ctx.fill();
+    });
+
+    // If Foil is active, knock out Foil regions to pure 0% white; if 'none', print botanical in CMYK ink
+    if (PLS_STATE.foil !== 'none') {
+      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#ffffff');
+    } else {
+      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, mode === 'factory' ? '#000000' : colorObj.inkHex);
+    }
+    ctx.restore();
+    return;
+  }
+
+  // ==================== PLATE 2: CUSTOMER PHOTO APERTURE LAYER ====================
+  if (plateType === 2) {
+    if (mode === 'factory') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
+    } else {
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+    }
+
+    ctx.save();
+    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+    ctx.clip();
+
+    if (isModelSource) {
+      photoWins.forEach((win) => {
+        ctx.save();
+        ctx.beginPath();
+        tracePhotoWindowPath(ctx, win, 0);
+        ctx.clip();
+        ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
+        ctx.restore();
+      });
+    } else {
+      photoWins.forEach((win, idx) => drawStylizedHolidayFamilyScene(ctx, win, idx));
+    }
+    ctx.restore();
+    return;
+  }
+
+  // ==================== PLATE 3: METALLIC FOIL STAMPING SPOT PLATE ====================
+  if (plateType === 3) {
+    if (mode === 'factory') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, w, h);
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
+      if (PLS_STATE.foil !== 'none') {
+        ctx.save();
+        buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+        ctx.clip();
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#000000');
+        ctx.restore();
+      }
+    } else {
+      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+      ctx.save();
+      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.clip();
+
+      if (PLS_STATE.foil !== 'none') {
+        const foilGrad = createFoilLinearGradient(ctx, w, h, PLS_STATE.foil, PLS_STATE.foilSheen);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, foilGrad);
+      } else {
+        ctx.fillStyle = 'rgba(148, 163, 184, 0.65)';
+        ctx.font = `600 ${Math.round(w * 0.032)}px "Inter", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText('NO FOIL PASS (FLAT CMYK SELECTED)', w * 0.5, h * 0.5);
+      }
+      ctx.restore();
+    }
+    return;
+  }
+
+  // ==================== PLATE 4: EMBOSS / DEBOSS TACTILE RELIEF HEIGHT MAP ====================
+  if (plateType === 4) {
+    // Grayscale height/relief substrate (#0f172a in visual, #000000 in factory)
+    ctx.fillStyle = mode === 'factory' ? '#000000' : '#0f172a';
+    ctx.fillRect(0, 0, w, h);
+    drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
+
+    ctx.save();
+    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, PLS_STATE.trim);
+    ctx.fillStyle = mode === 'factory' ? '#141414' : '#1e293b';
+    ctx.fill();
+    ctx.clip();
+
+    if (embossObj.dir !== 0) {
+      if (mode === 'visual') {
+        // Normal-map / 3D bevel visualization (cyan/amber directional relief)
+        ctx.save();
+        ctx.translate(embossObj.dir * -2.2, embossObj.dir * -2.2);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#38bdf8');
+        ctx.restore();
+        ctx.save();
+        ctx.translate(embossObj.dir * 2.2, embossObj.dir * 2.2);
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#020617');
+        ctx.restore();
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#f8fafc');
+      } else {
+        // Pure 8-bit Grayscale Height Map (255 White = +0.35mm Raised / -0.25mm Deboss Die)
+        ctx.save();
+        ctx.shadowColor = '#ffffff';
+        ctx.shadowBlur = 4;
+        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#ffffff');
+        ctx.restore();
+      }
+    } else {
+      ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
+      ctx.font = `600 ${Math.round(w * 0.032)}px "Inter", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('0.00mm FLAT SMOOTH (NO EMBOSS PASS)', w * 0.5, h * 0.5);
+    }
+    ctx.restore();
+  }
+}
+
+function updateExploded3DStackTransforms() {
+  const viewport = $('#plsExplodedViewport');
+  const scene = $('#plsStackScene');
+  const spreadValEl = $('#plsSpreadVal');
+  const spread = Number(PLS_STATE.spread) || 0;
+  if (spreadValEl) spreadValEl.textContent = `${Math.round(spread)}%`;
+  if (viewport) viewport.dataset.cam = PLS_STATE.cam;
+
+  if (!scene) return;
+  const cam = PLS_STATE.cam;
+  if (cam === 'side') {
+    scene.style.transform = 'rotateX(74deg) rotateZ(-8deg) scale(0.92)';
+  } else if (cam === 'top') {
+    scene.style.transform = 'rotateX(0deg) rotateZ(0deg) scale(0.96)';
+  } else {
+    // 3D Isometric view
+    scene.style.transform = 'rotateX(54deg) rotateZ(-28deg) scale(0.88)';
+  }
+
+  const maxStepZ = 56; // px between plates at 100% spread
+  const stepZ = (spread / 100) * maxStepZ;
+  const stepY = (spread / 100) * -10;
+
+  for (let i = 0; i < 5; i++) {
+    const plane = $(`#plsPlane${i}`);
+    if (!plane) continue;
+    const centeredIdx = i - 2; // -2, -1, 0, +1, +2
+    const z = centeredIdx * stepZ;
+    const y = centeredIdx * stepY;
+    const isVis = Boolean(PLS_STATE.layerVis[i]);
+    const isHi = PLS_STATE.highlightedPlate === i;
+    plane.classList.toggle('is-hidden-layer', !isVis);
+    plane.classList.toggle('is-highlighted', isHi);
+    const extraScale = isHi ? 1.04 : 1.0;
+    plane.style.transform = `translate3d(0px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) scale(${extraScale})`;
+  }
+}
+
+function ensurePrintPlatesGridBuilt() {
+  const grid = $('#plsPlatesGrid');
+  if (!grid || grid.children.length === 5) return;
+  grid.innerHTML = '';
+  PLS_PLATE_DEFS.forEach((def) => {
+    const card = el('div', 'pls-plate-card');
+    card.dataset.plateIdx = String(def.idx);
+    card.innerHTML = `
+      <div class="pls-plate-top">
+        <div class="pls-plate-top-row">
+          <span class="pls-plate-num">${esc(def.num)}</span>
+          <span class="pls-plate-channel" id="plsPlateChan${def.idx}">${esc(def.channel)}</span>
+        </div>
+        <h5 class="pls-plate-name" id="plsPlateName${def.idx}">${esc(def.name)}</h5>
+      </div>
+      <div class="pls-plate-stage" data-plate-enlarge="${def.idx}" title="Click to inspect high-resolution plate in full-screen Lightbox">
+        <canvas id="plsPlateCanvas${def.idx}" width="480" height="672"></canvas>
+      </div>
+      <div class="pls-plate-spec" id="plsPlateSpec${def.idx}">${def.spec}</div>
+      <div class="pls-plate-actions">
+        <button type="button" class="bar-btn" data-plate-enlarge="${def.idx}">🔍 Inspect</button>
+        <button type="button" class="bar-btn" data-plate-dl="${def.idx}">⬇ Save Plate PNG</button>
+      </div>
+    `;
+    card.addEventListener('mouseenter', () => {
+      PLS_STATE.highlightedPlate = def.idx;
+      updateExploded3DStackTransforms();
+    });
+    card.addEventListener('mouseleave', () => {
+      PLS_STATE.highlightedPlate = null;
+      updateExploded3DStackTransforms();
+    });
+    grid.appendChild(card);
+  });
+
+  grid.querySelectorAll('[data-plate-enlarge]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const idx = Number(node.dataset.plateEnlarge);
+      openPrintPlateInLightbox(idx);
+    });
+  });
+
+  grid.querySelectorAll('[data-plate-dl]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const idx = Number(node.dataset.plateDl);
+      downloadSinglePrintPlatePng(idx);
+    });
+  });
+}
+
+function buildCustomizedCardPromptFromStudio() {
+  const colorObj = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.emerald;
+  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.scalloped;
+  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG.gold;
+  const embossObj = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
+  const layoutObj = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
+
+  const foilDesc = PLS_STATE.foil === 'none'
+    ? `flat ${colorObj.inkHex} CMYK ink (no metallic foil)`
+    : `shimmering ${foilObj.label} (${foilObj.meta})`;
+
+  return `Overhead flat-lay studio proof of a personalized 5x7 vertical "Deco Botanical Holiday Card" on ${colorObj.label} cotton cardstock (${colorObj.hex}) with a ${trimObj.label} die-cut outer trim contour. Feature a ${layoutObj.label} framing warm winter family portraits at the top. Below the photo aperture, render intricate Art Deco botanical pine sprigs, eucalyptus leaves, winter berries, and geometric hairline borders in ${foilDesc} with ${embossObj.meta}, flanking bold Art Deco display typography reading "${PLS_STATE.greeting}" and custom family sign-off reading "${PLS_STATE.signoff}".`;
+}
+
+function syncStudioPromptToComposer(flashButton = false) {
+  const promptEl = $('#imgPromptInput');
+  if (!promptEl) return;
+  promptEl.value = buildCustomizedCardPromptFromStudio();
+  markImageComposerApplied();
+  if (flashButton) {
+    const btn = $('#plsSyncPromptBtn');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✓ Synced to Prompt';
+      setTimeout(() => { btn.textContent = orig; }, 1400);
+    }
+  }
+}
+
+function refreshPrintStudioSourceOptions() {
+  const sel = $('#plsSourceSelect');
+  if (!sel) return;
+  const prev = sel.value || PLS_STATE.source || 'designer-template';
+  sel.innerHTML = '';
+
+  const optDefault = el('option');
+  optDefault.value = 'designer-template';
+  optDefault.textContent = '🎨 Designer Template (Deco Botanical + Reference Photo)';
+  sel.appendChild(optDefault);
+
+  (IMG_LAST_RESULTS || []).forEach((r) => {
+    if (r && r.ok && r.imageDataUrl) {
+      const o = el('option');
+      o.value = `slot-${r.slot}`;
+      o.textContent = `💥 Explode Slot ${r.slot} Output — ${r.label} (${r.width || '?'}×${r.height || '?'})`;
+      sel.appendChild(o);
+    }
+  });
+
+  if (Array.from(sel.options).some((o) => o.value === prev)) {
+    sel.value = prev;
+  } else {
+    sel.value = 'designer-template';
+    PLS_STATE.source = 'designer-template';
+  }
+}
+
+function loadPrintStudioSourceImageThenRender() {
+  let targetUrl = '';
+  if (PLS_STATE.source.startsWith('slot-')) {
+    const slot = PLS_STATE.source.replace('slot-', '');
+    const hit = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && String(r.slot) === String(slot));
+    if (hit && hit.imageDataUrl) targetUrl = hit.imageDataUrl;
+  } else if (Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS.length > 0) {
+    const ref0 = IMG_REF_ATTACHMENTS[0];
+    const cleanB64 = String(ref0.data || '').replace(/^data:[^;]+;base64,/, '');
+    if (cleanB64) targetUrl = `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`;
+  }
+
+  if (!targetUrl) {
+    PLS_STATE.cachedSourceImage = null;
+    PLS_STATE.cachedSourceKey = '';
+    renderPrintLayerStudioNow();
+    return;
+  }
+
+  const key = targetUrl.slice(0, 128) + ':' + targetUrl.length;
+  if (PLS_STATE.cachedSourceKey === key && PLS_STATE.cachedSourceImage && PLS_STATE.cachedSourceImage.complete) {
+    renderPrintLayerStudioNow();
+    return;
+  }
+
+  const img = new Image();
+  img.onload = () => {
+    PLS_STATE.cachedSourceImage = img;
+    PLS_STATE.cachedSourceKey = key;
+    renderPrintLayerStudioNow();
+  };
+  img.onerror = () => {
+    PLS_STATE.cachedSourceImage = null;
+    PLS_STATE.cachedSourceKey = '';
+    renderPrintLayerStudioNow();
+  };
+  img.src = targetUrl;
+}
+
+function renderPrintLayerStudio() {
+  if (!PLS_STATE.open) return;
+  ensurePrintPlatesGridBuilt();
+  refreshPrintStudioSourceOptions();
+  loadPrintStudioSourceImageThenRender();
+}
+
+function renderPrintLayerStudioNow() {
+  if (!PLS_STATE.open) return;
+  ensurePrintPlatesGridBuilt();
+
+  const colorObj = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.emerald;
+  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.scalloped;
+  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG.gold;
+  const embossObj = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
+  const layoutObj = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
+
+  const colorMeta = $('#plsColorMeta');
+  if (colorMeta) colorMeta.textContent = colorObj.meta;
+  const trimMeta = $('#plsTrimMeta');
+  if (trimMeta) trimMeta.textContent = trimObj.meta;
+  const foilMeta = $('#plsFoilMeta');
+  if (foilMeta) foilMeta.textContent = foilObj.meta;
+  const embossMeta = $('#plsEmbossMeta');
+  if (embossMeta) embossMeta.textContent = embossObj.meta;
+  const layoutMeta = $('#plsLayoutMeta');
+  if (layoutMeta) layoutMeta.textContent = layoutObj.meta;
+
+  const p3Title = $('#plsPlane3Title');
+  if (p3Title) p3Title.textContent = PLS_STATE.foil === 'none' ? 'No Foil Pass (Flat CMYK)' : `${foilObj.label} Spot Plate`;
+  const p4Title = $('#plsPlane4Title');
+  if (p4Title) p4Title.textContent = `${embossObj.label} Map`;
+  const cardP3Name = $('#plsPlateName3');
+  if (cardP3Name) cardP3Name.textContent = PLS_STATE.foil === 'none' ? 'Foil Channel (Unused / Flat CMYK)' : `${foilObj.label} Stamping Plate`;
+  const cardP4Name = $('#plsPlateName4');
+  if (cardP4Name) cardP4Name.textContent = `${embossObj.label} Relief Map`;
+
+  const compCanvas = $('#plsCompositeCanvas');
+  if (compCanvas) renderSinglePrintPlateCanvas(compCanvas, 'composite', 'visual');
+
+  for (let i = 0; i < 5; i++) {
+    const stackCanvas = $(`#plsStackCanvas${i}`);
+    if (stackCanvas) renderSinglePrintPlateCanvas(stackCanvas, i, 'visual');
+    const plateCanvas = $(`#plsPlateCanvas${i}`);
+    if (plateCanvas) renderSinglePrintPlateCanvas(plateCanvas, i, PLS_STATE.plateMode);
+  }
+
+  updateExploded3DStackTransforms();
+}
+
+function setPrintLayerStudioOpen(open, scrollIntoView = false) {
+  PLS_STATE.open = Boolean(open);
+  const studio = $('#imgPrintLayerStudio');
+  if (studio) studio.classList.toggle('hidden', !PLS_STATE.open);
+  const toggleBtn = $('#imgPrintLayerToggleBtn');
+  if (toggleBtn) {
+    toggleBtn.classList.toggle('is-on', PLS_STATE.open);
+    toggleBtn.setAttribute('aria-pressed', String(PLS_STATE.open));
+  }
+  if (PLS_STATE.open) {
+    renderPrintLayerStudio();
+    if (scrollIntoView && studio && typeof studio.scrollIntoView === 'function') {
+      studio.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+}
+
+function syncPrintStudioForScenario(sc, isInitialRestore) {
+  if (!sc) return;
+  if (sc.id === 'deco-botanical-print-layers') {
+    setPrintLayerStudioOpen(true, !isInitialRestore);
+  } else if (PLS_STATE.open) {
+    renderPrintLayerStudio();
+  }
+}
+
+function explodeModelResultInPrintStudio(slot) {
+  refreshPrintStudioSourceOptions();
+  PLS_STATE.source = `slot-${slot}`;
+  const sel = $('#plsSourceSelect');
+  if (sel) sel.value = PLS_STATE.source;
+  setPrintLayerStudioOpen(true, true);
+}
+
+function openPrintPlateInLightbox(plateIdx) {
+  const hiCanvas = document.createElement('canvas');
+  hiCanvas.width = 900;
+  hiCanvas.height = 1260;
+  const isComposite = plateIdx === 'composite';
+  renderSinglePrintPlateCanvas(hiCanvas, isComposite ? 'composite' : plateIdx, isComposite ? 'visual' : PLS_STATE.plateMode);
+  const dataUrl = hiCanvas.toDataURL('image/png');
+  const def = isComposite
+    ? { num: 'Composite Proof', name: 'Deco Botanical Holiday Card (Assembled 5×7" Proof)', channel: 'RGB Customer Proof' }
+    : (PLS_PLATE_DEFS[plateIdx] || PLS_PLATE_DEFS[0]);
+  openImageLightbox(
+    [{
+      src: dataUrl,
+      title: `${def.num} · ${def.name}`,
+      meta: `${def.channel} · 900×1260 Prepress Inspection (${PLS_STATE.plateMode === 'factory' ? '100% K Factory RIP Mask' : 'Visual Layer Preview'})`,
+      downloadName: `deco-botanical-${def.fileSlug || 'proof'}-${PLS_STATE.plateMode}.png`,
+    }],
+    0
+  );
+}
+
+function downloadSinglePrintPlatePng(plateIdx) {
+  const hiCanvas = document.createElement('canvas');
+  hiCanvas.width = 1200;
+  hiCanvas.height = 1680;
+  const isComposite = plateIdx === 'composite';
+  renderSinglePrintPlateCanvas(hiCanvas, isComposite ? 'composite' : plateIdx, isComposite ? 'visual' : PLS_STATE.plateMode);
+  const def = isComposite
+    ? { fileSlug: '00-composite-customer-proof' }
+    : (PLS_PLATE_DEFS[plateIdx] || PLS_PLATE_DEFS[0]);
+  const a = document.createElement('a');
+  a.href = hiCanvas.toDataURL('image/png');
+  a.download = `shutterfly-deco-botanical-${def.fileSlug}-${PLS_STATE.color}-${PLS_STATE.trim}-${PLS_STATE.foil}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function downloadCutContourSvg() {
+  const w = 500;
+  const h = 700;
+  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG.gold;
+  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.scalloped;
+  const svgContent = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="5in" height="7in">
+  <title>Deco Botanical Holiday Card — Prepress CutContour &amp; Spot Foil Vector Separation</title>
+  <desc>Trim: ${esc(trimObj.label)} | Foil: ${esc(foilObj.label)} | Greeting: ${esc(PLS_STATE.greeting)}</desc>
+  <g id="Layer_1_Bleed_Box" stroke="#38bdf8" stroke-width="0.75" stroke-dasharray="4 3" fill="none">
+    <rect x="12" y="12" width="476" height="676" />
+  </g>
+  <g id="Layer_2_CutContour_DieLine" stroke="#ec4899" stroke-width="1.5" fill="none">
+    <rect x="24" y="24" width="452" height="652" rx="${PLS_STATE.trim === 'rounded' ? 28 : (PLS_STATE.trim === 'arch' ? 220 : 0)}" />
+  </g>
+  <g id="Layer_4_SPOT_FOIL_100K" fill="#d4af37" stroke="#d4af37">
+    <rect x="44" y="44" width="412" height="612" fill="none" stroke-width="2" />
+    <rect x="52" y="52" width="396" height="596" fill="none" stroke-width="1" />
+    <text x="250" y="500" text-anchor="middle" font-family="Cinzel, Georgia, serif" font-size="32" font-weight="bold" stroke="none">${esc(PLS_STATE.greeting)}</text>
+    <text x="250" y="565" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="16" stroke="none">${esc(PLS_STATE.signoff)}</text>
+  </g>
+</svg>`;
+  const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `shutterfly-deco-botanical-cutcontour-foil-${PLS_STATE.trim}-${PLS_STATE.foil}.svg`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function initPrintLayerStudioBindings() {
+  const openBtn = $('#imgOpenPrintStudioBtn');
+  if (openBtn) {
+    openBtn.addEventListener('click', () => {
+      // Select the Deco Botanical scenario in the Print pack and open studio
+      const packSel = $('#imgPackSelect');
+      const subSel = $('#imgSubcategorySelect');
+      const scSel = $('#imgScenarioSelect');
+      if (packSel && IMG_CONFIG) {
+        packSel.value = 'print-photobooks';
+        if (typeof packSel.onchange === 'function') packSel.onchange();
+        if (subSel) {
+          subSel.value = 'stationery-cards';
+          if (typeof subSel.onchange === 'function') subSel.onchange();
+        }
+        if (scSel) {
+          scSel.value = 'deco-botanical-print-layers';
+          if (typeof scSel.onchange === 'function') scSel.onchange();
+        }
+      }
+      setPrintLayerStudioOpen(true, true);
+    });
+  }
+
+  const toggleBtn = $('#imgPrintLayerToggleBtn');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      setPrintLayerStudioOpen(!PLS_STATE.open, !PLS_STATE.open);
+    });
+  }
+
+  const bindPillGroup = (containerId, dataAttr, stateKey) => {
+    const container = $(containerId);
+    if (!container) return;
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest(`[${dataAttr}]`);
+      if (!btn) return;
+      const val = btn.getAttribute(dataAttr);
+      if (!val) return;
+      PLS_STATE[stateKey] = val;
+      container.querySelectorAll(`[${dataAttr}]`).forEach((b) => b.classList.toggle('active', b === btn));
+      syncStudioPromptToComposer(false);
+      renderPrintLayerStudioNow();
+    });
+  };
+
+  bindPillGroup('#plsColorPills', 'data-pls-color', 'color');
+  bindPillGroup('#plsTrimPills', 'data-pls-trim', 'trim');
+  bindPillGroup('#plsFoilPills', 'data-pls-foil', 'foil');
+  bindPillGroup('#plsEmbossPills', 'data-pls-emboss', 'emboss');
+  bindPillGroup('#plsLayoutPills', 'data-pls-layout', 'layout');
+
+  const greetSel = $('#plsGreetingSelect');
+  if (greetSel) {
+    greetSel.addEventListener('change', () => {
+      PLS_STATE.greeting = greetSel.value;
+      syncStudioPromptToComposer(false);
+      renderPrintLayerStudioNow();
+    });
+  }
+
+  const signInput = $('#plsSignoffInput');
+  if (signInput) {
+    signInput.addEventListener('input', () => {
+      PLS_STATE.signoff = signInput.value;
+      syncStudioPromptToComposer(false);
+      renderPrintLayerStudioNow();
+    });
+  }
+
+  const sourceSel = $('#plsSourceSelect');
+  if (sourceSel) {
+    sourceSel.addEventListener('change', () => {
+      PLS_STATE.source = sourceSel.value;
+      loadPrintStudioSourceImageThenRender();
+    });
+  }
+
+  const sheenSlider = $('#plsFoilSheenSlider');
+  if (sheenSlider) {
+    sheenSlider.addEventListener('input', () => {
+      PLS_STATE.foilSheen = Number(sheenSlider.value) || 38;
+      renderPrintLayerStudioNow();
+    });
+  }
+
+  const trimChk = $('#plsShowTrimGuideChk');
+  if (trimChk) {
+    trimChk.addEventListener('change', () => {
+      PLS_STATE.showTrimGuide = Boolean(trimChk.checked);
+      renderPrintLayerStudioNow();
+    });
+  }
+
+  const compCanvas = $('#plsCompositeCanvas');
+  if (compCanvas) {
+    compCanvas.addEventListener('click', () => openPrintPlateInLightbox('composite'));
+  }
+
+  document.querySelectorAll('.pls-cam-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      PLS_STATE.cam = btn.dataset.plsCam || 'iso';
+      document.querySelectorAll('.pls-cam-btn').forEach((b) => b.classList.toggle('active', b === btn));
+      updateExploded3DStackTransforms();
+    });
+  });
+
+  const spreadSlider = $('#plsSpreadSlider');
+  if (spreadSlider) {
+    spreadSlider.addEventListener('input', () => {
+      PLS_STATE.spread = Number(spreadSlider.value) || 0;
+      const animBtn = $('#plsAnimateExplodeBtn');
+      if (animBtn) {
+        const isExploded = PLS_STATE.spread > 15;
+        animBtn.classList.toggle('is-on', isExploded);
+        animBtn.setAttribute('aria-pressed', String(isExploded));
+      }
+      updateExploded3DStackTransforms();
+    });
+  }
+
+  const animExplodeBtn = $('#plsAnimateExplodeBtn');
+  if (animExplodeBtn) {
+    animExplodeBtn.addEventListener('click', () => {
+      const nextExploded = PLS_STATE.spread <= 15;
+      PLS_STATE.spread = nextExploded ? 78 : 0;
+      if (spreadSlider) spreadSlider.value = String(PLS_STATE.spread);
+      animExplodeBtn.classList.toggle('is-on', nextExploded);
+      animExplodeBtn.setAttribute('aria-pressed', String(nextExploded));
+      updateExploded3DStackTransforms();
+    });
+  }
+
+  const layerToggles = $('#plsLayerToggles');
+  if (layerToggles) {
+    layerToggles.addEventListener('change', (e) => {
+      const chk = e.target.closest('[data-layer-vis]');
+      if (!chk) return;
+      const idx = Number(chk.dataset.layerVis);
+      if (idx >= 0 && idx < 5) {
+        PLS_STATE.layerVis[idx] = Boolean(chk.checked);
+        updateExploded3DStackTransforms();
+      }
+    });
+  }
+
+  const resetLayersBtn = $('#plsResetLayersBtn');
+  if (resetLayersBtn) {
+    resetLayersBtn.addEventListener('click', () => {
+      PLS_STATE.layerVis = [true, true, true, true, true];
+      PLS_STATE.highlightedPlate = null;
+      document.querySelectorAll('#plsLayerToggles [data-layer-vis]').forEach((c) => { c.checked = true; });
+      updateExploded3DStackTransforms();
+    });
+  }
+
+  for (let i = 0; i < 5; i++) {
+    const plane = $(`#plsPlane${i}`);
+    if (plane) {
+      plane.addEventListener('click', () => openPrintPlateInLightbox(i));
+      plane.addEventListener('mouseenter', () => {
+        PLS_STATE.highlightedPlate = i;
+        updateExploded3DStackTransforms();
+      });
+      plane.addEventListener('mouseleave', () => {
+        PLS_STATE.highlightedPlate = null;
+        updateExploded3DStackTransforms();
+      });
+    }
+  }
+
+  const plateModeToggle = $('#plsPlateModeToggle');
+  if (plateModeToggle) {
+    plateModeToggle.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-plate-mode]');
+      if (!btn) return;
+      PLS_STATE.plateMode = btn.dataset.plateMode || 'visual';
+      plateModeToggle.querySelectorAll('[data-plate-mode]').forEach((b) => {
+        const active = b === btn;
+        b.classList.toggle('active', active);
+        b.setAttribute('aria-pressed', String(active));
+      });
+      renderPrintLayerStudioNow();
+    });
+  }
+
+  const syncPromptBtn = $('#plsSyncPromptBtn');
+  if (syncPromptBtn) {
+    syncPromptBtn.addEventListener('click', () => syncStudioPromptToComposer(true));
+  }
+
+  const dlSvgBtn = $('#plsDownloadSvgBtn');
+  if (dlSvgBtn) {
+    dlSvgBtn.addEventListener('click', downloadCutContourSvg);
+  }
+
+  const dlAllBtn = $('#plsDownloadAllBtn');
+  if (dlAllBtn) {
+    dlAllBtn.addEventListener('click', () => {
+      downloadSinglePrintPlatePng('composite');
+      for (let i = 0; i < 5; i++) {
+        setTimeout(() => downloadSinglePrintPlatePng(i), (i + 1) * 180);
+      }
+    });
+  }
+}
+
 const ARENA_CALLOUT_DISMISSED_KEY = 'llmc_arena_discovery_callout_v1';
 
 function isArenaDiscoveryCalloutDismissed() {
@@ -10067,6 +11590,7 @@ function initImageArenaBindings() {
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
       updateSplitCurtainView();
+      if (PLS_STATE.open) renderPrintLayerStudio();
     });
   }
 
@@ -10077,6 +11601,7 @@ function initImageArenaBindings() {
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
       updateSplitCurtainView();
+      if (PLS_STATE.open) renderPrintLayerStudio();
     });
   }
 
@@ -10111,6 +11636,7 @@ function initImageArenaBindings() {
   if (offPeakSlider) offPeakSlider.addEventListener('input', renderImageEconomicsModeler);
 
   initCurtainDrag();
+  initPrintLayerStudioBindings();
   updateImageHistoryButton();
 }
 

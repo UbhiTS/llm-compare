@@ -82,7 +82,7 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.68</span>
+          <span id="headerAppVersion" class="head-version">v1.0.69</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -392,6 +392,7 @@
           </div>
           <div class="step-header-right">
             <span id="imgEndpointPill" class="img-endpoint-pill" title="Verified live Vertex AI endpoint routing">☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images</span>
+            <button type="button" id="imgOpenPrintStudioBtn" class="bar-btn bar-btn-accent" title="Open the Deco Botanical Holiday Card Customizer &amp; 5-Layer Print Separation Studio">✨ Stationery Print Layer Studio</button>
             <button type="button" id="imgNewClearBtn" class="bar-btn" title="Clear current outputs and start a fresh Custom Image Prompt">✦ New / Clear</button>
             <button type="button" id="imgCopyPromptBtn" class="bar-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
               <svg class="copy-ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -474,6 +475,9 @@
               <button id="imgSplitCurtainBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Toggle interactive Before/After Split Curtain slider between Slot A and Slot B (or Input Reference vs Edited Output)">
                 <span class="ar-led"></span>⇔ Split Curtain Compare
               </button>
+              <button id="imgPrintLayerToggleBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Customize a stationery card design (colors, die-cut cutout shapes, gold/silver foils, embossing) and explode into 5 prepress printing plates">
+                <span class="ar-led"></span>💥 Explode Print Layers Studio
+              </button>
             </div>
             <span id="imgStatusTimer" class="quota-badge">Ready · Live Vertex AI</span>
             <span id="imgQuotaBadge" class="quota-badge"></span>
@@ -487,6 +491,216 @@
         </div>
       </div>
     </div>
+
+    <!-- STATIONERY CUSTOMIZER & PREPRESS 5-LAYER PRINT SEPARATION STUDIO -->
+    <section id="imgPrintLayerStudio" class="glass img-print-studio hidden" aria-label="Stationery Customizer and Prepress 5-Layer Print Separation Studio">
+      <div class="pls-head">
+        <div class="pls-head-left">
+          <div class="pls-title-row">
+            <span class="pls-badge">✨ Prepress &amp; Foil Separation Studio</span>
+            <h3 class="pls-title">Deco Botanical Holiday Card — Customizer &amp; 5-Layer Print Exploder</h3>
+          </div>
+          <p class="sc-sub">Customize well-defined designer options (cardstock color, die-cut cutout shape, gold/silver/rose-gold foil, tactile embossing, photo layout, and greeting), inspect the live composite customer proof, and explode the design into <strong>5 isolated production plates</strong> ready for commercial printing (HP Indigo CMYK + Kurz Foil + Scodix Tactile Emboss + Rotary Die-Cut).</p>
+        </div>
+        <div class="pls-head-actions">
+          <button type="button" id="plsAnimateExplodeBtn" class="bar-btn toggle is-on" aria-pressed="true" title="Toggle exploded 3D layer separation vs merged stack">
+            <span class="ar-led"></span>💥 Explode Layers (5 Plates)
+          </button>
+          <button type="button" id="plsSyncPromptBtn" class="bar-btn" title="Sync the selected customization options into the AI generation prompt above">
+            🪄 Sync Options → AI Prompt
+          </button>
+          <button type="button" id="plsDownloadSvgBtn" class="bar-btn" title="Download vector CutContour die-line &amp; foil spot SVG">
+            📐 Download CutContour SVG
+          </button>
+          <button type="button" id="plsDownloadAllBtn" class="ctl-btn primary" title="Download all 5 separated prepress production plates + composite proof as high-res PNGs">
+            📦 Export All 5 Print Plates (PNG)
+          </button>
+        </div>
+      </div>
+
+      <!-- STRUCTURED DESIGNER CUSTOMIZATION OPTIONS -->
+      <div class="pls-options-grid" role="region" aria-label="Card customization options">
+        <!-- 1. Cardstock Color -->
+        <div class="pls-opt-card">
+          <div class="pls-opt-label">1. Cardstock Color <span class="pls-opt-sub" id="plsColorMeta">Emerald Pine (#123528)</span></div>
+          <div class="pls-pill-row" id="plsColorPills" role="radiogroup" aria-label="Cardstock Color">
+            <button type="button" class="pls-swatch-btn active" data-pls-color="emerald" title="Emerald Pine (#123528)"><span class="pls-swatch" style="background:#123528"></span>Emerald Pine</button>
+            <button type="button" class="pls-swatch-btn" data-pls-color="navy" title="Midnight Navy (#14233c)"><span class="pls-swatch" style="background:#14233c"></span>Midnight Navy</button>
+            <button type="button" class="pls-swatch-btn" data-pls-color="cranberry" title="Cranberry Red (#5c1624)"><span class="pls-swatch" style="background:#5c1624"></span>Cranberry Red</button>
+            <button type="button" class="pls-swatch-btn" data-pls-color="cream" title="Warm Cream (#f4efe4)"><span class="pls-swatch" style="background:#f4efe4"></span>Warm Cream</button>
+            <button type="button" class="pls-swatch-btn" data-pls-color="charcoal" title="Charcoal Slate (#23272e)"><span class="pls-swatch" style="background:#23272e"></span>Charcoal Slate</button>
+            <button type="button" class="pls-swatch-btn" data-pls-color="blush" title="Winter Blush (#ecd8d4)"><span class="pls-swatch" style="background:#ecd8d4"></span>Winter Blush</button>
+          </div>
+        </div>
+
+        <!-- 2. Trim / Die-Cut Cutout Shape -->
+        <div class="pls-opt-card">
+          <div class="pls-opt-label">2. Trim / Die-Cut Cutout <span class="pls-opt-sub" id="plsTrimMeta">Scalloped Edge (Rotary Die)</span></div>
+          <div class="pls-pill-row" id="plsTrimPills" role="radiogroup" aria-label="Trim Die-Cut Shape">
+            <button type="button" class="pls-pill-btn active" data-pls-trim="scalloped">❁ Scalloped</button>
+            <button type="button" class="pls-pill-btn" data-pls-trim="bracket">❲❳ Bracket</button>
+            <button type="button" class="pls-pill-btn" data-pls-trim="ticket">🎟 Ticket</button>
+            <button type="button" class="pls-pill-btn" data-pls-trim="arch">⌒ Arch Top</button>
+            <button type="button" class="pls-pill-btn" data-pls-trim="rounded">▢ Rounded</button>
+            <button type="button" class="pls-pill-btn" data-pls-trim="square">▭ Square</button>
+          </div>
+        </div>
+
+        <!-- 3. Metallic Foil Finish -->
+        <div class="pls-opt-card">
+          <div class="pls-opt-label">3. Metallic Foil Stamping <span class="pls-opt-sub" id="plsFoilMeta">Gold Foil (Kurz LUXOR® 220)</span></div>
+          <div class="pls-pill-row" id="plsFoilPills" role="radiogroup" aria-label="Metallic Foil Stamping">
+            <button type="button" class="pls-pill-btn active" data-pls-foil="gold"><span class="pls-foil-dot is-gold"></span>Gold Foil</button>
+            <button type="button" class="pls-pill-btn" data-pls-foil="silver"><span class="pls-foil-dot is-silver"></span>Silver Foil</button>
+            <button type="button" class="pls-pill-btn" data-pls-foil="rosegold"><span class="pls-foil-dot is-rosegold"></span>Rose Gold</button>
+            <button type="button" class="pls-pill-btn" data-pls-foil="copper"><span class="pls-foil-dot is-copper"></span>Copper Foil</button>
+            <button type="button" class="pls-pill-btn" data-pls-foil="none">🎨 No Foil (CMYK Ink)</button>
+          </div>
+        </div>
+
+        <!-- 4. Tactile Emboss / Deboss -->
+        <div class="pls-opt-card">
+          <div class="pls-opt-label">4. Tactile Emboss / Deboss <span class="pls-opt-sub" id="plsEmbossMeta">+0.35mm Raised Foil &amp; Botanical Relief</span></div>
+          <div class="pls-pill-row" id="plsEmbossPills" role="radiogroup" aria-label="Tactile Emboss or Deboss">
+            <button type="button" class="pls-pill-btn active" data-pls-emboss="raised-emboss">⛰ Raised Emboss (+0.35mm)</button>
+            <button type="button" class="pls-pill-btn" data-pls-emboss="letterpress-deboss">凹 Letterpress Deboss (-0.25mm)</button>
+            <button type="button" class="pls-pill-btn" data-pls-emboss="flat">📄 Flat Smooth (0.00mm)</button>
+          </div>
+        </div>
+
+        <!-- 5. Card Format & Photo Aperture -->
+        <div class="pls-opt-card">
+          <div class="pls-opt-label">5. Format &amp; Photo Cutout <span class="pls-opt-sub" id="plsLayoutMeta">3-Photo Top Strip · 5×7" Flat</span></div>
+          <div class="pls-pill-row" id="plsLayoutPills" role="radiogroup" aria-label="Card Format and Photo Aperture">
+            <button type="button" class="pls-pill-btn active" data-pls-layout="3-photo-strip">🖼️ 3-Photo Top Strip</button>
+            <button type="button" class="pls-pill-btn" data-pls-layout="hero-arch">🏛️ Hero Arch Cutout</button>
+            <button type="button" class="pls-pill-btn" data-pls-layout="2-photo-duo">🎞️ 2-Photo Editorial Duo</button>
+          </div>
+        </div>
+
+        <!-- 6. Greeting, Sign-Off & Source Image -->
+        <div class="pls-opt-card pls-opt-card-inputs">
+          <div class="pls-opt-label">6. Greeting, Family Sign-Off &amp; Layer Source</div>
+          <div class="pls-inputs-row">
+            <select id="plsGreetingSelect" aria-label="Card Greeting Headline" title="Select Foil Greeting Headline">
+              <option value="MERRY CHRISTMAS">MERRY CHRISTMAS</option>
+              <option value="HAPPY HOLIDAYS">HAPPY HOLIDAYS</option>
+              <option value="PEACE, LOVE &amp; JOY">PEACE, LOVE &amp; JOY</option>
+              <option value="WARMEST WISHES">WARMEST WISHES</option>
+              <option value="JOY TO THE WORLD">JOY TO THE WORLD</option>
+            </select>
+            <input type="text" id="plsSignoffInput" value="with love, The Miller Family · 2026" aria-label="Custom Family Sign-Off" placeholder="with love, The Miller Family · 2026" />
+            <select id="plsSourceSelect" aria-label="Source image to decompose into layers" title="Choose between the parametric Deco Botanical designer template or exploding a live AI model output">
+              <option value="designer-template">🎨 Designer Template (Deco Botanical)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- DUAL INTERACTIVE STAGE: COMPOSITE CUSTOMER PROOF + 3D EXPLODED LAYER STACK -->
+      <div class="pls-stage-grid">
+        <!-- LEFT: COMPOSITE CUSTOMER PROOF -->
+        <div class="pls-stage-card">
+          <div class="pls-stage-head">
+            <div>
+              <h4>👁 Customer Proof Preview (Assembled 5×7" Card)</h4>
+              <p class="pls-stage-sub">Interactive RGB proof with specular foil reflection, tactile emboss shading, and die-cut trim contour.</p>
+            </div>
+            <div class="pls-stage-controls">
+              <label class="pls-inline-ctl" title="Sweep simulated studio light across the metallic foil surface">
+                <span>✨ Foil Light Angle</span>
+                <input type="range" id="plsFoilSheenSlider" min="0" max="100" value="38" />
+              </label>
+              <label class="pls-inline-ctl" title="Overlay magenta CutContour die-line and 0.125-inch bleed guide on the proof">
+                <input type="checkbox" id="plsShowTrimGuideChk" />
+                <span>📐 Show CutContour Die-Line</span>
+              </label>
+            </div>
+          </div>
+          <div class="pls-composite-viewport" id="plsCompositeViewport">
+            <canvas id="plsCompositeCanvas" width="600" height="840" aria-label="Assembled Deco Botanical Holiday Card Customer Proof"></canvas>
+          </div>
+          <div class="pls-stage-foot" id="plsProofSummaryBar">
+            <span><strong>Trim:</strong> 5.00" × 7.00" (Bleed 5.25" × 7.25")</span>
+            <span><strong>Stock:</strong> 130 lb Mohawk Superfine Cotton</span>
+            <span><strong>Passes:</strong> CMYK + Spot Foil + Tactile Relief + Rotary Die</span>
+          </div>
+        </div>
+
+        <!-- RIGHT: 3D ISOMETRIC EXPLODED LAYER STACK -->
+        <div class="pls-stage-card">
+          <div class="pls-stage-head">
+            <div>
+              <h4>💥 3D Exploded Prepress Production Stack (5 Plates)</h4>
+              <p class="pls-stage-sub">Drag the separation slider or click any plate in the stack to inspect how the 5 physical print passes assemble.</p>
+            </div>
+            <div class="pls-stage-controls">
+              <div class="pls-cam-group" role="group" aria-label="3D Stack Camera View">
+                <button type="button" class="bar-btn pls-cam-btn active" data-pls-cam="iso">🧊 3D Iso</button>
+                <button type="button" class="bar-btn pls-cam-btn" data-pls-cam="side">📐 Side Profile</button>
+                <button type="button" class="bar-btn pls-cam-btn" data-pls-cam="top">⬇️ Top Align</button>
+              </div>
+              <label class="pls-inline-ctl" title="Control vertical Z-axis explosion spacing between the 5 printing plates">
+                <span>Spread</span>
+                <input type="range" id="plsSpreadSlider" min="0" max="100" value="76" />
+                <strong id="plsSpreadVal">76%</strong>
+              </label>
+            </div>
+          </div>
+
+          <div class="pls-exploded-viewport" id="plsExplodedViewport" data-cam="iso">
+            <div class="pls-stack-scene" id="plsStackScene">
+              <!-- 5 floating 3D layer planes populated & synced by app.js -->
+              <div class="pls-plane" data-plate-idx="0" id="plsPlane0">
+                <canvas id="plsStackCanvas0" width="360" height="504"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Plate 1</span><strong>Die-Cut &amp; Bleed Mask</strong><em>CutContour Spot Vector</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="1" id="plsPlane1">
+                <canvas id="plsStackCanvas1" width="360" height="504"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Plate 2</span><strong>Base Stock &amp; CMYK + Knockouts</strong><em>0% White Under Foil &amp; Photo</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="2" id="plsPlane2">
+                <canvas id="plsStackCanvas2" width="360" height="504"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Plate 3</span><strong>Customer Photo Aperture</strong><em>300 DPI Clipped RGB/CMYK</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="3" id="plsPlane3">
+                <canvas id="plsStackCanvas3" width="360" height="504"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Plate 4</span><strong id="plsPlane3Title">Metallic Gold Foil Spot Plate</strong><em>Overprint Spot Channel</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="4" id="plsPlane4">
+                <canvas id="plsStackCanvas4" width="360" height="504"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Plate 5</span><strong id="plsPlane4Title">Emboss / Deboss Relief Map</strong><em>3D Tactile Height Map</em></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pls-layer-toggles" id="plsLayerToggles" role="group" aria-label="Toggle individual print layers in 3D stack">
+            <span class="pls-lt-label">Visible Plates:</span>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="0" checked /><span>1. Die-Cut Mask</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="1" checked /><span>2. Base CMYK + Knockouts</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="2" checked /><span>3. Photo Cutout</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="3" checked /><span>4. Metallic Foil Plate</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="4" checked /><span>5. Emboss Height Map</span></label>
+            <button type="button" id="plsResetLayersBtn" class="bar-btn subtle">Show All 5</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- BOTTOM: 5 INDIVIDUAL SEPARATED PREPRESS PRODUCTION PLATES -->
+      <div class="pls-plates-section">
+        <div class="pls-plates-head">
+          <div>
+            <h4>🖨 Separated Prepress Production Plates (Individual Layer Outputs)</h4>
+            <p class="pls-stage-sub">Each layer is isolated with exact registration crop marks. Switch between <strong>Visual Layer Preview</strong> (colored/metallic) and <strong>Factory Press Spot Mask</strong> (100% K monochrome separation for plate RIPs).</p>
+          </div>
+          <div class="pls-plate-mode-switch" id="plsPlateModeToggle" role="group" aria-label="Prepress Plate Rendering Mode">
+            <button type="button" class="mv-btn active" data-plate-mode="visual" aria-pressed="true">👁 Visual Layer Preview</button>
+            <button type="button" class="mv-btn" data-plate-mode="factory" aria-pressed="false">🖨 Factory Spot Mask (100% K / RIP)</button>
+          </div>
+        </div>
+        <div class="pls-plates-grid" id="plsPlatesGrid"></div>
+      </div>
+    </section>
 
     <!-- INTERACTIVE SPLIT-CURTAIN OVERLAY VIEW (OPTIONAL TOGGLE) -->
     <section id="imgCurtainSection" class="glass img-curtain-section hidden">
@@ -692,6 +906,6 @@
   </div>
   <!-- [ARENA_BLOCK:CAD_MODAL_END] -->
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.68</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T19:52:00Z">Last updated Oct 19, 2026, 12:52 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.69</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T20:42:00Z">Last updated Oct 19, 2026, 1:42 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

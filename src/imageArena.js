@@ -950,6 +950,17 @@ const IMAGE_USE_CASE_PACKS = [
     ],
     scenarios: [
       {
+        id: 'deco-botanical-print-layers',
+        subcategory: 'stationery-cards',
+        title: 'Deco Botanical Holiday Card — Customizer & 5-Layer Print Separation',
+        badge: 'Print Layer Separation',
+        recommendedSize: '2K',
+        recommendedAspectRatio: '3:4',
+        prompt: 'Overhead flat-lay studio proof of a personalized 5x7 vertical "Deco Botanical Holiday Card" on deep Emerald Pine cotton cardstock (#123528) with a Scalloped die-cut outer trim edge. At the top, frame a horizontal 3-photo gallery strip bordered by crisp geometric Art Deco hairlines. Below the photo strip, render intricate raised Gold Foil botanical pine sprigs, eucalyptus leaves, and winter berries flanking bold Art Deco display typography reading "MERRY CHRISTMAS" and a custom family sign-off reading "with love, The Miller Family · 2026" in raised metallic Gold Foil with realistic +0.35mm tactile embossing.',
+        whyItMatters: 'Customize structured stationery options (cardstock color, die-cut trim shape, gold/silver/rose-gold foil, tactile emboss/deboss, photo layout, and greeting), preview the composite proof, and explode the design into 5 isolated prepress production plates (Die-Cut CutContour Mask, Base CMYK + Knockouts, Photo Aperture, Metallic Foil Spot Plate, and 3D Emboss Relief Map).',
+        sampleAttachments: ['holidayCard2025Template'],
+      },
+      {
         id: 'holiday-card-typography',
         subcategory: 'stationery-cards',
         title: 'Greeting Card Template Year Refresh & Typography',

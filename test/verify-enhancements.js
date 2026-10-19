@@ -278,6 +278,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   const upscalePack = imgCfg.packs.find((p) => p.id === 'upscaling-resampling');
   assert(upscalePack && upscalePack.scenarios.some((s) => s.id === 'portrait-color-science-4k-upscale' && s.attachments && s.attachments.length === 1), 'Upscaling pack must include portrait-color-science-4k-upscale with 1 reference attachment');
   const printPack = imgCfg.packs.find((p) => p.id === 'print-photobooks');
+  const decoSc = printPack && printPack.scenarios.find((s) => s.id === 'deco-botanical-print-layers');
+  assert(decoSc && decoSc.subcategory === 'stationery-cards' && decoSc.attachments && decoSc.attachments.length === 1, 'Print pack must include deco-botanical-print-layers scenario for customizer & 5-layer print separation');
   const holidaySc = printPack && printPack.scenarios.find((s) => s.id === 'holiday-card-typography');
   assert(holidaySc && holidaySc.attachments && holidaySc.attachments.length === 1 && holidaySc.attachments[0].id === 'sample-holiday-card-2025-template', 'Holiday card scenario must attach 2025 template for Split Curtain comparison');
   assert(printPack && printPack.scenarios.some((s) => s.id === 'persistent-custom-stickers' && s.attachments && s.attachments.length === 1), 'Print pack must include persistent-custom-stickers with explorer fox reference');
@@ -347,6 +349,9 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(appJs.includes('function updateImageHistoryButton('), 'app.js must keep the History button run count');
   assert(appJs.includes('function saveImageArenaRunToHistory('), 'app.js must define saveImageArenaRunToHistory() for IndexedDB Image Run History');
   assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="42" height="32"'), 'app.js must render History modal thumbnails with explicit 42x32 bounds');
+  assert(indexHtml.includes('id="imgPrintLayerStudio"'), 'index.html must include #imgPrintLayerStudio for stationery customization and 5-layer prepress explosion');
+  assert(indexHtml.includes('id="plsCompositeCanvas"') && indexHtml.includes('id="plsStackScene"') && indexHtml.includes('id="plsPlatesGrid"'), 'index.html must include composite proof canvas, 3D stack scene, and 5-plate prepress grid');
+  assert(appJs.includes('function renderSinglePrintPlateCanvas(') && appJs.includes('function explodeModelResultInPrintStudio('), 'app.js must define 5-plate prepress renderer and model result layer exploder');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
