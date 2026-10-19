@@ -10,7 +10,13 @@
   </a>
 </p>
 
-This directory contains **both** the official **go/demos (Cloud Demo Platform) Terraform Click-to-Deploy** configuration and a **1-command interactive quickstart script** so any Googler or customer can deploy **LLM Compare** into their Argolis (`*.altostrat.com`) or Google Cloud environment in ~90 seconds.
+This directory contains **both** the official **go/demos (Cloud Demo Platform) Terraform Click-to-Deploy** configuration and a **1-command interactive quickstart script** so any Googler or customer can deploy **LLM Compare (`v1.0.68`)** into their Argolis (`*.altostrat.com`) or Google Cloud environment in ~90 seconds.
+
+### What's Included in `v1.0.68` (4 Isolated Sub-Path Arenas on 1 Unified Backend)
+- ⚡ **Text, Code & Agent Arena (`/text`)** — Race up to 6 frontier models (`Gemini 3.8 Flash`, `Gemini 4 Argon`, `Claude Opus 5.5`, `GPT-6 Sol`, Vertex MaaS) across **67 tasks** (Coding, Security, Enterprise Architecture, Business, Games, and Custom Prompts with attachments).
+- 🎨 **Image & GenMedia Arena (`/image`)** — Compare **Gemini Nano Banana 2.1 vs Nano Banana 2 (`3.1 Flash Image`)**, **Imagen 4**, and **GPT-Image** at `1K` / `2K` / `4K` with up to 13 reference images, **Split-Curtain Compare**, and a live **CFO Volume Economics & SLA Modeler**.
+- 🧊 **3D & CAD Studio Arena (`/3d`)** — 16 parametric 3D mechanical, aerospace, architecture, and robotics benchmarks with synchronized **Three.js WebGL viewports (`Iso + Spin`)**, watertight manifold telemetry, 4-view (`Iso`/`Front`/`Top`/`Right`) vision grading, `STL`/`STEP`/`GLB`/`OBJ` export, and 1-click live push to **Autodesk Fusion 360 (`Fusion 360 / CAD MCP`)**.
+- 🎬 **Video Generation Arena (`/video`)** — Dedicated sub-path preview for Veo 3.1 video generation workflows.
 
 ---
 

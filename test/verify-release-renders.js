@@ -490,6 +490,13 @@ function httpRequest(port, method, urlPath, bodyObj) {
             document.getElementById('modeBtnText').click();
             syncCadModifyBarVisibility();
             const visInText = checkVis();
+            const calloutEl = document.getElementById('arenaDiscoveryCallout');
+            const calloutVisibleOnText = Boolean(calloutEl && !calloutEl.hasAttribute('hidden') && window.getComputedStyle(calloutEl).display !== 'none');
+            const caretImgEl = document.getElementById('calloutCaretImage');
+            const caret3dEl = document.getElementById('calloutCaret3d');
+            const hasBothCarets = Boolean(caretImgEl && caret3dEl);
+            document.getElementById('arenaCalloutDismissBtn').click();
+            const calloutHiddenAfterDismiss = Boolean(calloutEl && (calloutEl.hasAttribute('hidden') || window.getComputedStyle(calloutEl).display === 'none'));
 
             // 5e. Switch back to 3D Arena via tab click
             document.getElementById('modeBtn3d').click();
@@ -517,6 +524,9 @@ function httpRequest(port, method, urlPath, bodyObj) {
               visInVideo,
               visInText,
               visIn3dReturn,
+              calloutVisibleOnText,
+              hasBothCarets,
+              calloutHiddenAfterDismiss,
             };
           })()`,
           awaitPromise: true,
@@ -576,6 +586,9 @@ function httpRequest(port, method, urlPath, bodyObj) {
         assert.strictEqual(val.visIn3dReturn.bodyMode, '3d', 'Returning to 3D Arena must set body[data-arena-mode="3d"]');
         assert(val.visIn3dReturn.cadBarShown && val.visIn3dReturn.textControlsShown && val.visIn3dReturn.arenaShown, 'Returning to 3D Arena must show #cadModifyBar, controls, and #arena');
         assert(val.visIn3dReturn.imgSecHidden && val.visIn3dReturn.vidSecHidden, 'Returning to 3D Arena must hide #imageArenaSection and #videoArenaSection');
+        assert.strictEqual(val.calloutVisibleOnText, true, 'Balloon pointer (#arenaDiscoveryCallout) must be visible on Text Arena before dismissal');
+        assert.strictEqual(val.hasBothCarets, true, 'Balloon pointer must include both #calloutCaretImage and #calloutCaret3d upward carets');
+        assert.strictEqual(val.calloutHiddenAfterDismiss, true, 'Clicking #arenaCalloutDismissBtn must dismiss #arenaDiscoveryCallout and persist to localStorage');
 
         // 6. Verify Isolated Sub-Path Pages (/3d, /image, /video, /text) in Live Headless Chrome
         await cdpSend('Page.enable');

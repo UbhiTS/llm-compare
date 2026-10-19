@@ -2,6 +2,11 @@
 // scripts). Runs synchronously in <head> before first paint to avoid a flash.
 try { document.documentElement.dataset.theme = localStorage.getItem('ullm.theme') || 'medium'; }
 catch (e) { document.documentElement.dataset.theme = 'medium'; }
+try {
+  if (localStorage.getItem('llmc_arena_discovery_callout_v1') === '1') {
+    document.documentElement.dataset.arenaCalloutDismissed = '1';
+  }
+} catch (_) {}
 // Start /api/config immediately in <head> in parallel with styles.css and app.js
 try {
   if (typeof window !== 'undefined' && typeof window.fetch === 'function') {

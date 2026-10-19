@@ -889,7 +889,13 @@ function buildArenaPageHtml(baseHtml, arenaMode) {
     html = stripArenaBlock(html, 'CAD_MODAL');
     html = stripArenaBlock(html, 'IMAGE_ARENA');
     html = stripArenaBlock(html, 'VIDEO_ARENA');
-  } else if (arenaMode === '3d') {
+  } else {
+    html = html.replace(
+      'id="arenaDiscoveryCallout" role="region"',
+      'id="arenaDiscoveryCallout" hidden role="region"'
+    );
+  }
+  if (arenaMode === '3d') {
     html = stripArenaBlock(html, 'IMAGE_ARENA');
     html = stripArenaBlock(html, 'VIDEO_ARENA');
     html = html.replace(

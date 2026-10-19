@@ -5,57 +5,59 @@
 <h1 align="center">LLM Compare</h1>
 
 <p align="center">
-  <b>Race the same agentic coding, business, or game-building task across multiple LLMs and compare them on what a buyer actually cares about — correctness, speed, tokens, and cost — measured live.</b>
+  <b>Race the same agentic coding, 3D &amp; CAD engineering, multimodal image generation, security, or enterprise architecture task across up to 6 frontier LLMs in parallel — and compare correctness, speed, tokens, and cost live.</b>
 </p>
 
 <p align="center">
   <a href="https://youtu.be/mrylqpgjiVI"><img src="https://img.shields.io/badge/%E2%96%B6_Watch_Walkthrough-YouTube-FF0000?logo=youtube&logoColor=white" alt="Watch Walkthrough on YouTube"></a>
   <a href="https://ssh.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FUbhiTS%2Fllm-compare.git&cloudshell_tutorial=click-to-deploy%2FREADME.md"><img src="https://img.shields.io/badge/%E2%98%81%EF%B8%8F_Deploy_to_Argolis_%2F_GCP-Cloud_Shell-4285F4?logo=googlecloud&logoColor=white" alt="Open in Google Cloud Shell"></a>
+  <img src="https://img.shields.io/badge/version-v1.0.68-34e0a1" alt="v1.0.68">
   <img src="https://img.shields.io/badge/node-%E2%89%A518-3c873a" alt="Node >= 18">
   <img src="https://img.shields.io/badge/deploy-Cloud%20Run-4285F4" alt="Deploys to Cloud Run">
   <img src="https://img.shields.io/badge/auth-Google%20SSO-ea4335" alt="Google SSO">
-  <img src="https://img.shields.io/badge/models-Gemini%20%2B%20Claude%20%2B%20GPT%20%2B%20Kimi-5e8bff" alt="Gemini, Claude, GPT, and Kimi">
+  <img src="https://img.shields.io/badge/models-Gemini%204%20Argon%20%2B%20Claude%20Opus%205.5%20%2B%20GPT--6%20Sol%20%2B%20Nano%20Banana%202.1-5e8bff" alt="Frontier Models">
 </p>
 
 ---
 
-**LLM Compare** sends the **same task** to up to three LLMs concurrently. For graded coding tasks, each model writes a solution and the harness runs it against **hidden edge-case tests** in an isolated sandbox; for open-ended Business, General, and Pygame tasks, a **blind LLM judge** (`src/judge.js`) scores the full unredacted outputs on a weighted rubric. Every model is measured live on **correctness, cost, wall-time, and token throughput**, streamed token-by-token to the browser. It's a dependency-light Node/Express + vanilla-JS app that runs locally in one command and deploys to **Google Cloud Run** with keyless CI.
+**LLM Compare (`v1.0.68`)** is a multi-arena enterprise AI benchmarking platform with **1 unified backend serving 4 isolated sub-path arenas (`/text`, `/image`, `/3d`, `/video`)**:
+1. ⚡ **Text, Code & Agent Arena (`/text`)** — Race up to 6 frontier LLMs (`Gemini 3.8 Flash`, `Gemini 4 Argon`, `Claude Opus 5.5`, `GPT-6 Sol`, Vertex Model Garden MaaS, and more) concurrently across **67 benchmark tasks** (Coding, Security & Red-Team, Enterprise Architecture, Business & CFO Strategy, Pygame WASM Games, and Custom Prompts with PDF/Office/CSV/ZIP/image attachments).
+2. 🎨 **Image & GenMedia Arena (`/image`)** — Benchmark multimodal image generators (`Gemini Nano Banana 2.1` vs `Nano Banana 2 (3.1 Flash Image)` vs `Imagen 4` vs `GPT-Image`) side-by-side at `1K` / `2K` / `4K` with up to 13 reference images, interactive **Split-Curtain Compare**, and a live **CFO Volume Economics & SLA Modeler**.
+3. 🧊 **3D & CAD Studio Arena (`/3d`)** — Race LLMs on 16 parametric 3D mechanical, aerospace, architecture, and robotics benchmarks with synchronized **Three.js WebGL viewports (`Iso + Spin`)**, watertight manifold & triangle/volume telemetry, 4-angle (`Iso` / `Front` / `Top` / `Right`) composite vision grading, `STL` / `STEP` / `GLB` / `OBJ` export, and 1-click live push to **Autodesk Fusion 360 (`Fusion 360 / CAD MCP`)** with Z-up top-view orientation.
+4. 🎬 **Video Generation Arena (`/video`)** — Dedicated sub-path preview for Veo 3.1 multimodal video generation workflows.
 
-## 🎥 Video Walkthrough & Live Screenshots
+## 🎥 Video Walkthrough & Live Arena Screenshots
 
 <p align="center">
   <a href="https://youtu.be/mrylqpgjiVI" target="_blank" rel="noopener noreferrer">
-    <img src="docs/screenshots/02-live-streaming-race.png" alt="Watch the LLM Compare Live Walkthrough on YouTube (https://youtu.be/mrylqpgjiVI)" width="880">
+    <img src="docs/screenshots/01-arena-setup.png" alt="LLM Compare v1.0.68 — Text, Image & GenMedia, and 3D & CAD Arenas" width="880">
   </a>
   <br>
   <b>▶️ <a href="https://youtu.be/mrylqpgjiVI">Watch the 1080p Live Demo Walkthrough on YouTube (https://youtu.be/mrylqpgjiVI)</a></b>
 </p>
 
-| 1. 3-Model Arena Setup (`Gemini 3.7 Flash` vs `Claude Opus 5` vs `GPT-5.6 Sol`) | 2. Live Streaming Race & Hidden Test Execution |
+| 1. ⚡ Text, Code & Agent Arena (`/text`) + New Arenas Discovery Callout | 2. 🧊 3D & CAD Studio Arena (`/3d`) — Synced `Iso + Spin` WebGL + Fusion 360 MCP |
 | :---: | :---: |
-| <img src="docs/screenshots/01-arena-setup.png" alt="3-Model Arena Setup" width="430"> | <img src="docs/screenshots/03-completed-race.png" alt="Completed 3-Model Race" width="430"> |
-| **3. Neutral Per-Metric Scorecard (Correctness, Cost, Speed, Throughput)** | **4. Per-User Durable Run History & Replay** |
-| <img src="docs/screenshots/04-live-scorecard.png" alt="Live Neutral Scorecard" width="430"> | <img src="docs/screenshots/05-run-history.png" alt="Durable Run History Drawer" width="430"> |
+| <img src="docs/screenshots/01-arena-setup.png" alt="Text, Code & Agent Arena (/text)" width="430"> | <img src="docs/screenshots/07-3d-cad-studio-arena.png" alt="3D & CAD Studio Arena (/3d)" width="430"> |
+| **3. 🎨 Image & GenMedia Arena (`/image`) — Nano Banana 2 vs 2.1 + Split-Curtain** | **4. 📊 Live Streaming Race, Neutral Scorecard & Executive PDF Export** |
+| <img src="docs/screenshots/06-image-genmedia-arena.png" alt="Image & GenMedia Arena (/image)" width="430"> | <img src="docs/screenshots/04-live-scorecard.png" alt="Live Neutral Scorecard" width="430"> |
 
 ### Why it's a credible demo, not a rigged one
 
-Every number is **measured live** from the provider APIs — real latency, the token counts the APIs return, and **your** server-locked prices. Correctness is either the share of hidden edge-case tests the model's code passes or a blind rubric score from the LLM judge. Nothing is hardcoded, so a fast, low-cost model wins the cost and speed axes on its own merits and the result holds up under scrutiny.
+Every number is **measured live** from the provider APIs — real latency, the token counts the APIs return, and **your** server-locked prices. Correctness is either the share of hidden edge-case tests the model's code passes or a blind rubric score from the LLM judge (including multimodal 4-angle vision grading for 3D & CAD renders). Nothing is hardcoded, so a fast, low-cost model wins the cost and speed axes on its own merits and the result holds up under scrutiny.
 
 <p align="center">
   <img src="docs/scorecard.svg" alt="Per-metric comparison: correctness, cost per task, wall time, and tokens per second, shown as neutral side-by-side bars." width="820">
 </p>
 
-## Features
+## Key Capabilities (`v1.0.68`)
 
-- ⚡ **Live, parallel runs** — all models run concurrently; results stream token-by-token over NDJSON (thinking stream, metrics, test pass/fail, and blind judge evaluation).
-- 🎯 **Hidden edge-case grading + Blind LLM Judge** — coding tasks are graded against hidden edge-case tests in a sandboxed runner (`src/runner.js`) with optional crashed-code auto-repair (`autoFix`); ungraded prose and game tasks are evaluated by a blind LLM judge (`src/judge.js`) sized dynamically to the judge's context window.
-- 📊 **Neutral scorecard** — per-metric vertical bars for correctness, cost, speed, and tokens/sec. No hardcoded "winner".
-- 🔒 **Locked model catalog** — users pick from a server-authoritative multi-provider catalog (`src/pricing.js`) with per-model thinking-effort controls (`low` / `medium` / `high`); prices and model IDs cannot be tampered with from the browser.
-- 🧩 **17 file-based tasks** — across **Business (6) / Coding (6) / Games (3) / General (2)**; add a task by dropping a Markdown file in `prompts/`.
-- 🕹️ **Runnable code & isolated in-browser WASM games** — coding tasks execute against their test suite; Pygame tasks (**Super Mario**, **Pac-Man**, **Tetris**) compile to WebAssembly via **pygbag** (`src/webGame.js`) inside a cross-origin isolated iframe with bundle integrity validation so games never freeze the page.
-- 🗂️ **Per-user run history & last-lineup persistence** — durable server-side history stored on GCS (`/data`); reopens each user's last selected model lineup automatically; admins get a full multi-user usage dashboard.
-- 🔑 **Bring-your-own-keys** — users can supply their own API keys in the browser (never persisted server-side); own-key runs skip the daily limit.
-- ☁️ **Deploys to Cloud Run with Google SSO** — containerized, keyless CI (Workload Identity Federation + automated `npm test` gate), multi-origin Google OIDC SSO (`hd` + email domain verified), `/privacy` & `/terms` compliance routes, and per-user daily run caps.
+- 🧭 **4 Isolated Sub-Path Arenas on 1 Unified Backend (`/text`, `/image`, `/3d`, `/video`)** — Each arena serves only its own DOM, controls, and state while sharing auth, API keys, budgets, and per-user workspace continuity (`/api/preferences`). Includes an interactive **New Arenas Discovery Balloon Pointer** on `/text` so users immediately discover the Image and 3D & CAD tabs.
+- 🧊 **3D & CAD Studio (`/3d`) + Live Fusion 360 MCP Integration** — 16 parametric 3D engineering tasks across Mechanical, Automotive, Aerospace, Robotics, Architecture, and Consumer Design. Renders synchronized multi-slot WebGL viewports (`Iso + Spin` default, `3-Axis Spin`, `Wireframe`, `X-Ray`, `Cross-Section Cut`), computes watertight manifold/volume/bounding-box telemetry, exports `STL` / `STEP` / `GLB` / `OBJ`, and pushes live geometry to **Autodesk Fusion 360** (`Z-up` aligned so the render Top view matches Fusion 360's Top view).
+- 🎨 **Image & GenMedia Arena (`/image`)** — Side-by-side comparison of **Gemini Nano Banana 2.1**, **Gemini Nano Banana 2 (`3.1 Flash Image`)**, **Imagen 4**, and **GPT-Image** with up to 13 reference images, `1K` / `2K` / `4K` resolution selector, interactive **Split-Curtain Compare** slider, and **CFO Volume Economics & SLA Modeler** (`99.5%` Long-Term SLA vs `95.0%` Short-Term SLA + `-50%` Off-Peak flex pricing).
+- ⚡ **Up to 6 Parallel Model Slots + `Provider ▸ Model` Cascading Selector** — Race up to 6 models simultaneously (`Gemini 3.8 Flash`, `Gemini 4 Argon`, `Claude Opus 5.5`, `GPT-6 Sol`, `DeepSeek`, `Qwen`, `Llama`, `Mistral`, `Kimi`) with one-click presets (`Gemini Models`, `🏆 Flagships`, `⚡ Fast`, `🧠 Thinking A/B/C`, `☁️ Vertex MaaS`).
+- 🎯 **Hidden Edge-Case Grading + Multimodal Blind LLM Judge + Follow-Up Turn Continuity** — Sandboxed code execution (`src/runner.js`) with optional `Auto-fix`, 8-disk animated **Towers of Hanoi** visualizer, **Pygame WebAssembly** (`pygbag`) in-browser game console, multi-turn follow-up prompts, and 1-click **Executive PDF Report Export**.
+- 🛡️ **Enterprise Auth, Strict BYOK & Multi-Window Spend / Run Budgets** — Google OIDC SSO (`hd` + domain verified), per-user and global Rolling 24h / 7d / 30d run and USD spend budgets, strict Bring-Your-Own-Key (`BYOK`) isolation, and 90-day admin audit logging.
 
 ## Quickstart (local)
 

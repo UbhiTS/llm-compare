@@ -7376,6 +7376,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
   if (cadBtn) cadBtn.classList.toggle('active', target === '3d');
   if (imgBtn) imgBtn.classList.toggle('active', target === 'image');
   if (vidBtn) vidBtn.classList.toggle('active', target === 'video');
+  syncArenaDiscoveryCallout(target);
 
   const textControls = document.querySelector('section.controls:not(.image-controls-panel)');
   const cadModifyBar = $('#cadModifyBar');
@@ -9771,6 +9772,80 @@ function clearAndResetImageArena() {
   saveUserPreferencesImmediate();
 }
 
+const ARENA_CALLOUT_DISMISSED_KEY = 'llmc_arena_discovery_callout_v1';
+
+function isArenaDiscoveryCalloutDismissed() {
+  try {
+    return localStorage.getItem(ARENA_CALLOUT_DISMISSED_KEY) === '1';
+  } catch (_) {
+    return false;
+  }
+}
+
+function dismissArenaDiscoveryCallout() {
+  try {
+    localStorage.setItem(ARENA_CALLOUT_DISMISSED_KEY, '1');
+  } catch (_) {}
+  try {
+    document.documentElement.dataset.arenaCalloutDismissed = '1';
+  } catch (_) {}
+  const wrap = $('#arenaModeSwitchWrap');
+  if (wrap) wrap.classList.remove('has-discovery-callout');
+  const callout = $('#arenaDiscoveryCallout');
+  if (callout) {
+    callout.classList.add('is-dismissed');
+    callout.setAttribute('hidden', '');
+  }
+}
+
+function positionArenaDiscoveryCarets() {
+  const callout = $('#arenaDiscoveryCallout');
+  if (!callout || callout.hasAttribute('hidden') || callout.classList.contains('is-dismissed')) return;
+  try {
+    const calloutRect = callout.getBoundingClientRect();
+    if (!calloutRect || calloutRect.width <= 0) return;
+    const imgBtn = $('#modeBtnImage');
+    const cadBtn = $('#modeBtn3d');
+    const caretImg = $('#calloutCaretImage');
+    const caret3d = $('#calloutCaret3d');
+    if (imgBtn && caretImg) {
+      const r = imgBtn.getBoundingClientRect();
+      if (r.width > 0) {
+        const cx = Math.max(18, Math.min(calloutRect.width - 18, (r.left + r.width / 2) - calloutRect.left));
+        caretImg.style.setProperty('--caret-x', `${Math.round(cx)}px`);
+      }
+    }
+    if (cadBtn && caret3d) {
+      const r = cadBtn.getBoundingClientRect();
+      if (r.width > 0) {
+        const cx = Math.max(18, Math.min(calloutRect.width - 18, (r.left + r.width / 2) - calloutRect.left));
+        caret3d.style.setProperty('--caret-x', `${Math.round(cx)}px`);
+      }
+    }
+  } catch (_) {}
+}
+
+function syncArenaDiscoveryCallout(mode) {
+  const target = mode || ACTIVE_ARENA_MODE || 'text';
+  const wrap = $('#arenaModeSwitchWrap');
+  const callout = $('#arenaDiscoveryCallout');
+  if (!callout) return;
+  const dismissed = isArenaDiscoveryCalloutDismissed();
+  const shouldShow = !dismissed && target === 'text';
+  if (wrap) wrap.classList.toggle('has-discovery-callout', shouldShow);
+  callout.classList.toggle('is-dismissed', !shouldShow);
+  if (shouldShow) {
+    callout.removeAttribute('hidden');
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(positionArenaDiscoveryCarets);
+    } else {
+      positionArenaDiscoveryCarets();
+    }
+  } else {
+    callout.setAttribute('hidden', '');
+  }
+}
+
 function initImageArenaBindings() {
   const modeSwitch = $('#arenaModeSwitch');
   if (modeSwitch) {
@@ -9778,6 +9853,23 @@ function initImageArenaBindings() {
       btn.addEventListener('click', () => switchArenaMode(btn.dataset.arenaMode));
     });
   }
+
+  const calloutDismissBtn = $('#arenaCalloutDismissBtn');
+  if (calloutDismissBtn) {
+    calloutDismissBtn.addEventListener('click', () => dismissArenaDiscoveryCallout());
+  }
+  const calloutTryImgBtn = $('#arenaCalloutTryImageBtn');
+  if (calloutTryImgBtn) {
+    calloutTryImgBtn.addEventListener('click', () => switchArenaMode('image'));
+  }
+  const calloutTry3dBtn = $('#arenaCalloutTry3dBtn');
+  if (calloutTry3dBtn) {
+    calloutTry3dBtn.addEventListener('click', () => switchArenaMode('3d'));
+  }
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('resize', () => positionArenaDiscoveryCarets());
+  }
+  syncArenaDiscoveryCallout(ACTIVE_ARENA_MODE);
 
   const vidGoImageBtn = $('#videoGoImageBtn');
   if (vidGoImageBtn) vidGoImageBtn.addEventListener('click', () => switchArenaMode('image'));

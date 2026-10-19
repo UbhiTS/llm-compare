@@ -82,31 +82,48 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.67</span>
+          <span id="headerAppVersion" class="head-version">v1.0.68</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
     </div>
-    <nav class="arena-mode-switch" id="arenaModeSwitch" aria-label="Arena Mode">
-      <button type="button" class="arena-mode-btn active" data-arena-mode="text" data-arena-href="/text" id="modeBtnText">
-        <span class="am-icon">⚡</span>
-        <span>Text, Code &amp; Agent Arena</span>
-      </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="image" data-arena-href="/image" id="modeBtnImage">
-        <span class="am-icon">🎨</span>
-        <span>Image &amp; GenMedia Arena</span>
-      </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="3d" data-arena-href="/3d" id="modeBtn3d">
-        <span class="am-icon">🧊</span>
-        <span>3D &amp; CAD Arena</span>
-        <span class="am-badge is-live">NEW</span>
-      </button>
-      <button type="button" class="arena-mode-btn" data-arena-mode="video" data-arena-href="/video" id="modeBtnVideo">
-        <span class="am-icon">🎬</span>
-        <span>Video Generation</span>
-        <span class="am-badge">Coming soon...</span>
-      </button>
-    </nav>
+    <div class="arena-mode-switch-wrap has-discovery-callout" id="arenaModeSwitchWrap">
+      <nav class="arena-mode-switch" id="arenaModeSwitch" aria-label="Arena Mode">
+        <button type="button" class="arena-mode-btn active" data-arena-mode="text" data-arena-href="/text" id="modeBtnText">
+          <span class="am-icon">⚡</span>
+          <span>Text, Code &amp; Agent Arena</span>
+        </button>
+        <button type="button" class="arena-mode-btn" data-arena-mode="image" data-arena-href="/image" id="modeBtnImage">
+          <span class="am-icon">🎨</span>
+          <span>Image &amp; GenMedia Arena</span>
+          <span class="am-badge is-live">NEW</span>
+        </button>
+        <button type="button" class="arena-mode-btn" data-arena-mode="3d" data-arena-href="/3d" id="modeBtn3d">
+          <span class="am-icon">🧊</span>
+          <span>3D &amp; CAD Arena</span>
+          <span class="am-badge is-live">NEW</span>
+        </button>
+        <button type="button" class="arena-mode-btn" data-arena-mode="video" data-arena-href="/video" id="modeBtnVideo">
+          <span class="am-icon">🎬</span>
+          <span>Video Generation</span>
+          <span class="am-badge">SOON</span>
+        </button>
+      </nav>
+      <aside class="arena-discovery-callout" id="arenaDiscoveryCallout" role="region" aria-label="New Image and 3D Arenas available">
+        <span class="arena-callout-caret caret-image" id="calloutCaretImage" aria-hidden="true"></span>
+        <span class="arena-callout-caret caret-3d" id="calloutCaret3d" aria-hidden="true"></span>
+        <div class="arena-callout-head">
+          <span class="arena-callout-pill">✨ NEW ARENAS LIVE</span>
+          <strong class="arena-callout-title">Try Image &amp; GenMedia + 3D &amp; CAD Studio above!</strong>
+          <button type="button" class="arena-callout-close" id="arenaCalloutDismissBtn" aria-label="Dismiss new arenas callout" title="Got it">Got it ✕</button>
+        </div>
+        <p class="arena-callout-desc">Race multimodal image models (<strong>Nano Banana 2.1 vs 2</strong>, Imagen 4) side-by-side or benchmark parametric <strong>3D &amp; CAD Studio</strong> with 4-view renders &amp; live Fusion 360 push.</p>
+        <div class="arena-callout-actions">
+          <button type="button" class="arena-callout-btn is-image" id="arenaCalloutTryImageBtn" data-callout-target="image">🎨 Open Image Arena →</button>
+          <button type="button" class="arena-callout-btn is-3d" id="arenaCalloutTry3dBtn" data-callout-target="3d">🧊 Open 3D &amp; CAD Arena →</button>
+        </div>
+      </aside>
+    </div>
     <div class="topbar-right">
       <div class="theme-switch" id="themeSwitch" role="group" aria-label="Color theme" title="Theme">
         <button type="button" data-theme="light" title="Light theme" aria-label="Light theme" aria-pressed="true">☀</button>
