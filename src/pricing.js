@@ -90,6 +90,7 @@ const MODEL_CATALOG = [
   { id: 'llama-3.3-70b-instruct-maas', label: 'Llama 3.3 70B Instruct', provider: 'agentplatform', publisher: 'meta', providerFamily: 'meta', providerLabel: 'Meta (Llama)', endpointType: 'openai-maas', region: 'us-central1', thinkingMode: 'off', model: 'meta/llama-3.3-70b-instruct-maas', price: { input: 0.60, output: 0.60 }, context: 128000 },
 
   // --- 5. DeepSeek (Vertex AI Model Garden MaaS) ---
+  { id: 'deepseek-v4.1-flash-maas', label: 'DeepSeek-V4.1-Flash', provider: 'agentplatform', publisher: 'deepseek-ai', providerFamily: 'deepseek', providerLabel: 'DeepSeek', endpointType: 'openai-maas', region: 'global', thinkingMode: 'configurable-effort', model: 'deepseek-ai/deepseek-v4.1-flash-maas', price: { input: 0.30, output: 1.20 }, context: 1048576 },
   { id: 'deepseek-r1-0528-maas', label: 'DeepSeek-R1 (0528)', provider: 'agentplatform', publisher: 'deepseek-ai', providerFamily: 'deepseek', providerLabel: 'DeepSeek', endpointType: 'openai-maas', region: 'us-central1', thinkingMode: 'native', model: 'deepseek-ai/deepseek-r1-0528-maas', price: { input: 1.35, output: 5.40 }, context: 163840 },
   { id: 'deepseek-v3.2-maas', label: 'DeepSeek-V3.2', provider: 'agentplatform', publisher: 'deepseek-ai', providerFamily: 'deepseek', providerLabel: 'DeepSeek', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'deepseek-ai/deepseek-v3.2-maas', price: { input: 0.56, output: 1.68 }, context: 163840 },
 
@@ -157,10 +158,12 @@ const RETIRED_REPLACEMENT = {
   'gpt-6-terra': 'gpt-5.6-terra',
   'kimi-k3': 'kimi-k2-thinking-maas',
   'kimi-k2.6': 'kimi-k2-thinking-maas',
+  'deepseek-v4.1-flash': 'deepseek-v4.1-flash-maas',
 };
 
 function catalogEntry(id, { includeRetired = false } = {}) {
-  const found = MODEL_CATALOG.find((m) => m.id === id) || MODEL_CATALOG.find((m) => m.model === id);
+  const mappedId = RETIRED_REPLACEMENT[id] || id;
+  const found = MODEL_CATALOG.find((m) => m.id === id || m.id === mappedId) || MODEL_CATALOG.find((m) => m.model === id);
   if (found) return found;
   if (includeRetired) {
     return RETIRED_CATALOG.find((m) => m.id === id) || RETIRED_CATALOG.find((m) => m.model === id) || null;

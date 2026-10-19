@@ -226,6 +226,8 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(resolveOpenAIImageSize('4K', '9:16'), '2160x3840', 'OpenAI 4K 9:16 size must map to 2160x3840 (8.29 MP budget)');
   assert(!MODEL_CATALOG.some((m) => m.id === 'kimi-k3' || m.id === 'kimi-k2.6'), 'Unconfigured Moonshot direct models (kimi-k3, kimi-k2.6) must be retired from MODEL_CATALOG');
   assert(MODEL_CATALOG.some((m) => m.id === 'kimi-k2-thinking-maas'), 'Kimi K2 Thinking (Vertex MaaS) must remain active in MODEL_CATALOG');
+  const dsv41 = MODEL_CATALOG.find((m) => m.id === 'deepseek-v4.1-flash-maas');
+  assert(dsv41 && dsv41.label === 'DeepSeek-V4.1-Flash' && dsv41.model === 'deepseek-ai/deepseek-v4.1-flash-maas', 'DeepSeek-V4.1-Flash must be in MODEL_CATALOG for Text and 3D Arenas');
   const sunburstEntry = imgCfg.catalog.find((m) => m.id === 'gpt-image-2.5-sunburst');
   assert(sunburstEntry && sunburstEntry.provider === 'openai', 'gpt-image-2.5-sunburst must exist with provider: openai');
   const oaEcon = computeImageSlotEconomics(
