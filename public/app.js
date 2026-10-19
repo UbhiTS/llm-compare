@@ -7663,9 +7663,10 @@ function applyLightboxSizing() {
 
 function openCurrentLightboxImageInNewTab() {
   const item = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
-  if (!item || !item.url) return;
+  const targetUrl = item && (item.url || item.src);
+  if (!targetUrl) return;
   try {
-    const m = /^data:([^;]+);base64,(.+)$/.exec(item.url);
+    const m = /^data:([^;]+);base64,(.+)$/.exec(targetUrl);
     if (m) {
       const mime = m[1] || 'image/png';
       const bstr = window.atob(m[2]);
@@ -7679,15 +7680,16 @@ function openCurrentLightboxImageInNewTab() {
       setTimeout(() => { try { URL.revokeObjectURL(blobUrl); } catch (_) { /* ignore */ } }, 60000);
       return;
     }
-    window.open(item.url, '_blank', 'noopener');
+    window.open(targetUrl, '_blank', 'noopener');
   } catch (_) {
-    window.open(item.url, '_blank', 'noopener');
+    window.open(targetUrl, '_blank', 'noopener');
   }
 }
 
 function renderImageLightboxCurrent() {
   const item = IMG_LIGHTBOX_ITEMS[IMG_LIGHTBOX_IDX];
   if (!item) return;
+  const itemUrl = item.url || item.src || '';
   const badgeEl = $('#imgLightboxBadge');
   const titleEl = $('#imgLightboxTitle');
   const metaEl = $('#imgLightboxMeta');
@@ -7709,7 +7711,7 @@ function renderImageLightboxCurrent() {
   }
 
   if (dlBtn) {
-    dlBtn.href = item.url || '#';
+    dlBtn.href = itemUrl || '#';
     dlBtn.download = item.downloadName || 'image-preview.png';
   }
 
@@ -7725,7 +7727,7 @@ function renderImageLightboxCurrent() {
       }
       applyLightboxSizing();
     };
-    imgEl.src = item.url || '';
+    imgEl.src = itemUrl;
     imgEl.alt = item.title || 'Enlarged preview';
     applyLightboxSizing();
   }
@@ -8138,7 +8140,7 @@ function applyImageScenario(pack, sc, opts) {
   renderImageMetricComparison();
   renderImageEconomicsModeler();
   if (typeof syncPrintStudioForScenario === 'function') {
-    syncPrintStudioForScenario(sc, isInitialRestore);
+    syncPrintStudioForScenario(pack, sc, isInitialRestore);
   }
   if (!isInitialRestore) {
     saveUserPreferencesDebounced();
@@ -11000,9 +11002,42 @@ function setPrintLayerStudioOpen(open, scrollIntoView = false) {
   }
 }
 
-function syncPrintStudioForScenario(sc, isInitialRestore) {
+function applyPrintStudioPresetUI(preset) {
+  if (!preset || typeof preset !== 'object') return;
+  if (preset.color && PLS_COLOR_CATALOG[preset.color]) PLS_STATE.color = preset.color;
+  if (preset.trim && PLS_TRIM_CATALOG[preset.trim]) PLS_STATE.trim = preset.trim;
+  if (preset.foil && PLS_FOIL_CATALOG[preset.foil]) PLS_STATE.foil = preset.foil;
+  if (preset.emboss && PLS_EMBOSS_CATALOG[preset.emboss]) PLS_STATE.emboss = preset.emboss;
+  if (preset.layout && PLS_LAYOUT_CATALOG[preset.layout]) PLS_STATE.layout = preset.layout;
+  if (preset.greeting) PLS_STATE.greeting = preset.greeting;
+  if (preset.signoff) PLS_STATE.signoff = preset.signoff;
+
+  const syncAttrPills = (containerId, attr, val) => {
+    const c = $(containerId);
+    if (!c) return;
+    c.querySelectorAll(`[${attr}]`).forEach((b) => {
+      b.classList.toggle('active', b.getAttribute(attr) === val);
+    });
+  };
+  syncAttrPills('#plsColorPills', 'data-pls-color', PLS_STATE.color);
+  syncAttrPills('#plsTrimPills', 'data-pls-trim', PLS_STATE.trim);
+  syncAttrPills('#plsFoilPills', 'data-pls-foil', PLS_STATE.foil);
+  syncAttrPills('#plsEmbossPills', 'data-pls-emboss', PLS_STATE.emboss);
+  syncAttrPills('#plsLayoutPills', 'data-pls-layout', PLS_STATE.layout);
+
+  const greetSel = $('#plsGreetingSelect');
+  if (greetSel) greetSel.value = PLS_STATE.greeting;
+  const signInput = $('#plsSignoffInput');
+  if (signInput) signInput.value = PLS_STATE.signoff;
+}
+
+function syncPrintStudioForScenario(pack, sc, isInitialRestore) {
   if (!sc) return;
-  if (sc.id === 'deco-botanical-print-layers') {
+  const isPrintLayerPack = Boolean((pack && pack.id === 'stationery-print-layers') || sc.studioPreset || sc.id === 'deco-botanical-print-layers');
+  if (sc.studioPreset) {
+    applyPrintStudioPresetUI(sc.studioPreset);
+  }
+  if (isPrintLayerPack) {
     setPrintLayerStudioOpen(true, !isInitialRestore);
   } else if (PLS_STATE.open) {
     renderPrintLayerStudio();
@@ -11018,24 +11053,30 @@ function explodeModelResultInPrintStudio(slot) {
 }
 
 function openPrintPlateInLightbox(plateIdx) {
-  const hiCanvas = document.createElement('canvas');
-  hiCanvas.width = 900;
-  hiCanvas.height = 1260;
-  const isComposite = plateIdx === 'composite';
-  renderSinglePrintPlateCanvas(hiCanvas, isComposite ? 'composite' : plateIdx, isComposite ? 'visual' : PLS_STATE.plateMode);
-  const dataUrl = hiCanvas.toDataURL('image/png');
-  const def = isComposite
-    ? { num: 'Composite Proof', name: 'Deco Botanical Holiday Card (Assembled 5×7" Proof)', channel: 'RGB Customer Proof' }
-    : (PLS_PLATE_DEFS[plateIdx] || PLS_PLATE_DEFS[0]);
-  openImageLightbox(
-    [{
+  const modeLabel = PLS_STATE.plateMode === 'factory' ? '100% K Factory RIP Mask' : 'Visual Layer Preview';
+  const allTargets = ['composite', 0, 1, 2, 3, 4];
+  const items = allTargets.map((t, galleryIdx) => {
+    const hiCanvas = document.createElement('canvas');
+    hiCanvas.width = 960;
+    hiCanvas.height = 1344;
+    const isComp = t === 'composite';
+    renderSinglePrintPlateCanvas(hiCanvas, isComp ? 'composite' : t, isComp ? 'visual' : PLS_STATE.plateMode);
+    const dataUrl = hiCanvas.toDataURL('image/png');
+    const def = isComp
+      ? { num: 'Composite Proof', name: 'Assembled 5×7" Customer Proof (RGB)', channel: 'Assembled Card Proof', fileSlug: '00-composite-customer-proof' }
+      : (PLS_PLATE_DEFS[t] || PLS_PLATE_DEFS[0]);
+    return {
+      badge: `${def.num} (${galleryIdx + 1} of ${allTargets.length})`,
+      url: dataUrl,
       src: dataUrl,
       title: `${def.num} · ${def.name}`,
-      meta: `${def.channel} · 900×1260 Prepress Inspection (${PLS_STATE.plateMode === 'factory' ? '100% K Factory RIP Mask' : 'Visual Layer Preview'})`,
-      downloadName: `deco-botanical-${def.fileSlug || 'proof'}-${PLS_STATE.plateMode}.png`,
-    }],
-    0
-  );
+      meta: `${def.channel} · 960×1344 Prepress Inspection (${isComp ? 'RGB Customer Proof' : modeLabel})`,
+      downloadName: `shutterfly-deco-botanical-${def.fileSlug || 'plate'}-${PLS_STATE.color}-${PLS_STATE.trim}-${PLS_STATE.foil}.png`,
+      defaultPixelated: false,
+    };
+  });
+  const startIdx = plateIdx === 'composite' ? 0 : Math.max(0, Math.min(items.length - 1, Number(plateIdx) + 1));
+  openImageLightbox(items, startIdx);
 }
 
 function downloadSinglePrintPlatePng(plateIdx) {
@@ -11092,21 +11133,11 @@ function initPrintLayerStudioBindings() {
   const openBtn = $('#imgOpenPrintStudioBtn');
   if (openBtn) {
     openBtn.addEventListener('click', () => {
-      // Select the Deco Botanical scenario in the Print pack and open studio
+      // Select the top-level Stationery Customizer & 5-Layer Print Separation pack and open studio
       const packSel = $('#imgPackSelect');
-      const subSel = $('#imgSubcategorySelect');
-      const scSel = $('#imgScenarioSelect');
       if (packSel && IMG_CONFIG) {
-        packSel.value = 'print-photobooks';
+        packSel.value = 'stationery-print-layers';
         if (typeof packSel.onchange === 'function') packSel.onchange();
-        if (subSel) {
-          subSel.value = 'stationery-cards';
-          if (typeof subSel.onchange === 'function') subSel.onchange();
-        }
-        if (scSel) {
-          scSel.value = 'deco-botanical-print-layers';
-          if (typeof scSel.onchange === 'function') scSel.onchange();
-        }
       }
       setPrintLayerStudioOpen(true, true);
     });

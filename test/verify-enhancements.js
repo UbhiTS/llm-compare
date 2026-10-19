@@ -250,10 +250,11 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(liteEntry.pricing.inputPerM, 0.25, 'gemini-3.1-flash-lite-image input price must be $0.25/1M');
   assert.strictEqual(liteEntry.pricing.imageOutputPerM, 30.00, 'gemini-3.1-flash-lite-image image output price must be $30.00/1M');
   assert(imgCfg.defaultSlots.every((s) => imgCfg.catalog.some((m) => m.id === s.catalogId)), 'Default image slots must only use catalog models');
-  assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
+  assert.strictEqual(imgCfg.packs.length, 7, 'Image Arena must expose 7 workflow packs (custom, stationery-print-layers, upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation)');
   const packIds = imgCfg.packs.map((p) => p.id);
   assert.strictEqual(packIds[0], 'custom-image-prompt', 'Custom Image Prompt must be index 0 (default) in IMAGE_USE_CASE_PACKS');
-  for (const expectedId of ['upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
+  assert.strictEqual(packIds[1], 'stationery-print-layers', 'Stationery Customizer & 5-Layer Print Separation must be a top-level pack in IMAGE_USE_CASE_PACKS');
+  for (const expectedId of ['stationery-print-layers', 'upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
     assert(packIds.includes(expectedId), `Image Arena packs must include ${expectedId}`);
   }
   const logoSvgFile = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo.svg'), 'utf8');
