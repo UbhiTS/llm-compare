@@ -159,6 +159,140 @@ const USER_BOB = 'bob@example.com';
   assert(!appJs.includes('saveRememberedPromptAndAttachments'), 'app.js must not contain saveRememberedPromptAndAttachments');
   console.log('✓ Verified complete removal of Remember prompt & files from HTML, CSS, and JS');
 
+  // 9. Per-arena workspace state persistence (Text, 3D & CAD, Image & GenMedia) + automatic lastRunId linkage
+  const cadRun = await reloadedHistory.saveRun({
+    user: USER_ALICE,
+    userName: USER_ALICE,
+    task: {
+      id: 'cad3d-planetary-gearbox',
+      category: 'cad3d',
+      title: 'Planetary Gearbox',
+      prompt: 'Build a planetary gearbox.',
+    },
+    customPrompt: '',
+    kind: 'compare',
+    models: [
+      { slot: 'A', catalogId: 'deepseek-v4-1-flash', label: 'DeepSeek V4.1 Flash' },
+      { slot: 'B', catalogId: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', effort: 'high' },
+    ],
+    results: [
+      { slot: 'A', code: 'buildPart()', costUsd: 0.001, wallMs: 400 },
+      { slot: 'B', code: 'buildPart()', costUsd: 0.002, wallMs: 500 },
+    ],
+  });
+
+  const imgRun = await reloadedHistory.saveImageRun({
+    id: 'img_test_run_001',
+    user: USER_ALICE,
+    userName: USER_ALICE,
+    packId: 'pack-photoreal',
+    scenarioId: 'sc-product-hero',
+    scenarioTitle: 'Product Hero Shot',
+    prompt: 'Studio product hero shot on dark slate',
+    imageSize: '2K',
+    aspectRatio: '16:9',
+    slots: [
+      { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
+      { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
+    ],
+    results: [
+      { slot: 'A', catalogId: 'gemini-3.1-flash-image', ok: true, latencyMs: 1200, costUsd: 0.04 },
+      { slot: 'B', catalogId: 'gemini-nano-banana-2.1', ok: true, latencyMs: 900, costUsd: 0.02 },
+    ],
+  });
+
+  reloadedHistory.saveUserPreferences(USER_ALICE, {
+    taskId: 'custom',
+    slots: [
+      { slot: 'A', catalogId: 'claude-opus-5-5', effort: 'high' },
+      { slot: 'B', catalogId: 'deepseek-v4-1-flash', effort: null },
+    ],
+    workspaceState: {
+      lastArena: '3d',
+      arenas: {
+        text: {
+          slots: [
+            { slot: 'A', catalogId: 'claude-opus-5-5', effort: 'high' },
+            { slot: 'B', catalogId: 'deepseek-v4-1-flash', effort: null },
+          ],
+          taskId: 'custom',
+          draftPrompt: 'Unsaved text arena custom prompt draft',
+          lastRunId: runWithAttachment.id,
+        },
+        '3d': {
+          slots: [
+            { slot: 'A', catalogId: 'deepseek-v4-1-flash', effort: null },
+            { slot: 'B', catalogId: 'gemini-3.8-flash', effort: 'high' },
+          ],
+          taskId: 'cad3d-planetary-gearbox',
+          draftPrompt: 'Custom 3D bracket draft',
+          lastRunId: cadRun.id,
+        },
+        image: {
+          slots: [
+            { slot: 'A', catalogId: 'gemini-3.1-flash-image' },
+            { slot: 'B', catalogId: 'gemini-nano-banana-2.1' },
+          ],
+          packId: 'pack-photoreal',
+          scenarioId: 'sc-product-hero',
+          draftPrompt: 'Custom image prompt draft',
+          imageSize: '4K',
+          aspectRatio: '1:1',
+          lastRunId: imgRun.id,
+        },
+      },
+    },
+  });
+
+  const wsPrefs = reloadedHistory.getUserPreferences(USER_ALICE);
+  assert(wsPrefs.workspaceState, 'workspaceState must be present in getUserPreferences');
+  assert.strictEqual(wsPrefs.workspaceState.lastArena, '3d');
+  assert.strictEqual(wsPrefs.workspaceState.arenas.text.draftPrompt, 'Unsaved text arena custom prompt draft');
+  assert.strictEqual(wsPrefs.workspaceState.arenas.text.lastRunId, runWithAttachment.id);
+  assert.strictEqual(Boolean(wsPrefs.workspaceState.arenas.text.prunedToDefault), false);
+  assert.strictEqual(wsPrefs.workspaceState.arenas['3d'].taskId, 'cad3d-planetary-gearbox');
+  assert.strictEqual(wsPrefs.workspaceState.arenas['3d'].lastRunId, cadRun.id);
+  assert.strictEqual(Boolean(wsPrefs.workspaceState.arenas['3d'].prunedToDefault), false);
+  assert.strictEqual(wsPrefs.workspaceState.arenas.image.packId, 'pack-photoreal');
+  assert.strictEqual(wsPrefs.workspaceState.arenas.image.imageSize, '4K');
+  assert.strictEqual(wsPrefs.workspaceState.arenas.image.aspectRatio, '1:1');
+  assert.strictEqual(wsPrefs.workspaceState.arenas.image.lastRunId, imgRun.id);
+  assert.strictEqual(Boolean(wsPrefs.workspaceState.arenas.image.prunedToDefault), false);
+  console.log('✓ Per-arena workspaceState (lastArena, text, 3d, image) saved and verified');
+
+  // 10. 7-Day Pruning Fallback Rule (Case A: lastRunId points to a pruned/deleted run)
+  await reloadedHistory.deleteRun(cadRun.id, { username: USER_ALICE, isAdmin: true });
+  const afterCadRunPruned = reloadedHistory.getUserPreferences(USER_ALICE);
+  assert.strictEqual(afterCadRunPruned.workspaceState.arenas['3d'].prunedToDefault, true, '3D arena must flag prunedToDefault when its lastRunId was pruned');
+  assert.strictEqual(afterCadRunPruned.workspaceState.arenas['3d'].taskId, 'custom', '3D arena must fall back to Custom Prompt when its lastRunId was pruned');
+  assert.strictEqual(afterCadRunPruned.workspaceState.arenas['3d'].draftPrompt, '', '3D arena draftPrompt must be cleared when pruned');
+  assert.strictEqual(afterCadRunPruned.workspaceState.arenas['3d'].lastRunId, null, '3D arena lastRunId must be cleared when pruned');
+  assert.strictEqual(afterCadRunPruned.workspaceState.arenas['3d'].slots.length, 2, '3D arena model slots must still be preserved');
+  assert.strictEqual(Boolean(afterCadRunPruned.workspaceState.arenas.text.prunedToDefault), false, 'Text arena with live run must remain untouched');
+  console.log('✓ 7-Day Pruning Fallback (Case A: pruned run ID) resets affected arena to Custom Prompt while preserving model slots');
+
+  // 11. 7-Day Pruning Fallback Rule (Case B: user logs back in after > 7 days of inactivity)
+  const EIGHT_DAYS_AGO = Date.now() - (8 * 24 * 60 * 60 * 1000);
+  reloadedHistory.saveUserPreferences(USER_ALICE, {
+    taskId: 'coding-queue',
+    slots: afterCadRunPruned.slots,
+    workspaceState: afterCadRunPruned.workspaceState,
+    _testUpdatedAt: EIGHT_DAYS_AGO,
+  });
+  const afterSevenDays = reloadedHistory.getUserPreferences(USER_ALICE);
+  assert.strictEqual(afterSevenDays.taskId, 'custom', 'Top-level taskId must default to custom after 7 days');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.text.prunedToDefault, true);
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.text.taskId, 'custom');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.text.draftPrompt, '');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.text.lastRunId, null);
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.prunedToDefault, true);
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.packId, 'custom-image-prompt');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.scenarioId, 'custom-freeform');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.draftPrompt, '');
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.lastRunId, null);
+  assert.strictEqual(afterSevenDays.workspaceState.arenas.image.slots.length, 2, 'Image arena model slots must be preserved after 7-day reset');
+  console.log('✓ 7-Day Pruning Fallback (Case B: >7 days inactivity) resets all arenas to Custom Prompt while keeping model slots');
+
   console.log('\nALL USER PREFERENCE & CLEANUP CHECKS PASSED ✓');
 })().catch((e) => {
   console.error('\nFAILED:', e);

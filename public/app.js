@@ -443,6 +443,7 @@ function populateTaskSelect(catKey, preferredTaskId) {
 }
 
 function selectTaskById(taskId) {
+  _arenaHydrateSeq++;
   const cs = $('#categorySelect');
   if (!taskId || taskId === 'custom' || String(taskId).startsWith('saved:')) {
     if (cs) cs.value = 'custom';
@@ -886,15 +887,21 @@ async function init() {
   if (CONFIG.me && !CONFIG.me.external && CONFIG.me.mustChangePassword) {
     openChangePwModal({ forced: true });
   }
-  // Seed the drag-and-drop slots from the server's default selection, then let
-  // MODELS be derived from the slots from here on.
-  seedSlots();
+  initWorkspaceStateFromConfig();
+  const urlTab = getExplicitUrlArenaTab();
+  const initialArena = urlTab || (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.lastArena) || 'text';
+  const bootTextOr3dKey = initialArena === '3d' ? '3d' : 'text';
+  ACTIVE_ARENA_MODE = bootTextOr3dKey;
+  const bootArenaSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas[bootTextOr3dKey]) || {};
+
+  // Seed the drag-and-drop slots from the active arena's saved slots or server default.
+  seedSlots(bootArenaSt.slots);
   syncModelsFromSlots();
 
   // 3-stage category -> subcategory -> filtered task selector (defaults to Custom Prompt on load)
   const cs = $('#categorySelect');
   const ts = $('#taskSelect');
-  populateCategorySelect(typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text');
+  populateCategorySelect(bootTextOr3dKey);
 
   // Last applied Step 1 selection, so a change the user declines (a comparison is
   // still streaming, or the composer holds unsaved text) can be rolled back.
@@ -936,6 +943,12 @@ async function init() {
         saveComposerDraft();
       }
     }
+    _lastRunId = null;
+    _currentRunId = null;
+    LAST_RESULTS = {};
+    _lastScored = null;
+    _judgeScored = null;
+    ARENA_LIVE_SNAPSHOTS[ACTIVE_ARENA_MODE === '3d' ? '3d' : 'text'] = null;
     snapshotTaskSelection();
     syncSavedPromptButtons();
     renderTaskPrompt();
@@ -967,6 +980,8 @@ async function init() {
     ts.addEventListener('change', onTaskSelectionChange);
   }
   {
+    const ncb = $('#newClearArenaBtn');
+    if (ncb) ncb.addEventListener('click', clearAndResetCurrentArena);
     const sb = $('#savePromptBtn');
     if (sb) sb.addEventListener('click', onSavePromptClick);
     const db = $('#deleteSavedPromptBtn');
@@ -985,6 +1000,7 @@ async function init() {
     customTa.addEventListener('input', () => {
       renderContextMeter();
       saveComposerDraftDebounced();
+      saveUserPreferencesDebounced();
     });
   }
 
@@ -995,20 +1011,36 @@ async function init() {
     }
   } catch (_) {}
 
-  const initialTask = (prefs.taskId && String(prefs.taskId).startsWith('saved:') && getSavedPromptById(prefs.taskId))
-    ? prefs.taskId
-    : 'custom';
+  let initialTask = 'custom';
+  if (bootArenaSt.prunedToDefault) {
+    clearComposerDraft();
+    initialTask = 'custom';
+  } else {
+    const candidateTask = bootArenaSt.taskId || prefs.taskId || 'custom';
+    if (String(candidateTask).startsWith('saved:') && getSavedPromptById(candidateTask)) {
+      initialTask = candidateTask;
+    } else if (candidateTask && candidateTask !== 'custom') {
+      const foundT = (CONFIG && Array.isArray(CONFIG.tasks) ? CONFIG.tasks : []).find((t) => t.id === candidateTask);
+      if (foundT && (bootTextOr3dKey === '3d' ? foundT.category === 'cad3d' : foundT.category !== 'cad3d')) {
+        initialTask = foundT.id;
+      }
+    }
+  }
   selectTaskById(initialTask);
   if (String(initialTask).startsWith('saved:')) {
     const savedItem = getSavedPromptById(initialTask);
     if (savedItem) applySavedPromptToComposer(savedItem);
+  } else if (initialTask === 'custom' && customTa) {
+    customTa.value = (!bootArenaSt.prunedToDefault && typeof bootArenaSt.draftPrompt === 'string')
+      ? bootArenaSt.draftPrompt
+      : '';
   }
   // Snapshot the programmatic composer state first so a restored draft that differs
   // from it still counts as dirty (and is protected from silent wipes).
   markComposerApplied();
   // Bring back the prompt that was being typed before a reload / session-expiry
   // redirect (saved on every input; see saveComposerDraft).
-  {
+  if (!bootArenaSt.prunedToDefault) {
     const draft = loadComposerDraft();
     if (draft && customTa && !String(customTa.value || '').trim()) {
       customTa.value = draft.prompt;
@@ -1028,9 +1060,23 @@ async function init() {
   renderModelEditors();
   buildArena();
   updateRunButton();
-  if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d' && typeof switchArenaMode === 'function') {
-    switchArenaMode('3d', { updateUrl: false, initialBoot: true });
+  if (initialArena === 'image' || initialArena === 'video' || initialArena === '3d') {
+    switchArenaMode(initialArena, { updateUrl: Boolean(urlTab), initialBoot: true });
   }
+  if ((initialArena === 'text' || initialArena === '3d') && bootArenaSt.lastRunId && !bootArenaSt.prunedToDefault) {
+    hydrateArenaRunFromServer(initialArena, bootArenaSt.lastRunId);
+  }
+
+  window.addEventListener('pagehide', () => {
+    saveComposerDraft();
+    saveUserPreferencesImmediate({ useBeacon: true });
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      saveComposerDraft();
+      saveUserPreferencesImmediate({ useBeacon: true });
+    }
+  });
 
   $('#runBtn').addEventListener('click', run);
   {
@@ -2334,6 +2380,141 @@ function restoreCustomAttachmentsFromData(list) {
   });
 }
 
+const WORKSPACE_RETENTION_MS = 7 * 86400 * 1000;
+let ARENA_WORKSPACE_STATE = null;
+const ARENA_LIVE_SNAPSHOTS = { text: null, '3d': null };
+let _lastImageRunId = null;
+let _arenaHydrateSeq = 0;
+
+function createDefaultWorkspaceState() {
+  return {
+    lastArena: 'text',
+    arenas: {
+      text:  { taskId: 'custom', draftPrompt: '', slots: null, lastRunId: null, updatedAt: 0 },
+      '3d':  { taskId: 'custom', draftPrompt: '', slots: null, lastRunId: null, updatedAt: 0 },
+      image: { packId: 'custom-image-prompt', scenarioId: 'custom-freeform', draftPrompt: '', imageSize: '2K', aspectRatio: '16:9', slots: null, lastRunId: null, updatedAt: 0 },
+    },
+  };
+}
+
+function initWorkspaceStateFromConfig() {
+  const me = CONFIG && CONFIG.me;
+  const srvWs = me && me.preferences && me.preferences.workspaceState;
+  const base = createDefaultWorkspaceState();
+  let locWs = null;
+  try {
+    const raw = localStorage.getItem('ullm.ws.' + getUsername());
+    if (raw) locWs = JSON.parse(raw);
+  } catch (_) {}
+
+  const now = Date.now();
+  const mergeArena = (key) => {
+    const def = base.arenas[key];
+    const s = (srvWs && srvWs.arenas && srvWs.arenas[key]) || null;
+    const l = (locWs && locWs.arenas && locWs.arenas[key]) || null;
+    if (s && s.prunedToDefault) {
+      return { ...def, ...s };
+    }
+    const sAt = (s && Number(s.updatedAt)) || 0;
+    const lAt = (l && Number(l.updatedAt)) || 0;
+    const lFresh = lAt > 0 && (now - lAt <= WORKSPACE_RETENTION_MS);
+    const chosen = (lFresh && lAt > sAt) ? { ...def, ...(s || {}), ...l } : { ...def, ...(lFresh ? l : {}), ...(s || {}) };
+    if (chosen.updatedAt > 0 && (now - Number(chosen.updatedAt) > WORKSPACE_RETENTION_MS)) {
+      if (key === 'image') {
+        return { ...def, slots: chosen.slots || null, imageSize: chosen.imageSize || '2K', aspectRatio: chosen.aspectRatio || '16:9', prunedToDefault: true };
+      }
+      return { ...def, slots: chosen.slots || null, prunedToDefault: true };
+    }
+    return chosen;
+  };
+
+  let lastArena = (srvWs && ['text', '3d', 'image'].includes(srvWs.lastArena)) ? srvWs.lastArena : 'text';
+  if (locWs && ['text', '3d', 'image'].includes(locWs.lastArena)) {
+    const srvMaxAt = Math.max(
+      (srvWs && srvWs.arenas && srvWs.arenas.text && srvWs.arenas.text.updatedAt) || 0,
+      (srvWs && srvWs.arenas && srvWs.arenas['3d'] && srvWs.arenas['3d'].updatedAt) || 0,
+      (srvWs && srvWs.arenas && srvWs.arenas.image && srvWs.arenas.image.updatedAt) || 0
+    );
+    const locMaxAt = Math.max(
+      (locWs.arenas && locWs.arenas.text && locWs.arenas.text.updatedAt) || 0,
+      (locWs.arenas && locWs.arenas['3d'] && locWs.arenas['3d'].updatedAt) || 0,
+      (locWs.arenas && locWs.arenas.image && locWs.arenas.image.updatedAt) || 0
+    );
+    if (locMaxAt > srvMaxAt && (now - locMaxAt <= WORKSPACE_RETENTION_MS)) {
+      lastArena = locWs.lastArena;
+    }
+  }
+
+  ARENA_WORKSPACE_STATE = {
+    lastArena,
+    arenas: {
+      text: mergeArena('text'),
+      '3d': mergeArena('3d'),
+      image: mergeArena('image'),
+    },
+  };
+  return ARENA_WORKSPACE_STATE;
+}
+
+function captureCurrentArenaState(modeOverride) {
+  if (!CONFIG || !CONFIG.me) return;
+  if (!ARENA_WORKSPACE_STATE) initWorkspaceStateFromConfig();
+  const mode = modeOverride || (typeof ACTIVE_ARENA_MODE !== 'undefined' ? ACTIVE_ARENA_MODE : 'text');
+  if (mode === 'text' || mode === '3d' || mode === 'image') {
+    ARENA_WORKSPACE_STATE.lastArena = mode;
+  }
+  const now = Date.now();
+  if (mode === 'image') {
+    if (typeof IMG_CONFIG !== 'undefined' && IMG_CONFIG) {
+      const packSel = $('#imgPackSelect');
+      const scSel = $('#imgScenarioSelect');
+      const promptEl = $('#imgPromptInput');
+      ARENA_WORKSPACE_STATE.arenas.image = {
+        packId: (packSel && packSel.value) || 'custom-image-prompt',
+        scenarioId: (scSel && scSel.value) || 'custom-freeform',
+        draftPrompt: (promptEl && promptEl.value) ? String(promptEl.value).slice(0, COMPOSER_DRAFT_MAX_CHARS) : '',
+        imageSize: IMG_SELECTED_SIZE || '2K',
+        aspectRatio: IMG_SELECTED_ASPECT || '16:9',
+        slots: Array.isArray(IMG_SLOTS) ? IMG_SLOTS.map((s) => ({ slot: s.slot, catalogId: s.catalogId })) : null,
+        lastRunId: _lastImageRunId || null,
+        updatedAt: now,
+      };
+    }
+    return;
+  }
+  const aKey = mode === '3d' ? '3d' : 'text';
+  if (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== aKey) return;
+  const ts = $('#taskSelect');
+  const ta = $('#customPrompt');
+  const taskId = (ts && ts.value) || 'custom';
+  const slots = SLOT_IDS.map((s) => ({
+    slot: s,
+    catalogId: SLOT_ASSIGN[s] || null,
+    effort: SLOT_EFFORT[s] || null,
+  })).filter((s) => s.catalogId);
+  const runId = _lastRunId || _currentRunId || null;
+  ARENA_WORKSPACE_STATE.arenas[aKey] = {
+    taskId,
+    draftPrompt: isCustomTaskId(taskId) && ta ? String(ta.value || '').slice(0, COMPOSER_DRAFT_MAX_CHARS) : '',
+    slots,
+    lastRunId: runId,
+    updatedAt: now,
+  };
+  if (LAST_RESULTS && Object.keys(LAST_RESULTS).length > 0) {
+    ARENA_LIVE_SNAPSHOTS[aKey] = {
+      id: runId,
+      taskId,
+      prompt: ta ? String(ta.value || '') : '',
+      attachments: Array.isArray(CUSTOM_ATTACHMENTS) ? CUSTOM_ATTACHMENTS.map((a) => ({ ...a })) : [],
+      models: ((ARENA_MODELS && ARENA_MODELS.length) ? ARENA_MODELS : MODELS).map((m) => ({ ...m })),
+      slots: Object.entries(LAST_RESULTS).map(([slot, data]) => ({ slot, data })),
+      judge: _judgeScored || null,
+    };
+  } else {
+    ARENA_LIVE_SNAPSHOTS[aKey] = null;
+  }
+}
+
 let _prefSaveTimer = null;
 function saveUserPreferencesDebounced() {
   if (_prefSaveTimer) clearTimeout(_prefSaveTimer);
@@ -2343,12 +2524,13 @@ function saveUserPreferencesDebounced() {
   }, 400);
 }
 
-function saveUserPreferencesImmediate() {
+function saveUserPreferencesImmediate(opts) {
   if (_prefSaveTimer) {
     clearTimeout(_prefSaveTimer);
     _prefSaveTimer = null;
   }
   if (!CONFIG || !CONFIG.me || !CONFIG.me.username) return;
+  captureCurrentArenaState();
   const uname = CONFIG.me.username;
   const taskSelectEl = $('#taskSelect');
   const taskId = (taskSelectEl && taskSelectEl.value) || 'custom';
@@ -2362,17 +2544,29 @@ function saveUserPreferencesImmediate() {
     taskId,
     slots,
     models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
+    workspaceState: ARENA_WORKSPACE_STATE || undefined,
   };
 
   if (!CONFIG.me.preferences) CONFIG.me.preferences = {};
   CONFIG.me.preferences.slots = slots;
   CONFIG.me.preferences.models = payload.models;
   CONFIG.me.preferences.taskId = taskId;
+  if (ARENA_WORKSPACE_STATE) CONFIG.me.preferences.workspaceState = ARENA_WORKSPACE_STATE;
   CONFIG.me.lastModels = payload.models;
 
   try {
     localStorage.setItem('ullm.pref.' + uname, JSON.stringify(payload));
+    if (ARENA_WORKSPACE_STATE) {
+      localStorage.setItem('ullm.ws.' + uname, JSON.stringify(ARENA_WORKSPACE_STATE));
+    }
   } catch (_) {}
+
+  if (opts && opts.useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    try {
+      const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+      if (navigator.sendBeacon('/api/me/preferences', blob)) return;
+    } catch (_) {}
+  }
 
   try {
     fetch('/api/me/preferences', {
@@ -2380,6 +2574,7 @@ function saveUserPreferencesImmediate() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       credentials: 'same-origin',
+      keepalive: true,
     }).catch(() => {});
   } catch (_) {}
 }
@@ -2396,10 +2591,20 @@ const RETIRED_MODEL_MAP = {
   'gpt-6-terra': 'gpt-5.6-terra',
 };
 
-function seedSlots() {
+function seedSlots(preferredSlots) {
 
   const me = CONFIG && CONFIG.me;
-  const userSlots = (me && me.preferences && me.preferences.slots)
+  const activeKey = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d') ? '3d' : 'text';
+  const wsArenaSlots = ARENA_WORKSPACE_STATE
+    && ARENA_WORKSPACE_STATE.arenas
+    && ARENA_WORKSPACE_STATE.arenas[activeKey]
+    && Array.isArray(ARENA_WORKSPACE_STATE.arenas[activeKey].slots)
+    && ARENA_WORKSPACE_STATE.arenas[activeKey].slots.length > 0
+      ? ARENA_WORKSPACE_STATE.arenas[activeKey].slots
+      : null;
+  const userSlots = (Array.isArray(preferredSlots) && preferredSlots.length ? preferredSlots : null)
+    || wsArenaSlots
+    || (me && me.preferences && me.preferences.slots)
     || (me && me.lastModels)
     || loadLocalSlots();
   let rawList = (Array.isArray(userSlots) && userSlots.length) ? userSlots : CONFIG.models;
@@ -5560,6 +5765,8 @@ function handleEvent(ev, results, own, ctx) {
       _lastRunId = (ev && ev.runId) || null;
       _currentRunId = _lastRunId;
       finalize(results);   // re-runs merge into LAST_RESULTS, so the scorecard reflects every slot
+      captureCurrentArenaState();
+      saveUserPreferencesDebounced();
       // Show the non-intrusive "🏆 View Scorecard ▾" pill in the composer footer instead of yanking the user's scroll position
       {
         const sc = $('#scorecard');
@@ -6567,8 +6774,83 @@ async function restoreHistory(id) {
     saveComposerDraft();
     renderTaskPrompt();
     renderSavedRun(snap); // rebuilds the arena + scorecard from the snapshot (its own model set)
+    captureCurrentArenaState(targetMode);
+    saveUserPreferencesDebounced();
     $('#arena').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) { window.alert(e.message); }
+}
+
+async function hydrateArenaRunFromServer(targetMode, runId) {
+  if (!runId) return;
+  const seq = ++_arenaHydrateSeq;
+  try {
+    const r = await fetch('/api/history/' + encodeURIComponent(runId), { credentials: 'same-origin' });
+    if (seq !== _arenaHydrateSeq || ACTIVE_ARENA_MODE !== targetMode || anyRunInFlight()) return;
+    if (r.status === 404) {
+      if (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas[targetMode]) {
+        ARENA_WORKSPACE_STATE.arenas[targetMode].lastRunId = null;
+        ARENA_WORKSPACE_STATE.arenas[targetMode].taskId = 'custom';
+        ARENA_WORKSPACE_STATE.arenas[targetMode].draftPrompt = '';
+      }
+      selectTaskById('custom');
+      resetCustomComposerToBlank({ focus: false });
+      buildArena();
+      saveUserPreferencesDebounced();
+      return;
+    }
+    if (!r.ok) return;
+    const j = await r.json().catch(() => ({}));
+    if (seq !== _arenaHydrateSeq || ACTIVE_ARENA_MODE !== targetMode || anyRunInFlight()) return;
+    if (!j || !j.run) return;
+    const snap = j.run;
+    const arenaSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas[targetMode]) || null;
+    const wantTask = (arenaSt && arenaSt.taskId) || snap.taskId || 'custom';
+    selectTaskById(wantTask);
+    const customTa = $('#customPrompt');
+    if (isCustomTaskId(wantTask) && customTa) {
+      const savedDraft = (arenaSt && typeof arenaSt.draftPrompt === 'string' && arenaSt.draftPrompt.trim())
+        ? arenaSt.draftPrompt
+        : (snap.prompt || '');
+      if (savedDraft) customTa.value = savedDraft;
+    }
+    if (isCustomTaskId(wantTask) && Array.isArray(snap.attachments) && snap.attachments.length) {
+      restoreCustomAttachmentsFromData(snap.attachments);
+    } else if (isCustomTaskId(wantTask)) {
+      clearAttachments();
+    }
+    markComposerApplied();
+    renderTaskPrompt();
+    renderSavedRun(snap, { skipPrefSave: true });
+    captureCurrentArenaState(targetMode);
+  } catch (_) {}
+}
+
+function clearAndResetCurrentArena() {
+  if (!confirmInterruptRun('A comparison is still running. Stop it and start a fresh custom prompt?')) return;
+  _arenaHydrateSeq++;
+  const mode = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d') ? '3d' : 'text';
+  _lastRunId = null;
+  _currentRunId = null;
+  LAST_RESULTS = {};
+  _lastScored = null;
+  _judgeScored = null;
+  ARENA_LIVE_SNAPSHOTS[mode] = null;
+  if (mode === '3d' && typeof resetAllCadSlotStates === 'function') {
+    resetAllCadSlotStates();
+  }
+  selectTaskById('custom');
+  resetCustomComposerToBlank({ focus: true });
+  if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
+  const sc = $('#scorecard');
+  if (sc) sc.classList.add('hidden');
+  const jb = $('#jumpScorecardBtn');
+  if (jb) jb.classList.add('hidden');
+  const pb = $('#exportPdfTopBtn');
+  if (pb) pb.classList.add('hidden');
+  const jo = $('#judgeOut');
+  if (jo) jo.innerHTML = '';
+  buildArena();
+  saveUserPreferencesImmediate();
 }
 
 async function deleteHistoryRun(id) {
@@ -6594,6 +6876,7 @@ async function deleteHistoryRun(id) {
 // task's saved snapshot and any in-flight wall timer, then rebuilds empty columns.
 // Repaint the arena + scorecard + Step 2 model selectors from a saved snapshot (used by History → Restore).
 function renderSavedRun(snap) {
+  const opts = arguments[1] || {};
   // A restore replaces every CAD slot's code/telemetry/4-view state; never let a
   // previous session's revisions leak into (and be sent to the model for) this run (1.7).
   if (typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
@@ -6654,7 +6937,7 @@ function renderSavedRun(snap) {
     updateQuotaBadge();
     updateRunButton();
     renderContextMeter();
-    saveUserPreferencesDebounced();
+    if (!(opts && opts.skipPrefSave)) saveUserPreferencesDebounced();
   }
 
   buildArena(snap.models);
@@ -6962,6 +7245,18 @@ let IMG_CURTAIN_PICKS = null;  // { left, right } layer ids the user chose expli
 let IMG_RUNNING = false;
 let IMG_TIMER_ID = null;
 
+function getExplicitUrlArenaTab() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab') || params.get('mode');
+    if (tabParam === 'image' || window.location.hash === '#image-arena') return 'image';
+    if (tabParam === 'video' || window.location.hash === '#video-arena') return 'video';
+    if (tabParam === '3d' || tabParam === 'cad' || window.location.hash === '#3d-arena') return '3d';
+    if (tabParam === 'text') return 'text';
+  } catch (_) {}
+  return null;
+}
+
 function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInterruptCheck = false } = {}) {
   const target = (mode === 'image' || mode === 'video' || mode === '3d') ? mode : 'text';
   const prevMode = ACTIVE_ARENA_MODE;
@@ -6970,13 +7265,22 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
   if (!skipInterruptCheck && !initialBoot && (prevMode === 'text' || prevMode === '3d') && target !== prevMode) {
     if (!confirmInterruptRun('A comparison is still running. Stop it and switch arenas?')) return;
   }
+  _arenaHydrateSeq++;
+  if (!initialBoot && prevMode !== target) {
+    captureCurrentArenaState(prevMode);
+  }
   ACTIVE_ARENA_MODE = target;
+  if (ARENA_WORKSPACE_STATE && (target === 'text' || target === '3d' || target === 'image')) {
+    ARENA_WORKSPACE_STATE.lastArena = target;
+  }
   // Leaving the 3D arena: forget per-slot CAD code / telemetry / 4-view renders so
   // they can never be attached to a later text run or a restored run (1.7).
   if (prevMode === '3d' && target !== '3d' && typeof resetAllCadSlotStates === 'function') resetAllCadSlotStates();
-  // Switching between Text Arena and 3D & CAD Arena: clear stale results, scorecard, and judge output
-  // from the previous arena so they never bleed into the newly selected arena.
-  if (!initialBoot && prevMode !== target && (prevMode === 'text' || prevMode === '3d') && (target === 'text' || target === '3d')) {
+  // Switching into Text Arena or 3D & CAD Arena: clear stale results, scorecard, and judge output
+  // from the previous arena before restoring the target arena's state.
+  if (!initialBoot && prevMode !== target && (target === 'text' || target === '3d')) {
+    _lastRunId = null;
+    _currentRunId = null;
     LAST_RESULTS = {};
     _lastScored = null;
     _judgeScored = null;
@@ -7012,7 +7316,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
     if (vidSection) vidSection.classList.add('hidden');
     if (imgSection) imgSection.classList.remove('hidden');
     if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
-    ensureImageArenaLoaded();
+    ensureImageArenaLoaded({ skipAutoRestore: skipInterruptCheck });
     updateImageHistoryButton();
   } else if (target === 'video') {
     if (textControls) textControls.classList.add('hidden');
@@ -7027,27 +7331,72 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
     if (textControls) textControls.classList.remove('hidden');
     if (textArena) textArena.classList.remove('hidden');
 
-    if (CONFIG) {
+    if (CONFIG && !initialBoot && prevMode !== target) {
+      const targetSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas[target]) || null;
+      if (targetSt && Array.isArray(targetSt.slots) && targetSt.slots.length > 0) {
+        seedSlots(targetSt.slots);
+        syncModelsFromSlots();
+        renderModelEditors();
+      }
       populateCategorySelect(target);
       const cs = $('#categorySelect');
-      const curTask = currentTask();
-      if (target === '3d') {
-        if (isCustomTaskSelected() || curTask.category !== 'cad3d') {
-          const tsNow = $('#taskSelect');
-          const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
-          if (cs) cs.value = 'custom';
-          populateSubcategorySelect('custom');
-          populateTaskSelect('custom', curVal);
+      if (!skipInterruptCheck) {
+        let savedTaskId = (targetSt && !targetSt.prunedToDefault && targetSt.taskId) || 'custom';
+        const allTasks = (CONFIG && Array.isArray(CONFIG.tasks)) ? CONFIG.tasks : [];
+        let foundTask = null;
+        if (savedTaskId && savedTaskId !== 'custom' && !String(savedTaskId).startsWith('saved:')) {
+          foundTask = allTasks.find((x) => x.id === savedTaskId && (target === '3d' ? x.category === 'cad3d' : x.category !== 'cad3d')) || null;
+          if (!foundTask) savedTaskId = 'custom';
         }
-        renderTaskPrompt();
-        buildArena();
-      } else if (target === 'text' && prevMode === '3d') {
-        if (cs && (isCadCategoryKey(cs.value) || isCustomTaskSelected())) {
-          const tsNow = $('#taskSelect');
-          const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
+        if (foundTask && cs) {
+          cs.value = foundTask.category;
+          populateSubcategorySelect(foundTask.category, foundTask.subcategory);
+          populateTaskSelect(foundTask.category, foundTask.id);
+        } else if (String(savedTaskId).startsWith('saved:') && getSavedPromptById(savedTaskId) && cs) {
           cs.value = 'custom';
           populateSubcategorySelect('custom');
-          populateTaskSelect('custom', curVal);
+          populateTaskSelect('custom', savedTaskId);
+          const savedItem = getSavedPromptById(savedTaskId);
+          if (savedItem) applySavedPromptToComposer(savedItem);
+        } else if (cs) {
+          cs.value = 'custom';
+          populateSubcategorySelect('custom');
+          populateTaskSelect('custom', 'custom');
+        }
+        renderTaskPrompt();
+        const customTa = $('#customPrompt');
+        if (savedTaskId === 'custom' && customTa) {
+          customTa.value = (targetSt && !targetSt.prunedToDefault && typeof targetSt.draftPrompt === 'string')
+            ? targetSt.draftPrompt
+            : '';
+          markComposerApplied();
+          renderContextMeter();
+        }
+        buildArena();
+        const liveSnap = ARENA_LIVE_SNAPSHOTS[target];
+        if (liveSnap && liveSnap.results && Object.keys(liveSnap.results).length > 0) {
+          renderSavedRun(liveSnap, { skipTaskRestore: true });
+        } else if (targetSt && targetSt.lastRunId && !targetSt.prunedToDefault) {
+          hydrateArenaRunFromServer(target, targetSt.lastRunId);
+        }
+      } else {
+        const curTask = currentTask();
+        if (target === '3d') {
+          if (isCustomTaskSelected() || curTask.category !== 'cad3d') {
+            const tsNow = $('#taskSelect');
+            const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
+            if (cs) cs.value = 'custom';
+            populateSubcategorySelect('custom');
+            populateTaskSelect('custom', curVal);
+          }
+        } else if (target === 'text') {
+          if (cs && (isCadCategoryKey(cs.value) || isCustomTaskSelected())) {
+            const tsNow = $('#taskSelect');
+            const curVal = (isCustomTaskSelected() && tsNow && tsNow.value) ? tsNow.value : 'custom';
+            cs.value = 'custom';
+            populateSubcategorySelect('custom');
+            populateTaskSelect('custom', curVal);
+          }
         }
         renderTaskPrompt();
         buildArena();
@@ -7057,6 +7406,10 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
     if (textScorecard && Object.keys(LAST_RESULTS || {}).length > 0) {
       textScorecard.classList.remove('hidden');
     }
+  }
+
+  if (!initialBoot && !skipInterruptCheck) {
+    saveUserPreferencesDebounced();
   }
 
   if (updateUrl && window.history && typeof window.history.replaceState === 'function') {
@@ -7070,7 +7423,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
 }
 
 let _imgConfigPromise = null;
-async function ensureImageArenaLoaded() {
+async function ensureImageArenaLoaded(opts) {
   if (IMG_CONFIG) return IMG_CONFIG;
   if (_imgConfigPromise) return _imgConfigPromise;
   _imgConfigPromise = (async () => {
@@ -7080,8 +7433,24 @@ async function ensureImageArenaLoaded() {
       const data = await resp.json();
       if (!data || !data.ok) return null;
       IMG_CONFIG = data;
-      if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
+      const imgSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.image) || {};
+      const catalog = Array.isArray(data.catalog) ? data.catalog : [];
+      const savedSlots = (!imgSt.prunedToDefault && Array.isArray(imgSt.slots))
+        ? imgSt.slots.filter((s) => s && s.catalogId && catalog.some((c) => c.id === s.catalogId))
+        : [];
+      if (savedSlots.length > 0) {
+        IMG_SLOTS = savedSlots.slice(0, 4).map((s, i) => ({
+          slot: String.fromCharCode(65 + i),
+          catalogId: s.catalogId,
+        }));
+      } else if (Array.isArray(data.defaultSlots) && data.defaultSlots.length) {
         IMG_SLOTS = data.defaultSlots.map((s) => ({ ...s }));
+      }
+      if (!imgSt.prunedToDefault && imgSt.imageSize && ['1K', '2K', '4K'].includes(imgSt.imageSize)) {
+        IMG_SELECTED_SIZE = imgSt.imageSize;
+      }
+      if (!imgSt.prunedToDefault && imgSt.aspectRatio) {
+        IMG_SELECTED_ASPECT = imgSt.aspectRatio;
       }
       renderImageSizeAndAspectPills();
       renderImageSlotsConfigurator();
@@ -7090,6 +7459,9 @@ async function ensureImageArenaLoaded() {
       renderImageMetricComparison();
       renderImageEconomicsModeler();
       updateImageHistoryButton();
+      if (!imgSt.prunedToDefault && imgSt.lastRunId && !(opts && opts.skipAutoRestore)) {
+        await restoreImageArenaRun(imgSt.lastRunId, { silentAutoRestore: true });
+      }
       return IMG_CONFIG;
     } catch (e) {
       console.warn('[imageArena] failed to load config:', e);
@@ -7338,6 +7710,7 @@ function renderImageSizeAndAspectPills() {
         if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
         renderImageMetricComparison();
         renderImageEconomicsModeler();
+        saveUserPreferencesDebounced();
       });
       b.disabled = IMG_RUNNING;
       sizeWrap.appendChild(b);
@@ -7355,6 +7728,7 @@ function renderImageSizeAndAspectPills() {
         IMG_SELECTED_ASPECT = a.id;
         renderImageSizeAndAspectPills();
         if (!IMG_LAST_RESULTS.length) renderImageArenaPlaceholderCards();
+        saveUserPreferencesDebounced();
       });
       b.disabled = IMG_RUNNING;
       aspectWrap.appendChild(b);
@@ -7457,12 +7831,14 @@ function renderImageSlotsConfigurator() {
         if (IMG_RUNNING) return; // lineup is frozen while images are generating (1.5)
         IMG_SLOTS.splice(idx, 1);
         IMG_SLOTS.forEach((s, i) => { s.slot = String.fromCharCode(65 + i); });
+        _lastImageRunId = null;
         IMG_LAST_RESULTS = [];
         renderImageSlotsConfigurator();
         renderImageArenaPlaceholderCards();
         updateSplitCurtainView();
         renderImageMetricComparison();
         renderImageEconomicsModeler();
+        saveUserPreferencesDebounced();
       });
     }
 
@@ -7475,12 +7851,14 @@ function renderImageSlotsConfigurator() {
           || catalog.find((x) => providerFamilyOf(x) === fam);
         if (firstModel) {
           slotObj.catalogId = firstModel.id;
+          _lastImageRunId = null;
           IMG_LAST_RESULTS = [];
           renderImageSlotsConfigurator();
           renderImageArenaPlaceholderCards();
           updateSplitCurtainView();
           renderImageMetricComparison();
           renderImageEconomicsModeler();
+          saveUserPreferencesDebounced();
         }
       });
     }
@@ -7490,12 +7868,14 @@ function renderImageSlotsConfigurator() {
       sel.addEventListener('change', () => {
         if (IMG_RUNNING) { sel.value = slotObj.catalogId; return; } // frozen during a run (1.5)
         slotObj.catalogId = sel.value;
+        _lastImageRunId = null;
         IMG_LAST_RESULTS = [];
         renderImageSlotsConfigurator();
         renderImageArenaPlaceholderCards();
         updateSplitCurtainView();
         renderImageMetricComparison();
         renderImageEconomicsModeler();
+        saveUserPreferencesDebounced();
       });
     }
 
@@ -7539,7 +7919,7 @@ function populateImagePacksAndScenarios() {
     packSel.appendChild(o);
   });
 
-  const populateImgScenariosForSubcat = (pack, subcatId, preferredScenarioId) => {
+  const populateImgScenariosForSubcat = (pack, subcatId, preferredScenarioId, opts) => {
     if (!pack) return;
     const badge = $('#imgScenarioBadge');
     if (badge) badge.textContent = pack.badge || 'Image Benchmark';
@@ -7557,11 +7937,11 @@ function populateImagePacksAndScenarios() {
     const chosen = (preferredScenarioId && filteredSc.find((s) => s.id === preferredScenarioId)) || filteredSc[0] || allSc[0];
     if (chosen) {
       scSel.value = chosen.id;
-      applyImageScenario(pack, chosen);
+      applyImageScenario(pack, chosen, opts);
     }
   };
 
-  const updateScenariosForPack = (packId, preferredSubcatId, preferredScenarioId) => {
+  const updateScenariosForPack = (packId, preferredSubcatId, preferredScenarioId, opts) => {
     const pack = packs.find((p) => p.id === packId) || packs[0];
     if (!pack) return;
     const subs = Array.isArray(pack.subcategories) ? pack.subcategories : [];
@@ -7587,7 +7967,7 @@ function populateImagePacksAndScenarios() {
       }
     }
     const activeSub = (subSel && !subSel.classList.contains('hidden')) ? subSel.value : '';
-    populateImgScenariosForSubcat(pack, activeSub, preferredScenarioId);
+    populateImgScenariosForSubcat(pack, activeSub, preferredScenarioId, opts);
   };
 
   packSel.onchange = () => updateScenariosForPack(packSel.value);
@@ -7603,14 +7983,33 @@ function populateImagePacksAndScenarios() {
     if (sc) applyImageScenario(pack, sc);
   };
 
-  const defaultImgPack = packs.find((p) => p.id === 'custom-image-prompt') || packs[0];
+  const imgSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.image) || {};
+  const savedPack = (!imgSt.prunedToDefault && imgSt.packId) ? packs.find((p) => p.id === imgSt.packId) : null;
+  const defaultImgPack = savedPack || packs.find((p) => p.id === 'custom-image-prompt') || packs[0];
   if (defaultImgPack) {
     packSel.value = defaultImgPack.id;
-    updateScenariosForPack(defaultImgPack.id);
+    let prefSub = undefined;
+    let prefSc = undefined;
+    if (savedPack && imgSt.scenarioId) {
+      const foundSc = (savedPack.scenarios || []).find((s) => s.id === imgSt.scenarioId);
+      if (foundSc) {
+        prefSc = foundSc.id;
+        prefSub = foundSc.subcategory;
+      }
+    }
+    updateScenariosForPack(defaultImgPack.id, prefSub, prefSc, { initialRestore: true });
+    if (!imgSt.prunedToDefault && defaultImgPack.id === 'custom-image-prompt' && typeof imgSt.draftPrompt === 'string') {
+      const promptEl = $('#imgPromptInput');
+      if (promptEl) {
+        promptEl.value = imgSt.draftPrompt;
+        markImageComposerApplied();
+      }
+    }
   }
 }
 
-function applyImageScenario(pack, sc) {
+function applyImageScenario(pack, sc, opts) {
+  const isInitialRestore = Boolean(opts && opts.initialRestore);
   const promptEl = $('#imgPromptInput');
   const whyEl = $('#imgWhyBanner');
   const badgeEl = $('#imgScenarioBadge');
@@ -7626,15 +8025,23 @@ function applyImageScenario(pack, sc) {
     }
   }
 
-  if (sc.recommendedSize && ['1K', '2K', '4K'].includes(sc.recommendedSize)) {
+  const imgSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.image) || {};
+  if (isInitialRestore && !imgSt.prunedToDefault && imgSt.imageSize && ['1K', '2K', '4K'].includes(imgSt.imageSize)) {
+    IMG_SELECTED_SIZE = imgSt.imageSize;
+  } else if (sc.recommendedSize && ['1K', '2K', '4K'].includes(sc.recommendedSize)) {
     IMG_SELECTED_SIZE = sc.recommendedSize;
   }
-  if (sc.recommendedAspectRatio) {
+  if (isInitialRestore && !imgSt.prunedToDefault && imgSt.aspectRatio) {
+    IMG_SELECTED_ASPECT = imgSt.aspectRatio;
+  } else if (sc.recommendedAspectRatio) {
     IMG_SELECTED_ASPECT = sc.recommendedAspectRatio;
   }
 
   IMG_CURRENT_SCENARIO_REFS = Array.isArray(sc.attachments) ? sc.attachments.map((a) => ({ ...a })) : [];
   IMG_REF_ATTACHMENTS = IMG_CURRENT_SCENARIO_REFS.map((a) => ({ ...a }));
+  if (!isInitialRestore) {
+    _lastImageRunId = null;
+  }
   IMG_LAST_RESULTS = [];
   markImageComposerApplied();
   renderImageReferenceAttachments();
@@ -7644,6 +8051,9 @@ function applyImageScenario(pack, sc) {
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
+  if (!isInitialRestore) {
+    saveUserPreferencesDebounced();
+  }
 }
 
 // Image Arena composer pristine/dirty tracking (prompt text + reference images last
@@ -8319,17 +8729,19 @@ async function updateImageHistoryButton() {
 }
 
 async function restoreImageArenaRun(runId) {
+  const opts = arguments[1] || {};
+  const silentAutoRestore = Boolean(opts && opts.silentAutoRestore);
   // A restore overwrites the prompt, reference images and result cards: never do it
   // under a running generation (its slots would land in the wrong cards) or over
   // unsaved input without an explicit OK (1.6).
   if (IMG_RUNNING) {
-    window.alert('An image generation is still running. Wait for it to finish before restoring a run.');
+    if (!silentAutoRestore) window.alert('An image generation is still running. Wait for it to finish before restoring a run.');
     return;
   }
-  if (imageComposerIsDirty() && !window.confirm('Replace your current prompt and reference images with this saved run?')) return;
-  await ensureImageArenaLoaded();
-  if (ACTIVE_ARENA_MODE !== 'image') {
-    switchArenaMode('image');
+  if (!silentAutoRestore && imageComposerIsDirty() && !window.confirm('Replace your current prompt and reference images with this saved run?')) return;
+  await ensureImageArenaLoaded({ skipAutoRestore: true });
+  if (!silentAutoRestore && ACTIVE_ARENA_MODE !== 'image') {
+    switchArenaMode('image', { skipInterruptCheck: true });
   }
 
   const runs = await listImageArenaRunsFromHistory();
@@ -8371,7 +8783,19 @@ async function restoreImageArenaRun(runId) {
       }
     } catch (_) {}
   }
-  if (!rec) return;
+  if (!rec) {
+    if (silentAutoRestore && ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.image) {
+      // Run was pruned or deleted — fall back to Custom Image Prompt cleanly.
+      ARENA_WORKSPACE_STATE.arenas.image.lastRunId = null;
+      ARENA_WORKSPACE_STATE.arenas.image.packId = 'custom-image-prompt';
+      ARENA_WORKSPACE_STATE.arenas.image.scenarioId = 'custom-freeform';
+      ARENA_WORKSPACE_STATE.arenas.image.draftPrompt = '';
+      populateImagePacksAndScenarios();
+      saveUserPreferencesDebounced();
+    }
+    return;
+  }
+  _lastImageRunId = rec.id || runId;
 
   // Sync pack & scenario dropdowns + banner without calling applyImageScenario() (which resets state)
   const packs = (IMG_CONFIG && Array.isArray(IMG_CONFIG.packs)) ? IMG_CONFIG.packs : [];
@@ -8534,13 +8958,16 @@ async function restoreImageArenaRun(runId) {
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
+  if (!silentAutoRestore) {
+    saveUserPreferencesDebounced();
+  }
 
   const timerBadge = $('#imgStatusTimer');
   if (timerBadge) {
     timerBadge.textContent = `Restored ${IMG_LAST_RESULTS.length} models (${rec.imageSize || IMG_SELECTED_SIZE})`;
   }
   const gridEl = $('#imgArenaGrid');
-  if (gridEl && typeof gridEl.scrollIntoView === 'function') {
+  if (!silentAutoRestore && gridEl && typeof gridEl.scrollIntoView === 'function') {
     gridEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
@@ -8777,6 +9204,7 @@ async function runImageArenaComparisonClick() {
     }
 
     if (okCount > 0) {
+      _lastImageRunId = clientRunId;
       await saveImageArenaRunToHistory({
         id: clientRunId,
         at: Date.now(),
@@ -8791,6 +9219,8 @@ async function runImageArenaComparisonClick() {
         results: resultsArr,
       });
       await updateImageHistoryButton();
+      captureCurrentArenaState('image');
+      saveUserPreferencesDebounced();
     }
   } catch (e) {
     if (timerBadge) timerBadge.textContent = `Error: ${e.message}`;
@@ -9207,6 +9637,38 @@ function renderImageEconomicsModeler() {
   });
 }
 
+function clearAndResetImageArena() {
+  if (IMG_RUNNING) {
+    window.alert('An image generation is still running. Wait for it to finish before resetting.');
+    return;
+  }
+  _lastImageRunId = null;
+  IMG_LAST_RESULTS = [];
+  if (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas.image) {
+    ARENA_WORKSPACE_STATE.arenas.image.packId = 'custom-image-prompt';
+    ARENA_WORKSPACE_STATE.arenas.image.scenarioId = 'custom-freeform';
+    ARENA_WORKSPACE_STATE.arenas.image.draftPrompt = '';
+    ARENA_WORKSPACE_STATE.arenas.image.lastRunId = null;
+    ARENA_WORKSPACE_STATE.arenas.image.prunedToDefault = false;
+  }
+  populateImagePacksAndScenarios();
+  const promptEl = $('#imgPromptInput');
+  if (promptEl) {
+    promptEl.value = '';
+    promptEl.focus();
+  }
+  IMG_REF_ATTACHMENTS = [];
+  markImageComposerApplied();
+  renderImageReferenceAttachments();
+  renderImageArenaPlaceholderCards();
+  updateSplitCurtainView();
+  renderImageMetricComparison();
+  renderImageEconomicsModeler();
+  const timerBadge = $('#imgStatusTimer');
+  if (timerBadge) timerBadge.textContent = 'Ready';
+  saveUserPreferencesImmediate();
+}
+
 function initImageArenaBindings() {
   const modeSwitch = $('#arenaModeSwitch');
   if (modeSwitch) {
@@ -9219,6 +9681,11 @@ function initImageArenaBindings() {
   if (vidGoImageBtn) vidGoImageBtn.addEventListener('click', () => switchArenaMode('image'));
   const vidGoTextBtn = $('#videoGoTextBtn');
   if (vidGoTextBtn) vidGoTextBtn.addEventListener('click', () => switchArenaMode('text'));
+
+  const imgNewClearBtn = $('#imgNewClearBtn');
+  if (imgNewClearBtn) {
+    imgNewClearBtn.addEventListener('click', clearAndResetImageArena);
+  }
 
   const imgHistBtn = $('#imgHistoryBtn');
   if (imgHistBtn) {
@@ -9250,6 +9717,9 @@ function initImageArenaBindings() {
 
   const imgPromptInput = $('#imgPromptInput');
   if (imgPromptInput) {
+    imgPromptInput.addEventListener('input', () => {
+      saveUserPreferencesDebounced();
+    });
     imgPromptInput.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -9323,12 +9793,14 @@ function initImageArenaBindings() {
       if (!nextCat) return;
       const nextSlot = String.fromCharCode(65 + IMG_SLOTS.length);
       IMG_SLOTS.push({ slot: nextSlot, catalogId: nextCat.id });
+      _lastImageRunId = null;
       IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
       updateSplitCurtainView();
       renderImageMetricComparison();
       renderImageEconomicsModeler();
+      saveUserPreferencesDebounced();
     });
   }
 
@@ -9361,12 +9833,14 @@ function initImageArenaBindings() {
           { slot: 'D', catalogId: 'gemini-3-pro-image' },
         ];
       }
+      _lastImageRunId = null;
       IMG_LAST_RESULTS = [];
       renderImageSlotsConfigurator();
       renderImageArenaPlaceholderCards();
       updateSplitCurtainView();
       renderImageMetricComparison();
       renderImageEconomicsModeler();
+      saveUserPreferencesDebounced();
     });
   });
 
@@ -9444,19 +9918,6 @@ function initImageArenaBindings() {
 
   initCurtainDrag();
   updateImageHistoryButton();
-
-  // Check URL deep link (?tab=image, ?tab=video, ?tab=3d, #image-arena, #video-arena, #3d-arena)
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const tabParam = params.get('tab') || params.get('mode');
-    if (tabParam === 'image' || window.location.hash === '#image-arena') {
-      switchArenaMode('image', { updateUrl: false });
-    } else if (tabParam === 'video' || window.location.hash === '#video-arena') {
-      switchArenaMode('video', { updateUrl: false });
-    } else if (tabParam === '3d' || tabParam === 'cad' || window.location.hash === '#3d-arena') {
-      switchArenaMode('3d', { updateUrl: false });
-    }
-  } catch (_) { /* ignore */ }
 }
 
 // ============================================================================

@@ -1046,6 +1046,7 @@ app.get('/api/config', (req, res) => {
         taskId: prefs.taskId || 'custom',
         slots: prefs.slots || null,
         models: prefs.models || null,
+        workspaceState: prefs.workspaceState || null,
       },
       savedPrompts: prefs.savedPrompts || [],
       savedPresets: prefs.savedPresets || [],

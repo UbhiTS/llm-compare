@@ -859,6 +859,7 @@ function initSqlite() {
           slots_json TEXT,
           saved_prompts_json TEXT,
           saved_presets_json TEXT,
+          workspace_state_json TEXT,
           updated_at INTEGER
         );
         CREATE TABLE IF NOT EXISTS user_saved_prompts (
@@ -932,6 +933,7 @@ function initSqlite() {
       `);
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_prompts_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN saved_presets_json TEXT;`); } catch (_) {}
+      try { sqliteDb.exec(`ALTER TABLE user_prefs ADD COLUMN workspace_state_json TEXT;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE image_runs ADD COLUMN starred INTEGER NOT NULL DEFAULT 0;`); } catch (_) {}
       try { sqliteDb.exec(`ALTER TABLE audit_runs ADD COLUMN prompt_sha256 TEXT;`); } catch (_) {}
@@ -1000,17 +1002,18 @@ function initSqlite() {
         delArchivedImageRun: sqliteDb.prepare(`DELETE FROM archived_image_runs WHERE id = ?`),
         allArchivedImageRuns: sqliteDb.prepare(`SELECT * FROM archived_image_runs ORDER BY at DESC`),
         upsertPref: sqliteDb.prepare(`
-          INSERT INTO user_prefs (user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO user_prefs (user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, workspace_state_json, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_key) DO UPDATE SET
             user = excluded.user,
             task_id = excluded.task_id,
             slots_json = excluded.slots_json,
             saved_prompts_json = excluded.saved_prompts_json,
             saved_presets_json = excluded.saved_presets_json,
+            workspace_state_json = excluded.workspace_state_json,
             updated_at = excluded.updated_at
         `),
-        allPrefs: sqliteDb.prepare(`SELECT user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, updated_at FROM user_prefs`),
+        allPrefs: sqliteDb.prepare(`SELECT user_key, user, task_id, slots_json, saved_prompts_json, saved_presets_json, workspace_state_json, updated_at FROM user_prefs`),
         upsertPrompt: sqliteDb.prepare(`
           INSERT INTO user_saved_prompts (user_key, id, user, title, prompt, attachments_json, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1212,9 +1215,11 @@ function initSqlite() {
           let slots = null;
           let rawSavedPrompts = [];
           let rawSavedPresets = [];
+          let rawWorkspaceState = null;
           try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
           try { rawSavedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
           try { rawSavedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
+          try { rawWorkspaceState = JSON.parse(pr.workspace_state_json || 'null'); } catch (_) {}
 
           // Merge dedicated table rows (`user_saved_prompts`) with any legacy `user_prefs.saved_prompts_json` rows
           const tablePrompts = promptsByUserKey.get(pr.user_key) || [];
@@ -1224,6 +1229,7 @@ function initSqlite() {
           const tablePresets = presetsByUserKey.get(pr.user_key) || [];
           const mergedRawPresets = [...tablePresets, ...(Array.isArray(rawSavedPresets) ? rawSavedPresets : [])];
           const savedPresets = sanitizeSavedPresetsList(mergedRawPresets);
+          const workspaceState = sanitizeWorkspaceState(rawWorkspaceState, null);
 
           const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
           const prefEntry = {
@@ -1233,6 +1239,7 @@ function initSqlite() {
             models,
             savedPrompts,
             savedPresets,
+            workspaceState,
             updatedAt: Number(pr.updated_at) || 0,
           };
           prefsByUserKey.set(pr.user_key, prefEntry);
@@ -1254,6 +1261,7 @@ function initSqlite() {
                 JSON.stringify(slots || []),
                 JSON.stringify(savedPrompts),
                 JSON.stringify(savedPresets),
+                JSON.stringify(workspaceState || null),
                 prefEntry.updatedAt || Date.now()
               );
             } catch (_) {}
@@ -1834,9 +1842,11 @@ function syncFromPersistSqliteIfNewer(force = false) {
               let slots = null;
               let rawSavedPrompts = [];
               let rawSavedPresets = [];
+              let rawWorkspaceState = null;
               try { slots = JSON.parse(pr.slots_json || 'null'); } catch (_) {}
               try { rawSavedPrompts = JSON.parse(pr.saved_prompts_json || '[]'); } catch (_) {}
               try { rawSavedPresets = JSON.parse(pr.saved_presets_json || '[]'); } catch (_) {}
+              try { rawWorkspaceState = JSON.parse(pr.workspace_state_json || 'null'); } catch (_) {}
               const mergedPrompts = extractAndStripSavedPrompts(pr.user_key, [
                 ...(extPromptsByUser.get(pr.user_key) || []),
                 ...(Array.isArray(rawSavedPrompts) ? rawSavedPrompts : []),
@@ -1847,6 +1857,7 @@ function syncFromPersistSqliteIfNewer(force = false) {
                 ...(Array.isArray(rawSavedPresets) ? rawSavedPresets : []),
                 ...((cur && cur.savedPresets) || []),
               ]);
+              const mergedWorkspaceState = sanitizeWorkspaceState(rawWorkspaceState, (cur && cur.workspaceState) || null);
               const models = Array.isArray(slots) ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null;
               const nextEntry = {
                 user: rowUser,
@@ -1855,6 +1866,7 @@ function syncFromPersistSqliteIfNewer(force = false) {
                 models: models || (cur && cur.models) || null,
                 savedPrompts: mergedPrompts,
                 savedPresets: mergedPresets,
+                workspaceState: mergedWorkspaceState,
                 updatedAt: Math.max(prUpdated, (cur && cur.updatedAt) || 0),
               };
               prefsByUserKey.set(pr.user_key, nextEntry);
@@ -1867,6 +1879,7 @@ function syncFromPersistSqliteIfNewer(force = false) {
                 JSON.stringify(nextEntry.slots || []),
                 JSON.stringify(mergedPrompts),
                 JSON.stringify(mergedPresets),
+                JSON.stringify(mergedWorkspaceState || null),
                 nextEntry.updatedAt
               );
             }
@@ -1975,6 +1988,7 @@ function ensureOwnerLoadedSync(key) {
             models: Array.isArray(p.models) ? p.models : null,
             savedPrompts: strippedPrompts,
             savedPresets: cleanPresets,
+            workspaceState: sanitizeWorkspaceState(p.workspaceState, null),
             updatedAt: Number(p.updatedAt) || Date.now(),
           };
           prefsByUserKey.set(key, cleanPref);
@@ -1989,6 +2003,7 @@ function ensureOwnerLoadedSync(key) {
                 JSON.stringify(cleanPref.slots || []),
                 JSON.stringify(cleanPref.savedPrompts || []),
                 JSON.stringify(cleanPref.savedPresets || []),
+                JSON.stringify(cleanPref.workspaceState || null),
                 cleanPref.updatedAt
               );
               // One-time legacy migration per user key: flush synchronously so the legacy prefs.json
@@ -2183,9 +2198,27 @@ async function saveRun({ id: passedId, user, userName, task, customPrompt, model
           }))
       : ((cur && cur.slots) || null);
 
+    const activeTaskId = (task && task.id) || (cur && cur.taskId) || 'custom';
+    const arenaKey = runArena === '3d' ? '3d' : 'text';
+    const isCustom = !activeTaskId || activeTaskId === 'custom' || String(activeTaskId).startsWith('saved:');
+    const wsUpdate = {
+      lastArena: arenaKey,
+      updatedAt: at,
+      arenas: {
+        [arenaKey]: {
+          taskId: activeTaskId,
+          draftPrompt: isCustom ? capText(promptText, MAX_AUDIT_PROMPT_CHARS) : '',
+          slots: runSlots,
+          lastRunId: id,
+          updatedAt: at,
+        },
+      },
+    };
+
     saveUserPreferences(u, {
-      taskId: (task && task.id) || (cur && cur.taskId) || 'custom',
+      taskId: activeTaskId,
       slots: runSlots,
+      workspaceState: wsUpdate,
     });
 
     // 2. Write full record JSON to owner directory for getRun(id) restore (tracked so a SIGTERM drain can await it)
@@ -2206,24 +2239,79 @@ function derivePrefsFromHistory(u, key) {
   for (const m of metaById.values()) {
     if (m.userKey === key) userRuns.push(m);
   }
-  if (!userRuns.length) return null;
+  const userImgRuns = [];
+  for (const im of imageMetaById.values()) {
+    if (im.userKey === key) userImgRuns.push(im);
+  }
+  if (!userRuns.length && !userImgRuns.length) return null;
   userRuns.sort((a, b) => b.at - a.at);
-  const pick = userRuns.find((r) => r.kind !== 'single' && Array.isArray(r.models) && r.models.length)
-    || userRuns.find((r) => Array.isArray(r.models) && r.models.length);
-  if (!pick) return null;
+  userImgRuns.sort((a, b) => b.at - a.at);
 
-  const slots = (pick.models || [])
-    .filter((m) => m && m.catalogId)
-    .map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null }));
+  const pick = userRuns.find((r) => r.kind !== 'single' && Array.isArray(r.models) && r.models.length)
+    || userRuns.find((r) => Array.isArray(r.models) && r.models.length)
+    || null;
+
+  const slots = pick
+    ? (pick.models || [])
+        .filter((m) => m && m.catalogId)
+        .map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null }))
+    : [];
+
+  const latestText = userRuns.find((r) => !isCadRunMeta(r)) || null;
+  const latestCad = userRuns.find((r) => isCadRunMeta(r)) || null;
+  const latestImg = userImgRuns[0] || null;
+  const latestAllAt = Math.max(
+    latestText ? Number(latestText.at) || 0 : 0,
+    latestCad ? Number(latestCad.at) || 0 : 0,
+    latestImg ? Number(latestImg.at) || 0 : 0
+  );
+  let lastArena = 'text';
+  if (latestCad && Number(latestCad.at) === latestAllAt) lastArena = '3d';
+  else if (latestImg && Number(latestImg.at) === latestAllAt) lastArena = 'image';
+
+  const ws = defaultWorkspaceState();
+  ws.lastArena = lastArena;
+  ws.updatedAt = latestAllAt;
+  if (latestText) {
+    ws.arenas.text = {
+      taskId: latestText.taskId || 'custom',
+      draftPrompt: '',
+      slots: (latestText.models || []).filter((m) => m && m.catalogId).map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null })),
+      lastRunId: latestText.id,
+      updatedAt: Number(latestText.at) || 0,
+    };
+  }
+  if (latestCad) {
+    ws.arenas['3d'] = {
+      taskId: latestCad.taskId || 'custom',
+      draftPrompt: '',
+      slots: (latestCad.models || []).filter((m) => m && m.catalogId).map((m) => ({ slot: m.slot || null, catalogId: m.catalogId, effort: m.effort || null })),
+      lastRunId: latestCad.id,
+      updatedAt: Number(latestCad.at) || 0,
+    };
+  }
+  if (latestImg) {
+    ws.arenas.image = {
+      packId: latestImg.packId || 'custom-image-prompt',
+      scenarioId: latestImg.scenarioId || 'custom-freeform',
+      draftPrompt: typeof latestImg.prompt === 'string' ? capText(latestImg.prompt, MAX_AUDIT_PROMPT_CHARS) : '',
+      imageSize: latestImg.imageSize || '2K',
+      aspectRatio: latestImg.aspectRatio || '16:9',
+      slots: Array.isArray(latestImg.slots) ? latestImg.slots.slice(0, 6) : null,
+      lastRunId: latestImg.id,
+      updatedAt: Number(latestImg.at) || 0,
+    };
+  }
 
   return {
     user: u,
-    taskId: pick.taskId || 'custom',
+    taskId: (pick && pick.taskId) || 'custom',
     slots: slots.length ? slots : null,
-    models: slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })),
+    models: slots.length ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : null,
     savedPrompts: [],
     savedPresets: [],
-    updatedAt: pick.at,
+    workspaceState: ws,
+    updatedAt: latestAllAt,
   };
 }
 
@@ -2403,11 +2491,196 @@ function sanitizeSavedPresetsList(list) {
   return out;
 }
 
-// Get preferences for a specific user (taskId, slots, models, savedPrompts, savedPresets)
+function defaultWorkspaceState() {
+  return {
+    lastArena: 'text',
+    updatedAt: 0,
+    arenas: {
+      text: {
+        taskId: 'custom',
+        draftPrompt: '',
+        slots: null,
+        lastRunId: null,
+        updatedAt: 0,
+      },
+      '3d': {
+        taskId: 'custom',
+        draftPrompt: '',
+        slots: null,
+        lastRunId: null,
+        updatedAt: 0,
+      },
+      image: {
+        packId: 'custom-image-prompt',
+        scenarioId: 'custom-freeform',
+        draftPrompt: '',
+        imageSize: '2K',
+        aspectRatio: '16:9',
+        slots: null,
+        lastRunId: null,
+        updatedAt: 0,
+      },
+    },
+  };
+}
+
+function sanitizeArenaSlots(rawSlots) {
+  if (!Array.isArray(rawSlots)) return null;
+  const out = rawSlots
+    .slice(0, 6)
+    .filter((s) => s && (s.catalogId || s.id))
+    .map((s, idx) => ({
+      slot: cleanShortText(s.slot, 8, String.fromCharCode(65 + idx)),
+      catalogId: cleanShortText(s.catalogId || s.id, 80, ''),
+      effort: s.effort ? cleanShortText(s.effort, 24, null) : null,
+      ...(s.thinkingLevel ? { thinkingLevel: cleanShortText(s.thinkingLevel, 24, 'minimal') } : {}),
+    }))
+    .filter((s) => s.catalogId);
+  return out.length ? out : null;
+}
+
+function sanitizeWorkspaceState(incoming, base) {
+  const def = defaultWorkspaceState();
+  const cur = (base && typeof base === 'object') ? base : def;
+  const inc = (incoming && typeof incoming === 'object') ? incoming : {};
+  const validArena = (v) => (v === 'text' || v === '3d' || v === 'image') ? v : null;
+  const lastArena = validArena(inc.lastArena) || validArena(cur.lastArena) || 'text';
+  const now = Date.now();
+  const updatedAt = Number(inc.updatedAt) > 0
+    ? Math.min(now, Number(inc.updatedAt))
+    : (Number(cur.updatedAt) > 0 ? Math.min(now, Number(cur.updatedAt)) : 0);
+
+  const curArenas = (cur.arenas && typeof cur.arenas === 'object') ? cur.arenas : {};
+  const incArenas = (inc.arenas && typeof inc.arenas === 'object') ? inc.arenas : {};
+
+  const mergeCodeArena = (k) => {
+    const c = (curArenas[k] && typeof curArenas[k] === 'object') ? curArenas[k] : def.arenas[k];
+    const n = (incArenas[k] && typeof incArenas[k] === 'object') ? incArenas[k] : null;
+    if (!n) {
+      return {
+        taskId: typeof c.taskId === 'string' && c.taskId ? c.taskId.slice(0, 100) : 'custom',
+        draftPrompt: typeof c.draftPrompt === 'string' ? capText(c.draftPrompt, MAX_AUDIT_PROMPT_CHARS) : '',
+        slots: sanitizeArenaSlots(c.slots),
+        lastRunId: c.lastRunId ? safeId(c.lastRunId) : null,
+        updatedAt: Number(c.updatedAt) || 0,
+      };
+    }
+    return {
+      taskId: typeof n.taskId === 'string' && n.taskId
+        ? n.taskId.slice(0, 100)
+        : (typeof c.taskId === 'string' && c.taskId ? c.taskId.slice(0, 100) : 'custom'),
+      draftPrompt: n.draftPrompt !== undefined
+        ? capText(String(n.draftPrompt || ''), MAX_AUDIT_PROMPT_CHARS)
+        : (typeof c.draftPrompt === 'string' ? capText(c.draftPrompt, MAX_AUDIT_PROMPT_CHARS) : ''),
+      slots: n.slots !== undefined ? sanitizeArenaSlots(n.slots) : sanitizeArenaSlots(c.slots),
+      lastRunId: n.lastRunId !== undefined ? (n.lastRunId ? safeId(n.lastRunId) : null) : (c.lastRunId ? safeId(c.lastRunId) : null),
+      updatedAt: Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : (Number(c.updatedAt) || now),
+    };
+  };
+
+  const mergeImageArena = () => {
+    const c = (curArenas.image && typeof curArenas.image === 'object') ? curArenas.image : def.arenas.image;
+    const n = (incArenas.image && typeof incArenas.image === 'object') ? incArenas.image : null;
+    if (!n) {
+      return {
+        packId: typeof c.packId === 'string' && c.packId ? c.packId.slice(0, 80) : 'custom-image-prompt',
+        scenarioId: typeof c.scenarioId === 'string' && c.scenarioId ? c.scenarioId.slice(0, 80) : 'custom-freeform',
+        draftPrompt: typeof c.draftPrompt === 'string' ? capText(c.draftPrompt, MAX_AUDIT_PROMPT_CHARS) : '',
+        imageSize: ['1K', '2K', '4K'].includes(c.imageSize) ? c.imageSize : '2K',
+        aspectRatio: typeof c.aspectRatio === 'string' && c.aspectRatio ? c.aspectRatio.slice(0, 12) : '16:9',
+        slots: sanitizeArenaSlots(c.slots),
+        lastRunId: c.lastRunId ? safeId(c.lastRunId) : null,
+        updatedAt: Number(c.updatedAt) || 0,
+      };
+    }
+    return {
+      packId: typeof n.packId === 'string' && n.packId
+        ? n.packId.slice(0, 80)
+        : (typeof c.packId === 'string' && c.packId ? c.packId.slice(0, 80) : 'custom-image-prompt'),
+      scenarioId: typeof n.scenarioId === 'string' && n.scenarioId
+        ? n.scenarioId.slice(0, 80)
+        : (typeof c.scenarioId === 'string' && c.scenarioId ? c.scenarioId.slice(0, 80) : 'custom-freeform'),
+      draftPrompt: n.draftPrompt !== undefined
+        ? capText(String(n.draftPrompt || ''), MAX_AUDIT_PROMPT_CHARS)
+        : (typeof c.draftPrompt === 'string' ? capText(c.draftPrompt, MAX_AUDIT_PROMPT_CHARS) : ''),
+      imageSize: ['1K', '2K', '4K'].includes(n.imageSize)
+        ? n.imageSize
+        : (['1K', '2K', '4K'].includes(c.imageSize) ? c.imageSize : '2K'),
+      aspectRatio: typeof n.aspectRatio === 'string' && n.aspectRatio
+        ? n.aspectRatio.slice(0, 12)
+        : (typeof c.aspectRatio === 'string' && c.aspectRatio ? c.aspectRatio.slice(0, 12) : '16:9'),
+      slots: n.slots !== undefined ? sanitizeArenaSlots(n.slots) : sanitizeArenaSlots(c.slots),
+      lastRunId: n.lastRunId !== undefined ? (n.lastRunId ? safeId(n.lastRunId) : null) : (c.lastRunId ? safeId(c.lastRunId) : null),
+      updatedAt: Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : (Number(c.updatedAt) || now),
+    };
+  };
+
+  return {
+    lastArena,
+    updatedAt,
+    arenas: {
+      text: mergeCodeArena('text'),
+      '3d': mergeCodeArena('3d'),
+      image: mergeImageArena(),
+    },
+  };
+}
+
+// Enforce the 7-day retention / pruning fallback: if a user's workspace state or last run
+// is older than RUN_RETENTION_MS (7 days) or its referenced run has been pruned/deleted,
+// automatically fall back to the Custom Prompt default (`taskId: 'custom'` / `packId: 'custom-image-prompt'`).
+function applyWorkspacePruningRules(ws, uKey) {
+  const clean = sanitizeWorkspaceState(ws, null);
+  const now = Date.now();
+  const cutoff = now - RUN_RETENTION_MS;
+  const topExpired = clean.updatedAt > 0 && clean.updatedAt < cutoff;
+  if (topExpired) clean.prunedToDefault = true;
+
+  for (const k of ['text', '3d']) {
+    const a = clean.arenas[k];
+    const expiredByAge = topExpired || (a.updatedAt > 0 && a.updatedAt < cutoff);
+    let runPrunedOrMissing = false;
+    if (a.lastRunId) {
+      const m = metaById.get(a.lastRunId);
+      if (!m || m.userKey !== uKey || (!m.starred && Number(m.at) > 0 && Number(m.at) < cutoff)) {
+        runPrunedOrMissing = true;
+      }
+    }
+    if (expiredByAge || runPrunedOrMissing) {
+      a.lastRunId = null;
+      a.taskId = 'custom';
+      a.draftPrompt = '';
+      a.prunedToDefault = true;
+    }
+  }
+
+  {
+    const img = clean.arenas.image;
+    const expiredByAge = topExpired || (img.updatedAt > 0 && img.updatedAt < cutoff);
+    let runPrunedOrMissing = false;
+    if (img.lastRunId) {
+      const im = imageMetaById.get(img.lastRunId);
+      if (!im || im.userKey !== uKey || (!im.starred && Number(im.at) > 0 && Number(im.at) < cutoff)) {
+        runPrunedOrMissing = true;
+      }
+    }
+    if (expiredByAge || runPrunedOrMissing) {
+      img.lastRunId = null;
+      img.packId = 'custom-image-prompt';
+      img.scenarioId = 'custom-freeform';
+      img.draftPrompt = '';
+      img.prunedToDefault = true;
+    }
+  }
+
+  return clean;
+}
+
+// Get preferences for a specific user (taskId, slots, models, savedPrompts, savedPresets, workspaceState)
 // Strictly isolated by normalized username + SHA-256 userKey; returns a defensive copy.
 function getUserPreferences(username) {
   const u = norm(username);
-  if (!u) return { taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [] };
+  if (!u) return { taskId: 'custom', slots: null, models: null, savedPrompts: [], savedPresets: [], workspaceState: defaultWorkspaceState() };
   syncFromPersistSqliteIfNewer(false);
   const key = userKey(u);
   ensureOwnerLoadedSync(key);
@@ -2427,19 +2700,34 @@ function getUserPreferences(username) {
       prefsByUserKey.set(key, p);
     } else {
       // Memoize default empty prefs in memory so repeat calls in the same request / session never hit disk
-      p = { user: u, taskId: 'custom', slots: null, models: null, savedPrompts: dbPrompts, savedPresets: dbPresets, updatedAt: 0 };
+      p = {
+        user: u,
+        taskId: 'custom',
+        slots: null,
+        models: null,
+        savedPrompts: dbPrompts,
+        savedPresets: dbPresets,
+        workspaceState: defaultWorkspaceState(),
+        updatedAt: 0,
+      };
       prefsByUserKey.set(key, p);
     }
   }
   if (!Array.isArray(p.savedPrompts)) p.savedPrompts = [];
   if (!Array.isArray(p.savedPresets)) p.savedPresets = [];
+  const ws = applyWorkspacePruningRules(p.workspaceState, key);
+  const topTaskExpired = p.updatedAt > 0 && (Date.now() - Number(p.updatedAt) > RUN_RETENTION_MS);
+  const effectiveTaskId = (topTaskExpired || (ws.arenas && ws.arenas.text && ws.arenas.text.prunedToDefault))
+    ? 'custom'
+    : (p.taskId || 'custom');
   return {
     user: u,
-    taskId: p.taskId || 'custom',
+    taskId: effectiveTaskId,
     slots: Array.isArray(p.slots) ? p.slots.map((s) => ({ ...s })) : null,
     models: Array.isArray(p.models) ? p.models.map((m) => ({ ...m })) : null,
     savedPrompts: p.savedPrompts.slice(),
     savedPresets: p.savedPresets.slice(),
+    workspaceState: ws,
     updatedAt: p.updatedAt || 0,
   };
 }
@@ -2454,6 +2742,7 @@ function saveUserPreferences(username, newPrefs) {
   if (!u) return null;
   syncFromPersistSqliteIfNewer(true);
   const key = userKey(u);
+  const existingRaw = prefsByUserKey.get(key) || null;
   const current = getUserPreferences(u) || {};
   const hasExplicitPrompts = Boolean(newPrefs && Array.isArray(newPrefs.savedPrompts));
   const hasExplicitPresets = Boolean(newPrefs && Array.isArray(newPrefs.savedPresets));
@@ -2498,7 +2787,15 @@ function saveUserPreferences(username, newPrefs) {
   }
 
   const models = slots ? slots.map((s) => ({ catalogId: s.catalogId, effort: s.effort })) : (current.models || null);
-  const updatedAt = Date.now();
+  const updatedAt = (newPrefs && Number(newPrefs._testUpdatedAt) > 0) ? Number(newPrefs._testUpdatedAt) : Date.now();
+  const baseWs = (existingRaw && existingRaw.workspaceState) || current.workspaceState || defaultWorkspaceState();
+  const workspaceState = sanitizeWorkspaceState(
+    (newPrefs && newPrefs.workspaceState) ? { ...newPrefs.workspaceState, updatedAt: newPrefs.workspaceState.updatedAt || updatedAt } : null,
+    baseWs
+  );
+  if (newPrefs && Number(newPrefs._testUpdatedAt) > 0) {
+    workspaceState.updatedAt = Number(newPrefs._testUpdatedAt);
+  }
 
   const prefObj = {
     user: u,
@@ -2507,6 +2804,7 @@ function saveUserPreferences(username, newPrefs) {
     models,
     savedPrompts,
     savedPresets,
+    workspaceState,
     updatedAt,
   };
 
@@ -2527,11 +2825,12 @@ function saveUserPreferences(username, newPrefs) {
         JSON.stringify(slots || []),
         JSON.stringify(savedPrompts || []),
         JSON.stringify(savedPresets || []),
+        JSON.stringify(workspaceState || null),
         updatedAt
       );
       flushSnapshotSync();
     } catch (_) {}
-    return prefObj;
+    return getUserPreferences(u);
   }
 
   // Fallback JSON persistence only when built-in node:sqlite is unavailable
@@ -2555,7 +2854,7 @@ function saveUserPreferences(username, newPrefs) {
   });
   prefWriteChains.set(key, nextChain);
 
-  return prefObj;
+  return getUserPreferences(u);
 }
 
 // List a user's saved prompts library (newest / most recently updated first).
@@ -3886,6 +4185,25 @@ async function saveImageRunLocked({
     }
     cachePayload(id, record);
     if (replacedRefs.size > 0) gcReplacedImageRefs(uKey, replacedRefs);
+
+    saveUserPreferences(u, {
+      workspaceState: {
+        lastArena: 'image',
+        updatedAt: at,
+        arenas: {
+          image: {
+            packId: record.packId,
+            scenarioId: record.scenarioId,
+            draftPrompt: capText(promptText, MAX_AUDIT_PROMPT_CHARS),
+            imageSize: record.imageSize,
+            aspectRatio: record.aspectRatio,
+            slots: cleanSlots,
+            lastRunId: id,
+            updatedAt: at,
+          },
+        },
+      },
+    });
 
     // Disk write: always the newest cached record for this id, tmp + rename, tracked for the SIGTERM drain
     const dir = path.join(BASE_DIR, uKey);

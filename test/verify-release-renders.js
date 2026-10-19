@@ -384,6 +384,37 @@ function httpRequest(port, method, urlPath, bodyObj) {
             const afterSwitchModSelA = document.querySelector('#imgSlotGrid .img-slot-select');
             const openaiModOptionsA = afterSwitchModSelA ? Array.from(afterSwitchModSelA.options).map((o) => o.value) : [];
 
+            // 4. Test Workspace State Continuity & New/Clear buttons across Text, 3D & Image Arenas
+            const hasNewClearBtn = Boolean(document.getElementById('newClearArenaBtn'));
+            const hasImgNewClearBtn = Boolean(document.getElementById('imgNewClearBtn'));
+            switchArenaMode('text', { skipInterruptCheck: true });
+            selectTaskById('custom');
+            const customTa = document.getElementById('customPrompt');
+            if (customTa) {
+              customTa.value = 'Text Arena Draft Continuity Check';
+              customTa.dispatchEvent(new Event('input'));
+            }
+            // Switch to 3D Arena (normal user switch without skipInterruptCheck)
+            // It should restore the 3D task ('cad-simple-stepped-shaft') from Step 1!
+            switchArenaMode('3d');
+            const tsEl = document.getElementById('taskSelect');
+            const restored3dTaskFromStep1 = tsEl ? tsEl.value : '';
+            selectTaskById('custom');
+            const customTa3d = document.getElementById('customPrompt');
+            if (customTa3d) {
+              customTa3d.value = '3D Arena Draft Continuity Check';
+              customTa3d.dispatchEvent(new Event('input'));
+            }
+            // Switch back to Text Arena and verify Text Arena's draft prompt is restored
+            switchArenaMode('text');
+            const restoredTextDraft = customTa ? customTa.value : '';
+            const saved3dDraftInState = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas['3d'])
+              ? ARENA_WORKSPACE_STATE.arenas['3d'].draftPrompt
+              : '';
+            // Click ✦ New / Clear in Text Arena and verify it resets to blank Custom Prompt
+            clearAndResetCurrentArena();
+            const afterClearTextDraft = customTa ? customTa.value : 'non-empty';
+
             return {
               cadSlots,
               spinStateA,
@@ -395,6 +426,12 @@ function httpRequest(port, method, urlPath, bodyObj) {
               imgModCount: imgModSelects.length,
               provOptionsA,
               openaiModOptionsA,
+              hasNewClearBtn,
+              hasImgNewClearBtn,
+              restored3dTaskFromStep1,
+              restoredTextDraft,
+              saved3dDraftInState,
+              afterClearTextDraft,
             };
           })()`,
           awaitPromise: true,
@@ -419,8 +456,13 @@ function httpRequest(port, method, urlPath, bodyObj) {
         assert(val.imgProvCount >= 2 && val.imgModCount >= 2, `Image & GenMedia Arena must render Provider ▸ Model selects for each slot (got ${val.imgProvCount} provider selects, ${val.imgModCount} model selects)`);
         assert(Array.isArray(val.provOptionsA) && val.provOptionsA.includes('google') && val.provOptionsA.includes('openai'), 'Image Arena Provider select must include Google and OpenAI');
         assert(Array.isArray(val.openaiModOptionsA) && val.openaiModOptionsA[0] === 'gpt-image-2.5-sunburst', `Selecting OpenAI in Image Arena Provider dropdown must cascade to OpenAI image models (got ${JSON.stringify(val.openaiModOptionsA)})`);
+        assert(val.hasNewClearBtn && val.hasImgNewClearBtn, 'Both #newClearArenaBtn and #imgNewClearBtn must exist in DOM');
+        assert.strictEqual(val.restored3dTaskFromStep1, 'cad-simple-stepped-shaft', 'Switching back to 3D Arena must restore its saved task cad-simple-stepped-shaft');
+        assert.strictEqual(val.restoredTextDraft, 'Text Arena Draft Continuity Check', 'Switching 3D -> Text must restore Text Arena draft prompt');
+        assert.strictEqual(val.saved3dDraftInState, '3D Arena Draft Continuity Check', 'Switching away from 3D Arena must capture 3D Arena draft prompt');
+        assert.strictEqual(val.afterClearTextDraft, '', 'clearAndResetCurrentArena() must clear draft prompt to blank');
         ws.close();
-        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector');
+        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector + Workspace State Continuity & New/Clear buttons');
       } finally {
         try { chrome.kill('SIGKILL'); } catch (_) {}
         try { fs.rmSync(chromeProfile, { recursive: true, force: true }); } catch (_) {}

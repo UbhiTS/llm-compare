@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.61"></script>
+  <script src="theme-init.js?v=1.0.62"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.61" />
+  <link rel="stylesheet" href="styles.css?v=1.0.62" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.61" defer></script>
+  <script src="app.js?v=1.0.62" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -82,7 +82,7 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.61</span>
+          <span id="headerAppVersion" class="head-version">v1.0.62</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -143,6 +143,7 @@
         </div>
         <div class="step-header-right">
           <span id="composerTokenPill" class="composer-token-pill hidden" title="Estimated input tokens"></span>
+          <button id="newClearArenaBtn" class="bar-btn" type="button" title="Clear current outputs and start a fresh Custom Prompt">✦ New / Clear</button>
           <button id="savePromptBtn" class="bar-btn" type="button" title="Save this custom prompt &amp; attached files to your Saved Prompts library to recall anytime">🔖 Save prompt</button>
           <button id="deleteSavedPromptBtn" class="bar-btn subtle hidden" type="button" title="Delete the selected saved prompt from your library">🗑 Delete saved</button>
           <button type="button" id="copyPromptBtn" class="bar-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
@@ -364,6 +365,7 @@
           </div>
           <div class="step-header-right">
             <span id="imgEndpointPill" class="img-endpoint-pill" title="Verified live Vertex AI endpoint routing">☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images</span>
+            <button type="button" id="imgNewClearBtn" class="bar-btn" title="Clear current outputs and start a fresh Custom Image Prompt">✦ New / Clear</button>
             <button type="button" id="imgCopyPromptBtn" class="bar-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
               <svg class="copy-ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="1.6"></rect>
@@ -658,6 +660,6 @@
     </div>
   </div>
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.61</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T02:50:00Z">Last updated Oct 18, 2026, 7:50 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.62</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-19T03:28:00Z">Last updated Oct 18, 2026, 8:28 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>
