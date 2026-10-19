@@ -7,20 +7,26 @@ Bridges browser requests from LLM Compare (Cloud Run / Cloudtop) to Autodesk Fus
 built-in MCP Server (http://127.0.0.1:27182/mcp) on your Mac.
 
 Why this exists:
-  Chrome blocks web pages on remote origins (e.g. *.run.app or ulin.c.googlers.com) from
-  calling http://127.0.0.1:27182/mcp directly unless the local server responds to OPTIONS
-  preflight requests with `Access-Control-Allow-Origin` and
-  `Access-Control-Allow-Private-Network: true`, and exposes `Mcp-Session-Id`.
+  1. Chrome blocks web pages on remote origins (*.run.app / ulin.c.googlers.com) from calling
+     http://127.0.0.1:27182/mcp directly unless OPTIONS preflight returns
+     `Access-Control-Allow-Origin` and `Access-Control-Allow-Private-Network: true`.
+  2. Autodesk Fusion 360's local MCP HTTP server (:27182) enforces a tight HTTP request body
+     limit (returning HTTP 413 if a 1 MB STEP solid is embedded inline in the JSON-RPC call).
+     This local Mac bridge writes the watertight `.step` solid to disk on your Mac first and
+     sends a compact ~2 KB `fusion_mcp_execute` (`featureType: "script"`) payload to Fusion 360
+     that imports the local `.step` file directly via `app.importManager`.
 
 Usage on your Mac:
   curl -fsSL https://llm-compare-87624372578.us-central1.run.app/fusion-mcp-cors-proxy.py | python3 -
 """
+import base64
 import json
 import os
 import re
 import sys
 import urllib.error
 import urllib.request
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LISTEN_HOST = "127.0.0.1"
@@ -66,11 +72,9 @@ def _mcp_post(url, payload_obj, session_id=None, timeout=25):
             or session_id
         )
         ctype = (resp.headers.get("Content-Type") or "").lower()
-        # Notifications (no "id") may return 202/204 with empty body
         if "id" not in payload_obj or resp.status in (202, 204):
             return resp.status, new_sid, {}
         if "text/event-stream" in ctype:
-            # Read SSE stream line-by-line and return as soon as the JSON-RPC response arrives
             last_obj = None
             while True:
                 raw_line = resp.fp.readline()
@@ -92,12 +96,29 @@ def _mcp_post(url, payload_obj, session_id=None, timeout=25):
         return resp.status, new_sid, body
 
 
+def _extract_step_text(body, fusion_script):
+    """Extract ISO-10303-21 STEP solid from body['stepText'] or embedded STEP_ZLIB_B64 in fusion_script."""
+    step_text = str(body.get("stepText") or "")
+    if step_text and "ISO-10303-21" in step_text:
+        return step_text
+    m = re.search(r'STEP_ZLIB_B64\s*=\s*"([A-Za-z0-9+/=]+)"', fusion_script)
+    if m and m.group(1):
+        try:
+            raw_bytes = zlib.decompress(base64.b64decode(m.group(1)))
+            decoded = raw_bytes.decode("utf-8", errors="replace")
+            if "ISO-10303-21" in decoded:
+                return decoded
+        except Exception:
+            pass
+    return ""
+
+
 def _save_local_fusion_script_and_step(body, fusion_script):
-    """Also save the generated script into Fusion 360's local macOS API/Scripts folder & STEP file."""
+    """Save the STEP AP214 solid to ~/Downloads and the standalone Script to Fusion's API/Scripts folder."""
     saved_paths = {}
     raw_title = str(body.get("title") or "LLMCompare_3D_Model")
     safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", raw_title).strip("_") or "LLMCompare_3D_Model"
-    step_text = str(body.get("stepText") or "")
+    step_text = _extract_step_text(body, fusion_script)
     try:
         if step_text and "ISO-10303-21" in step_text:
             dl_dir = os.path.expanduser("~/Downloads")
@@ -138,6 +159,127 @@ def _save_local_fusion_script_and_step(body, fusion_script):
     return saved_paths
 
 
+def _build_compact_mcp_script(fusion_script, step_path):
+    """
+    Strip the 1 MB inline STEP_ZLIB_B64 string from the MCP script payload and point it at
+    the local `step_path` on the Mac so the HTTP POST to 127.0.0.1:27182/mcp is ~2 KB
+    (never triggering HTTP 413 Payload Too Large).
+    """
+    compact = re.sub(
+        r'STEP_ZLIB_B64\s*=\s*"[^"]*"',
+        'STEP_ZLIB_B64 = ""',
+        fusion_script,
+    )
+    if step_path:
+        escaped_path = json.dumps(step_path)
+        if "STEP_FILE_PATH =" in compact:
+            compact = re.sub(
+                r'STEP_FILE_PATH\s*=\s*"[^"]*"',
+                f"STEP_FILE_PATH = {escaped_path}",
+                compact,
+            )
+        else:
+            compact = compact.replace(
+                'STEP_ZLIB_B64 = ""',
+                f'STEP_FILE_PATH = {escaped_path}\nSTEP_ZLIB_B64 = ""',
+                1,
+            )
+            compact = compact.replace(
+                "if STEP_ZLIB_B64:",
+                "if STEP_FILE_PATH and os.path.exists(STEP_FILE_PATH):\n"
+                "            import_mgr = app.importManager\n"
+                "            step_opts = import_mgr.createSTEPImportOptions(STEP_FILE_PATH)\n"
+                "            import_mgr.importToTarget(step_opts, root)\n"
+                "        elif STEP_ZLIB_B64:",
+                1,
+            )
+    # Ensure `def run(_context: str = None):` signature expected by Autodesk Fusion MCP
+    compact = re.sub(r"def\s+run\s*\([^)]*\)\s*:", "def run(_context: str = None):", compact, count=1)
+    return compact
+
+
+def _build_candidate_tool_args(chosen_tool, compact_script):
+    """
+    Inspect `chosen_tool['inputSchema']` from Autodesk Fusion MCP (`fusion_mcp_execute`)
+    and produce ordered candidate argument dicts so we match the exact schema on the first try.
+    """
+    candidates = []
+    seen = set()
+
+    def _add(obj):
+        key = json.dumps(obj, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            candidates.append(obj)
+
+    schema = (chosen_tool or {}).get("inputSchema") or {}
+    tname = str((chosen_tool or {}).get("name") or "")
+
+    # Gather properties from top-level and any oneOf / anyOf / allOf branches
+    prop_maps = []
+    if isinstance(schema.get("properties"), dict):
+        prop_maps.append(schema["properties"])
+    for branch_key in ("oneOf", "anyOf", "allOf"):
+        for sub in schema.get(branch_key) or []:
+            if isinstance(sub, dict) and isinstance(sub.get("properties"), dict):
+                prop_maps.append(sub["properties"])
+
+    for props in prop_maps:
+        ft_key = "featureType" if "featureType" in props else ("feature_type" if "feature_type" in props else None)
+        other_keys = [k for k in props.keys() if k not in ("featureType", "feature_type")]
+
+        if ft_key:
+            # Look for direct script/code string property alongside featureType
+            for k in ("script", "code", "python_code", "python", "source", "body", "command", "content"):
+                if k in props:
+                    _add({ft_key: "script", k: compact_script})
+            # Inspect other properties alongside featureType (e.g. `object`, `feature`, `parameters`, `input`, `data`)
+            for k in other_keys:
+                ps = props.get(k) or {}
+                if not isinstance(ps, dict):
+                    continue
+                ptype = ps.get("type")
+                sub_props = ps.get("properties") if isinstance(ps.get("properties"), dict) else {}
+                for bk in ("oneOf", "anyOf", "allOf"):
+                    for sub in ps.get(bk) or []:
+                        if isinstance(sub, dict) and isinstance(sub.get("properties"), dict):
+                            sub_props = {**sub_props, **sub["properties"]}
+                if sub_props:
+                    for sk in ("script", "code", "python_code", "python", "source", "body", "command", "content"):
+                        if sk in sub_props:
+                            _add({ft_key: "script", k: {sk: compact_script}})
+                    if len(sub_props) == 1:
+                        only_k = list(sub_props.keys())[0]
+                        _add({ft_key: "script", k: {only_k: compact_script}})
+                if ptype == "string":
+                    _add({ft_key: "script", k: compact_script})
+                elif ptype == "object" or not ptype:
+                    _add({ft_key: "script", k: {"script": compact_script}})
+                    _add({ft_key: "script", k: compact_script})
+        else:
+            if len(props) == 1:
+                only_k = list(props.keys())[0]
+                if only_k not in ("featureType", "feature_type"):
+                    _add({only_k: compact_script})
+            for k in ("script", "code", "python_code", "python", "source", "command", "fusionScript"):
+                if k in props:
+                    _add({k: compact_script})
+
+    # Standard Autodesk Fusion MCP `fusion_mcp_execute` argument shapes
+    if tname == "fusion_mcp_execute" or not candidates:
+        _add({"featureType": "script", "script": compact_script})
+        _add({"featureType": "script", "object": {"script": compact_script}})
+        _add({"featureType": "script", "feature": {"script": compact_script}})
+        _add({"featureType": "script", "object": compact_script})
+        _add({"featureType": "script", "feature": compact_script})
+        _add({"featureType": "script", "code": compact_script})
+        _add({"feature_type": "script", "feature": {"script": compact_script}})
+        _add({"feature_type": "script", "script": compact_script})
+        _add({"script": compact_script})
+
+    return candidates
+
+
 def _connect_and_list_tools(target_url):
     """Initialize MCP session with Fusion 360 (trying /mcp and root fallback) and list tools."""
     candidates = [target_url]
@@ -158,7 +300,7 @@ def _connect_and_list_tools(target_url):
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "llm-compare-3d-arena", "version": "1.0.57"},
+                        "clientInfo": {"name": "llm-compare-3d-arena", "version": "1.0.58"},
                     },
                 },
                 timeout=10,
@@ -185,13 +327,33 @@ def _connect_and_list_tools(target_url):
     return target_url, None, None, [], last_err
 
 
+def _extract_mcp_error_text(call_res):
+    if not isinstance(call_res, dict):
+        return ""
+    if call_res.get("error"):
+        err = call_res["error"]
+        return str(err.get("message") if isinstance(err, dict) else err)
+    res = call_res.get("result")
+    if isinstance(res, dict) and res.get("isError"):
+        content = res.get("content") or []
+        parts = [str(c.get("text") or "") for c in content if isinstance(c, dict)]
+        return " ".join(p for p in parts if p).strip() or "Tool returned isError=true"
+    return ""
+
+
 def forward_script_to_fusion_mcp(target_url, body):
     fusion_script = body.get("fusionScript") or body.get("script") or body.get("code") or ""
     if not fusion_script:
         return 400, {"ok": False, "error": "Missing fusionScript in request payload."}
 
+    # 1. Save STEP file & standalone script locally on the Mac first
     saved_paths = _save_local_fusion_script_and_step(body, fusion_script)
+    step_path = saved_paths.get("stepPath") or ""
 
+    # 2. Replace the 1 MB inline STEP_ZLIB_B64 with the local `step_path` (~2 KB payload, zero HTTP 413!)
+    compact_script = _build_compact_mcp_script(fusion_script, step_path)
+
+    # 3. Connect to Fusion 360 MCP and list tools
     resolved_url, session_id, init_res, tools, conn_err = _connect_and_list_tools(target_url)
     if conn_err is not None and not tools and init_res is None:
         return 502, {
@@ -203,18 +365,18 @@ def forward_script_to_fusion_mcp(target_url, body):
             "savedPaths": saved_paths,
         }
 
-    # Handle non-JSON-RPC local REST bridge (e.g. LLMCompareFusionMCP Add-In direct POST)
+    # Handle non-JSON-RPC local REST bridge
     if isinstance(init_res, dict) and not init_res.get("jsonrpc") and init_res.get("ok"):
         try:
-            status, _, direct_res = _mcp_post(
+            _, _, direct_res = _mcp_post(
                 resolved_url,
                 {
                     "tool": "fusion360_import_model",
                     "slot": body.get("slot") or "A",
                     "title": body.get("title") or "LLM_Compare_Model",
-                    "stepText": body.get("stepText") or "",
+                    "stepPath": step_path,
                     "params": body.get("params") or {},
-                    "fusionScript": fusion_script,
+                    "fusionScript": compact_script,
                 },
                 timeout=25,
             )
@@ -232,10 +394,9 @@ def forward_script_to_fusion_mcp(target_url, body):
     discovered_tools = [t.get("name") for t in tools if isinstance(t, dict) and t.get("name")]
     print(f"[Fusion MCP] Connected to {resolved_url} | Discovered tools: {discovered_tools}")
 
-    # Select best execution tool from discovered tools
     preferred_names = (
-        "execute_python",
         "fusion_mcp_execute",
+        "execute_python",
         "execute_script",
         "run_script",
         "run_python_script",
@@ -254,75 +415,86 @@ def forward_script_to_fusion_mcp(target_url, body):
             break
     if not chosen:
         for t in tools:
-            if isinstance(t, dict) and re.search(r"python|exec|script|run|code|eval|import", str(t.get("name") or ""), re.I):
+            if isinstance(t, dict) and re.search(r"exec|python|script|run|code|eval|import", str(t.get("name") or ""), re.I):
                 chosen = t
                 break
     if not chosen and tools:
         chosen = tools[0]
 
-    tool_name = (chosen.get("name") if chosen else None) or "execute_python"
-    arg_key = "script"
-    if chosen:
-        schema = chosen.get("inputSchema") or {}
-        props = schema.get("properties") or {}
-        req_keys = schema.get("required") or []
-        if len(props) == 1:
-            arg_key = list(props.keys())[0]
-        else:
-            for candidate in ("code", "script", "python_code", "python", "source", "command", "fusionScript"):
-                if candidate in props:
-                    arg_key = candidate
-                    break
-            else:
-                if req_keys:
-                    arg_key = req_keys[0]
+    tool_name = (chosen.get("name") if chosen else None) or "fusion_mcp_execute"
+    if chosen and chosen.get("inputSchema"):
+        schema_props = list(((chosen["inputSchema"].get("properties")) or {}).keys())
+        schema_req = chosen["inputSchema"].get("required") or []
+        print(f"[Fusion MCP] Tool '{tool_name}' schema properties={schema_props} required={schema_req}")
 
-    tool_args = {arg_key: fusion_script}
-    if tool_name == "fusion360_import_model":
-        tool_args.update({
-            "title": body.get("title") or "LLM_Compare_Model",
-            "slot": body.get("slot") or "A",
-            "stepText": body.get("stepText") or "",
-            "params": body.get("params") or {},
-            "fusionScript": fusion_script,
-        })
+    candidate_args_list = _build_candidate_tool_args(chosen, compact_script)
 
-    print(f"[Fusion MCP] Calling tool '{tool_name}' (arg '{arg_key}', {len(fusion_script)} chars)...")
-    try:
-        status, _, call_res = _mcp_post(
-            resolved_url,
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": tool_args,
+    last_call_res = None
+    last_err_msg = ""
+    for idx, tool_args in enumerate(candidate_args_list):
+        arg_summary = {k: (f"<{len(v)} chars>" if isinstance(v, str) and len(v) > 60 else (
+            {sk: f"<{len(sv)} chars>" if isinstance(sv, str) and len(sv) > 60 else sv for sk, sv in v.items()}
+            if isinstance(v, dict) else v
+        )) for k, v in tool_args.items()}
+        print(f"[Fusion MCP] Attempt {idx + 1}: tools/call '{tool_name}' args={arg_summary} (STEP={step_path or 'none'})...")
+        try:
+            status, _, call_res = _mcp_post(
+                resolved_url,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 10 + idx,
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": tool_args,
+                    },
                 },
-            },
-            session_id=session_id,
-            timeout=35,
-        )
-        is_err = bool((call_res or {}).get("error")) or bool(((call_res or {}).get("result") or {}).get("isError"))
-        if is_err:
-            print(f"[Fusion MCP] Tool '{tool_name}' returned error: {call_res}")
-        else:
-            print(f"[Fusion MCP] ✓ Successfully executed '{tool_name}' in Fusion 360!")
-        return (400 if is_err else 200), {
-            "ok": not is_err,
-            "pushed": not is_err,
-            "endpointUrl": resolved_url,
-            "tool": tool_name,
-            "argKey": arg_key,
-            "discoveredTools": discovered_tools,
-            "mcpResult": call_res,
-            "savedPaths": saved_paths,
-        }
-    except urllib.error.HTTPError as he:
-        err_body = _parse_mcp_response(he.read()) if he.fp else {}
-        return he.code, {"ok": False, "error": f"Fusion MCP tools/call HTTP {he.code}", "details": err_body, "savedPaths": saved_paths}
-    except Exception as exc:
-        return 502, {"ok": False, "error": f"Fusion MCP tools/call failed: {exc}", "savedPaths": saved_paths}
+                session_id=session_id,
+                timeout=35,
+            )
+            last_call_res = call_res
+            err_text = _extract_mcp_error_text(call_res)
+            is_err = bool(err_text) or bool((call_res or {}).get("error")) or bool(((call_res or {}).get("result") or {}).get("isError"))
+            if not is_err:
+                print(f"[Fusion MCP] ✓ Successfully executed '{tool_name}' in Fusion 360! Result: {call_res}")
+                return 200, {
+                    "ok": True,
+                    "pushed": True,
+                    "endpointUrl": resolved_url,
+                    "tool": tool_name,
+                    "discoveredTools": discovered_tools,
+                    "mcpResult": call_res,
+                    "savedPaths": saved_paths,
+                }
+            last_err_msg = err_text or str(call_res)
+            print(f"[Fusion MCP] Attempt {idx + 1} returned error: {last_err_msg}")
+            # If the error is a parameter/schema mismatch, try the next candidate argument shape
+            if re.search(r"missing required|required parameter|invalid|unexpected|property|schema|argument|feature_type|featureType|-32602", last_err_msg, re.I):
+                continue
+            # Otherwise it's a runtime message from Fusion 360 itself (e.g. dialog open), so stop and report it
+            break
+        except urllib.error.HTTPError as he:
+            err_body = _parse_mcp_response(he.read()) if he.fp else {}
+            last_err_msg = f"Fusion MCP tools/call HTTP {he.code}: {err_body}"
+            print(f"[Fusion MCP] Attempt {idx + 1} HTTP error: {last_err_msg}")
+            if he.code in (400, 422):
+                continue
+            return he.code, {"ok": False, "error": last_err_msg, "details": err_body, "savedPaths": saved_paths}
+        except Exception as exc:
+            last_err_msg = f"Fusion MCP tools/call failed: {exc}"
+            print(f"[Fusion MCP] Attempt {idx + 1} exception: {last_err_msg}")
+            break
+
+    return 400, {
+        "ok": False,
+        "pushed": False,
+        "endpointUrl": resolved_url,
+        "tool": tool_name,
+        "error": last_err_msg or "Fusion MCP rejected tool call",
+        "discoveredTools": discovered_tools,
+        "mcpResult": last_call_res,
+        "savedPaths": saved_paths,
+    }
 
 
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -389,13 +561,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     srv = ReusableThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
     print("======================================================================")
-    print("🚀 LLM Compare -> Fusion 360 Local MCP Bridge active on your Mac!")
+    print("🚀 LLM Compare -> Fusion 360 Local MCP Bridge (v1.0.58) active on Mac!")
     print(f"   Browser CORS Endpoint : http://{LISTEN_HOST}:{LISTEN_PORT}/mcp")
     print(f"   Forwarding to Fusion  : {DEFAULT_FUSION_MCP}")
     resolved, _, _, startup_tools, startup_err = _connect_and_list_tools(DEFAULT_FUSION_MCP)
     if startup_err is None:
         t_names = [t.get("name") for t in startup_tools if isinstance(t, dict) and t.get("name")]
         print(f"   ✓ Fusion 360 MCP Live : {resolved} (Tools: {t_names})")
+        for t in startup_tools:
+            if isinstance(t, dict) and t.get("name") == "fusion_mcp_execute":
+                sch = t.get("inputSchema") or {}
+                print(f"   ✓ fusion_mcp_execute  : required={sch.get('required')} properties={list((sch.get('properties') or {}).keys())}")
     else:
         print(f"   ⚠ Fusion 360 MCP Note : {startup_err}")
     print("======================================================================")

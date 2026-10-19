@@ -10383,17 +10383,20 @@ async function pushToBrowserLocalMcp(endpointUrl, payload) {
         const props = (chosen.inputSchema && chosen.inputSchema.properties) || {};
         const reqKeys = (chosen.inputSchema && Array.isArray(chosen.inputSchema.required)) ? chosen.inputSchema.required : [];
         const propNames = Object.keys(props);
-        if (propNames.length === 1) {
+        if (propNames.length === 1 && propNames[0] !== 'featureType') {
           argKey = propNames[0];
         } else {
-          const matchKey = ['code', 'script', 'python_code', 'python', 'source', 'command', 'fusionScript'].find((k) => k in props);
+          const matchKey = ['script', 'code', 'python_code', 'python', 'source', 'command', 'fusionScript'].find((k) => k in props);
           if (matchKey) argKey = matchKey;
-          else if (reqKeys.length) argKey = reqKeys[0];
+          else if (reqKeys.length && reqKeys[0] !== 'featureType') argKey = reqKeys[0];
         }
       }
     } catch (_) { /* fallback to execute_python */ }
 
-    const args = { [argKey]: fusionScript };
+    const compactDirectScript = fusionScript.replace(/STEP_ZLIB_B64\s*=\s*"[^"]*"/, 'STEP_ZLIB_B64 = ""');
+    const args = toolName === 'fusion_mcp_execute'
+      ? { featureType: 'script', [argKey]: compactDirectScript }
+      : { [argKey]: compactDirectScript };
     if (toolName === 'fusion360_import_model') {
       args.title = payload.title;
       args.slot = payload.slot;
