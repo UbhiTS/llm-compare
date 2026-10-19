@@ -9930,8 +9930,8 @@ function initImageArenaBindings() {
 // ============================================================================
 
 let CAD_CAMERA_SYNC_ON = true; // Lockstep synced camera across slots ON by default
-let CAD_SPIN_3AXIS_ON = true; // Simultaneous X+Y+Z 3-axis gimbal spin across slots (ON by default)
-let CAD_TURNTABLE_ON = false; // Horizontal turntable spin across slots
+let CAD_SPIN_3AXIS_ON = false; // Simultaneous X+Y+Z 3-axis gimbal spin across slots (OFF by default)
+let CAD_TURNTABLE_ON = true; // Iso + horizontal turntable spin across slots (ON by default at execution rendering)
 let CAD_SPIN_EPOCH_MS = Date.now(); // Shared wall-clock epoch (ms) so slots finishing at different times spin in exact phase
 let CAD_LAST_SHARED_CAMERA = null;
 const CAD_SLOT_STATE = {}; // slot -> { code, telemetry, fourViewDataUrl, revisions: [{rev, code, telemetry, fourViewDataUrl, note, at}], activeRevIndex, targetPartName, iframe, ready }
@@ -9958,7 +9958,8 @@ function resetAllCadSlotStates() {
     delete CAD_SLOT_STATE[s];
   });
   CAD_SPIN_EPOCH_MS = Date.now();
-  CAD_TURNTABLE_ON = false;
+  CAD_TURNTABLE_ON = true;
+  CAD_SPIN_3AXIS_ON = false;
   CAD_LAST_SHARED_CAMERA = null;
   updateCadTargetChip('');
   syncCadModifyBarVisibility();
@@ -10132,6 +10133,7 @@ function syncCadModifyBarVisibility() {
   bar.classList.toggle('hidden', !isCad);
   if (isCad) {
     updateCadSyncCamButtonUi();
+    updateCadTurntableButtonUi();
     updateCadSpin3AxisButtonUi();
     syncCadScopeSelectOptions();
   }
@@ -10187,10 +10189,52 @@ function setCadCameraSyncState(nextSync) {
             enabled: CAD_SPIN_3AXIS_ON,
             spinEpochMs: CAD_SPIN_EPOCH_MS,
           }, '*');
+          ifr.contentWindow.postMessage({
+            type: 'CAD_SET_TURNTABLE',
+            enabled: CAD_TURNTABLE_ON,
+            spinEpochMs: CAD_SPIN_EPOCH_MS,
+          }, '*');
         }
       } catch (_) { /* ignore */ }
     });
   }
+}
+
+function updateCadTurntableButtonUi() {
+  const btn = $('#cadSpinBtn');
+  if (btn) {
+    btn.classList.toggle('is-on', CAD_TURNTABLE_ON);
+    btn.setAttribute('aria-pressed', String(CAD_TURNTABLE_ON));
+    btn.innerHTML = `<span class="ar-led"></span>${CAD_TURNTABLE_ON ? '↻ Iso + Spin: ON' : '↻ Iso + Spin: OFF'}`;
+  }
+}
+
+function setCadTurntableState(nextTurntable, sourceWin = null) {
+  CAD_TURNTABLE_ON = Boolean(nextTurntable);
+  if (CAD_TURNTABLE_ON) {
+    CAD_SPIN_3AXIS_ON = false;
+    updateCadSpin3AxisButtonUi();
+  }
+  updateCadTurntableButtonUi();
+  document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
+    try {
+      if (ifr.contentWindow && (!sourceWin || ifr.contentWindow !== sourceWin)) {
+        if (CAD_TURNTABLE_ON && !sourceWin) {
+          ifr.contentWindow.postMessage({
+            type: 'CAD_SET_CAMERA_PRESET',
+            preset: 'iso',
+            broadcast: false,
+            pauseSpin: false,
+          }, '*');
+        }
+        ifr.contentWindow.postMessage({
+          type: 'CAD_SET_TURNTABLE',
+          enabled: CAD_TURNTABLE_ON,
+          spinEpochMs: CAD_SPIN_EPOCH_MS,
+        }, '*');
+      }
+    } catch (_) { /* ignore */ }
+  });
 }
 
 function updateCadSpin3AxisButtonUi() {
@@ -10206,6 +10250,7 @@ function setCadSpin3AxisState(nextSpin, angles = null, sourceWin = null) {
   CAD_SPIN_3AXIS_ON = Boolean(nextSpin);
   if (CAD_SPIN_3AXIS_ON) {
     CAD_TURNTABLE_ON = false;
+    updateCadTurntableButtonUi();
   }
   updateCadSpin3AxisButtonUi();
   document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
@@ -10372,12 +10417,11 @@ function handleCadViewportMessage(ev) {
         enabled: CAD_SPIN_3AXIS_ON,
         spinEpochMs: CAD_SPIN_EPOCH_MS,
       }, '*');
-      if (CAD_TURNTABLE_ON) {
-        st.iframe.contentWindow.postMessage({
-          type: 'CAD_SET_TURNTABLE',
-          enabled: CAD_TURNTABLE_ON,
-        }, '*');
-      }
+      st.iframe.contentWindow.postMessage({
+        type: 'CAD_SET_TURNTABLE',
+        enabled: CAD_TURNTABLE_ON,
+        spinEpochMs: CAD_SPIN_EPOCH_MS,
+      }, '*');
     }
     return;
   }
@@ -10388,7 +10432,9 @@ function handleCadViewportMessage(ev) {
       setCadSpin3AxisState(nextSpin, msg.angles || null, ev.source);
     } else {
       CAD_SPIN_3AXIS_ON = nextSpin;
+      if (nextSpin) CAD_TURNTABLE_ON = false;
       updateCadSpin3AxisButtonUi();
+      updateCadTurntableButtonUi();
     }
     return;
   }
@@ -10396,21 +10442,14 @@ function handleCadViewportMessage(ev) {
   if (msg.type === 'CAD_TURNTABLE_CHANGE') {
     const nextTurntable = Boolean(msg.enabled);
     if (CAD_CAMERA_SYNC_ON) {
+      setCadTurntableState(nextTurntable, ev.source);
+    } else {
       CAD_TURNTABLE_ON = nextTurntable;
       if (nextTurntable) {
         CAD_SPIN_3AXIS_ON = false;
         updateCadSpin3AxisButtonUi();
       }
-      document.querySelectorAll('iframe.cad-frame').forEach((ifr) => {
-        try {
-          if (ifr.contentWindow && ifr.contentWindow !== ev.source) {
-            ifr.contentWindow.postMessage({
-              type: 'CAD_SET_TURNTABLE',
-              enabled: nextTurntable,
-            }, '*');
-          }
-        } catch (_) { /* ignore */ }
-      });
+      updateCadTurntableButtonUi();
     }
     return;
   }
@@ -10981,6 +11020,13 @@ function initCadArenaBindings() {
     });
   }
 
+  const spinBtn = $('#cadSpinBtn');
+  if (spinBtn) {
+    spinBtn.addEventListener('click', () => {
+      setCadTurntableState(!CAD_TURNTABLE_ON);
+    });
+  }
+
   const spin3Btn = $('#cadSpin3AxisBtn');
   if (spin3Btn) {
     spin3Btn.addEventListener('click', () => {
@@ -10992,11 +11038,14 @@ function initCadArenaBindings() {
     btn.addEventListener('click', () => {
       const preset = btn.dataset.globalCam;
       if (!preset) return;
+      document.querySelectorAll('.cad-global-cam-btn').forEach((b) => {
+        b.classList.toggle('is-on', b === btn);
+      });
       if (CAD_SPIN_3AXIS_ON) {
         setCadSpin3AxisState(false);
       }
       if (CAD_TURNTABLE_ON) {
-        CAD_TURNTABLE_ON = false;
+        setCadTurntableState(false);
       }
       document.querySelectorAll('iframe.cad-frame').forEach((ifr, idx) => {
         try {

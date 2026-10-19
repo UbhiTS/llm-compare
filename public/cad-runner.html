@@ -374,8 +374,8 @@
           <button type="button" class="hud-btn" data-cam="right" aria-pressed="false" title="Right View (Z-Y)">Right</button>
           <button type="button" class="hud-btn" data-cam="top" aria-pressed="false" title="Top View (X-Z)">Top</button>
           <div class="hud-sep"></div>
-          <button type="button" class="hud-btn" id="hudSpinBtn" aria-pressed="false" title="Toggle Turntable Y-Axis Auto-Rotate">↻ Spin</button>
-          <button type="button" class="hud-btn active" id="hudSpin3AxisBtn" aria-pressed="true" title="Toggle 3-Axis Gimbal Tumble (Simultaneous X + Y + Z Inspection)">🔄 3-Axis</button>
+          <button type="button" class="hud-btn active" id="hudSpinBtn" aria-pressed="true" title="Toggle Turntable Y-Axis Auto-Rotate">↻ Spin</button>
+          <button type="button" class="hud-btn" id="hudSpin3AxisBtn" aria-pressed="false" title="Toggle 3-Axis Gimbal Tumble (Simultaneous X + Y + Z Inspection)">🔄 3-Axis</button>
           <button type="button" class="hud-btn sync-on" id="hudSyncBtn" aria-pressed="true" title="Lockstep Sync 3D Camera across Slots A, B, C, D (Click to Unlink/Relink)">🔗 Synced</button>
         </div>
 
@@ -643,8 +643,10 @@
     let isApplyingExternalCamera = false;
     let lastCameraBroadcastMs = 0;
 
-    // 3-Axis Gimbal Tumbling Spin state (rotates modelRoot around modelCenter on X, Y, Z simultaneously, ON by default)
-    let spin3AxisEnabled = true;
+    // Spin state: Iso + Turntable Y-axis spin ON by default; 3-Axis Gimbal Tumble OFF by default
+    let spin3AxisEnabled = false;
+    let turntableEnabled = true;
+    let currentCameraPreset = 'iso';
     let spin3AxisAngles = { x: 0, y: 0, z: 0 };
     let spinSyncEpochMs = Number(urlParams.get('spinEpoch')) || 0;
     let lastAnimFrameMs = performance.now();
@@ -657,6 +659,12 @@
         y: (elapsedSec * 1.05) % (Math.PI * 2),
         z: (elapsedSec * 0.42) % (Math.PI * 2),
       };
+    }
+
+    function computeSyncedTurntableAngle(nowEpochMs = Date.now()) {
+      const refEpoch = Number.isFinite(spinSyncEpochMs) && spinSyncEpochMs > 0 ? spinSyncEpochMs : 0;
+      const elapsedSec = Math.max(0, (nowEpochMs - refEpoch) / 1000);
+      return (elapsedSec * 0.85) % (Math.PI * 2);
     }
 
     function applySpin3AxisTransform(rx, ry, rz) {
@@ -696,7 +704,8 @@
       spin3AxisEnabled = Boolean(enabled);
       setPressed(document.getElementById('hudSpin3AxisBtn'), spin3AxisEnabled);
       if (spin3AxisEnabled) {
-        if (controls.autoRotate) {
+        if (turntableEnabled || controls.autoRotate) {
+          turntableEnabled = false;
           controls.autoRotate = false;
           setPressed(document.getElementById('hudSpinBtn'), false);
         }
@@ -707,7 +716,7 @@
           applySpin3AxisTransform(angles.x, angles.y || 0, angles.z || 0);
         }
         lastAnimFrameMs = performance.now();
-      } else {
+      } else if (!turntableEnabled) {
         applySpin3AxisTransform(0, 0, 0);
       }
       if (broadcast) {
@@ -721,18 +730,34 @@
       }
     }
 
-    function setTurntableState(enabled, broadcast = true) {
-      controls.autoRotate = Boolean(enabled);
-      controls.autoRotateSpeed = 2.0;
-      setPressed(document.getElementById('hudSpinBtn'), controls.autoRotate);
-      if (controls.autoRotate && spin3AxisEnabled) {
-        setSpin3AxisState(false, false);
+    function setTurntableState(enabled, broadcast = true, epochMs = null) {
+      if (Number.isFinite(epochMs) && epochMs > 0) {
+        spinSyncEpochMs = epochMs;
+      }
+      turntableEnabled = Boolean(enabled);
+      controls.autoRotate = false;
+      setPressed(document.getElementById('hudSpinBtn'), turntableEnabled);
+      if (turntableEnabled) {
+        if (spin3AxisEnabled) {
+          spin3AxisEnabled = false;
+          setPressed(document.getElementById('hudSpin3AxisBtn'), false);
+        }
+        if (cameraSyncEnabled) {
+          const ry = computeSyncedTurntableAngle(Date.now());
+          applySpin3AxisTransform(0, ry, 0);
+        } else {
+          applySpin3AxisTransform(0, spin3AxisAngles.y || 0, 0);
+        }
+        lastAnimFrameMs = performance.now();
+      } else if (!spin3AxisEnabled) {
+        applySpin3AxisTransform(0, 0, 0);
       }
       if (broadcast) {
         postToParent({
           type: 'CAD_TURNTABLE_CHANGE',
           slot: slotId,
-          enabled: controls.autoRotate,
+          enabled: turntableEnabled,
+          spinEpochMs: spinSyncEpochMs,
         });
       }
     }
@@ -871,11 +896,12 @@
     }
 
     function setCameraPreset(preset, broadcast = true, pauseSpin = false) {
+      currentCameraPreset = preset || 'iso';
       if (pauseSpin) {
         if (spin3AxisEnabled || spin3AxisAngles.x || spin3AxisAngles.y || spin3AxisAngles.z) {
           setSpin3AxisState(false, broadcast);
         }
-        if (controls.autoRotate) {
+        if (turntableEnabled || controls.autoRotate) {
           setTurntableState(false, broadcast);
         }
       }
@@ -1420,6 +1446,13 @@
           } else {
             applySpin3AxisTransform(spin3AxisAngles.x, spin3AxisAngles.y, spin3AxisAngles.z);
           }
+        } else if (turntableEnabled) {
+          if (cameraSyncEnabled) {
+            const ry = computeSyncedTurntableAngle(Date.now());
+            applySpin3AxisTransform(0, ry, 0);
+          } else {
+            applySpin3AxisTransform(0, spin3AxisAngles.y || 0, 0);
+          }
         }
         // Render an immediate initial frame while shadowMap.autoUpdate is true so shadow maps
         // and PBR material shaders are compiled and the canvas buffer is populated even if
@@ -1642,10 +1675,26 @@
         .replace(/^-|-$/g, '');
     }
 
+    function withCanonicalModelPose(fn) {
+      if (!modelRoot) return fn();
+      const savedPos = modelRoot.position.clone();
+      const savedRot = modelRoot.rotation.clone();
+      try {
+        modelRoot.rotation.set(0, 0, 0);
+        modelRoot.position.set(0, 0, 0);
+        modelRoot.updateMatrixWorld(true);
+        return fn();
+      } finally {
+        modelRoot.rotation.copy(savedRot);
+        modelRoot.position.copy(savedPos);
+        modelRoot.updateMatrixWorld(true);
+      }
+    }
+
     document.getElementById('exportStlBtn')?.addEventListener('click', () => {
       if (!modelRoot) return;
       const exporter = new STLExporter();
-      const buffer = exporter.parse(modelRoot, { binary: true });
+      const buffer = withCanonicalModelPose(() => exporter.parse(modelRoot, { binary: true }));
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
       triggerBlobDownload(blob, `${safeSlug()}.stl`);
     });
@@ -1653,7 +1702,7 @@
     document.getElementById('exportObjBtn')?.addEventListener('click', () => {
       if (!modelRoot) return;
       const exporter = new OBJExporter();
-      const text = exporter.parse(modelRoot);
+      const text = withCanonicalModelPose(() => exporter.parse(modelRoot));
       const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
       triggerBlobDownload(blob, `${safeSlug()}.obj`);
     });
@@ -1661,18 +1710,20 @@
     document.getElementById('exportGlbBtn')?.addEventListener('click', () => {
       if (!modelRoot) return;
       const exporter = new GLTFExporter();
-      exporter.parse(
-        modelRoot,
-        (result) => {
-          const blob =
-            result instanceof ArrayBuffer
-              ? new Blob([result], { type: 'model/gltf-binary' })
-              : new Blob([JSON.stringify(result, null, 2)], { type: 'model/gltf+json' });
-          triggerBlobDownload(blob, `${safeSlug()}.glb`);
-        },
-        (err) => console.error('GLB export error:', err),
-        { binary: true }
-      );
+      withCanonicalModelPose(() => {
+        exporter.parse(
+          modelRoot,
+          (result) => {
+            const blob =
+              result instanceof ArrayBuffer
+                ? new Blob([result], { type: 'model/gltf-binary' })
+                : new Blob([JSON.stringify(result, null, 2)], { type: 'model/gltf+json' });
+            triggerBlobDownload(blob, `${safeSlug()}.glb`);
+          },
+          (err) => console.error('GLB export error:', err),
+          { binary: true }
+        );
+      });
     });
 
     // STEP serialisation runs in cad-step-worker.js so a large export does not freeze the
@@ -1758,7 +1809,7 @@
       if (!modelRoot) return Promise.resolve({ stepText: '', warnings: [] });
       const productName = options.productName || `${safeSlug()}_AP214`;
       const maxFacesPerPart = options.maxFacesPerPart || 3500;
-      const meshes = collectStepMeshes(modelRoot);
+      const meshes = withCanonicalModelPose(() => collectStepMeshes(modelRoot));
       const runInline = () => buildStepExport(meshes, { productName, maxFacesPerPart });
       const worker = getStepWorker();
       if (!worker) return Promise.resolve(runInline());
@@ -1782,7 +1833,7 @@
       }).catch((err) => {
         console.warn('STEP worker unavailable, exporting on the main thread:', err);
         // Buffers may have been transferred: re-collect from the live model.
-        return buildStepExport(collectStepMeshes(modelRoot), { productName, maxFacesPerPart });
+        return buildStepExport(withCanonicalModelPose(() => collectStepMeshes(modelRoot)), { productName, maxFacesPerPart });
       });
     }
 
@@ -1821,7 +1872,7 @@
     });
 
     document.getElementById('hudSpinBtn')?.addEventListener('click', () => {
-      setTurntableState(!controls.autoRotate, true);
+      setTurntableState(!turntableEnabled, true);
     });
 
     document.getElementById('hudSpin3AxisBtn')?.addEventListener('click', () => {
@@ -1831,9 +1882,14 @@
     document.getElementById('hudSyncBtn')?.addEventListener('click', () => {
       cameraSyncEnabled = !cameraSyncEnabled;
       updateSyncButtonUI();
-      if (cameraSyncEnabled && spin3AxisEnabled && modelRoot) {
-        const synced = computeSyncedSpin3AxisAngles(Date.now());
-        applySpin3AxisTransform(synced.x, synced.y, synced.z);
+      if (cameraSyncEnabled && modelRoot) {
+        if (spin3AxisEnabled) {
+          const synced = computeSyncedSpin3AxisAngles(Date.now());
+          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        } else if (turntableEnabled) {
+          const ry = computeSyncedTurntableAngle(Date.now());
+          applySpin3AxisTransform(0, ry, 0);
+        }
       }
       postToParent({
         type: 'CAD_TOGGLE_SYNC_REQUEST',
@@ -1935,7 +1991,7 @@
           setSpin3AxisState(msg.spin3Axis, false, msg.angles || null, spinSyncEpochMs);
         }
         if (typeof msg.turntable === 'boolean') {
-          setTurntableState(msg.turntable, false);
+          setTurntableState(msg.turntable, false, spinSyncEpochMs);
         }
         loadAndRunCadCode(msg.code || '', { preserveCamera: Boolean(msg.preserveCamera) });
         const sharedCam = msg.cameraState || msg.camera;
@@ -1953,29 +2009,42 @@
         }
         cameraSyncEnabled = Boolean(msg.enabled !== undefined ? msg.enabled : msg.sync);
         updateSyncButtonUI();
-        if (cameraSyncEnabled && spin3AxisEnabled && modelRoot) {
-          const synced = computeSyncedSpin3AxisAngles(Date.now());
-          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        if (cameraSyncEnabled && modelRoot) {
+          if (spin3AxisEnabled) {
+            const synced = computeSyncedSpin3AxisAngles(Date.now());
+            applySpin3AxisTransform(synced.x, synced.y, synced.z);
+          } else if (turntableEnabled) {
+            const ry = computeSyncedTurntableAngle(Date.now());
+            applySpin3AxisTransform(0, ry, 0);
+          }
         }
       } else if (msg.type === 'CAD_SET_PRESET' || msg.type === 'CAD_SET_CAMERA_PRESET') {
-        setCameraPreset(msg.preset || 'iso', Boolean(msg.broadcast), true);
+        const pauseSpin = msg.pauseSpin !== undefined ? Boolean(msg.pauseSpin) : true;
+        setCameraPreset(msg.preset || 'iso', Boolean(msg.broadcast), pauseSpin);
       } else if (msg.type === 'CAD_SET_SPIN_3AXIS') {
         setSpin3AxisState(Boolean(msg.enabled), false, msg.angles || null, msg.spinEpochMs || null);
       } else if (msg.type === 'CAD_SET_TURNTABLE') {
-        setTurntableState(Boolean(msg.enabled), false);
+        setTurntableState(Boolean(msg.enabled), false, msg.spinEpochMs || null);
       } else if (msg.type === 'CAD_GET_SPIN_STATE') {
-        const synced = cameraSyncEnabled ? computeSyncedSpin3AxisAngles(Date.now()) : spin3AxisAngles;
-        if (spin3AxisEnabled && cameraSyncEnabled && modelRoot) {
-          applySpin3AxisTransform(synced.x, synced.y, synced.z);
+        let anglesOut = { ...spin3AxisAngles };
+        if (spin3AxisEnabled && cameraSyncEnabled) {
+          anglesOut = computeSyncedSpin3AxisAngles(Date.now());
+          if (modelRoot) applySpin3AxisTransform(anglesOut.x, anglesOut.y, anglesOut.z);
+        } else if (turntableEnabled && cameraSyncEnabled) {
+          const ry = computeSyncedTurntableAngle(Date.now());
+          anglesOut = { x: 0, y: ry, z: 0 };
+          if (modelRoot) applySpin3AxisTransform(0, ry, 0);
         }
         postToParent({
           type: 'CAD_SPIN_STATE_REPORT',
           slot: slotId,
           reqId: msg.reqId || '',
           cameraSyncEnabled,
+          turntableEnabled,
           spin3AxisEnabled,
+          cameraPreset: currentCameraPreset,
           spinEpochMs: spinSyncEpochMs,
-          angles: { x: synced.x, y: synced.y, z: synced.z },
+          angles: { x: anglesOut.x, y: anglesOut.y, z: anglesOut.z },
           modelRotation: modelRoot ? { x: modelRoot.rotation.x, y: modelRoot.rotation.y, z: modelRoot.rotation.z } : null,
         });
       } else if (msg.type === 'CAD_CAPTURE_FOUR_VIEW' || msg.type === 'CAD_REQUEST_4VIEW') {
@@ -2049,6 +2118,14 @@
             const nz = (spin3AxisAngles.z + dt * 0.42) % (Math.PI * 2);
             applySpin3AxisTransform(nx, ny, nz);
           }
+        } else if (turntableEnabled && modelRoot) {
+          if (cameraSyncEnabled) {
+            const ry = computeSyncedTurntableAngle(Date.now());
+            applySpin3AxisTransform(0, ry, 0);
+          } else {
+            const ny = (spin3AxisAngles.y + dt * 0.85) % (Math.PI * 2);
+            applySpin3AxisTransform(0, ny, 0);
+          }
         }
         controls.update();
         renderer.render(scene, camera);
@@ -2075,9 +2152,14 @@
         camera.updateProjectionMatrix();
         renderer.setSize(w, h);
         if (modelRoot) {
-          if (spin3AxisEnabled && cameraSyncEnabled) {
-            const synced = computeSyncedSpin3AxisAngles(Date.now());
-            applySpin3AxisTransform(synced.x, synced.y, synced.z);
+          if (cameraSyncEnabled) {
+            if (spin3AxisEnabled) {
+              const synced = computeSyncedSpin3AxisAngles(Date.now());
+              applySpin3AxisTransform(synced.x, synced.y, synced.z);
+            } else if (turntableEnabled) {
+              const ry = computeSyncedTurntableAngle(Date.now());
+              applySpin3AxisTransform(0, ry, 0);
+            }
           }
           applyRenderModeToModel();
           renderer.render(scene, camera);

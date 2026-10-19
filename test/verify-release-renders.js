@@ -448,10 +448,16 @@ function httpRequest(port, method, urlPath, bodyObj) {
           assert(cs.stripText.includes('Watertight') && cs.stripText.includes('tris'), `Slot ${cs.slot} telemetry strip must render mesh stats (got "${cs.stripText}")`);
         }
         assert(val.spinStateA && val.spinStateB, 'Both staggered 3D slots must report CAD_SPIN_STATE_REPORT');
+        assert.strictEqual(val.spinStateA.turntableEnabled, true, 'Slot A must default to Iso + Spin (turntableEnabled = true) at execution rendering');
+        assert.strictEqual(val.spinStateB.turntableEnabled, true, 'Slot B must default to Iso + Spin (turntableEnabled = true) at execution rendering');
+        assert.strictEqual(val.spinStateA.spin3AxisEnabled, false, 'Slot A must have 3-Axis Spin OFF by default');
+        assert.strictEqual(val.spinStateA.cameraPreset, 'iso', 'Slot A must default to Iso camera preset at execution rendering');
+        assert.strictEqual(val.spinStateB.cameraPreset, 'iso', 'Slot B must default to Iso camera preset at execution rendering');
         assert.strictEqual(val.spinStateA.spinEpochMs, val.spinStateB.spinEpochMs, 'Staggered 3D slots must share identical spinEpochMs');
         const dy = Math.abs(val.spinStateA.modelRotation.y - val.spinStateB.modelRotation.y);
         const wrappedDy = Math.min(dy, Math.abs(dy - Math.PI * 2));
-        assert(wrappedDy < 0.08, `Staggered 3D slots (700ms apart) must be phase-locked in 3-Axis Spin when Synced is ON (got Δy=${wrappedDy.toFixed(4)} rad)`);
+        assert(wrappedDy < 0.08, `Staggered 3D slots (700ms apart) must be phase-locked in Iso + Spin when Synced is ON (got Δy=${wrappedDy.toFixed(4)} rad)`);
+        assert(Math.abs(val.spinStateA.modelRotation.x) < 1e-6 && Math.abs(val.spinStateA.modelRotation.z) < 1e-6, 'Iso + Spin must keep X and Z model rotation at 0 (upright turntable)');
         assert(val.hanoiOk && val.hanoiVisible && val.hanoiDisks === 8, `Towers of Hanoi must render 8 animated disks in #exec-viz-A (got hanoiDisks=${val.hanoiDisks})`);
         assert(val.imgProvCount >= 2 && val.imgModCount >= 2, `Image & GenMedia Arena must render Provider ▸ Model selects for each slot (got ${val.imgProvCount} provider selects, ${val.imgModCount} model selects)`);
         assert(Array.isArray(val.provOptionsA) && val.provOptionsA.includes('google') && val.provOptionsA.includes('openai'), 'Image Arena Provider select must include Google and OpenAI');

@@ -82,21 +82,26 @@ function httpRequest(port, method, urlPath, bodyObj) {
     'index.html must include #cadSyncCamBtn defaulted to ON (aria-pressed="true")'
   );
   assert(
-    indexHtml.includes('id="cadSpin3AxisBtn"') &&
-      indexHtml.includes('3-Axis Spin: ON') &&
+    indexHtml.includes('id="cadSpinBtn"') &&
+      indexHtml.includes('Iso + Spin: ON') &&
+      indexHtml.includes('id="cadSpin3AxisBtn"') &&
+      indexHtml.includes('3-Axis Spin: OFF') &&
       !indexHtml.includes('<option value="all">📦 All Parts'),
-    'index.html must include #cadSpin3AxisBtn defaulted to ON and #subcategorySelect with only Simple and Complex options (no All Parts)'
+    'index.html must include #cadSpinBtn defaulted to ON (Iso + Spin), #cadSpin3AxisBtn defaulted to OFF, and #subcategorySelect with only Simple and Complex options (no All Parts)'
   );
   assert(
-    cadRunnerHtml.includes('id="hudSpin3AxisBtn"') &&
-      cadRunnerHtml.includes('let spin3AxisEnabled = true;') &&
+    cadRunnerHtml.includes('id="hudSpinBtn"') &&
+      cadRunnerHtml.includes('id="hudSpin3AxisBtn"') &&
+      cadRunnerHtml.includes('let turntableEnabled = true;') &&
+      cadRunnerHtml.includes('let spin3AxisEnabled = false;') &&
       cadRunnerHtml.includes('class="hud-top-stack"'),
-    'cad-runner.html must include #hudSpin3AxisBtn defaulted to active (spin3AxisEnabled = true) and non-overlapping .hud-top-stack layout'
+    'cad-runner.html must default to Iso + Spin (turntableEnabled = true, spin3AxisEnabled = false) and non-overlapping .hud-top-stack layout'
   );
   assert(
-    appJs.includes('let CAD_SPIN_3AXIS_ON = true;') &&
+    appJs.includes('let CAD_TURNTABLE_ON = true;') &&
+      appJs.includes('let CAD_SPIN_3AXIS_ON = false;') &&
       !appJs.includes('Simple · ${complexCount} Complex'),
-    'public/app.js must default CAD_SPIN_3AXIS_ON = true and omit (x Simple - y Complex) counts from category labels'
+    'public/app.js must default CAD_TURNTABLE_ON = true and CAD_SPIN_3AXIS_ON = false and omit (x Simple - y Complex) counts from category labels'
   );
   assert(
     indexHtml.includes('id="cadIncludeVisionToggle" checked') && indexHtml.includes('Auto-Attach 4-View Render'),
