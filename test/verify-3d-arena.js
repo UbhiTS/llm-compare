@@ -201,7 +201,7 @@ function httpRequest(port, method, urlPath, bodyObj) {
   const THREE = await import('three');
   const cadKernelPath = path.join(rootDir, 'public', 'cad-kernel.js');
   const cadKernelMod = await import('file://' + cadKernelPath);
-  const { createCadKernel, analyzeModelTelemetry, exportModelToSTEP } = cadKernelMod;
+  const { createCadKernel, analyzeModelTelemetry, collectStepMeshes, exportModelToSTEP } = cadKernelMod;
   const { CAD, CSG } = createCadKernel(THREE);
 
   for (const t of cadTasks) {
@@ -246,7 +246,39 @@ function httpRequest(port, method, urlPath, bodyObj) {
   assert(polyLoopMatch, 'STEP output must include POLY_LOOP entities');
   assert(stepText.includes(`#${polyLoopMatch[1]} = CARTESIAN_POINT(`), 'POLY_LOOP must reference CARTESIAN_POINT IDs (not VERTEX_POINT IDs)');
   assert(cadStepWorkerJs.includes('ISO-10303-21;') && cadStepWorkerJs.includes('STEP_EXPORT_DONE'), 'public/cad-step-worker.js must handle Web Worker STEP generation');
-  console.log('✓ 2. All 30 3D & CAD benchmark reference models across 6 industry verticals (14 Simple + 16 Complex), hybrid Mesh/BufferGeometry duality, CSG Boolean operations, and ISO-10303-21 STEP export verified');
+
+  // Verify Three.js Y-up (X right, Y top, Z front) -> Fusion 360 Z-up (X right, Y = -Z_three, Z = +Y_three)
+  // so the Top view of the Three.js render maps to the Top view of Fusion 360 on the X-Y origin plane.
+  const zUpProbeGroup = new THREE.Group();
+  const zUpProbeGeom = new THREE.BufferGeometry();
+  zUpProbeGeom.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+    10, 50, 20,
+    15, 50, 20,
+    10, 50, 25,
+  ]), 3));
+  const zUpProbeMesh = new THREE.Mesh(zUpProbeGeom, CAD.materials.aluminum());
+  zUpProbeMesh.name = 'top_probe_surface';
+  zUpProbeGroup.add(zUpProbeMesh);
+  const zUpMeshes = collectStepMeshes(zUpProbeGroup);
+  assert.strictEqual(zUpMeshes.length, 1, 'collectStepMeshes must extract the probe mesh');
+  assert.deepStrictEqual(
+    Array.from(zUpMeshes[0].positions),
+    [10, -20, 50, 15, -20, 50, 10, -25, 50],
+    'collectStepMeshes must rotate Three.js Y-up (x, y, z) to Fusion 360 Z-up (x, -z, y) by default so Three.js Top (+Y) becomes Fusion 360 Top (+Z)'
+  );
+  const zUpStep = exportModelToSTEP(zUpProbeGroup, { productName: 'ZUp_Probe' });
+  assert(
+    zUpStep.includes("CARTESIAN_POINT('',(10,-20,50))") &&
+    zUpStep.includes("CARTESIAN_POINT('',(15,-20,50))") &&
+    zUpStep.includes("CARTESIAN_POINT('',(10,-25,50))"),
+    'exportModelToSTEP must write Fusion 360 Z-up coordinates (X=x, Y=-z, Z=y) into STEP CARTESIAN_POINT entities'
+  );
+  assert(
+    cadRunnerHtml.includes('function withZUpCadPose(') &&
+    cadRunnerHtml.includes('modelRoot.rotation.set(Math.PI / 2, 0, 0)'),
+    'public/cad-runner.html must rotate STL exports by +90° around X (withZUpCadPose) so STL downloads also match Fusion 360 Z-up Top orientation'
+  );
+  console.log('✓ 2. All 30 3D & CAD benchmark reference models across 6 industry verticals (14 Simple + 16 Complex), hybrid Mesh/BufferGeometry duality, CSG Boolean operations, and ISO-10303-21 STEP Z-up Fusion 360 orientation verified');
 
   // ---------------------------------------------------------------------------
   // 3. Lockstep Camera Sync (ON by default) & Automatic 4-Angle Vision Loop
@@ -346,6 +378,7 @@ function httpRequest(port, method, urlPath, bodyObj) {
   });
   assert(f360Py.includes('import adsk.core, adsk.fusion, adsk.cam, traceback, math'), 'Fusion 360 script must import adsk.core and adsk.fusion');
   assert(f360Py.includes('comp.meshBodies.add') && f360Py.includes('MillimeterMeshUnit'), 'Fusion 360 script must import per-part STL meshes via comp.meshBodies.add with MillimeterMeshUnit');
+  assert(f360Py.includes('comp.xYConstructionPlane'), 'Fusion 360 script fallback sketch must use comp.xYConstructionPlane (Z-up Top origin plane)');
   assert(f360Py.includes('extrudes.addSimple'), 'Fusion 360 script must generate native Fusion 360 solid extrusions');
   const mcpStatus = getCadMcpStatus();
   assert(mcpStatus.ok && Array.isArray(mcpStatus.capabilities) && mcpStatus.capabilities.includes('step-ap214-export'), 'getCadMcpStatus() must report capabilities');

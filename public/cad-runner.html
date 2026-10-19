@@ -1691,10 +1691,28 @@
       }
     }
 
+    function withZUpCadPose(fn) {
+      if (!modelRoot) return fn();
+      const savedPos = modelRoot.position.clone();
+      const savedRot = modelRoot.rotation.clone();
+      try {
+        // Rotate +90° around X so Three.js Y-up (X right, Y top, Z front) maps to
+        // CAD / Fusion 360 Z-up (X right, Y = -Z_three, Z = +Y_three).
+        modelRoot.rotation.set(Math.PI / 2, 0, 0);
+        modelRoot.position.set(0, 0, 0);
+        modelRoot.updateMatrixWorld(true);
+        return fn();
+      } finally {
+        modelRoot.rotation.copy(savedRot);
+        modelRoot.position.copy(savedPos);
+        modelRoot.updateMatrixWorld(true);
+      }
+    }
+
     document.getElementById('exportStlBtn')?.addEventListener('click', () => {
       if (!modelRoot) return;
       const exporter = new STLExporter();
-      const buffer = withCanonicalModelPose(() => exporter.parse(modelRoot, { binary: true }));
+      const buffer = withZUpCadPose(() => exporter.parse(modelRoot, { binary: true }));
       const blob = new Blob([buffer], { type: 'application/octet-stream' });
       triggerBlobDownload(blob, `${safeSlug()}.stl`);
     });

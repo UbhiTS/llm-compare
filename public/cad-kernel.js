@@ -2199,9 +2199,15 @@ export function analyzeModelTelemetry(rootObject, THREE) {
  *   [{ name, positions: Float32Array (9 floats per world-space triangle), csgApprox }]
  * Used by the runner to hand the model to cad-step-worker.js, and by buildStepExport itself.
  */
-export function collectStepMeshes(rootObject) {
+export function collectStepMeshes(rootObject, options = {}) {
   const meshes = [];
   if (!rootObject || typeof rootObject.traverse !== 'function') return meshes;
+  // Convert Three.js Y-up (X right, Y top/up, Z front, X-Z origin grid at y=0) to
+  // CAD / Fusion 360 Z-up (X right, Y = -Z_three, Z = +Y_three, X-Y origin plane at Z=0)
+  // via a right-handed +90° X rotation (det = +1, preserving outward normals and CCW winding)
+  // so the Top view of the Three.js render sits upright on Fusion 360's origin plane and
+  // matches Fusion 360's Top ViewCube orientation.
+  const zUp = options.zUp !== false;
   rootObject.updateMatrixWorld(true);
   let idx = 0;
   rootObject.traverse((child) => {
@@ -2218,9 +2224,18 @@ export function collectStepMeshes(rootObject) {
       const x = pos.getX(i);
       const y = pos.getY(i);
       const z = pos.getZ(i);
-      positions[i * 3] = m[0] * x + m[4] * y + m[8] * z + m[12];
-      positions[i * 3 + 1] = m[1] * x + m[5] * y + m[9] * z + m[13];
-      positions[i * 3 + 2] = m[2] * x + m[6] * y + m[10] * z + m[14];
+      const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
+      const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
+      const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
+      if (zUp) {
+        positions[i * 3] = wx;
+        positions[i * 3 + 1] = -wz;
+        positions[i * 3 + 2] = wy;
+      } else {
+        positions[i * 3] = wx;
+        positions[i * 3 + 1] = wy;
+        positions[i * 3 + 2] = wz;
+      }
     }
     meshes.push({
       name: String(child.name || `Part_${idx}`),
@@ -2260,7 +2275,7 @@ export function buildStepExport(input, options = {}) {
   const warnings = [];
 
   // Normalize input into [{ name, triangles: [[x1,y1,z1, x2,y2,z2, x3,y3,z3], ...] }]
-  const soups = Array.isArray(input) ? input : collectStepMeshes(input);
+  const soups = Array.isArray(input) ? input : collectStepMeshes(input, options);
   const totalInputTris = soups.reduce(
     (sum, item) => sum + (item && item.positions ? Math.floor(item.positions.length / 9) : 0),
     0

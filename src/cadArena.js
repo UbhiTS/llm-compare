@@ -538,7 +538,7 @@ def run(_context=None):
 
         if imported_bodies == 0 and comp.bRepBodies.count == 0 and comp.meshBodies.count == 0:
             sketches = comp.sketches
-            xyPlane = comp.xZConstructionPlane
+            xyPlane = comp.xYConstructionPlane
             sketch = sketches.add(xyPlane)
             circles = sketch.sketchCurves.sketchCircles
             baseRadiusCm = float(PARAMS.get("outerRadius", 30.0)) * 0.1
