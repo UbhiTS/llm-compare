@@ -8012,7 +8012,8 @@ function populateImagePacksAndScenarios() {
     const badge = $('#imgScenarioBadge');
     if (badge) badge.textContent = pack.badge || 'Image Benchmark';
     const allSc = pack.scenarios || [];
-    const filteredSc = (subcatId && Array.isArray(pack.subcategories) && pack.subcategories.length > 0 && allSc.some((s) => s.subcategory === subcatId))
+    const subs = Array.isArray(pack.subcategories) ? pack.subcategories : [];
+    const filteredSc = (subcatId && subs.length > 0 && allSc.some((s) => s.subcategory === subcatId))
       ? allSc.filter((s) => s.subcategory === subcatId)
       : allSc;
     scSel.innerHTML = '';
@@ -8022,6 +8023,10 @@ function populateImagePacksAndScenarios() {
       o.textContent = s.title;
       scSel.appendChild(o);
     });
+    const scSep = $('#imgScenarioSep');
+    const hideSingleScenarioSubmenu = subs.length === 0 && filteredSc.length <= 1;
+    scSel.classList.toggle('hidden', hideSingleScenarioSubmenu);
+    if (scSep) scSep.classList.toggle('hidden', hideSingleScenarioSubmenu);
     const chosen = (preferredScenarioId && filteredSc.find((s) => s.id === preferredScenarioId)) || filteredSc[0] || allSc[0];
     if (chosen) {
       scSel.value = chosen.id;
@@ -8914,18 +8919,20 @@ async function restoreImageArenaRun(runId) {
   const whyEl = $('#imgWhyBanner');
   let matchedPack = (rec.packId && packs.find((p) => p.id === rec.packId)) || null;
   let matchedScenario = null;
-  if (!matchedPack && rec.scenarioId) {
+  if (matchedPack && rec.scenarioId) {
+    matchedScenario = (matchedPack.scenarios || []).find((s) => s.id === rec.scenarioId) || null;
+  }
+  if (!matchedScenario && rec.scenarioId) {
     for (const p of packs) {
       const found = (p.scenarios || []).find((s) => s.id === rec.scenarioId);
       if (found) { matchedPack = p; matchedScenario = found; break; }
     }
-  } else if (matchedPack && rec.scenarioId) {
-    matchedScenario = (matchedPack.scenarios || []).find((s) => s.id === rec.scenarioId) || null;
   }
   if (matchedPack && packSel) {
     packSel.value = matchedPack.id;
     const subSel = $('#imgSubcategorySelect');
     const subSep = $('#imgSubcategorySep');
+    const scSep = $('#imgScenarioSep');
     const subs = Array.isArray(matchedPack.subcategories) ? matchedPack.subcategories : [];
     const targetSub = matchedScenario && matchedScenario.subcategory
       ? matchedScenario.subcategory
@@ -8959,6 +8966,9 @@ async function restoreImageArenaRun(runId) {
         o.textContent = s.title;
         scSel.appendChild(o);
       });
+      const hideSingleScenarioSubmenu = subs.length === 0 && filteredSc.length <= 1;
+      scSel.classList.toggle('hidden', hideSingleScenarioSubmenu);
+      if (scSep) scSep.classList.toggle('hidden', hideSingleScenarioSubmenu);
       if (matchedScenario) scSel.value = matchedScenario.id;
     }
   }
@@ -11040,7 +11050,7 @@ function syncPrintStudioForScenario(pack, sc, isInitialRestore) {
   if (isPrintLayerPack) {
     setPrintLayerStudioOpen(true, !isInitialRestore);
   } else if (PLS_STATE.open) {
-    renderPrintLayerStudio();
+    setPrintLayerStudioOpen(false);
   }
 }
 

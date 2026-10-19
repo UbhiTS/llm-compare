@@ -278,9 +278,23 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   const upscalePack = imgCfg.packs.find((p) => p.id === 'upscaling-resampling');
   assert(upscalePack && upscalePack.scenarios.some((s) => s.id === 'portrait-color-science-4k-upscale' && s.attachments && s.attachments.length === 1), 'Upscaling pack must include portrait-color-science-4k-upscale with 1 reference attachment');
+  const stationeryLayersPack = imgCfg.packs.find((p) => p.id === 'stationery-print-layers');
+  assert(stationeryLayersPack && Array.isArray(stationeryLayersPack.subcategories) && stationeryLayersPack.subcategories.length === 0, 'stationery-print-layers must be a direct top-level pack without redundant subcategories');
+  assert.strictEqual(stationeryLayersPack.scenarios.length, 1, 'stationery-print-layers must have exactly 1 canonical scenario');
+  const decoSc = stationeryLayersPack.scenarios[0];
+  assert(decoSc && decoSc.id === 'deco-botanical-print-layers' && decoSc.attachments && decoSc.attachments.length === 1, 'stationery-print-layers must include deco-botanical-print-layers scenario for customizer & 5-layer print separation');
   const printPack = imgCfg.packs.find((p) => p.id === 'print-photobooks');
-  const decoSc = printPack && printPack.scenarios.find((s) => s.id === 'deco-botanical-print-layers');
-  assert(decoSc && decoSc.subcategory === 'stationery-cards' && decoSc.attachments && decoSc.attachments.length === 1, 'Print pack must include deco-botanical-print-layers scenario for customizer & 5-layer print separation');
+  assert(printPack && !printPack.scenarios.some((s) => s.id === 'deco-botanical-print-layers'), 'print-photobooks must not duplicate deco-botanical-print-layers');
+  const seenScIds = new Set();
+  const seenScTitles = new Set();
+  for (const p of imgCfg.packs) {
+    for (const s of (p.scenarios || [])) {
+      assert(!seenScIds.has(s.id), `Duplicate scenario id "${s.id}" found across Image Arena packs`);
+      assert(!seenScTitles.has(s.title), `Duplicate scenario title "${s.title}" found across Image Arena packs`);
+      seenScIds.add(s.id);
+      seenScTitles.add(s.title);
+    }
+  }
   const holidaySc = printPack && printPack.scenarios.find((s) => s.id === 'holiday-card-typography');
   assert(holidaySc && holidaySc.attachments && holidaySc.attachments.length === 1 && holidaySc.attachments[0].id === 'sample-holiday-card-2025-template', 'Holiday card scenario must attach 2025 template for Split Curtain comparison');
   assert(printPack && printPack.scenarios.some((s) => s.id === 'persistent-custom-stickers' && s.attachments && s.attachments.length === 1), 'Print pack must include persistent-custom-stickers with explorer fox reference');
