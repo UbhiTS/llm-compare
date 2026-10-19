@@ -278,6 +278,9 @@ function populateSubcategorySelect(catKey, preferredSubcat) {
 }
 
 function isCadActiveTask(t) {
+  if (!t && typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE !== '3d') {
+    return false;
+  }
   const task = t || (typeof currentTask === 'function' ? currentTask() : null);
   return (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d')
     || !!(task && (task.visualizer === 'cad3d' || task.category === 'cad3d'));
@@ -892,6 +895,7 @@ async function init() {
   const initialArena = urlTab || (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.lastArena) || 'text';
   const bootTextOr3dKey = initialArena === '3d' ? '3d' : 'text';
   ACTIVE_ARENA_MODE = bootTextOr3dKey;
+  if (document.body) document.body.dataset.arenaMode = bootTextOr3dKey;
   const bootArenaSt = (ARENA_WORKSPACE_STATE && ARENA_WORKSPACE_STATE.arenas && ARENA_WORKSPACE_STATE.arenas[bootTextOr3dKey]) || {};
 
   // Seed the drag-and-drop slots from the active arena's saved slots or server default.
@@ -1060,9 +1064,7 @@ async function init() {
   renderModelEditors();
   buildArena();
   updateRunButton();
-  if (initialArena === 'image' || initialArena === 'video' || initialArena === '3d') {
-    switchArenaMode(initialArena, { updateUrl: Boolean(urlTab), initialBoot: true });
-  }
+  switchArenaMode(initialArena, { updateUrl: Boolean(urlTab), initialBoot: true });
   if ((initialArena === 'text' || initialArena === '3d') && bootArenaSt.lastRunId && !bootArenaSt.prunedToDefault) {
     hydrateArenaRunFromServer(initialArena, bootArenaSt.lastRunId);
   }
@@ -5808,8 +5810,13 @@ function finalize(resultsMap, slots) {
 }
 
 function buildScorecard(results) {
-  $('#scorecard').classList.remove('hidden');
-  { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.remove('hidden'); }
+  const inTextOr3d = (typeof ACTIVE_ARENA_MODE === 'undefined') || ACTIVE_ARENA_MODE === 'text' || ACTIVE_ARENA_MODE === '3d';
+  if (inTextOr3d) {
+    $('#scorecard').classList.remove('hidden');
+    { const pdfTopBtn = $('#exportPdfTopBtn'); if (pdfTopBtn) pdfTopBtn.classList.remove('hidden'); }
+  } else {
+    $('#scorecard').classList.add('hidden');
+  }
 
   const minCost = Math.min(...results.map((r) => Math.max(r.costUsd, 1e-9)));
   const minWall = Math.min(...results.map((r) => r.wallMs));
@@ -7270,8 +7277,15 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
     captureCurrentArenaState(prevMode);
   }
   ACTIVE_ARENA_MODE = target;
+  if (document.body) document.body.dataset.arenaMode = target;
   if (ARENA_WORKSPACE_STATE && (target === 'text' || target === '3d' || target === 'image')) {
     ARENA_WORKSPACE_STATE.lastArena = target;
+  }
+  if (prevMode !== target) {
+    ['#cadMcpModal', '#imgLightboxModal', '#mdModal', '#modelPalette'].forEach((sel) => {
+      const m = $(sel);
+      if (m) m.classList.add('hidden');
+    });
   }
   // Leaving the 3D arena: forget per-slot CAD code / telemetry / 4-view renders so
   // they can never be attached to a later text run or a restored run (1.7).
@@ -7304,6 +7318,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
   if (vidBtn) vidBtn.classList.toggle('active', target === 'video');
 
   const textControls = document.querySelector('section.controls:not(.image-controls-panel)');
+  const cadModifyBar = $('#cadModifyBar');
   const textArena = $('#arena');
   const textScorecard = $('#scorecard');
   const imgSection = $('#imageArenaSection');
@@ -7311,6 +7326,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
 
   if (target === 'image') {
     if (textControls) textControls.classList.add('hidden');
+    if (cadModifyBar) cadModifyBar.classList.add('hidden');
     if (textArena) textArena.classList.add('hidden');
     if (textScorecard) textScorecard.classList.add('hidden');
     if (vidSection) vidSection.classList.add('hidden');
@@ -7320,6 +7336,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
     updateImageHistoryButton();
   } else if (target === 'video') {
     if (textControls) textControls.classList.add('hidden');
+    if (cadModifyBar) cadModifyBar.classList.add('hidden');
     if (textArena) textArena.classList.add('hidden');
     if (textScorecard) textScorecard.classList.add('hidden');
     if (imgSection) imgSection.classList.add('hidden');
@@ -7328,6 +7345,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
   } else {
     if (imgSection) imgSection.classList.add('hidden');
     if (vidSection) vidSection.classList.add('hidden');
+    if (target !== '3d' && cadModifyBar) cadModifyBar.classList.add('hidden');
     if (textControls) textControls.classList.remove('hidden');
     if (textArena) textArena.classList.remove('hidden');
 
@@ -7374,7 +7392,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
         }
         buildArena();
         const liveSnap = ARENA_LIVE_SNAPSHOTS[target];
-        if (liveSnap && liveSnap.results && Object.keys(liveSnap.results).length > 0) {
+        if (liveSnap && Array.isArray(liveSnap.slots) && liveSnap.slots.length > 0) {
           renderSavedRun(liveSnap, { skipTaskRestore: true });
         } else if (targetSt && targetSt.lastRunId && !targetSt.prunedToDefault) {
           hydrateArenaRunFromServer(target, targetSt.lastRunId);
@@ -10129,7 +10147,7 @@ function extractCadJsCode(rawText) {
 function syncCadModifyBarVisibility() {
   const bar = $('#cadModifyBar');
   if (!bar) return;
-  const isCad = isCadActiveTask();
+  const isCad = (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d') && isCadActiveTask();
   bar.classList.toggle('hidden', !isCad);
   if (isCad) {
     updateCadSyncCamButtonUi();

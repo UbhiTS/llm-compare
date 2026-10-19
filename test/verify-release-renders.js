@@ -415,6 +415,62 @@ function httpRequest(port, method, urlPath, bodyObj) {
             clearAndResetCurrentArena();
             const afterClearTextDraft = customTa ? customTa.value : 'non-empty';
 
+            // 5. Cross-Arena UI Isolation Matrix (verifies zero card/toolbar/modal leakage across all 4 tabs)
+            const checkVis = () => {
+              const isShown = (el) => Boolean(el && !el.classList.contains('hidden') && window.getComputedStyle(el).display !== 'none');
+              const isStrictlyHidden = (el) => Boolean(el && el.classList.contains('hidden') && window.getComputedStyle(el).display === 'none');
+              const textControlsEl = document.querySelector('section.controls:not(.image-controls-panel)');
+              const cadBarEl = document.getElementById('cadModifyBar');
+              const arenaEl = document.getElementById('arena');
+              const scorecardEl = document.getElementById('scorecard');
+              const imgSecEl = document.getElementById('imageArenaSection');
+              const vidSecEl = document.getElementById('videoArenaSection');
+              const cadMcpModalEl = document.getElementById('cadMcpModal');
+              return {
+                bodyMode: document.body.dataset.arenaMode || '',
+                textControlsShown: isShown(textControlsEl),
+                textControlsHidden: isStrictlyHidden(textControlsEl),
+                cadBarShown: isShown(cadBarEl),
+                cadBarHidden: isStrictlyHidden(cadBarEl),
+                arenaShown: isShown(arenaEl),
+                arenaHidden: isStrictlyHidden(arenaEl),
+                scorecardShown: isShown(scorecardEl),
+                scorecardHidden: isStrictlyHidden(scorecardEl),
+                imgSecShown: isShown(imgSecEl),
+                imgSecHidden: isStrictlyHidden(imgSecEl),
+                vidSecShown: isShown(vidSecEl),
+                vidSecHidden: isStrictlyHidden(vidSecEl),
+                cadMcpModalHidden: isStrictlyHidden(cadMcpModalEl),
+              };
+            };
+
+            // 5a. Enter 3D Arena with a 3D benchmark task selected, scorecard open, and CAD MCP modal open
+            document.getElementById('modeBtn3d').click();
+            selectTaskById('cad-planetary-gearbox');
+            document.getElementById('scorecard').classList.remove('hidden');
+            document.getElementById('cadMcpModal').classList.remove('hidden');
+            const visIn3d = checkVis();
+
+            // 5b. Switch directly from 3D Arena (with 3D task selected!) to Image Arena via tab click
+            document.getElementById('modeBtnImage').click();
+            // Also try calling syncCadModifyBarVisibility() while on Image Arena to prove it stays hidden
+            syncCadModifyBarVisibility();
+            const visInImageAfter3d = checkVis();
+
+            // 5c. Switch to Video Arena via tab click
+            document.getElementById('modeBtnVideo').click();
+            syncCadModifyBarVisibility();
+            const visInVideo = checkVis();
+
+            // 5d. Switch to Text Arena via tab click
+            document.getElementById('modeBtnText').click();
+            syncCadModifyBarVisibility();
+            const visInText = checkVis();
+
+            // 5e. Switch back to 3D Arena via tab click
+            document.getElementById('modeBtn3d').click();
+            const visIn3dReturn = checkVis();
+
             return {
               cadSlots,
               spinStateA,
@@ -432,6 +488,11 @@ function httpRequest(port, method, urlPath, bodyObj) {
               restoredTextDraft,
               saved3dDraftInState,
               afterClearTextDraft,
+              visIn3d,
+              visInImageAfter3d,
+              visInVideo,
+              visInText,
+              visIn3dReturn,
             };
           })()`,
           awaitPromise: true,
@@ -467,8 +528,33 @@ function httpRequest(port, method, urlPath, bodyObj) {
         assert.strictEqual(val.restoredTextDraft, 'Text Arena Draft Continuity Check', 'Switching 3D -> Text must restore Text Arena draft prompt');
         assert.strictEqual(val.saved3dDraftInState, '3D Arena Draft Continuity Check', 'Switching away from 3D Arena must capture 3D Arena draft prompt');
         assert.strictEqual(val.afterClearTextDraft, '', 'clearAndResetCurrentArena() must clear draft prompt to blank');
+
+        // Assert Cross-Arena UI Isolation Matrix
+        assert.strictEqual(val.visIn3d.bodyMode, '3d', '3D Arena must set body[data-arena-mode="3d"]');
+        assert(val.visIn3d.cadBarShown && val.visIn3d.textControlsShown && val.visIn3d.arenaShown, '3D Arena must show #cadModifyBar, controls, and #arena');
+        assert(val.visIn3d.imgSecHidden && val.visIn3d.vidSecHidden, '3D Arena must hide #imageArenaSection and #videoArenaSection');
+
+        assert.strictEqual(val.visInImageAfter3d.bodyMode, 'image', 'Image Arena must set body[data-arena-mode="image"]');
+        assert(val.visInImageAfter3d.cadBarHidden, 'Switching 3D -> Image Arena MUST hide #cadModifyBar (3D & CAD Studio card)');
+        assert(val.visInImageAfter3d.textControlsHidden && val.visInImageAfter3d.arenaHidden && val.visInImageAfter3d.scorecardHidden, 'Image Arena must hide Text/3D controls, #arena, and #scorecard');
+        assert(val.visInImageAfter3d.cadMcpModalHidden, 'Switching 3D -> Image Arena must auto-close #cadMcpModal');
+        assert(val.visInImageAfter3d.imgSecShown && val.visInImageAfter3d.vidSecHidden, 'Image Arena must show #imageArenaSection and hide #videoArenaSection');
+
+        assert.strictEqual(val.visInVideo.bodyMode, 'video', 'Video Arena must set body[data-arena-mode="video"]');
+        assert(val.visInVideo.cadBarHidden && val.visInVideo.textControlsHidden && val.visInVideo.arenaHidden && val.visInVideo.scorecardHidden && val.visInVideo.imgSecHidden, 'Video Arena must hide #cadModifyBar, Text/3D controls, #arena, #scorecard, and #imageArenaSection');
+        assert(val.visInVideo.vidSecShown, 'Video Arena must show #videoArenaSection');
+
+        assert.strictEqual(val.visInText.bodyMode, 'text', 'Text Arena must set body[data-arena-mode="text"]');
+        assert(val.visInText.cadBarHidden, 'Text Arena MUST hide #cadModifyBar (3D & CAD Studio card)');
+        assert(val.visInText.imgSecHidden && val.visInText.vidSecHidden, 'Text Arena must hide #imageArenaSection and #videoArenaSection');
+        assert(val.visInText.textControlsShown && val.visInText.arenaShown, 'Text Arena must show controls and #arena');
+
+        assert.strictEqual(val.visIn3dReturn.bodyMode, '3d', 'Returning to 3D Arena must set body[data-arena-mode="3d"]');
+        assert(val.visIn3dReturn.cadBarShown && val.visIn3dReturn.textControlsShown && val.visIn3dReturn.arenaShown, 'Returning to 3D Arena must show #cadModifyBar, controls, and #arena');
+        assert(val.visIn3dReturn.imgSecHidden && val.visIn3dReturn.vidSecHidden, 'Returning to 3D Arena must hide #imageArenaSection and #videoArenaSection');
+
         ws.close();
-        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector + Workspace State Continuity & New/Clear buttons');
+        console.log('✓ 4. Headless Chrome E2E verified: multi-slot 3D CAD WebGL viewports + deferred 4-view PNGs + 8-disk Towers of Hanoi + Image Arena Provider ▸ Model cascading selector + Workspace State Continuity + Cross-Arena UI Isolation Matrix');
       } finally {
         try { chrome.kill('SIGKILL'); } catch (_) {}
         try { fs.rmSync(chromeProfile, { recursive: true, force: true }); } catch (_) {}

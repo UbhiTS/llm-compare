@@ -3865,3 +3865,18 @@ a.ud-item[hidden] { display: none; }
   white-space: pre;
 }
 
+/* Strict declarative per-arena visibility guard: prevents cross-arena UI leakage */
+body[data-arena-mode="text"] :is(#cadModifyBar, #imageArenaSection, #videoArenaSection) {
+  display: none !important;
+}
+body[data-arena-mode="image"] :is(section.controls:not(.image-controls-panel), #cadModifyBar, #arena, #scorecard, #videoArenaSection) {
+  display: none !important;
+}
+body[data-arena-mode="3d"] :is(#imageArenaSection, #videoArenaSection) {
+  display: none !important;
+}
+body[data-arena-mode="video"] :is(section.controls:not(.image-controls-panel), #cadModifyBar, #arena, #scorecard, #imageArenaSection) {
+  display: none !important;
+}
+
+
