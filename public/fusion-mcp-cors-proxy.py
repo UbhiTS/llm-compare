@@ -23,6 +23,7 @@ import base64
 import json
 import os
 import re
+import struct
 import sys
 import urllib.error
 import urllib.request
@@ -113,12 +114,73 @@ def _extract_step_text(body, fusion_script):
     return ""
 
 
+def _step_to_part_stls(step_text, out_dir):
+    """Extract each CLOSED_SHELL / OPEN_SHELL from STEP into a binary .stl file on the Mac."""
+    pts = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*CARTESIAN_POINT\s*\(\s*'[^']*'\s*,\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)\s*\)", step_text):
+        pts[int(m.group(1))] = (float(m.group(2)), float(m.group(3)), float(m.group(4)))
+    vmap = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*VERTEX_POINT\s*\(\s*'[^']*'\s*,\s*#(\d+)\s*\)", step_text):
+        vmap[int(m.group(1))] = int(m.group(2))
+    loops = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*POLY_LOOP\s*\(\s*'[^']*'\s*,\s*\(\s*#(\d+)\s*,\s*#(\d+)\s*,\s*#(\d+)\s*\)\s*\)", step_text):
+        a, b, c = int(m.group(2)), int(m.group(3)), int(m.group(4))
+        loops[int(m.group(1))] = (vmap.get(a, a), vmap.get(b, b), vmap.get(c, c))
+    bounds = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*FACE_OUTER_BOUND\s*\(\s*'[^']*'\s*,\s*#(\d+)", step_text):
+        bounds[int(m.group(1))] = int(m.group(2))
+    faces = {}
+    for m in re.finditer(r"#(\d+)\s*=\s*ADVANCED_FACE\s*\(\s*'[^']*'\s*,\s*\(\s*#(\d+)\s*\)", step_text):
+        lid = bounds.get(int(m.group(2)))
+        if lid in loops:
+            faces[int(m.group(1))] = loops[lid]
+    shells = []
+    for m in re.finditer(r"#(\d+)\s*=\s*(?:CLOSED_SHELL|OPEN_SHELL)\s*\(\s*'([^']*)'\s*,\s*\(([^)]+)\)\s*\)", step_text):
+        sname = m.group(2).strip() or f"Part_{len(shells) + 1}"
+        fids = [int(x) for x in re.findall(r"#(\d+)", m.group(3))]
+        tris = [faces[fid] for fid in fids if fid in faces]
+        if tris:
+            shells.append((sname, tris))
+    if not shells and faces:
+        shells.append(("Body_1", list(faces.values())))
+    os.makedirs(out_dir, exist_ok=True)
+    stl_files = []
+    for idx, (sname, tris) in enumerate(shells):
+        safe = re.sub(r"[^A-Za-z0-9_]+", "_", sname).strip("_") or f"Part_{idx + 1}"
+        stl_path = os.path.join(out_dir, f"{idx + 1:02d}_{safe}.stl")
+        with open(stl_path, "wb") as f:
+            hdr = f"LLMCompare {safe}".encode("ascii", errors="ignore")[:80].ljust(80, b"\x00")
+            f.write(hdr)
+            f.write(struct.pack("<I", len(tris)))
+            for p0_id, p1_id, p2_id in tris:
+                p0 = pts.get(p0_id, (0.0, 0.0, 0.0))
+                p1 = pts.get(p1_id, (0.0, 0.0, 0.0))
+                p2 = pts.get(p2_id, (0.0, 0.0, 0.0))
+                ux, uy, uz = p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]
+                vx, vy, vz = p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]
+                nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+                nl = (nx * nx + ny * ny + nz * nz) ** 0.5 or 1.0
+                f.write(
+                    struct.pack(
+                        "<12fH",
+                        nx / nl, ny / nl, nz / nl,
+                        p0[0], p0[1], p0[2],
+                        p1[0], p1[1], p1[2],
+                        p2[0], p2[1], p2[2],
+                        0,
+                    )
+                )
+        stl_files.append((sname, stl_path))
+    return stl_files
+
+
 def _save_local_fusion_script_and_step(body, fusion_script):
-    """Save the STEP AP214 solid to ~/Downloads and the standalone Script to Fusion's API/Scripts folder."""
+    """Save the STEP AP214 solid + per-part binary STLs to ~/Downloads and the standalone Script to Fusion's API/Scripts folder."""
     saved_paths = {}
     raw_title = str(body.get("title") or "LLMCompare_3D_Model")
     safe_name = re.sub(r"[^A-Za-z0-9_]+", "_", raw_title).strip("_") or "LLMCompare_3D_Model"
     step_text = _extract_step_text(body, fusion_script)
+    part_stl_files = []
     try:
         if step_text and "ISO-10303-21" in step_text:
             dl_dir = os.path.expanduser("~/Downloads")
@@ -127,8 +189,14 @@ def _save_local_fusion_script_and_step(body, fusion_script):
             with open(step_path, "w", encoding="utf-8") as f:
                 f.write(step_text)
             saved_paths["stepPath"] = step_path
-    except Exception:
-        pass
+            stl_dir = os.path.join(dl_dir, "LLMCompare_Fusion360", safe_name)
+            part_stl_files = _step_to_part_stls(step_text, stl_dir)
+            saved_paths["partStlCount"] = len(part_stl_files)
+            saved_paths["partStlDir"] = stl_dir
+    except Exception as exc:
+        print(f"[Fusion MCP] Warning while extracting STEP/STL files: {exc}")
+
+    saved_paths["partStlFiles"] = part_stl_files
 
     try:
         scripts_root = os.path.expanduser(
@@ -159,12 +227,80 @@ def _save_local_fusion_script_and_step(body, fusion_script):
     return saved_paths
 
 
-def _build_compact_mcp_script(fusion_script, step_path):
+def _build_compact_mcp_script(fusion_script, step_path, part_stl_files=None, raw_title="LLMCompare_3D_Model", params=None):
     """
-    Strip the 1 MB inline STEP_ZLIB_B64 string from the MCP script payload and point it at
-    the local `step_path` on the Mac so the HTTP POST to 127.0.0.1:27182/mcp is ~2 KB
-    (never triggering HTTP 413 Payload Too Large).
+    Build a compact ~1.8 KB Fusion 360 Python script (`def run(_context: str = None):`) that:
+      1. Deletes any empty 0-body `llm-compare*` placeholder components from prior runs
+      2. Creates a new component for this slot/model
+      3. Imports every pre-extracted binary `.stl` part in `part_stl_files` via
+         `comp.meshBodies.add(stl_path, adsk.fusion.MeshUnits.MillimeterMeshUnit)` so all
+         parts appear inside the component's `Bodies` folder in <50ms at 1:1 mm scale
+      4. Registers parametric userParameters and fits the active viewport.
     """
+    part_stl_files = part_stl_files or []
+    safe_title = re.sub(r"[^A-Za-z0-9_-]+", "_", str(raw_title or "LLMCompare_3D_Model")).strip("_")[:48] or "LLMCompare_3D_Model"
+    if not isinstance(params, dict):
+        m_params = re.search(r"PARAMS\s*=\s*(\{[^\n]+\})", fusion_script)
+        if m_params:
+            try:
+                params = json.loads(m_params.group(1))
+            except Exception:
+                params = {}
+        else:
+            params = {}
+
+    if part_stl_files:
+        return (
+            "import adsk.core, adsk.fusion, os, traceback\n\n"
+            f"MODEL_NAME = {json.dumps(safe_title)}\n"
+            f"PART_STL_FILES = {json.dumps(part_stl_files)}\n"
+            f"STEP_FILE_PATH = {json.dumps(step_path or '')}\n"
+            f"PARAMS = {json.dumps(params)}\n\n"
+            "def run(_context: str = None):\n"
+            "    app = adsk.core.Application.get()\n"
+            "    try:\n"
+            "        design = adsk.fusion.Design.cast(app.activeProduct)\n"
+            "        if not design:\n"
+            "            doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)\n"
+            "            design = adsk.fusion.Design.cast(app.activeProduct)\n"
+            "        root = design.rootComponent\n"
+            "        for i in range(root.occurrences.count - 1, -1, -1):\n"
+            "            occ = root.occurrences.item(i)\n"
+            "            c = occ.component\n"
+            "            if c.name.lower().startswith('llm-compare') and c.meshBodies.count == 0 and c.bRepBodies.count == 0:\n"
+            "                occ.deleteMe()\n"
+            "        occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())\n"
+            "        comp = occ.component\n"
+            "        comp.name = MODEL_NAME\n"
+            "        mm_unit = adsk.fusion.MeshUnits.MillimeterMeshUnit\n"
+            "        imported = 0\n"
+            "        for part_name, stl_path in PART_STL_FILES:\n"
+            "            if os.path.exists(stl_path):\n"
+            "                added = comp.meshBodies.add(stl_path, mm_unit)\n"
+            "                for m_idx in range(added.count):\n"
+            "                    added.item(m_idx).name = part_name\n"
+            "                    imported += 1\n"
+            "        if imported == 0 and STEP_FILE_PATH and os.path.exists(STEP_FILE_PATH):\n"
+            "            step_opts = app.importManager.createSTEPImportOptions(STEP_FILE_PATH)\n"
+            "            app.importManager.importToTarget(step_opts, comp)\n"
+            "        user_params = design.userParameters\n"
+            "        for k, v in PARAMS.items():\n"
+            "            if isinstance(v, (int, float)):\n"
+            "                existing = user_params.itemByName(k)\n"
+            "                val_input = adsk.core.ValueInput.createByReal(float(v) * 0.1)\n"
+            "                if existing:\n"
+            "                    existing.expression = f'{float(v)} mm'\n"
+            "                else:\n"
+            "                    user_params.add(k, val_input, 'mm', 'LLM Compare CAD Arena parameter')\n"
+            "        if app.activeViewport:\n"
+            "            app.activeViewport.fit()\n"
+            "        adsk.doEvents()\n"
+            "        print(f\"Imported {imported} 3D bodies into component '{comp.name}' (meshBodies={comp.meshBodies.count}, bRepBodies={comp.bRepBodies.count}).\")\n"
+            "    except Exception:\n"
+            "        if app and app.userInterface:\n"
+            "            app.userInterface.messageBox('LLM Compare Import Failed:\\n' + traceback.format_exc())\n"
+        )
+
     compact = re.sub(
         r'STEP_ZLIB_B64\s*=\s*"[^"]*"',
         'STEP_ZLIB_B64 = ""',
@@ -178,22 +314,6 @@ def _build_compact_mcp_script(fusion_script, step_path):
                 f"STEP_FILE_PATH = {escaped_path}",
                 compact,
             )
-        else:
-            compact = compact.replace(
-                'STEP_ZLIB_B64 = ""',
-                f'STEP_FILE_PATH = {escaped_path}\nSTEP_ZLIB_B64 = ""',
-                1,
-            )
-            compact = compact.replace(
-                "if STEP_ZLIB_B64:",
-                "if STEP_FILE_PATH and os.path.exists(STEP_FILE_PATH):\n"
-                "            import_mgr = app.importManager\n"
-                "            step_opts = import_mgr.createSTEPImportOptions(STEP_FILE_PATH)\n"
-                "            import_mgr.importToTarget(step_opts, root)\n"
-                "        elif STEP_ZLIB_B64:",
-                1,
-            )
-    # Ensure `def run(_context: str = None):` signature expected by Autodesk Fusion MCP
     compact = re.sub(r"def\s+run\s*\([^)]*\)\s*:", "def run(_context: str = None):", compact, count=1)
     return compact
 
@@ -300,7 +420,7 @@ def _connect_and_list_tools(target_url):
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "llm-compare-3d-arena", "version": "1.0.58"},
+                        "clientInfo": {"name": "llm-compare-3d-arena", "version": "1.0.59"},
                     },
                 },
                 timeout=10,
@@ -346,12 +466,26 @@ def forward_script_to_fusion_mcp(target_url, body):
     if not fusion_script:
         return 400, {"ok": False, "error": "Missing fusionScript in request payload."}
 
-    # 1. Save STEP file & standalone script locally on the Mac first
+    # 1. Save STEP file + per-part binary STLs & standalone script locally on the Mac first
     saved_paths = _save_local_fusion_script_and_step(body, fusion_script)
     step_path = saved_paths.get("stepPath") or ""
+    part_stl_files = saved_paths.get("partStlFiles") or []
+    raw_title = str(body.get("title") or "LLMCompare_3D_Model")
 
-    # 2. Replace the 1 MB inline STEP_ZLIB_B64 with the local `step_path` (~2 KB payload, zero HTTP 413!)
-    compact_script = _build_compact_mcp_script(fusion_script, step_path)
+    # 2. Build compact ~1.8 KB script that imports all per-part binary STLs directly into comp.meshBodies
+    compact_script = _build_compact_mcp_script(
+        fusion_script,
+        step_path,
+        part_stl_files=part_stl_files,
+        raw_title=raw_title,
+        params=body.get("params"),
+    )
+    if saved_paths.get("fusionScriptPath"):
+        try:
+            with open(saved_paths["fusionScriptPath"], "w", encoding="utf-8") as f:
+                f.write(compact_script)
+        except Exception:
+            pass
 
     # 3. Connect to Fusion 360 MCP and list tools
     resolved_url, session_id, init_res, tools, conn_err = _connect_and_list_tools(target_url)
@@ -436,7 +570,7 @@ def forward_script_to_fusion_mcp(target_url, body):
             {sk: f"<{len(sv)} chars>" if isinstance(sv, str) and len(sv) > 60 else sv for sk, sv in v.items()}
             if isinstance(v, dict) else v
         )) for k, v in tool_args.items()}
-        print(f"[Fusion MCP] Attempt {idx + 1}: tools/call '{tool_name}' args={arg_summary} (STEP={step_path or 'none'})...")
+        print(f"[Fusion MCP] Attempt {idx + 1}: tools/call '{tool_name}' args={arg_summary} (parts={len(part_stl_files)}, STEP={step_path or 'none'})...")
         try:
             status, _, call_res = _mcp_post(
                 resolved_url,
@@ -561,7 +695,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     srv = ReusableThreadingHTTPServer((LISTEN_HOST, LISTEN_PORT), ProxyHandler)
     print("======================================================================")
-    print("🚀 LLM Compare -> Fusion 360 Local MCP Bridge (v1.0.58) active on Mac!")
+    print("🚀 LLM Compare -> Fusion 360 Local MCP Bridge (v1.0.59) active on Mac!")
     print(f"   Browser CORS Endpoint : http://{LISTEN_HOST}:{LISTEN_PORT}/mcp")
     print(f"   Forwarding to Fusion  : {DEFAULT_FUSION_MCP}")
     resolved, _, _, startup_tools, startup_err = _connect_and_list_tools(DEFAULT_FUSION_MCP)

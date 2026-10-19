@@ -237,6 +237,9 @@ function httpRequest(port, method, urlPath, bodyObj) {
 
   const stepText = exportModelToSTEP(csgMesh, { productName: 'CSG_Test_Block' });
   assert(stepText.startsWith('ISO-10303-21;') && stepText.includes('AUTOMOTIVE_DESIGN') && stepText.trim().endsWith('END-ISO-10303-21;'), 'exportModelToSTEP must output valid ISO-10303-21 STEP AP214 structure');
+  const polyLoopMatch = stepText.match(/POLY_LOOP\('',\(#(\d+),#(\d+),#(\d+)\)\)/);
+  assert(polyLoopMatch, 'STEP output must include POLY_LOOP entities');
+  assert(stepText.includes(`#${polyLoopMatch[1]} = CARTESIAN_POINT(`), 'POLY_LOOP must reference CARTESIAN_POINT IDs (not VERTEX_POINT IDs)');
   assert(cadStepWorkerJs.includes('ISO-10303-21;') && cadStepWorkerJs.includes('STEP_EXPORT_DONE'), 'public/cad-step-worker.js must handle Web Worker STEP generation');
   console.log('✓ 2. All 30 3D & CAD benchmark reference models across 6 industry verticals (14 Simple + 16 Complex), hybrid Mesh/BufferGeometry duality, CSG Boolean operations, and ISO-10303-21 STEP export verified');
 
@@ -337,6 +340,7 @@ function httpRequest(port, method, urlPath, bodyObj) {
     telemetry: { partCount: 5, watertight: true, boundingBoxMm: [140, 16, 140] },
   });
   assert(f360Py.includes('import adsk.core, adsk.fusion, adsk.cam, traceback, math'), 'Fusion 360 script must import adsk.core and adsk.fusion');
+  assert(f360Py.includes('comp.meshBodies.add') && f360Py.includes('MillimeterMeshUnit'), 'Fusion 360 script must import per-part STL meshes via comp.meshBodies.add with MillimeterMeshUnit');
   assert(f360Py.includes('extrudes.addSimple'), 'Fusion 360 script must generate native Fusion 360 solid extrusions');
   const mcpStatus = getCadMcpStatus();
   assert(mcpStatus.ok && Array.isArray(mcpStatus.capabilities) && mcpStatus.capabilities.includes('step-ap214-export'), 'getCadMcpStatus() must report capabilities');

@@ -2335,20 +2335,21 @@ export function buildStepExport(input, options = {}) {
   const dirX = addEntity("DIRECTION('',(1.,0.,0.))");
   const axisPlacement = addEntity(`AXIS2_PLACEMENT_3D('',#${originPt},#${dirZ},#${dirX})`);
 
-  // Deduplicate vertices with 0.001 mm spatial quantization
+  // Deduplicate vertices with 0.0001 mm spatial quantization
   const vertexMap = new Map();
-  function getVertexPointId(x, y, z) {
+  function getVertexEntry(x, y, z) {
     const qx = Number(x.toFixed(4));
     const qy = Number(y.toFixed(4));
     const qz = Number(z.toFixed(4));
     const key = `${qx},${qy},${qz}`;
-    let vId = vertexMap.get(key);
-    if (!vId) {
+    let entry = vertexMap.get(key);
+    if (!entry) {
       const cpId = addEntity(`CARTESIAN_POINT('',(${qx},${qy},${qz}))`);
-      vId = addEntity(`VERTEX_POINT('',#${cpId})`);
-      vertexMap.set(key, vId);
+      const vId = addEntity(`VERTEX_POINT('',#${cpId})`);
+      entry = { cpId, vId, x: qx, y: qy, z: qz };
+      vertexMap.set(key, entry);
     }
-    return vId;
+    return entry;
   }
 
   const shellIds = [];
@@ -2365,33 +2366,36 @@ export function buildStepExport(input, options = {}) {
     };
     for (const tri of part.triangles) {
       const [x0, y0, z0, x1, y1, z1, x2, y2, z2] = tri;
-      // Compute face normal
+      // Compute face normal and in-plane orthogonal reference direction
       const ux = x1 - x0, uy = y1 - y0, uz = z1 - z0;
       const vx = x2 - x0, vy = y2 - y0, vz = z2 - z0;
       let nx = uy * vz - uz * vy;
       let ny = uz * vx - ux * vz;
       let nz = ux * vy - uy * vx;
       const len = Math.hypot(nx, ny, nz);
-      if (len < 1e-8) continue;
+      const uLen = Math.hypot(ux, uy, uz);
+      if (len < 1e-8 || uLen < 1e-8) continue;
       nx = Number((nx / len).toFixed(5));
       ny = Number((ny / len).toFixed(5));
       nz = Number((nz / len).toFixed(5));
+      const tx = Number((ux / uLen).toFixed(5));
+      const ty = Number((uy / uLen).toFixed(5));
+      const tz = Number((uz / uLen).toFixed(5));
 
-      const v0 = getVertexPointId(x0, y0, z0);
-      const v1 = getVertexPointId(x1, y1, z1);
-      const v2 = getVertexPointId(x2, y2, z2);
+      const e0 = getVertexEntry(x0, y0, z0);
+      const e1 = getVertexEntry(x1, y1, z1);
+      const e2 = getVertexEntry(x2, y2, z2);
+      const v0 = e0.vId, v1 = e1.vId, v2 = e2.vId;
       if (v0 === v1 || v1 === v2 || v2 === v0) continue;
       noteEdge(v0, v1);
       noteEdge(v1, v2);
       noteEdge(v2, v0);
 
-      const loopId = addEntity(`POLY_LOOP('',(#${v0},#${v1},#${v2}))`);
+      const loopId = addEntity(`POLY_LOOP('',(#${e0.cpId},#${e1.cpId},#${e2.cpId}))`);
       const boundId = addEntity(`FACE_OUTER_BOUND('',#${loopId},.T.)`);
-      const cpPlane = addEntity(
-        `CARTESIAN_POINT('',(${Number(x0.toFixed(4))},${Number(y0.toFixed(4))},${Number(z0.toFixed(4))}))`
-      );
       const nDir = addEntity(`DIRECTION('',(${nx},${ny},${nz}))`);
-      const planeAxis = addEntity(`AXIS2_PLACEMENT_3D('',#${cpPlane},#${nDir},#${dirX})`);
+      const tDir = addEntity(`DIRECTION('',(${tx},${ty},${tz}))`);
+      const planeAxis = addEntity(`AXIS2_PLACEMENT_3D('',#${e0.cpId},#${nDir},#${tDir})`);
       const planeId = addEntity(`PLANE('',#${planeAxis})`);
       const faceId = addEntity(`ADVANCED_FACE('',(#${boundId}),#${planeId},.T.)`);
       faceIds.push(`#${faceId}`);
