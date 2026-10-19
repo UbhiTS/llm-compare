@@ -2574,7 +2574,9 @@ function sanitizeWorkspaceState(incoming, base) {
         : (typeof c.draftPrompt === 'string' ? capText(c.draftPrompt, MAX_AUDIT_PROMPT_CHARS) : ''),
       slots: n.slots !== undefined ? sanitizeArenaSlots(n.slots) : sanitizeArenaSlots(c.slots),
       lastRunId: n.lastRunId !== undefined ? (n.lastRunId ? safeId(n.lastRunId) : null) : (c.lastRunId ? safeId(c.lastRunId) : null),
-      updatedAt: Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : (Number(c.updatedAt) || now),
+      updatedAt: n.updatedAt !== undefined
+        ? (Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : 0)
+        : (Number(c.updatedAt) || now),
     };
   };
 
@@ -2611,7 +2613,9 @@ function sanitizeWorkspaceState(incoming, base) {
         : (typeof c.aspectRatio === 'string' && c.aspectRatio ? c.aspectRatio.slice(0, 12) : '16:9'),
       slots: n.slots !== undefined ? sanitizeArenaSlots(n.slots) : sanitizeArenaSlots(c.slots),
       lastRunId: n.lastRunId !== undefined ? (n.lastRunId ? safeId(n.lastRunId) : null) : (c.lastRunId ? safeId(c.lastRunId) : null),
-      updatedAt: Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : (Number(c.updatedAt) || now),
+      updatedAt: n.updatedAt !== undefined
+        ? (Number(n.updatedAt) > 0 ? Math.min(now, Number(n.updatedAt)) : 0)
+        : (Number(c.updatedAt) || now),
     };
   };
 
