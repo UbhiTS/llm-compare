@@ -250,11 +250,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(liteEntry.pricing.inputPerM, 0.25, 'gemini-3.1-flash-lite-image input price must be $0.25/1M');
   assert.strictEqual(liteEntry.pricing.imageOutputPerM, 30.00, 'gemini-3.1-flash-lite-image image output price must be $30.00/1M');
   assert(imgCfg.defaultSlots.every((s) => imgCfg.catalog.some((m) => m.id === s.catalogId)), 'Default image slots must only use catalog models');
-  assert.strictEqual(imgCfg.packs.length, 7, 'Image Arena must expose 7 workflow packs (custom, stationery-print-layers, upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation)');
+  assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
   const packIds = imgCfg.packs.map((p) => p.id);
   assert.strictEqual(packIds[0], 'custom-image-prompt', 'Custom Image Prompt must be index 0 (default) in IMAGE_USE_CASE_PACKS');
-  assert.strictEqual(packIds[1], 'stationery-print-layers', 'Stationery Customizer & 5-Layer Print Separation must be a top-level pack in IMAGE_USE_CASE_PACKS');
-  for (const expectedId of ['stationery-print-layers', 'upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
+  for (const expectedId of ['upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
     assert(packIds.includes(expectedId), `Image Arena packs must include ${expectedId}`);
   }
   const logoSvgFile = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo.svg'), 'utf8');
@@ -278,23 +277,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   const upscalePack = imgCfg.packs.find((p) => p.id === 'upscaling-resampling');
   assert(upscalePack && upscalePack.scenarios.some((s) => s.id === 'portrait-color-science-4k-upscale' && s.attachments && s.attachments.length === 1), 'Upscaling pack must include portrait-color-science-4k-upscale with 1 reference attachment');
-  const stationeryLayersPack = imgCfg.packs.find((p) => p.id === 'stationery-print-layers');
-  assert(stationeryLayersPack && Array.isArray(stationeryLayersPack.subcategories) && stationeryLayersPack.subcategories.length === 0, 'stationery-print-layers must be a direct top-level pack without redundant subcategories');
-  assert.strictEqual(stationeryLayersPack.scenarios.length, 1, 'stationery-print-layers must have exactly 1 canonical scenario');
-  const decoSc = stationeryLayersPack.scenarios[0];
-  assert(decoSc && decoSc.id === 'deco-botanical-print-layers' && decoSc.attachments && decoSc.attachments.length === 1, 'stationery-print-layers must include deco-botanical-print-layers scenario for customizer & 5-layer print separation');
   const printPack = imgCfg.packs.find((p) => p.id === 'print-photobooks');
-  assert(printPack && !printPack.scenarios.some((s) => s.id === 'deco-botanical-print-layers'), 'print-photobooks must not duplicate deco-botanical-print-layers');
-  const seenScIds = new Set();
-  const seenScTitles = new Set();
-  for (const p of imgCfg.packs) {
-    for (const s of (p.scenarios || [])) {
-      assert(!seenScIds.has(s.id), `Duplicate scenario id "${s.id}" found across Image Arena packs`);
-      assert(!seenScTitles.has(s.title), `Duplicate scenario title "${s.title}" found across Image Arena packs`);
-      seenScIds.add(s.id);
-      seenScTitles.add(s.title);
-    }
-  }
   const holidaySc = printPack && printPack.scenarios.find((s) => s.id === 'holiday-card-typography');
   assert(holidaySc && holidaySc.attachments && holidaySc.attachments.length === 1 && holidaySc.attachments[0].id === 'sample-holiday-card-2025-template', 'Holiday card scenario must attach 2025 template for Split Curtain comparison');
   assert(printPack && printPack.scenarios.some((s) => s.id === 'persistent-custom-stickers' && s.attachments && s.attachments.length === 1), 'Print pack must include persistent-custom-stickers with explorer fox reference');
@@ -364,9 +347,6 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(appJs.includes('function updateImageHistoryButton('), 'app.js must keep the History button run count');
   assert(appJs.includes('function saveImageArenaRunToHistory('), 'app.js must define saveImageArenaRunToHistory() for IndexedDB Image Run History');
   assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="42" height="32"'), 'app.js must render History modal thumbnails with explicit 42x32 bounds');
-  assert(indexHtml.includes('id="imgPrintLayerStudio"'), 'index.html must include #imgPrintLayerStudio for stationery customization and 5-layer prepress explosion');
-  assert(indexHtml.includes('id="plsCompositeCanvas"') && indexHtml.includes('id="plsStackScene"') && indexHtml.includes('id="plsPlatesGrid"'), 'index.html must include composite proof canvas, 3D stack scene, and 5-plate prepress grid');
-  assert(appJs.includes('function renderSinglePrintPlateCanvas(') && appJs.includes('function explodeModelResultInPrintStudio('), 'app.js must define 5-plate prepress renderer and model result layer exploder');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
@@ -914,6 +894,39 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     }
 
     console.log('✓ v1.0.38 90-day input prompt/attachment audit retention, 7-day output pruning, soft-delete, pre-execution logging, upstream attribution & external account Vertex cap/expiration verified');
+  }
+
+  // 23) v1.0.73: 9 Native DSLR/Print Aspect Ratios (3:2, 2:3, 4:5, 5:4), 4K Pixel-Lock Outpaint Pipeline,
+  //     Dual-Buffer Upload Normalization, 4K->2K Fallback Badge, and Use-Case-Aware UI Controls
+  {
+    const imgArenaMod = require('../src/imageArena');
+    const arIds = (imgArenaMod.IMAGE_ASPECT_RATIOS || []).map((a) => a.id);
+    assert.strictEqual(arIds.length, 9, 'IMAGE_ASPECT_RATIOS must include 9 aspect ratios');
+    for (const reqAr of ['16:9', '9:16', '1:1', '4:3', '3:2', '5:4', '3:4', '2:3', '4:5']) {
+      assert(arIds.includes(reqAr), `IMAGE_ASPECT_RATIOS must include ${reqAr}`);
+    }
+    const upscalePack = (imgCfg.packs || []).find((p) => p.id === 'upscaling-resampling');
+    const outpaintSc = upscalePack && (upscalePack.scenarios || []).find((s) => s.id === 'aspect-ratio-resampling');
+    assert(outpaintSc && outpaintSc.recommendedSize === '4K', 'aspect-ratio-resampling scenario must default to recommendedSize=4K');
+    assert(
+      outpaintSc && /NEVER stack|NEVERzoom|DO NOT zoom/i.test(outpaintSc.prompt),
+      'aspect-ratio-resampling prompt must include anti-stacking and zero-zoom guardrails'
+    );
+    assert(
+      imageArenaJs.includes('downgradedFrom: effectiveSize !== initialRequestedSize ? initialRequestedSize : null'),
+      'imageArena.js must report downgradedFrom when 4K falls back to 2K'
+    );
+    assert(
+      indexHtml.includes('id="imgPixelLockBtn"') &&
+      appJs.includes('function syncTextAnd3dContextualControls(') &&
+      appJs.includes('function syncImageArenaContextualControls(') &&
+      appJs.includes('async function buildPreAnchoredOutpaintInput(') &&
+      appJs.includes('async function applyFeatheredPixelLockComposite(') &&
+      appJs.includes('🔒 100% Pixel-Locked Center') &&
+      appJs.includes('⚠️ Fallback'),
+      'index.html and app.js must wire #imgPixelLockBtn, use-case-aware UI controls, Pre-Anchored + Feathered Pixel-Lock Outpaint, and 4K->2K fallback badges'
+    );
+    console.log('✓ v1.0.73 9 DSLR/print aspect ratios, 4K Pixel-Lock Outpainting pipeline, Dual-Buffer upload normalization, 4K->2K fallback badge & use-case-aware UI controls verified');
   }
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');

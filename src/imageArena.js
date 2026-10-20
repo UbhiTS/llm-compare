@@ -30,9 +30,13 @@ const IMAGE_RESOLUTIONS = [
 
 const IMAGE_ASPECT_RATIOS = [
   { id: '16:9', label: '16:9 · Landscape Spread' },
-  { id: '1:1',  label: '1:1 · Square Album' },
+  { id: '3:2',  label: '3:2 · DSLR Landscape (6×4)' },
   { id: '4:3',  label: '4:3 · Classic Photo Print' },
+  { id: '5:4',  label: '5:4 · Large Print (10×8)' },
+  { id: '1:1',  label: '1:1 · Square Album' },
+  { id: '4:5',  label: '4:5 · Portrait Print (8×10)' },
   { id: '3:4',  label: '3:4 · Portrait Greeting Card' },
+  { id: '2:3',  label: '2:3 · DSLR Portrait (4×6)' },
   { id: '9:16', label: '9:16 · Vertical Story / Poster' },
 ];
 
@@ -776,34 +780,6 @@ const IMAGE_USE_CASE_PACKS = [
     ],
   },
   {
-    id: 'stationery-print-layers',
-    title: '✨ Stationery Customizer & 5-Layer Print Separation',
-    badge: 'Base-to-Variant · Two-Stage QA · 5 Layers · Catalog Spec',
-    subcategories: [],
-    scenarios: [
-      {
-        id: 'deco-botanical-print-layers',
-        title: 'Deco Botanical Holiday Card — Base-to-Variant Reflow, Builder Z-Order QA, 5-Layer Separation & Catalog Spec',
-        badge: '1–5 Up Reflow · 60-SKU QA · IDML & Catalog Spec',
-        recommendedSize: '2K',
-        recommendedAspectRatio: '4:3',
-        prompt: 'Overhead flat-lay studio proof of a personalized horizontal 7x5 "Deco Botanical Holiday Card" on Forest Sage Green Pearl Shimmer cardstock (#3f534d) with an ornate Bracket die-cut outer trim contour. Across the top half, frame a horizontal 3-photo gallery strip of warm coastal family portraits separated by thin cardstock dividers. Across the bottom half, render bold 2-line Art Deco serif display lettering reading "MERRY" on the top-left and "CHRISTMAS" across the bottom filled with diagonal red-and-white candy-cane stripes, delicate white botanical sprigs intertwined around the letters, and a cursive script sign-off in the upper-right pocket reading "with love, the thompsons".',
-        whyItMatters: 'Automates all 3 back-office template bottlenecks across 1,500+ SKUs: (1) Base-to-Variant extrapolation from 1 golden template into 60–240+ Adobe InDesign/IDML variants with spatial 1-Up, 2-Up, 3-Up & 5-Up multi-photo reflow and 5 discrete Builder/prepress layers; (2) Two-stage automated QA (Stage 1 Build-Doc 1:1 spreadsheet audit + Stage 2 staging Builder layer z-order & unselectable-text collision detection); and (3) Multimodal catalog merchandising & attribution JSON generation.',
-        sampleAttachments: ['holidayCard2025Template'],
-        studioPreset: {
-          color: 'green',
-          trim: 'bracket',
-          foil: 'pearl-shimmer',
-          emboss: 'raised-emboss',
-          format: '5x7-flat',
-          layout: '3-photo-strip',
-          greeting: 'MERRY CHRISTMAS',
-          signoff: 'with love, the thompsons',
-        },
-      },
-    ],
-  },
-  {
     id: 'upscaling-resampling',
     title: '🔍 Super-Resolution & Outpainting',
     badge: 'Super-Resolution & Outpainting',
@@ -839,10 +815,10 @@ const IMAGE_USE_CASE_PACKS = [
         subcategory: 'outpaint-print',
         title: 'Panoramic Aspect-Ratio Outpainting',
         badge: '1:1 to 16:9 Outpainting',
-        recommendedSize: '2K',
+        recommendedSize: '4K',
         recommendedAspectRatio: '16:9',
-        prompt: 'Outpaint and extend the borders of the attached photograph to fill the target 16:9 panoramic aspect ratio while keeping the entire original image 100% intact, untouched, and unmodified in the center. Do not alter, relight, restyle, rescale, or regenerate any subjects, faces, clothing, structures, colors, textures, or details inside the original frame (keep the red-and-white striped lighthouse, basalt cliff, and ocean base pixel-identical to the input). Seamlessly extend only the surrounding coastline, ocean waves, and sky outward beyond the original borders with zero visible seams.',
-        whyItMatters: 'Tests aspect-ratio expansion and border outpainting when fitting square mobile photos into full-bleed 16:9 panoramic spreads or banners.',
+        prompt: 'Outpaint and extend the borders of the attached photograph to fill the target 16:9 panoramic aspect ratio while keeping the entire original image 100% intact, untouched, and unmodified at full scale in the center. Do not zoom out, shrink, alter, relight, restyle, rescale, or regenerate any subjects, faces, clothing, structures, colors, textures, or details inside the original frame (keep the red-and-white striped lighthouse, basalt cliff, and ocean base pixel-identical to the input). Seamlessly extend only the surrounding coastline, ocean waves, and sky outward beyond the original borders with zero visible seams, zero mirrored objects, and no duplicate horizon lines.',
+        whyItMatters: 'Tests direction-aware aspect-ratio expansion and border outpainting with 100% center pixel-lock when fitting square or 4:3 photos into full-bleed 4K panoramic spreads or portrait cards.',
         sampleAttachments: ['squareLighthouseCrop'],
       },
       {
@@ -1259,21 +1235,33 @@ const OPENAI_IMAGE_DIMENSIONS = {
   '1K': {
     '1:1': '1024x1024',
     '4:3': '1152x864',
+    '3:2': '1152x768',
+    '5:4': '1120x896',
     '3:4': '864x1152',
+    '2:3': '768x1152',
+    '4:5': '896x1120',
     '16:9': '1280x720',
     '9:16': '720x1280',
   },
   '2K': {
     '1:1': '2048x2048',
     '4:3': '2304x1728',
+    '3:2': '2304x1536',
+    '5:4': '2240x1792',
     '3:4': '1728x2304',
+    '2:3': '1536x2304',
+    '4:5': '1792x2240',
     '16:9': '2560x1440',
     '9:16': '1440x2560',
   },
   '4K': {
     '1:1': '2880x2880',
     '4:3': '3200x2400',
+    '3:2': '3456x2304',
+    '5:4': '3200x2560',
     '3:4': '2400x3200',
+    '2:3': '2304x3456',
+    '4:5': '2560x3200',
     '16:9': '3840x2160',
     '9:16': '2160x3840',
   },
@@ -1393,6 +1381,7 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
   let effectiveSize = (Array.isArray(entry.supportedSizes) && imageSize && !entry.supportedSizes.includes(imageSize))
     ? entry.supportedSizes[0]
     : (imageSize || '2K');
+  const initialRequestedSize = effectiveSize;
   const validAspect = aspectRatio || '16:9';
   const promptText = String(prompt || '').trim() || 'Generate a high-resolution studio image.';
   // Reference images were validated (count, size, MIME) in runSingleImageSlot.
@@ -1512,6 +1501,7 @@ async function runOpenAIImageSlot({ slot, entry, prompt, aspectRatio, imageSize,
     endpointBadge: entry.endpointBadge,
     architectureGuidance: entry.architectureGuidance,
     requestedSize: effectiveSize,
+    downgradedFrom: effectiveSize !== initialRequestedSize ? initialRequestedSize : null,
     requestedAspectRatio: validAspect,
     mimeType: finalMime,
     imageDataUrl: `data:${finalMime};base64,${finalB64}`,
@@ -1578,6 +1568,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   let effectiveSize = (Array.isArray(entry.supportedSizes) && imageSize && !entry.supportedSizes.includes(imageSize))
     ? entry.supportedSizes[0]
     : (imageSize || '2K');
+  const initialRequestedSize = effectiveSize;
 
   const buildPayload = (sizeOverride = effectiveSize) => {
     const imageConfig = { aspectRatio: aspectRatio || '16:9' };
@@ -1726,6 +1717,7 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     endpointBadge: entry.endpointBadge,
     architectureGuidance: entry.architectureGuidance,
     requestedSize: effectiveSize,
+    downgradedFrom: effectiveSize !== initialRequestedSize ? initialRequestedSize : null,
     requestedAspectRatio: aspectRatio || '16:9',
     mimeType: finalMime,
     imageDataUrl: `data:${finalMime};base64,${finalB64}`,

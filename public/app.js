@@ -4093,6 +4093,34 @@ function renderTaskMeta() {
   meta.className = 'task-meta is-' + catKey;
 }
 
+function syncTextAnd3dContextualControls() {
+  const t = currentTask();
+  const isCad = Boolean(
+    t && (
+      t.visualizer === 'cad3d' ||
+      t.category === 'cad3d' ||
+      (typeof ACTIVE_ARENA_MODE !== 'undefined' && ACTIVE_ARENA_MODE === '3d')
+    )
+  );
+  const isExecutableCode = Boolean(t && t.executable);
+  const hasAutomatedTests = Boolean(t && Number(t.testCount) > 0);
+  const codingWrap = $('#codingTogglesWrap');
+  const autoRunEl = $('#autoRun');
+  const autoFixEl = $('#autoFix');
+  const autoRunWrap = autoRunEl ? autoRunEl.closest('label.toggle') : null;
+  const autoFixWrap = autoFixEl ? autoFixEl.closest('label.toggle') : null;
+
+  if (!isExecutableCode && !isCad) {
+    if (codingWrap) codingWrap.classList.add('hidden');
+  } else {
+    if (codingWrap) codingWrap.classList.remove('hidden');
+    if (autoRunWrap) autoRunWrap.classList.remove('hidden');
+    if (autoFixWrap) {
+      autoFixWrap.classList.toggle('hidden', Boolean(isCad && !hasAutomatedTests));
+    }
+  }
+}
+
 function renderTaskPrompt() {
   const ta = $('#customPrompt');
   const tp = $('#taskPrompt');
@@ -4123,6 +4151,7 @@ function renderTaskPrompt() {
   }
 
   syncSavedPromptButtons();
+  syncTextAnd3dContextualControls();
   renderTaskMeta();
   renderContextMeter();
 }
@@ -7482,6 +7511,7 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
       }
     }
     if (typeof syncCadModifyBarVisibility === 'function') syncCadModifyBarVisibility();
+    if (typeof syncTextAnd3dContextualControls === 'function') syncTextAnd3dContextualControls();
     if (textScorecard && Object.keys(LAST_RESULTS || {}).length > 0) {
       textScorecard.classList.remove('hidden');
     }
@@ -7505,6 +7535,67 @@ function switchArenaMode(mode, { updateUrl = true, initialBoot = false, skipInte
         window.history.replaceState({}, '', url.toString());
       }
     } catch (_) { /* ignore */ }
+  }
+}
+
+let IMG_PIXEL_LOCK_OUTPAINT = true;
+
+function syncImageArenaContextualControls(packOverride, scOverride) {
+  const packSel = $('#imgPackSelect');
+  const scSel = $('#imgScenarioSelect');
+  const packs = (IMG_CONFIG && Array.isArray(IMG_CONFIG.packs)) ? IMG_CONFIG.packs : [];
+  const pack = packOverride || packs.find((p) => p && p.id === (packSel && packSel.value)) || null;
+  const sc = scOverride || (pack && Array.isArray(pack.scenarios) ? pack.scenarios.find((s) => s && s.id === (scSel && scSel.value)) : null) || null;
+  const packId = (pack && pack.id) || (packSel && packSel.value) || '';
+  const scId = (sc && sc.id) || (scSel && scSel.value) || '';
+  const refCount = Array.isArray(IMG_REF_ATTACHMENTS) ? IMG_REF_ATTACHMENTS.length : 0;
+
+  // 1. 🔒 Pixel-Lock Outpaint button: ONLY show when a single reference photo is attached
+  // AND the active scenario is Outpaint & Aspect-Ratio Extension or Custom Image Prompt.
+  const pxBtn = $('#imgPixelLockBtn');
+  const isOutpaintOrCustom = Boolean(
+    scId === 'aspect-ratio-resampling' ||
+    scId === 'outpaint-aspect-ratios' ||
+    packId === 'custom-image-prompt' ||
+    scId === 'custom-freeform'
+  );
+  const showPixelLockBtn = Boolean(refCount === 1 && isOutpaintOrCustom);
+  if (pxBtn) {
+    pxBtn.classList.toggle('hidden', !showPixelLockBtn);
+    pxBtn.classList.toggle('is-on', Boolean(IMG_PIXEL_LOCK_OUTPAINT));
+    pxBtn.setAttribute('aria-pressed', String(Boolean(IMG_PIXEL_LOCK_OUTPAINT)));
+  }
+
+  // 3. ⇔ Split Curtain Compare button: ONLY show when 1+ reference image is attached
+  // so pure Text-to-Image scenarios don't display an unusable Before/After curtain button.
+  const curtainBtn = $('#imgSplitCurtainBtn');
+  if (curtainBtn) {
+    const hasRef = refCount > 0;
+    if (!hasRef && IMG_SPLIT_CURTAIN_ON) {
+      IMG_SPLIT_CURTAIN_ON = false;
+    }
+    curtainBtn.classList.toggle('hidden', !hasRef);
+    curtainBtn.disabled = !hasRef;
+    curtainBtn.classList.toggle('is-on', Boolean(hasRef && IMG_SPLIT_CURTAIN_ON));
+    curtainBtn.setAttribute('aria-pressed', String(Boolean(hasRef && IMG_SPLIT_CURTAIN_ON)));
+  }
+
+  // 4. Contextual Reference Dropzone Hint
+  const dropHint = document.querySelector('#imgDropzone .ca-drop-hint');
+  if (dropHint) {
+    if (scId === 'aspect-ratio-resampling' || scId === 'outpaint-aspect-ratios') {
+      dropHint.textContent = 'Attach 1 portrait/landscape photo to outpaint into your target aspect ratio (or drag & drop · ⌘V)';
+    } else if (scId === 'lowres-to-4k-upscale' || scId === 'portrait-color-science-4k-upscale' || scId === 'print-4k-upscale') {
+      dropHint.textContent = 'Attach 1 photo to upscale to 4K super-resolution (or drag & drop · ⌘V)';
+    } else if (scId === 'smart-erase-conversational') {
+      dropHint.textContent = 'Attach 1 photo for conversational object removal (or drag & drop · ⌘V)';
+    } else if (scId === 'vintage-photo-restoration') {
+      dropHint.textContent = 'Attach 1 vintage or damaged scan to restore (or drag & drop · ⌘V)';
+    } else if (scId === 'character-consistency-5ref' || scId === 'multi-image-blending') {
+      dropHint.textContent = 'Attach up to 13 reference photos for multi-image fusion / identity lock (or drag & drop · ⌘V)';
+    } else {
+      dropHint.textContent = 'Optional: drag & drop, ⌘V paste, or attach up to 13 reference images for editing/outpainting';
+    }
   }
 }
 
@@ -8144,9 +8235,7 @@ function applyImageScenario(pack, sc, opts) {
   updateSplitCurtainView();
   renderImageMetricComparison();
   renderImageEconomicsModeler();
-  if (typeof syncPrintStudioForScenario === 'function') {
-    syncPrintStudioForScenario(pack, sc, isInitialRestore);
-  }
+  syncImageArenaContextualControls(pack, sc);
   if (!isInitialRestore) {
     saveUserPreferencesDebounced();
   }
@@ -8176,13 +8265,33 @@ function aspectRatioCssValue(aspectStr, w, h) {
   return '16 / 9';
 }
 
+function parseAspectRatioValue(aspectStr) {
+  const m = String(aspectStr || '16:9').trim().match(/^(\d+)\s*:\s*(\d+)$/);
+  if (m) {
+    const num = Number(m[1]);
+    const den = Number(m[2]);
+    if (num > 0 && den > 0) return num / den;
+  }
+  return 16 / 9;
+}
+
+function syncPixelLockButtonState() {
+  const btn = $('#imgPixelLockBtn');
+  if (!btn) return;
+  btn.classList.toggle('is-on', Boolean(IMG_PIXEL_LOCK_OUTPAINT));
+  btn.setAttribute('aria-pressed', String(Boolean(IMG_PIXEL_LOCK_OUTPAINT)));
+}
+
 function syncSplitCurtainButtonState() {
   const btn = $('#imgSplitCurtainBtn');
+  syncPixelLockButtonState();
+  syncImageArenaContextualControls();
   if (!btn) return;
   const hasRef = Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS.length > 0;
   if (!hasRef && IMG_SPLIT_CURTAIN_ON) {
     IMG_SPLIT_CURTAIN_ON = false;
   }
+  btn.classList.toggle('hidden', !hasRef);
   btn.disabled = !hasRef;
   btn.classList.toggle('is-on', Boolean(hasRef && IMG_SPLIT_CURTAIN_ON));
   btn.setAttribute('aria-pressed', String(Boolean(hasRef && IMG_SPLIT_CURTAIN_ON)));
@@ -8236,14 +8345,17 @@ function renderImageReferenceAttachments() {
     thumb.height = 34;
     thumb.style.cssText = 'width:34px;height:34px;max-width:34px;max-height:34px;object-fit:cover;flex-shrink:0;display:block';
     const cleanB64 = String(att.data || '').replace(/^data:[^;]+;base64,/, '');
-    thumb.src = `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
+    thumb.src = att.originalDataUrl || `data:${att.mimeType || 'image/png'};base64,${cleanB64}`;
     thumb.alt = att.label || att.name || `Reference ${idx + 1}`;
     item.appendChild(thumb);
 
     const info = el('div', 'ca-info');
     const nm = el('div', 'ca-name', esc(att.label || att.name || `ref-${idx + 1}.png`));
     const kb = Math.max(1, Math.round((cleanB64.length * 3) / 4 / 1024));
-    const meta = el('div', 'ca-meta', `Ref #${idx + 1} · ${kb} KB · ${esc(att.mimeType || 'image/png')}`);
+    const normNote = (att.normalizedForApi && att.originalWidth && att.originalHeight)
+      ? ` · Normalized (${att.originalWidth}×${att.originalHeight} → ${att.apiWidth || att.width}×${att.apiHeight || att.height})`
+      : '';
+    const meta = el('div', 'ca-meta', `Ref #${idx + 1} · ${kb} KB · ${esc(att.mimeType || 'image/png')}${esc(normNote)}`);
     info.appendChild(nm);
     info.appendChild(meta);
     item.appendChild(info);
@@ -8274,7 +8386,11 @@ function closestSupportedAspectRatio(w, h) {
   const candidates = [
     { id: '1:1', val: 1.0 },
     { id: '4:3', val: 4 / 3 },
+    { id: '3:2', val: 3 / 2 },
+    { id: '5:4', val: 5 / 4 },
     { id: '3:4', val: 3 / 4 },
+    { id: '2:3', val: 2 / 3 },
+    { id: '4:5', val: 4 / 5 },
     { id: '16:9', val: 16 / 9 },
     { id: '9:16', val: 9 / 16 },
   ];
@@ -8303,6 +8419,7 @@ function handleImageRefFiles(fileList) {
         label: file.name || 'Uploaded Reference',
         mimeType: file.type || 'image/png',
         data: base64,
+        originalDataUrl: res,
       };
       IMG_REF_ATTACHMENTS.push(attObj);
 
@@ -8313,6 +8430,38 @@ function handleImageRefFiles(fileList) {
         if (nw > 0 && nh > 0) {
           attObj.width = nw;
           attObj.height = nh;
+          attObj.originalWidth = nw;
+          attObj.originalHeight = nh;
+          // Dual-Buffer Upload Normalization: keep untouched full-resolution `originalDataUrl`
+          // in browser memory for the Split-Curtain viewer and 4K Pixel-Lock composite, while
+          // normalizing the API payload copy (`data`) when >3840px or >5.5M base64 chars (~4.1 MB)
+          // so raw DSLR uploads never trigger a Vertex AI HTTP 400 payload rejection on 4K.
+          if (nw > 3840 || nh > 3840 || base64.length > 5_500_000) {
+            try {
+              const scale = Math.min(1, 3840 / Math.max(nw, nh));
+              const targetW = Math.max(2, Math.round((nw * scale) / 2) * 2);
+              const targetH = Math.max(2, Math.round((nh * scale) / 2) * 2);
+              const normCanvas = document.createElement('canvas');
+              normCanvas.width = targetW;
+              normCanvas.height = targetH;
+              const nctx = normCanvas.getContext('2d');
+              if (nctx) {
+                nctx.imageSmoothingEnabled = true;
+                nctx.imageSmoothingQuality = 'high';
+                nctx.drawImage(probe, 0, 0, targetW, targetH);
+                const normDataUrl = normCanvas.toDataURL('image/jpeg', 0.92);
+                const normB64 = normDataUrl.replace(/^data:[^;]+;base64,/, '');
+                if (normB64 && normB64.length < base64.length) {
+                  attObj.data = normB64;
+                  attObj.mimeType = 'image/jpeg';
+                  attObj.normalizedForApi = true;
+                  attObj.apiWidth = targetW;
+                  attObj.apiHeight = targetH;
+                  renderImageReferenceAttachments();
+                }
+              }
+            } catch (_) { /* keep original base64 if canvas normalization fails */ }
+          }
           const activeScId = ($('#imgScenarioSelect') && $('#imgScenarioSelect').value) || '';
           if (activeScId !== 'aspect-ratio-resampling') {
             const matched = closestSupportedAspectRatio(nw, nh);
@@ -8393,7 +8542,6 @@ function renderImageArenaPlaceholderCards() {
           <span class="img-mode-chip">${esc(modeLabel)}</span>
         </div>
         <div class="img-card-actions-right">
-          <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to explode into 5 prepress printing plates">💥 Explode Layers</button>
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to view full size">🔍 Full Size</button>
           <button type="button" class="bar-btn img-thought-toggle" disabled title="Generate images to download PNG">⬇ Save PNG</button>
         </div>
@@ -8455,7 +8603,7 @@ function updateSplitCurtainView() {
 
   const ref0 = canShowCurtain ? IMG_REF_ATTACHMENTS[0] : null;
   const cleanB64 = ref0 ? String(ref0.data || '').replace(/^data:[^;]+;base64,/, '') : '';
-  const refDataUrl = ref0 ? `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}` : '';
+  const refDataUrl = ref0 ? (ref0.originalDataUrl || `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`) : '';
   const refLabel = (ref0 && (ref0.label || ref0.name)) || 'Original Input';
 
   document.querySelectorAll('#imgArenaGrid .img-stage-wrap').forEach((stage) => {
@@ -9025,6 +9173,7 @@ async function restoreImageArenaRun(runId) {
   renderImageSizeAndAspectPills();
   renderImageSlotsConfigurator();
   updateQuotaBadge();
+  syncImageArenaContextualControls(matchedPack, matchedScenario);
   renderImageArenaPlaceholderCards();
 
   IMG_LAST_RESULTS = currentModelImageResults(rec)
@@ -9042,6 +9191,10 @@ async function restoreImageArenaRun(runId) {
         else if (reqAr === '9:16') { w = Math.round(basePx * 9 / 16); h = basePx; }
         else if (reqAr === '4:3') { w = basePx; h = Math.round(basePx * 3 / 4); }
         else if (reqAr === '3:4') { w = Math.round(basePx * 3 / 4); h = basePx; }
+        else if (reqAr === '3:2') { w = basePx; h = Math.round(basePx * 2 / 3); }
+        else if (reqAr === '2:3') { w = Math.round(basePx * 2 / 3); h = basePx; }
+        else if (reqAr === '5:4') { w = basePx; h = Math.round(basePx * 4 / 5); }
+        else if (reqAr === '4:5') { w = Math.round(basePx * 4 / 5); h = basePx; }
         else { w = basePx; h = basePx; }
       }
       const mp = Number(mapped.megapixels) || Number(((w * h) / 1_000_000).toFixed(2));
@@ -9118,6 +9271,242 @@ function swapSharedExternalImageSlotsToVertex(dryRun) {
   renderImageMetricComparison();
   renderImageEconomicsModeler();
   return true;
+}
+
+// ---------- Direction-Aware Pre-Anchor + Feathered Pixel-Lock Outpainting ----------
+// Eliminates subject zoom, facial drift, and stacked/mirrored tile artifacts when
+// extending an uploaded photo to a wider or taller aspect ratio:
+// 1. Pre-Anchor Canvas: embeds the original reference image centered at exact 1:1 scale
+//    inside a target-aspect-ratio canvas whose outer extension bands are pre-seeded with
+//    softly blurred edge-color continuation (giving the model exact spatial coordinates).
+// 2. Feathered Pixel-Lock Composite: after each model returns its 2K/4K output, composites
+//    the untouched full-resolution original photo (`originalDataUrl`) back over the exact
+//    inner bounding box with a smooth 3.5% cosine-feathered alpha transition seam.
+function shouldApplyPixelLockOutpaint(reqRefs, reqAspect, promptText, scenarioId) {
+  if (!IMG_PIXEL_LOCK_OUTPAINT) return false;
+  if (!Array.isArray(reqRefs) || reqRefs.length !== 1) return false;
+  const ref = reqRefs[0];
+  if (!ref) return false;
+  const isOutpaintScenario = scenarioId === 'aspect-ratio-resampling' || scenarioId === 'outpaint-aspect-ratios';
+  const isOutpaintPrompt = /\b(outpaint|out-paint|extend\b.*\b(canvas|background|frame|left|right|top|bottom|aspect\s*ratio)|uncrop|expand\b.*\b(canvas|frame|aspect))\b/i.test(String(promptText || ''));
+  const origW = Number(ref.originalWidth || ref.width) || 0;
+  const origH = Number(ref.originalHeight || ref.height) || 0;
+  const targetRatio = parseAspectRatioValue(reqAspect);
+  const ratioDiff = (origW > 0 && origH > 0) ? Math.abs((origW / origH) - targetRatio) : 0;
+  return Boolean(isOutpaintScenario || isOutpaintPrompt || ratioDiff > 0.06);
+}
+
+function loadHtmlImageFromSrc(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = (err) => reject(err || new Error('Failed to decode image'));
+    img.src = src;
+  });
+}
+
+async function buildPreAnchoredOutpaintInput(refAtt, targetAspectStr) {
+  try {
+    const cleanB64 = String(refAtt.data || '').replace(/^data:[^;]+;base64,/, '');
+    const fullSrc = refAtt.originalDataUrl || `data:${refAtt.mimeType || 'image/png'};base64,${cleanB64}`;
+    const srcImg = await loadHtmlImageFromSrc(fullSrc);
+    const sw = srcImg.naturalWidth || Number(refAtt.originalWidth || refAtt.width) || 0;
+    const sh = srcImg.naturalHeight || Number(refAtt.originalHeight || refAtt.height) || 0;
+    if (!(sw > 0 && sh > 0)) return null;
+
+    const srcRatio = sw / sh;
+    const targetRatio = parseAspectRatioValue(targetAspectStr);
+    if (Math.abs(srcRatio - targetRatio) < 0.04) return null;
+
+    let fullCanvasW;
+    let fullCanvasH;
+    let boxXNorm;
+    let boxYNorm;
+    let boxWNorm;
+    let boxHNorm;
+    let directionMode;
+
+    if (targetRatio > srcRatio) {
+      // Extending horizontally (e.g. 2:3 or 3:4 portrait -> 16:9 or 4:3 landscape)
+      fullCanvasH = sh;
+      fullCanvasW = Math.max(sw + 4, Math.round(sh * targetRatio));
+      boxWNorm = sw / fullCanvasW;
+      boxHNorm = 1.0;
+      boxXNorm = (1.0 - boxWNorm) / 2;
+      boxYNorm = 0;
+      directionMode = 'horizontal';
+    } else {
+      // Extending vertically (e.g. 16:9 or 3:2 landscape -> 9:16 or 4:5 portrait)
+      fullCanvasW = sw;
+      fullCanvasH = Math.max(sh + 4, Math.round(sw / targetRatio));
+      boxWNorm = 1.0;
+      boxHNorm = sh / fullCanvasH;
+      boxXNorm = 0;
+      boxYNorm = (1.0 - boxHNorm) / 2;
+      directionMode = 'vertical';
+    }
+
+    // Build API-safe pre-anchored reference canvas (<=2048px longest edge)
+    const maxApiDim = 2048;
+    const apiScale = Math.min(1, maxApiDim / Math.max(fullCanvasW, fullCanvasH));
+    const cw = Math.max(64, Math.round((fullCanvasW * apiScale) / 2) * 2);
+    const ch = Math.max(64, Math.round((fullCanvasH * apiScale) / 2) * 2);
+    const ix = Math.round(boxXNorm * cw);
+    const iy = Math.round(boxYNorm * ch);
+    const iw = Math.max(16, Math.round(boxWNorm * cw));
+    const ih = Math.max(16, Math.round(boxHNorm * ch));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    // 1. Fill outer extension wings with softly blurred ambient edge continuation
+    // (NOT mirrored copies of the subject, which tricks diffusion models into tiled grids).
+    ctx.save();
+    ctx.filter = 'blur(42px) brightness(0.97)';
+    ctx.drawImage(srcImg, -Math.round(cw * 0.06), -Math.round(ch * 0.06), Math.round(cw * 1.12), Math.round(ch * 1.12));
+    ctx.restore();
+
+    if (directionMode === 'horizontal') {
+      const stripW = Math.max(2, Math.round(sw * 0.04));
+      ctx.save();
+      ctx.filter = 'blur(26px)';
+      if (ix > 0) {
+        ctx.drawImage(srcImg, 0, 0, stripW, sh, 0, 0, ix + 8, ch);
+      }
+      if (ix + iw < cw) {
+        ctx.drawImage(srcImg, sw - stripW, 0, stripW, sh, ix + iw - 8, 0, cw - (ix + iw) + 8, ch);
+      }
+      ctx.restore();
+    } else {
+      const stripH = Math.max(2, Math.round(sh * 0.04));
+      ctx.save();
+      ctx.filter = 'blur(26px)';
+      if (iy > 0) {
+        ctx.drawImage(srcImg, 0, 0, sw, stripH, 0, 0, cw, iy + 8);
+      }
+      if (iy + ih < ch) {
+        ctx.drawImage(srcImg, 0, sh - stripH, sw, stripH, 0, iy + ih - 8, cw, ch - (iy + ih) + 8);
+      }
+      ctx.restore();
+    }
+
+    // 2. Draw crisp, untouched original photograph at exact 1:1 scale in the center
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(srcImg, ix, iy, iw, ih);
+
+    const anchoredDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    const anchoredB64 = anchoredDataUrl.replace(/^data:[^;]+;base64,/, '');
+
+    const pctCenter = directionMode === 'horizontal'
+      ? Math.round(boxWNorm * 100)
+      : Math.round(boxHNorm * 100);
+    const pctWing = Math.max(1, Math.round((100 - pctCenter) / 2));
+    const spatialHint = directionMode === 'horizontal'
+      ? `\n\n[SPATIAL PIXEL-LOCK ANCHOR: The attached input image is already pre-framed at the exact ${targetAspectStr} target aspect ratio. The sharp central ${pctCenter}% column contains the untouched original photograph at 1:1 scale, and the blurred left (${pctWing}%) and right (${pctWing}%) side wings mark the outpainting zones. Replace ONLY the blurred left and right side wings with seamless, sharp, natural environmental continuation (sky, foliage, architecture, ground, and ambient lighting). Keep the central ${pctCenter}% subject in the exact same position and scale — DO NOT zoom in, DO NOT crop, and DO NOT stack or duplicate frames.]`
+      : `\n\n[SPATIAL PIXEL-LOCK ANCHOR: The attached input image is already pre-framed at the exact ${targetAspectStr} target aspect ratio. The sharp central ${pctCenter}% band contains the untouched original photograph at 1:1 scale, and the blurred top (${pctWing}%) and bottom (${pctWing}%) bands mark the outpainting zones. Replace ONLY the blurred top and bottom bands with seamless, sharp, natural environmental continuation. Keep the central ${pctCenter}% subject in the exact same position and scale — DO NOT zoom in, DO NOT crop, and DO NOT stack or duplicate frames.]`;
+
+    return {
+      anchoredAttachment: {
+        name: refAtt.name || 'anchored-outpaint-input.jpg',
+        label: `${refAtt.label || refAtt.name || 'Reference'} (${targetAspectStr} Pre-Anchored)`,
+        mimeType: 'image/jpeg',
+        data: anchoredB64,
+      },
+      originalSrc: fullSrc,
+      boxXNorm,
+      boxYNorm,
+      boxWNorm,
+      boxHNorm,
+      directionMode,
+      spatialHint,
+    };
+  } catch (err) {
+    console.warn('[PixelLockOutpaint] Pre-anchor canvas skipped:', err);
+    return null;
+  }
+}
+
+async function applyFeatheredPixelLockComposite(slotResult, anchorSpec) {
+  if (!slotResult || !slotResult.ok || !slotResult.imageDataUrl || !anchorSpec) return slotResult;
+  try {
+    const [genImg, origImg] = await Promise.all([
+      loadHtmlImageFromSrc(slotResult.imageDataUrl),
+      loadHtmlImageFromSrc(anchorSpec.originalSrc),
+    ]);
+    const gw = genImg.naturalWidth || Number(slotResult.width) || 0;
+    const gh = genImg.naturalHeight || Number(slotResult.height) || 0;
+    if (!(gw > 0 && gh > 0)) return slotResult;
+
+    const compCanvas = document.createElement('canvas');
+    compCanvas.width = gw;
+    compCanvas.height = gh;
+    const ctx = compCanvas.getContext('2d');
+    if (!ctx) return slotResult;
+
+    // 1. Base layer: model's generated full-frame outpainted output
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(genImg, 0, 0, gw, gh);
+
+    // 2. Prepare feathered original overlay on an offscreen canvas so the transition
+    //    between the 100% locked original pixels and the AI-generated extension is invisible
+    const bx = Math.round(anchorSpec.boxXNorm * gw);
+    const by = Math.round(anchorSpec.boxYNorm * gh);
+    const bw = Math.max(16, Math.round(anchorSpec.boxWNorm * gw));
+    const bh = Math.max(16, Math.round(anchorSpec.boxHNorm * gh));
+
+    const patchCanvas = document.createElement('canvas');
+    patchCanvas.width = bw;
+    patchCanvas.height = bh;
+    const pctx = patchCanvas.getContext('2d');
+    if (!pctx) return slotResult;
+    pctx.imageSmoothingEnabled = true;
+    pctx.imageSmoothingQuality = 'high';
+    pctx.drawImage(origImg, 0, 0, bw, bh);
+
+    // Feather the outpaint seam edges using destination-in alpha gradient
+    pctx.globalCompositeOperation = 'destination-in';
+    const featherRatio = 0.045; // 4.5% soft feather zone at the outpainted boundary
+    if (anchorSpec.directionMode === 'horizontal') {
+      const f = Math.max(0.015, Math.min(0.12, featherRatio));
+      const grad = pctx.createLinearGradient(0, 0, bw, 0);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(f * 0.45, 'rgba(0,0,0,0.45)');
+      grad.addColorStop(f, 'rgba(0,0,0,1)');
+      grad.addColorStop(1 - f, 'rgba(0,0,0,1)');
+      grad.addColorStop(1 - f * 0.45, 'rgba(0,0,0,0.45)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, bw, bh);
+    } else {
+      const f = Math.max(0.015, Math.min(0.12, featherRatio));
+      const grad = pctx.createLinearGradient(0, 0, 0, bh);
+      grad.addColorStop(0, 'rgba(0,0,0,0)');
+      grad.addColorStop(f * 0.45, 'rgba(0,0,0,0.45)');
+      grad.addColorStop(f, 'rgba(0,0,0,1)');
+      grad.addColorStop(1 - f, 'rgba(0,0,0,1)');
+      grad.addColorStop(1 - f * 0.45, 'rgba(0,0,0,0.45)');
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, bw, bh);
+    }
+
+    ctx.drawImage(patchCanvas, bx, by, bw, bh);
+
+    const compositedDataUrl = compCanvas.toDataURL('image/png');
+    slotResult.rawModelImageDataUrl = slotResult.imageDataUrl;
+    slotResult.pixelLockedImageDataUrl = compositedDataUrl;
+    slotResult.imageDataUrl = compositedDataUrl;
+    slotResult.pixelLockApplied = true;
+    return slotResult;
+  } catch (err) {
+    console.warn('[PixelLockOutpaint] Feathered composite skipped:', err);
+    return slotResult;
+  }
 }
 
 async function runImageArenaComparisonClick() {
@@ -9239,6 +9628,18 @@ async function runImageArenaComparisonClick() {
     const packIdVal = packSel ? packSel.value : '';
     const scenarioIdVal = scSel ? scSel.value : '';
 
+    // Pre-anchor canvas & pixel-lock pipeline for aspect-ratio extension / outpainting
+    let pixelLockPlan = null;
+    if (shouldApplyPixelLockOutpaint(reqRefs, reqAspect, prompt, scenarioIdVal)) {
+      pixelLockPlan = await buildPreAnchoredOutpaintInput(reqRefs[0], reqAspect);
+    }
+    const effectiveRefsForApi = (pixelLockPlan && pixelLockPlan.anchoredAttachment)
+      ? [pixelLockPlan.anchoredAttachment]
+      : reqRefs;
+    const effectivePromptForApi = (pixelLockPlan && pixelLockPlan.spatialHint)
+      ? `${prompt}${pixelLockPlan.spatialHint}`
+      : prompt;
+
     const slotPromises = activeSlotsSnapshot.map(async (slotObj) => {
       try {
         const resp = await fetch('/api/image-arena/run', {
@@ -9252,10 +9653,10 @@ async function runImageArenaComparisonClick() {
             packId: packIdVal,
             scenarioId: scenarioIdVal,
             scenarioTitle: scTitle,
-            prompt,
+            prompt: effectivePromptForApi,
             aspectRatio: reqAspect,
             imageSize: reqSize,
-            attachments: reqRefs,
+            attachments: effectiveRefsForApi,
             keys: loadKeys(),
             ticket: runTicket, // this run was already charged once at reserve
           }),
@@ -9287,6 +9688,9 @@ async function runImageArenaComparisonClick() {
           ok: false,
           error: 'Empty result from Vertex AI.',
         };
+        if (slotResult && slotResult.ok && slotResult.imageDataUrl && pixelLockPlan) {
+          await applyFeatheredPixelLockComposite(slotResult, pixelLockPlan);
+        }
         resultsArr.push(slotResult);
         resultsArr.sort((a, b) => String(a.slot).localeCompare(String(b.slot)));
         applyImageResultToCard(slotResult);
@@ -9383,6 +9787,12 @@ function applyImageResultToCard(r) {
   if (badges) {
     badges.innerHTML =
       `<span class="img-res-pill ${isTrue4K ? 'is-4k' : ''}">${esc(dimsStr)}${mpStr ? ' · ' + esc(mpStr) : ''}</span>` +
+      (r.downgradedFrom
+        ? `<span class="img-res-pill" style="border-color:rgba(245,158,11,0.55);color:#fbbf24" title="4K output exceeded payload budget or model limit and automatically fell back to ${esc(r.imageSize || '2K')}">⚠️ Fallback ${esc(r.downgradedFrom)} → ${esc(r.imageSize || '2K')}</span>`
+        : '') +
+      (r.pixelLockApplied
+        ? '<span class="img-res-pill is-4k" title="Original reference photo pixels are 100% locked inside the canvas with a feathered blend seam — zero subject zoom, facial drift, or color shift">🔒 100% Pixel-Locked Center</span>'
+        : '') +
       `<span class="img-res-pill">${esc(r.slaBadge || '')}</span>` +
       (Number(r.savingsVsNanoBanana2Pct) > 0
         ? `<span class="img-res-pill is-4k">~${Math.round(Number(r.savingsVsNanoBanana2Pct))}% Lower Cost</span>`
@@ -9393,6 +9803,10 @@ function applyImageResultToCard(r) {
     actions.innerHTML = '';
     const leftWrap = el('div', 'img-card-actions-left');
     const rightWrap = el('div', 'img-card-actions-right');
+
+    const dlBtn = el('a', 'bar-btn img-thought-toggle', '⬇ Save PNG');
+    dlBtn.href = r.imageDataUrl;
+    dlBtn.download = `${r.model}-${dimsStr}-${Date.now()}.png`;
 
     if (r.hasThoughtImage && r.thoughtImageDataUrl) {
       const tDims = (r.thoughtDims && r.thoughtDims.width) ? `${esc(r.thoughtDims.width)}×${esc(r.thoughtDims.height)}` : '1K';
@@ -9417,25 +9831,30 @@ function applyImageResultToCard(r) {
       leftWrap.appendChild(chip);
     }
 
-    const explodeBtn = el('button', 'bar-btn img-thought-toggle', '💥 Explode Layers');
-    explodeBtn.type = 'button';
-    explodeBtn.title = `Explode Slot ${r.slot} (${r.label}) into 5 prepress printing plates (Die-Cut, CMYK Base, Photo Window, Metallic Foil Spot Plate, and Emboss Relief Map)`;
-    explodeBtn.addEventListener('click', () => {
-      if (typeof explodeModelResultInPrintStudio === 'function') {
-        explodeModelResultInPrintStudio(r.slot);
-      }
-    });
-    rightWrap.appendChild(explodeBtn);
+    if (r.pixelLockApplied && r.rawModelImageDataUrl && r.pixelLockedImageDataUrl) {
+      const pxToggleBtn = el('button', 'bar-btn img-thought-toggle is-on', '🔒 Pixel-Locked (0% Drift)');
+      pxToggleBtn.type = 'button';
+      pxToggleBtn.title = 'Toggle between the 100% Pixel-Locked composite (0% facial/subject drift) and the raw uncomposited model output';
+      let showingRaw = false;
+      pxToggleBtn.addEventListener('click', () => {
+        showingRaw = !showingRaw;
+        r.imageDataUrl = showingRaw ? r.rawModelImageDataUrl : r.pixelLockedImageDataUrl;
+        const imgEl = stage && stage.querySelector('img.img-main-output');
+        if (imgEl) imgEl.src = r.imageDataUrl;
+        dlBtn.href = r.imageDataUrl;
+        pxToggleBtn.textContent = showingRaw
+          ? '🧪 Raw Model Output'
+          : '🔒 Pixel-Locked (0% Drift)';
+        pxToggleBtn.classList.toggle('is-on', !showingRaw);
+      });
+      leftWrap.appendChild(pxToggleBtn);
+    }
 
     const enlargeBtn = el('button', 'bar-btn img-thought-toggle', '🔍 Full Size');
     enlargeBtn.type = 'button';
     enlargeBtn.title = `Click to view full-size output (${dimsStr})`;
     enlargeBtn.addEventListener('click', () => openGeneratedOutputLightboxAt(r.slot));
     rightWrap.appendChild(enlargeBtn);
-
-    const dlBtn = el('a', 'bar-btn img-thought-toggle', '⬇ Save PNG');
-    dlBtn.href = r.imageDataUrl;
-    dlBtn.download = `${r.model}-${dimsStr}-${Date.now()}.png`;
     rightWrap.appendChild(dlBtn);
 
     actions.appendChild(leftWrap);
@@ -9801,2389 +10220,6 @@ function clearAndResetImageArena() {
   saveUserPreferencesImmediate();
 }
 
-// ============================================================================
-// ✨ Stationery Customizer & Prepress 5-Layer Print Separation Studio
-// Modeled on Shutterfly Deco Botanical Holiday Card:
-//   - 6 structured customization dimensions (Cardstock Color, Die-Cut Trim Shape,
-//     Metallic Foil Stamping, Tactile Emboss/Deboss, Photo Layout, Greeting/Sign-Off)
-//   - Live RGB Customer Composite Proof with specular foil reflection & die-line
-//   - Interactive 3D Isometric Exploded Prepress Stack (5 physical plates)
-//   - 5 Individual Prepress Production Plates with Visual vs 100% K Factory RIP toggle
-//   - Supports both the parametric Deco Botanical Designer Template AND exploding
-//     any generated AI model output (Slot A / B / C / D) into 5 print layers
-// ============================================================================
-
-const PLS_COLOR_CATALOG = {
-  green: { id: 'green', label: 'Forest Sage Green', shortLabel: 'Green', hex: '#3f534d', darkHex: '#2f403b', inkHex: '#f7f4ec', stripeHex: '#c83e3b', sprigHex: '#f7f4ec', meta: 'Forest Sage Green (#3f534d · Default)' },
-  cream: { id: 'cream', label: 'Warm Ivory Cream', shortLabel: 'Cream', hex: '#f4efe4', darkHex: '#e5decb', inkHex: '#2c423b', stripeHex: '#c83e3b', sprigHex: '#2f483f', meta: 'Warm Ivory Cream (#f4efe4 · Mohawk Natural)' },
-  navy: { id: 'navy', label: 'Midnight Navy', shortLabel: 'Navy', hex: '#0d2232', darkHex: '#071520', inkHex: '#f7f4ec', stripeHex: '#c83e3b', sprigHex: '#f7f4ec', meta: 'Midnight Navy (#0d2232 · PMS 289 C)' },
-  burgundy: { id: 'burgundy', label: 'Deep Burgundy Wine', shortLabel: 'Burgundy', hex: '#4a1219', darkHex: '#330b10', inkHex: '#f7f2e7', stripeHex: '#d4a64a', sprigHex: '#f5e6c8', meta: 'Deep Burgundy Wine (#4a1219 · PMS 7427 C)' },
-  emerald: { id: 'emerald', label: 'Emerald Pine', shortLabel: 'Emerald', hex: '#123528', darkHex: '#0a1f17', inkHex: '#f4efe4', stripeHex: '#c83e3b', sprigHex: '#f4efe4', meta: 'Emerald Pine (#123528 · PMS 3435 C)' },
-  cranberry: { id: 'cranberry', label: 'Cranberry Red', shortLabel: 'Cranberry', hex: '#4a1219', darkHex: '#330b10', inkHex: '#f7f2e7', stripeHex: '#d4a64a', sprigHex: '#f5e6c8', meta: 'Cranberry Red (#4a1219 · PMS 7427 C)' },
-  charcoal: { id: 'charcoal', label: 'Charcoal Slate', shortLabel: 'Charcoal', hex: '#23272e', darkHex: '#14171c', inkHex: '#f4efe4', stripeHex: '#c83e3b', sprigHex: '#f4efe4', meta: 'Charcoal Slate (#23272e · PMS 432 C)' },
-  blush: { id: 'blush', label: 'Winter Blush', shortLabel: 'Blush', hex: '#ecd8d4', darkHex: '#d5b9b3', inkHex: '#2f403b', stripeHex: '#b91c1c', sprigHex: '#2f403b', meta: 'Winter Blush (#ecd8d4 · PMS 7604 C)' },
-};
-
-const PLS_TRIM_CATALOG = {
-  rounded: { id: 'rounded', label: 'Rounded', meta: 'Rounded 1/4" Radius (Rotary Die #RD-507)' },
-  square: { id: 'square', label: 'Square', meta: 'Classic Square 90° Guillotine Trim' },
-  bracket: { id: 'bracket', label: 'Bracket', meta: 'Bracket Trim (+$0.33 ea. · Rotary Die #BR-507)' },
-  ticket: { id: 'ticket', label: 'Ticket', meta: 'Ticket Corner (+$0.33 ea. · Rotary Die #TK-507)' },
-  scalloped: { id: 'scalloped', label: 'Scalloped', meta: 'Scalloped Edge (+$0.33 ea. · Rotary Die #SC-507)' },
-  arch: { id: 'arch', label: 'Arch Top', meta: 'Arch Top (Rotary Die #AR-507)' },
-};
-
-const PLS_FOIL_CATALOG = {
-  'pearl-shimmer': {
-    id: 'pearl-shimmer',
-    label: 'Pearl Shimmer Cardstock',
-    meta: 'Pearl Shimmer Cardstock (+$0.10 ea. · Candy-Cane Stripes & Botanical Sprigs)',
-    stops: ['#fdfcfb', '#f5efe6', '#ffffff', '#e2d9c8', '#ffffff'],
-    flatHex: '#f7f4ec',
-    isCandyCane: true,
-  },
-  gold: {
-    id: 'gold',
-    label: 'Gold Foil',
-    meta: 'Gold Foil (Kurz LUXOR® 220 Metallic)',
-    stops: ['#9a6b16', '#e5b842', '#fff6b3', '#d49b27', '#7c510d', '#f5d061'],
-    flatHex: '#d4af37',
-  },
-  silver: {
-    id: 'silver',
-    label: 'Silver Foil',
-    meta: 'Silver Foil (Kurz ALUFIN® Satin)',
-    stops: ['#64748b', '#cbd5e1', '#ffffff', '#94a3b8', '#475569', '#e2e8f0'],
-    flatHex: '#cbd5e1',
-  },
-  rosegold: {
-    id: 'rosegold',
-    label: 'Rose Gold Foil',
-    meta: 'Rose Gold (Kurz LUXOR® Rose Champagne)',
-    stops: ['#8c4643', '#dca09b', '#ffe8e5', '#c87d77', '#6e322f', '#eebbb6'],
-    flatHex: '#dca09b',
-  },
-  copper: {
-    id: 'copper',
-    label: 'Copper Foil',
-    meta: 'Copper Foil (Kurz LUXOR® Burnished Copper)',
-    stops: ['#7c2d12', '#ea580c', '#ffedd5', '#c2410c', '#5c1f0b', '#fb923c'],
-    flatHex: '#ea580c',
-  },
-  none: {
-    id: 'none',
-    label: 'Matte Smooth CMYK',
-    meta: 'Signature Smooth Cardstock (CMYK Ink · No Foil Stamp)',
-    stops: null,
-    flatHex: null,
-    isCandyCane: true,
-  },
-};
-
-const PLS_EMBOSS_CATALOG = {
-  'raised-emboss': { id: 'raised-emboss', label: 'Raised Emboss (+0.35mm)', meta: '+0.35mm Raised Botanical & Typography Relief', depthMm: '+0.35mm', dir: 1 },
-  'letterpress-deboss': { id: 'letterpress-deboss', label: 'Letterpress Deboss (-0.25mm)', meta: '-0.25mm Letterpress Deboss Impression', depthMm: '-0.25mm', dir: -1 },
-  flat: { id: 'flat', label: 'Flat Smooth (0.00mm)', meta: '0.00mm Flat Signature Smooth Cardstock', depthMm: '0.00mm', dir: 0 },
-};
-
-const PLS_FORMAT_CATALOG = {
-  '5x7-flat': { id: '5x7-flat', label: '5×7 Flat', meta: '5×7" Flat (Horizontal 7.00" × 5.00")' },
-  '5x7-folded': { id: '5x7-folded', label: '5×7 Folded', meta: '5×7" Folded (Horizontal 7.00" × 5.00" w/ Top Score Line)' },
-  '6x8-flat': { id: '6x8-flat', label: '6×8 Large', meta: '6×8" Large Flat (Horizontal 8.00" × 6.00" Assortment Extrapolation)' },
-  ornament: { id: 'ornament', label: 'Ornament', meta: '3.5"×5" Keepsake Ornament Medallion w/ Ribbon Hole' },
-};
-
-const PLS_LAYOUT_CATALOG = {
-  'hero-arch': { id: 'hero-arch', label: '1-Up Hero Arch', slotCount: 1, meta: '1-Up Single Hero Arch Drop-Zone · Horizontal 7×5"' },
-  '2-photo-duo': { id: '2-photo-duo', label: '2-Up Balanced Duo', slotCount: 2, meta: '2-Up Balanced Duo Drop-Zones · Horizontal 7×5"' },
-  '3-photo-strip': { id: '3-photo-strip', label: '3-Up Top Strip', slotCount: 3, meta: '3-Up Horizontal Strip (Golden Base) · Horizontal 7×5"' },
-  '5-photo-grid': { id: '5-photo-grid', label: '5-Up Collage', slotCount: 5, meta: '5-Up Multi-Photo Mosaic Reflow (Auto-Extrapolated IDML Coordinates)' },
-};
-
-const PLS_GREETING_CATALOG = {
-  'MERRY CHRISTMAS': { id: 'MERRY CHRISTMAS', category: 'Christmas', topLine: 'MERRY', botLine: 'CHRISTMAS', meta: 'Christmas ("MERRY CHRISTMAS")' },
-  'HAPPY HOLIDAYS': { id: 'HAPPY HOLIDAYS', category: 'Holiday', topLine: 'HAPPY', botLine: 'HOLIDAYS', meta: 'Holiday ("HAPPY HOLIDAYS")' },
-  'PEACE ON EARTH': { id: 'PEACE ON EARTH', category: 'Religious', topLine: 'PEACE ON', botLine: 'EARTH · JOY', meta: 'Religious ("PEACE ON EARTH")' },
-};
-
-const PLS_STATE = {
-  open: false,
-  tab: 'customizer',
-  color: 'green',
-  trim: 'bracket',
-  foil: 'pearl-shimmer',
-  emboss: 'raised-emboss',
-  format: '5x7-flat',
-  layout: '3-photo-strip',
-  greeting: 'MERRY CHRISTMAS',
-  signoff: 'with love, the thompsons',
-  source: 'designer-template',
-  foilSheen: 38,
-  showTrimGuide: false,
-  aiAutoFixed: true,
-  qaFilter: 'all',
-  selectedMatrixKey: 'green|HAPPY HOLIDAYS|bracket',
-  cam: 'iso',
-  spread: 76,
-  layerVis: [true, true, true, true, true],
-  highlightedPlate: null,
-  plateMode: 'visual',
-  cachedSourceImage: null,
-  cachedSourceKey: '',
-};
-
-const PLS_PLATE_DEFS = [
-  {
-    idx: 0,
-    num: 'Layer 1 (z:10)',
-    name: 'Die-Cut & Bleed Mask (CutContour)',
-    channel: 'IDML Die-Line · CutContour Spot',
-    spec: '<strong>Rotary Die &amp; Trim Mask:</strong> 0.25pt Magenta <code>CutContour</code> spot vector + 0.125" bleed &amp; 3.2mm safe zone.',
-    fileSlug: '01-diecut-cutcontour-mask',
-  },
-  {
-    idx: 1,
-    num: 'Layer 2 (z:20)',
-    name: 'Background Substrate & Knockouts',
-    channel: 'InDesign Bg Layer · CMYK Pass',
-    spec: '<strong>Editable Builder Background:</strong> Cardstock color flood + <strong>0% white knockouts</strong> under Photo Drop-Zones &amp; Foil.',
-    fileSlug: '02-base-cmyk-with-knockouts',
-  },
-  {
-    idx: 2,
-    num: 'Layer 3 (z:25)',
-    name: 'Smart Photo Drop-Zones (1-Up to 5-Up)',
-    channel: 'Builder Photo Slots · 300 DPI',
-    spec: '<strong>Spatial Multi-Photo Reflow:</strong> Parametric <code>1-Up / 2-Up / 3-Up / 5-Up</code> IDML photo frames with 2mm bleed trap.',
-    fileSlug: '03-customer-photo-aperture',
-  },
-  {
-    idx: 3,
-    num: 'Layer 4 (z:30)',
-    name: 'Decorative Botanical Stickers & Foil',
-    channel: 'Builder Sticker Layer · SPOT_FOIL',
-    spec: '<strong>Z-Index Verified Stickers:</strong> Botanical sprigs &amp; foil accents locked at <code>z-index: 30</code> (below interactive text boxes).',
-    fileSlug: '04-metallic-foil-spot-plate',
-  },
-  {
-    idx: 4,
-    num: 'Layer 5 (z:50)',
-    name: 'Interactive Builder Text & Emboss Map',
-    channel: 'Top Builder Z-Order · Scodix Relief',
-    spec: '<strong>Selectable Text + Tactile Map:</strong> Greeting &amp; family name text boxes at <code>z-index: 50</code> + 8-bit tactile height map.',
-    fileSlug: '05-emboss-tactile-height-map',
-  },
-];
-
-// Evaluates any (color, greeting, trim) permutation for Stage 1 Build-Doc & Stage 2 Staging Builder defects and AI Auto-Fix resolutions
-function evaluateCardPermutationQA(colorId, greetingId, trimId) {
-  const col = PLS_COLOR_CATALOG[colorId] || PLS_COLOR_CATALOG.green;
-  const gr = PLS_GREETING_CATALOG[greetingId] || PLS_GREETING_CATALOG['MERRY CHRISTMAS'];
-  const tr = PLS_TRIM_CATALOG[trimId] || PLS_TRIM_CATALOG.bracket;
-
-  // 1. Stage 2 Staging Builder Layer Z-Order Lockout (Botanical Sticker Layer z:40 sits ABOVE Editable Text Box z:20 -> text unselectable!)
-  let zOrderIssue = null;
-  if (
-    (colorId === 'green' && gr.category === 'Holiday' && trimId === 'bracket') ||
-    (colorId === 'navy' && gr.category === 'Christmas' && trimId === 'bracket') ||
-    (colorId === 'cream' && gr.category === 'Holiday' && trimId === 'rounded') ||
-    (colorId === 'burgundy' && gr.category === 'Religious' && trimId === 'rounded')
-  ) {
-    zOrderIssue = {
-      type: 'zorder',
-      severity: 'fail',
-      rawScore: 48,
-      rawBadge: '🔒 Z-Order Lockout',
-      fixedBadge: '✨ AI Z-Order Fixed',
-      rawMetric: 'Stage 2 Builder Defect · Sticker (z:40) Blocks Text Box (z:20)',
-      fixedMetric: 'Text Selectable in Builder · Text (z:50) > Sticker (z:30)',
-      rawReason: `In the exported InDesign/Builder layer stack, the decorative botanical sticker frame (z-index: 40) sits above the interactive "${gr.topLine}" & family-name text box (z-index: 20), making the text unselectable in the staging Builder.`,
-      fixReason: 'Gemini Visual QA Agent detects the bounding-box z-order collision, promotes Editable Text Layer to z-index: 50 (above Sticker Layer z-index: 30), and tucks the overlapping sprig 3.5mm clear of the text box.',
-    };
-  }
-
-  // 2. Contrast defect on Cream (white sprigs vanish on cream) & Burgundy (red candy-cane stripes clash with dark burgundy)
-  let contrastIssue = null;
-  if (colorId === 'cream' && trimId === 'bracket') {
-    contrastIssue = {
-      type: 'contrast',
-      severity: 'fail',
-      rawScore: 54,
-      rawBadge: '❌ Contrast 1.2:1',
-      fixedBadge: '✨ AI Fixed 7.4:1',
-      rawMetric: 'Contrast 1.18:1 · White sprigs vanish on Cream',
-      fixedMetric: 'Contrast 7.4:1 · Sage (#2f483f) & Gold Botanical Palette',
-      rawReason: `On ${col.label} cardstock (#f4efe4), the default white botanical sprigs (#f7f4ec) and white cursive sign-off have 1.18:1 optical contrast and disappear.`,
-      fixReason: 'AI Co-Pilot remaps botanical sprigs & script sign-off to Deep Forest Sage (#2f483f) with Warm Gold berry accents (7.4:1 contrast).',
-    };
-  } else if (colorId === 'burgundy' && gr.category === 'Christmas' && (trimId === 'bracket' || trimId === 'rounded')) {
-    contrastIssue = {
-      type: 'contrast',
-      severity: 'warn',
-      rawScore: 68,
-      rawBadge: '⚠️ Stripe Clash',
-      fixedBadge: '✨ AI Gold Stripes',
-      rawMetric: 'Stripe Contrast 1.45:1 · Red stripes blend into Burgundy',
-      fixedMetric: 'Contrast 6.8:1 · Champagne Gold & Ivory Candy-Cane Stripes',
-      rawReason: `On ${col.label} cardstock (#4a1219), the red candy-cane letter stripes (#c83e3b) clash and lose legibility against the dark wine background.`,
-      fixReason: 'AI Co-Pilot remaps inline letter stripes to Champagne Gold (#e5b842) & Warm Ivory with pale-gold botanical sprigs.',
-    };
-  }
-
-  // 3. Trim Safe-Zone Clipping on Ticket & Scalloped corners
-  let trimIssue = null;
-  if ((trimId === 'ticket' || trimId === 'scalloped') && ((colorId === 'green' && gr.category === 'Christmas') || (colorId === 'navy' && gr.category === 'Holiday'))) {
-    trimIssue = {
-      type: 'trim',
-      severity: 'warn',
-      rawScore: 64,
-      rawBadge: '📐 Trim Clip 1.1mm',
-      fixedBadge: '✨ AI Safe 4.3mm',
-      rawMetric: `${tr.label} Notch 1.1mm from "${gr.botLine}" (Min 3.2mm)`,
-      fixedMetric: `${tr.label} Clearance 4.3mm · 7% Optical Safe-Zone Inset`,
-      rawReason: `Inward ${tr.label} die-cut contour cuts within 1.1mm of the outer serifs of "${gr.botLine}" and top photo corners (violating the 3.2mm rotary die safe zone).`,
-      fixReason: `AI Co-Pilot applies a 7% proportional safe-zone inset inside the ${tr.label} CutContour path, restoring 4.3mm clearance.`,
-    };
-  }
-
-  // 4. Greeting & Cursive Sign-Off Pocket Reflow Overlap on Religious ("PEACE ON EARTH") & Holiday ("HAPPY HOLIDAYS")
-  let reflowIssue = null;
-  if (
-    (gr.category === 'Religious' && ((colorId === 'green' && trimId === 'bracket') || (colorId === 'navy' && trimId === 'square') || (colorId === 'burgundy' && trimId === 'ticket')))
-  ) {
-    reflowIssue = {
-      type: 'reflow',
-      severity: 'warn',
-      rawScore: 66,
-      rawBadge: '🔤 Pocket Overlap',
-      fixedBadge: '✨ AI Reflowed',
-      rawMetric: `"${gr.topLine}" collides with "with love, the thompsons"`,
-      fixedMetric: 'Zero Overlap · Kerning & Sign-Off Pocket Reflowed',
-      rawReason: `Switching from "MERRY" (5 chars) to "${gr.topLine}" (${gr.topLine.length} chars) pushes the top display word into the upper-right cursive sign-off pocket and botanical sprig.`,
-      fixReason: `AI Co-Pilot tightens "${gr.topLine}" kerning by 9% and shifts the cursive sign-off pocket + botanical sprig rightward with balanced negative space.`,
-    };
-  }
-
-  const primaryIssue = zOrderIssue || contrastIssue || trimIssue || reflowIssue;
-  return {
-    key: `${colorId}|${greetingId}|${trimId}`,
-    colorId,
-    greetingId,
-    trimId,
-    colorLabel: col.shortLabel || col.label,
-    greetingCategory: gr.category,
-    greetingLabel: gr.id,
-    trimLabel: tr.label,
-    hasRawIssue: Boolean(primaryIssue),
-    issueType: primaryIssue ? primaryIssue.type : null,
-    severity: primaryIssue ? primaryIssue.severity : 'pass',
-    rawScore: primaryIssue ? primaryIssue.rawScore : 98,
-    fixedScore: 99,
-    rawBadge: primaryIssue ? primaryIssue.rawBadge : '✅ Pass 98%',
-    fixedBadge: primaryIssue ? primaryIssue.fixedBadge : '✅ Pass 99%',
-    rawMetric: primaryIssue ? primaryIssue.rawMetric : 'Stage 1 Build-Doc & Stage 2 Builder Z-Order Verified',
-    fixedMetric: primaryIssue ? primaryIssue.fixedMetric : 'Stage 1 Build-Doc & Stage 2 Builder Z-Order Verified',
-    rawReason: primaryIssue ? primaryIssue.rawReason : `1:1 Build-Doc row match, clean Builder z-order (Text z:50 > Sticker z:30), and high contrast on ${col.label} with ${tr.label} trim.`,
-    fixReason: primaryIssue ? primaryIssue.fixReason : 'Verified staging-ready without manual InDesign or Builder adjustments.',
-  };
-}
-
-function buildDieCutContourPath(ctx, x, y, w, h, trimId) {
-  ctx.beginPath();
-  if (trimId === 'rounded') {
-    const r = Math.min(w, h) * 0.065;
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-  } else if (trimId === 'ticket') {
-    const r = Math.min(w, h) * 0.082;
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.arc(x + w, y, r, Math.PI, Math.PI * 0.5, true);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.arc(x + w, y + h, r, Math.PI * 1.5, Math.PI, true);
-    ctx.lineTo(x + r, y + h);
-    ctx.arc(x, y + h, r, 0, Math.PI * 1.5, true);
-    ctx.lineTo(x, y + r);
-    ctx.arc(x, y, r, Math.PI * 0.5, 0, true);
-  } else if (trimId === 'arch') {
-    const rx = w * 0.5;
-    const ry = Math.min(h * 0.34, w * 0.46);
-    const rBot = Math.min(w, h) * 0.025;
-    ctx.moveTo(x, y + ry);
-    ctx.ellipse(x + rx, y + ry, rx, ry, 0, Math.PI, 0, false);
-    ctx.lineTo(x + w, y + h - rBot);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - rBot, y + h);
-    ctx.lineTo(x + rBot, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - rBot);
-  } else if (trimId === 'bracket') {
-    // Ornate Shutterfly Bracket contour: inward corner scallops + outward center bracket peaks on all 4 sides
-    const c = Math.min(w, h) * 0.085;
-    const inset = Math.min(w, h) * 0.028;
-    const peak = Math.min(w, h) * 0.026;
-    ctx.moveTo(x + c, y + inset);
-    ctx.lineTo(x + w * 0.38, y + inset);
-    ctx.quadraticCurveTo(x + w * 0.46, y + inset, x + w * 0.5, y - peak * 0.55);
-    ctx.quadraticCurveTo(x + w * 0.54, y + inset, x + w * 0.62, y + inset);
-    ctx.lineTo(x + w - c, y + inset);
-    ctx.quadraticCurveTo(x + w - c * 0.85, y + c * 0.85, x + w - inset, y + c);
-    ctx.lineTo(x + w - inset, y + h * 0.36);
-    ctx.quadraticCurveTo(x + w - inset, y + h * 0.45, x + w + peak * 0.45, y + h * 0.5);
-    ctx.quadraticCurveTo(x + w - inset, y + h * 0.55, x + w - inset, y + h * 0.64);
-    ctx.lineTo(x + w - inset, y + h - c);
-    ctx.quadraticCurveTo(x + w - c * 0.85, y + h - c * 0.85, x + w - c, y + h - inset);
-    ctx.lineTo(x + w * 0.62, y + h - inset);
-    ctx.quadraticCurveTo(x + w * 0.54, y + h - inset, x + w * 0.5, y + h + peak * 0.55);
-    ctx.quadraticCurveTo(x + w * 0.46, y + h - inset, x + w * 0.38, y + h - inset);
-    ctx.lineTo(x + c, y + h - inset);
-    ctx.quadraticCurveTo(x + c * 0.85, y + h - c * 0.85, x + inset, y + h - c);
-    ctx.lineTo(x + inset, y + h * 0.64);
-    ctx.quadraticCurveTo(x + inset, y + h * 0.55, x - peak * 0.45, y + h * 0.5);
-    ctx.quadraticCurveTo(x + inset, y + h * 0.45, x + inset, y + h * 0.36);
-    ctx.lineTo(x + inset, y + c);
-    ctx.quadraticCurveTo(x + c * 0.85, y + c * 0.85, x + c, y + inset);
-  } else if (trimId === 'scalloped') {
-    const nx = 13;
-    const ny = 9;
-    const dx = w / nx;
-    const dy = h / ny;
-    const amp = Math.min(dx, dy) * 0.24;
-    ctx.moveTo(x, y);
-    for (let i = 0; i < nx; i++) {
-      const x0 = x + i * dx;
-      const x1 = x0 + dx;
-      ctx.quadraticCurveTo((x0 + x1) * 0.5, y - amp, x1, y);
-    }
-    for (let j = 0; j < ny; j++) {
-      const y0 = y + j * dy;
-      const y1 = y0 + dy;
-      ctx.quadraticCurveTo(x + w + amp, (y0 + y1) * 0.5, x + w, y1);
-    }
-    for (let i = nx; i > 0; i--) {
-      const x0 = x + i * dx;
-      const x1 = x0 - dx;
-      ctx.quadraticCurveTo((x0 + x1) * 0.5, y + h + amp, x1, y + h);
-    }
-    for (let j = ny; j > 0; j--) {
-      const y0 = y + j * dy;
-      const y1 = y0 - dy;
-      ctx.quadraticCurveTo(x - amp, (y0 + y1) * 0.5, x, y1);
-    }
-  } else {
-    // Classic Square
-    ctx.rect(x, y, w, h);
-  }
-  ctx.closePath();
-}
-
-function getCardPhotoRects(cardX, cardY, cardW, cardH, layoutId, insetScale = 0) {
-  const pad = cardW * insetScale;
-  const cx = cardX + pad;
-  const cy = cardY + pad * 0.7;
-  const cw = cardW - pad * 2;
-  const ch = cardH - pad * 1.4;
-
-  if (layoutId === 'hero-arch') {
-    const pw = cw * 0.68;
-    const ph = ch * 0.50;
-    const px = cx + (cw - pw) * 0.5;
-    const py = cy + ch * 0.065;
-    return [{ x: px, y: py, w: pw, h: ph, arch: true }];
-  }
-  if (layoutId === '2-photo-duo') {
-    const gap = cw * 0.016;
-    const totalW = cw * 0.83;
-    const pw = (totalW - gap) * 0.5;
-    const ph = ch * 0.50;
-    const startX = cx + (cw - totalW) * 0.5;
-    const py = cy + ch * 0.065;
-    return [
-      { x: startX, y: py, w: pw, h: ph, arch: false },
-      { x: startX + pw + gap, y: py, w: pw, h: ph, arch: false },
-    ];
-  }
-  if (layoutId === '5-photo-grid') {
-    // Balanced 5-Up Mosaic Reflow: 2 tall hero portraits on left/center + 3 tiled portraits on right (2 top + 1 wide bottom)
-    const gap = cw * 0.01;
-    const totalW = cw * 0.85;
-    const startX = cx + (cw - totalW) * 0.5;
-    const py = cy + ch * 0.062;
-    const ph = ch * 0.51;
-    const col1W = totalW * 0.27;
-    const col2W = totalW * 0.30;
-    const col3W = totalW - col1W - col2W - gap * 2;
-    const col3X = startX + col1W + col2W + gap * 2;
-    const topH = (ph - gap) * 0.52;
-    const botH = ph - topH - gap;
-    const subW = (col3W - gap) * 0.5;
-    return [
-      { x: startX, y: py, w: col1W, h: ph, arch: false },
-      { x: startX + col1W + gap, y: py, w: col2W, h: ph, arch: false },
-      { x: col3X, y: py, w: subW, h: topH, arch: false },
-      { x: col3X + subW + gap, y: py, w: subW, h: topH, arch: false },
-      { x: col3X, y: py + topH + gap, w: col3W, h: botH, arch: false },
-    ];
-  }
-  // Default: 3-photo-strip (matches Shutterfly Deco Botanical Holiday Card horizontal 3-photo top strip)
-  const gap = cw * 0.011;
-  const totalW = cw * 0.84;
-  const pw = (totalW - gap * 2) / 3;
-  const ph = ch * 0.51;
-  const startX = cx + (cw - totalW) * 0.5;
-  const py = cy + ch * 0.062;
-  return [
-    { x: startX, y: py, w: pw, h: ph, arch: false },
-    { x: startX + pw + gap, y: py, w: pw, h: ph, arch: false },
-    { x: startX + (pw + gap) * 2, y: py, w: pw, h: ph, arch: false },
-  ];
-}
-
-function tracePhotoWindowPath(ctx, win, inflate = 0) {
-  const x = win.x - inflate;
-  const y = win.y - inflate;
-  const w = win.w + inflate * 2;
-  const h = win.h + inflate * 2;
-  if (win.arch) {
-    const rx = w * 0.5;
-    const ry = Math.min(h * 0.42, w * 0.48);
-    ctx.moveTo(x, y + ry);
-    ctx.ellipse(x + rx, y + ry, rx, ry, 0, Math.PI, 0, false);
-    ctx.lineTo(x + w, y + h);
-    ctx.lineTo(x, y + h);
-    ctx.closePath();
-  } else {
-    ctx.rect(x, y, w, h);
-  }
-}
-
-// Renders the warm coastal beach family portraits matching the Shutterfly Deco Botanical Holiday Card screenshot (supports 1-Up, 2-Up, 3-Up, and 5-Up)
-function drawStylizedHolidayFamilyScene(ctx, win, idx) {
-  ctx.save();
-  ctx.beginPath();
-  tracePhotoWindowPath(ctx, win, 0);
-  ctx.clip();
-
-  const ref0 = (Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS[0]) || null;
-  const isCustomUserPhoto = Boolean(ref0 && !String(ref0.id || '').startsWith('sample-'));
-  const refImg = PLS_STATE.cachedSourceImage;
-  if (isCustomUserPhoto && refImg && refImg.complete && refImg.naturalWidth > 0 && PLS_STATE.source === 'designer-template') {
-    const sw = refImg.naturalWidth;
-    const sh = refImg.naturalHeight;
-    const sliceFactor = (idx % 5) * 0.2;
-    const cropW = sw * 0.58;
-    const cropH = sh * 0.72;
-    const sx = Math.max(0, Math.min(sw - cropW, (sw - cropW) * sliceFactor));
-    const sy = sh * 0.08;
-    ctx.drawImage(refImg, sx, sy, cropW, cropH, win.x, win.y, win.w, win.h);
-    ctx.restore();
-    return;
-  }
-
-  // Warm coastal sunset sky matching the beach family photos in the Shutterfly screenshot
-  const skyGrad = ctx.createLinearGradient(win.x, win.y, win.x, win.y + win.h);
-  skyGrad.addColorStop(0, '#e5e0d8');
-  skyGrad.addColorStop(0.42, '#dfd2c0');
-  skyGrad.addColorStop(0.54, '#8fa3ad');
-  skyGrad.addColorStop(0.68, '#b8a38b');
-  skyGrad.addColorStop(1, '#8c7662');
-  ctx.fillStyle = skyGrad;
-  ctx.fillRect(win.x, win.y, win.w, win.h);
-
-  // Soft ocean horizon & coastal rocks
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-  ctx.fillRect(win.x, win.y + win.h * 0.52, win.w, win.h * 0.04);
-
-  // Coastal sandstone bluffs / beach dunes
-  ctx.fillStyle = '#a38d78';
-  ctx.beginPath();
-  if (idx === 2 || idx === 4) {
-    ctx.moveTo(win.x, win.y + win.h * 0.62);
-    ctx.lineTo(win.x + win.w * 0.45, win.y + win.h * 0.44);
-    ctx.lineTo(win.x + win.w, win.y + win.h * 0.36);
-    ctx.lineTo(win.x + win.w, win.y + win.h);
-    ctx.lineTo(win.x, win.y + win.h);
-  } else {
-    ctx.moveTo(win.x, win.y + win.h * 0.64);
-    ctx.quadraticCurveTo(win.x + win.w * 0.5, win.y + win.h * 0.58, win.x + win.w, win.y + win.h * 0.66);
-    ctx.lineTo(win.x + win.w, win.y + win.h);
-    ctx.lineTo(win.x, win.y + win.h);
-  }
-  ctx.closePath();
-  ctx.fill();
-
-  const unit = Math.min(win.w, win.h);
-  const drawPortraitFigure = (px, py, headR, torsoW, torsoH, outfitCol, hairCol, stripes = false) => {
-    ctx.save();
-    ctx.fillStyle = outfitCol;
-    ctx.beginPath();
-    ctx.moveTo(px - torsoW * 0.55, py + headR * 1.15 + torsoH);
-    ctx.quadraticCurveTo(px - torsoW * 0.5, py + headR * 1.05, px, py + headR * 1.05);
-    ctx.quadraticCurveTo(px + torsoW * 0.5, py + headR * 1.05, px + torsoW * 0.55, py + headR * 1.15 + torsoH);
-    ctx.closePath();
-    ctx.fill();
-
-    if (stripes) {
-      ctx.strokeStyle = '#f5f2eb';
-      ctx.lineWidth = Math.max(1.2, headR * 0.14);
-      for (let s = -2; s <= 2; s++) {
-        ctx.beginPath();
-        ctx.moveTo(px + s * torsoW * 0.16, py + headR * 1.15);
-        ctx.lineTo(px + s * torsoW * 0.2, py + headR * 1.15 + torsoH);
-        ctx.stroke();
-      }
-    }
-
-    ctx.fillStyle = '#e0b193';
-    ctx.fillRect(px - headR * 0.28, py + headR * 0.7, headR * 0.56, headR * 0.5);
-    ctx.beginPath();
-    ctx.arc(px, py, headR, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = hairCol;
-    ctx.beginPath();
-    ctx.arc(px, py - headR * 0.14, headR * 1.02, Math.PI * 0.95, Math.PI * 0.05, false);
-    ctx.fill();
-    ctx.restore();
-  };
-
-  if (idx === 0) {
-    drawPortraitFigure(win.x + win.w * 0.5, win.y + win.h * 0.34, unit * 0.115, win.w * 0.46, win.h * 0.56, '#f7f5f0', '#4a3325', false);
-  } else if (idx === 1) {
-    drawPortraitFigure(win.x + win.w * 0.54, win.y + win.h * 0.31, unit * 0.11, win.w * 0.48, win.h * 0.60, '#382c26', '#3b2418', true);
-    drawPortraitFigure(win.x + win.w * 0.38, win.y + win.h * 0.44, unit * 0.08, win.w * 0.28, win.h * 0.36, '#f5f2eb', '#593e2e', false);
-  } else if (idx === 2) {
-    drawPortraitFigure(win.x + win.w * 0.48, win.y + win.h * 0.42, unit * 0.095, win.w * 0.32, win.h * 0.44, '#6e2c26', '#3b2418', false);
-  } else if (idx === 3) {
-    drawPortraitFigure(win.x + win.w * 0.52, win.y + win.h * 0.38, unit * 0.115, win.w * 0.44, win.h * 0.52, '#2d4654', '#2e1f16', false);
-  } else {
-    // Panel 4 (5-Up bottom wide family group)
-    drawPortraitFigure(win.x + win.w * 0.34, win.y + win.h * 0.38, unit * 0.11, win.w * 0.26, win.h * 0.52, '#f7f5f0', '#3b2418', false);
-    drawPortraitFigure(win.x + win.w * 0.62, win.y + win.h * 0.41, unit * 0.10, win.w * 0.25, win.h * 0.50, '#6e2c26', '#4a3325', false);
-  }
-
-  ctx.restore();
-}
-
-// Helper to create a diagonal candy-cane stripe CanvasPattern
-function createCandyCaneStripePattern(ctx, stripeHex, baseHex, scale = 1) {
-  const sz = Math.max(10, Math.round(14 * scale));
-  const patCanvas = document.createElement('canvas');
-  patCanvas.width = sz;
-  patCanvas.height = sz;
-  const pctx = patCanvas.getContext('2d');
-  pctx.fillStyle = baseHex;
-  pctx.fillRect(0, 0, sz, sz);
-  pctx.strokeStyle = stripeHex;
-  pctx.lineWidth = Math.max(3, sz * 0.36);
-  pctx.beginPath();
-  pctx.moveTo(-sz * 0.5, sz * 0.5);
-  pctx.lineTo(sz * 0.5, -sz * 0.5);
-  pctx.moveTo(0, sz);
-  pctx.lineTo(sz, 0);
-  pctx.moveTo(sz * 0.5, sz * 1.5);
-  pctx.lineTo(sz * 1.5, sz * 0.5);
-  pctx.stroke();
-  return ctx.createPattern(patCanvas, 'repeat');
-}
-
-// Draws the Deco Botanical Holiday Card typography, candy-cane stripes, intertwined sprigs, and cursive sign-off
-function renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, styleFill, opts = {}) {
-  const colorId = opts.color || PLS_STATE.color;
-  const trimId = opts.trim || PLS_STATE.trim;
-  const foilId = opts.foil || PLS_STATE.foil;
-  const greetingId = opts.greeting != null ? opts.greeting : PLS_STATE.greeting;
-  const signoff = opts.signoff != null ? opts.signoff : PLS_STATE.signoff;
-  const aiAutoFixed = opts.aiAutoFixed != null ? Boolean(opts.aiAutoFixed) : Boolean(PLS_STATE.aiAutoFixed);
-  const isMonoPlate = Boolean(opts.monoPlate);
-
-  const grObj = PLS_GREETING_CATALOG[greetingId] || {
-    id: greetingId,
-    category: 'Christmas',
-    topLine: String(greetingId || 'MERRY CHRISTMAS').split(/\s+/)[0] || 'MERRY',
-    botLine: String(greetingId || 'MERRY CHRISTMAS').split(/\s+/).slice(1).join(' ') || 'CHRISTMAS',
-  };
-
-  const qaEval = evaluateCardPermutationQA(colorId, greetingId, trimId);
-
-  // Determine whether raw unfixed defects apply to this variant
-  const hasZOrderDefect = !aiAutoFixed && qaEval.issueType === 'zorder';
-  const hasCreamContrastDefect = !aiAutoFixed && colorId === 'cream';
-  const hasBurgundyStripeDefect = !aiAutoFixed && (colorId === 'burgundy' || colorId === 'cranberry');
-  const hasTrimClipDefect = !aiAutoFixed && (trimId === 'ticket' || trimId === 'scalloped');
-  const hasReflowDefect = !aiAutoFixed && qaEval.issueType === 'reflow';
-
-  // Safe-zone inset when AI Auto-Fix is active on Ticket / Scalloped trims
-  const safeScale = (aiAutoFixed && (trimId === 'ticket' || trimId === 'scalloped')) ? 0.042 : (hasTrimClipDefect ? -0.022 : 0);
-  const bx = cardX + cardW * (0.08 + safeScale);
-  const bw = cardW * (0.84 - safeScale * 2);
-
-  // Palette selection (Raw vs AI Auto-Fixed)
-  let sprigColor = styleFill;
-  let outlineColor = styleFill;
-  let fillStyleMain = styleFill;
-  let scriptColor = styleFill;
-
-  if (!isMonoPlate) {
-    if (foilId === 'pearl-shimmer' || foilId === 'none') {
-      if (colorId === 'cream') {
-        sprigColor = hasCreamContrastDefect ? '#faf6ed' : '#2f483f';
-        outlineColor = hasCreamContrastDefect ? '#f5efe2' : '#2f483f';
-        scriptColor = hasCreamContrastDefect ? '#f7f2e6' : '#2f483f';
-        fillStyleMain = createCandyCaneStripePattern(ctx, '#c83e3b', '#faf7f0', cardW / 500);
-      } else if (colorId === 'burgundy' || colorId === 'cranberry') {
-        sprigColor = '#f7f3eb';
-        outlineColor = '#f7f3eb';
-        scriptColor = '#f5e6c8';
-        fillStyleMain = createCandyCaneStripePattern(
-          ctx,
-          hasBurgundyStripeDefect ? '#6b1821' : '#d4a64a',
-          '#faf7f0',
-          cardW / 500
-        );
-      } else {
-        sprigColor = '#f7f4ec';
-        outlineColor = '#f7f4ec';
-        scriptColor = '#e8e4dc';
-        fillStyleMain = createCandyCaneStripePattern(ctx, '#c83e3b', '#faf7f0', cardW / 500);
-      }
-    }
-  }
-
-  ctx.save();
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-
-  const drawBotanicalSprig = (ox, oy, angleRad, scaleLen, flip = 1) => {
-    ctx.save();
-    ctx.translate(ox, oy);
-    ctx.rotate(angleRad);
-    ctx.strokeStyle = sprigColor;
-    ctx.fillStyle = sprigColor;
-    ctx.lineWidth = Math.max(1.25, cardW * 0.0028);
-
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.quadraticCurveTo(scaleLen * 0.5, -scaleLen * 0.14 * flip, scaleLen, 0);
-    ctx.stroke();
-
-    const pairs = 4;
-    for (let i = 1; i <= pairs; i++) {
-      const t = i / (pairs + 0.5);
-      const lx = scaleLen * t;
-      const ly = -scaleLen * 0.07 * flip * Math.sin(t * Math.PI);
-      const leafL = scaleLen * (0.28 * (1 - t * 0.3));
-      const leafW = leafL * 0.28;
-      [-1, 1].forEach((side) => {
-        ctx.save();
-        ctx.translate(lx, ly);
-        ctx.rotate(side * 0.62);
-        ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.quadraticCurveTo(leafL * 0.5, -leafW, leafL, 0);
-        ctx.quadraticCurveTo(leafL * 0.5, leafW, 0, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      });
-    }
-    ctx.restore();
-  };
-
-  const topY = cardY + cardH * 0.685;
-  const botY = cardY + cardH * 0.845;
-  const topFontPx = Math.round(bw * (grObj.topLine.length > 6 ? (aiAutoFixed ? 0.118 : 0.148) : 0.148));
-  const botFontPx = Math.round(bw * (grObj.botLine.length > 9 ? 0.128 : 0.148));
-
-  ctx.textBaseline = 'middle';
-  ctx.textAlign = 'left';
-  ctx.font = `700 ${topFontPx}px "Cinzel", "Playfair Display", "Didot", Georgia, serif`;
-  ctx.fillStyle = fillStyleMain;
-  ctx.strokeStyle = outlineColor;
-  ctx.lineWidth = Math.max(1.5, cardW * 0.0032);
-  ctx.fillText(grObj.topLine, bx, topY);
-  ctx.strokeText(grObj.topLine, bx, topY);
-
-  ctx.textAlign = 'center';
-  ctx.font = `700 ${botFontPx}px "Cinzel", "Playfair Display", "Didot", Georgia, serif`;
-  ctx.fillText(grObj.botLine, bx + bw * 0.5, botY);
-  ctx.strokeText(grObj.botLine, bx + bw * 0.5, botY);
-
-  const sprigLen = bw * 0.095;
-  drawBotanicalSprig(bx + bw * 0.01, topY - topFontPx * 0.42, -0.85, sprigLen, 1);
-  drawBotanicalSprig(bx + bw * 0.52, topY - topFontPx * 0.35, -0.55, sprigLen * 1.05, -1);
-  drawBotanicalSprig(bx + bw * 0.02, botY + botFontPx * 0.18, -2.15, sprigLen * 0.95, 1);
-  drawBotanicalSprig(bx + bw * 0.64, botY - botFontPx * 0.36, -0.95, sprigLen * 0.9, -1);
-  drawBotanicalSprig(bx + bw * 0.96, botY - botFontPx * 0.25, -0.65, sprigLen * 0.88, 1);
-
-  const rawSignoff = String(signoff || 'with love, the thompsons');
-  const signParts = rawSignoff.includes(',')
-    ? [rawSignoff.split(',')[0] + ',', rawSignoff.split(',').slice(1).join(',').trim()]
-    : ['with love,', rawSignoff];
-
-  const pocketX = bx + bw * (hasReflowDefect ? 0.56 : 0.77);
-  const pocketY = topY - topFontPx * 0.12;
-  const scriptPx = Math.round(bw * 0.044);
-  ctx.fillStyle = scriptColor;
-  ctx.textAlign = 'center';
-  ctx.font = `italic 500 ${scriptPx}px "Cormorant Garamond", "Playfair Display", Georgia, cursive, serif`;
-  ctx.fillText(signParts[0] || 'with love,', pocketX, pocketY);
-  ctx.fillText(signParts[1] || 'the thompsons', pocketX + bw * 0.02, pocketY + scriptPx * 1.08);
-
-  // If Stage 2 Builder Z-Order defect is unfixed, draw an overgrown sticker sprig directly ON TOP OF the interactive family-name text box!
-  if (hasZOrderDefect) {
-    drawBotanicalSprig(pocketX - bw * 0.11, pocketY + scriptPx * 0.45, -0.18, sprigLen * 1.45, 1);
-  }
-
-  // Diagnostic callouts for Before/After Spotlight or unfixed Customizer view
-  if (opts.showDefectCallouts || hasZOrderDefect) {
-    ctx.save();
-    ctx.strokeStyle = '#ef4444';
-    ctx.lineWidth = Math.max(2, cardW * 0.0045);
-    ctx.setLineDash([5, 3]);
-    if (hasZOrderDefect) {
-      const boxX = pocketX - bw * 0.17;
-      const boxY = pocketY - scriptPx * 0.85;
-      const boxW = bw * 0.36;
-      const boxH = scriptPx * 2.55;
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.18)';
-      ctx.fillRect(boxX, boxY, boxW, boxH);
-      ctx.strokeRect(boxX, boxY, boxW, boxH);
-      if (cardW >= 320) {
-        ctx.setLineDash([]);
-        ctx.fillStyle = '#dc2626';
-        const pillH = Math.max(15, Math.round(cardH * 0.046));
-        ctx.fillRect(boxX, Math.max(cardY + 4, boxY - pillH - 2), boxW, pillH);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `700 ${Math.max(8, Math.round(cardW * 0.0175))}px "JetBrains Mono", monospace`;
-        ctx.textAlign = 'center';
-        ctx.fillText('🔒 STICKER z:40 BLOCKS TEXT z:20', boxX + boxW * 0.5, Math.max(cardY + 4, boxY - pillH - 2) + pillH * 0.52);
-      }
-    } else if (hasCreamContrastDefect || hasBurgundyStripeDefect) {
-      ctx.strokeRect(bx - 6, topY - topFontPx * 0.58, bw + 12, (botY - topY) + botFontPx * 1.1);
-    } else if (hasTrimClipDefect) {
-      ctx.strokeRect(cardX + 4, botY - botFontPx * 0.52, cardW - 8, botFontPx * 1.02);
-    } else if (hasReflowDefect) {
-      ctx.strokeRect(bx + bw * 0.36, topY - topFontPx * 0.55, bw * 0.44, topFontPx * 1.05);
-    }
-    ctx.restore();
-  }
-
-  ctx.restore();
-}
-
-function createFoilLinearGradient(ctx, w, h, foilId, sheenPct) {
-  const foil = PLS_FOIL_CATALOG[foilId] || PLS_FOIL_CATALOG['pearl-shimmer'];
-  if (!foil.stops) {
-    const col = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.green;
-    return col.inkHex;
-  }
-  const shift = ((Number(sheenPct) || 38) - 50) / 100;
-  const x0 = w * (0.05 + shift * 0.35);
-  const y0 = h * 0.05;
-  const x1 = w * (0.95 + shift * 0.35);
-  const y1 = h * 0.95;
-  const g = ctx.createLinearGradient(x0, y0, x1, y1);
-  const stops = foil.stops;
-  stops.forEach((hex, i) => {
-    g.addColorStop(i / (stops.length - 1), hex);
-  });
-  return g;
-}
-
-function drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, darkBg = false) {
-  ctx.save();
-  const markColor = darkBg ? 'rgba(226, 232, 240, 0.72)' : 'rgba(15, 23, 42, 0.82)';
-  ctx.strokeStyle = markColor;
-  ctx.fillStyle = markColor;
-  ctx.lineWidth = 1.25;
-
-  const len = Math.max(10, w * 0.025);
-  const off = Math.max(5, w * 0.01);
-  const corners = [
-    [cardX, cardY, -1, -1],
-    [cardX + cardW, cardY, 1, -1],
-    [cardX, cardY + cardH, -1, 1],
-    [cardX + cardW, cardY + cardH, 1, 1],
-  ];
-  corners.forEach(([cx, cy, sx, sy]) => {
-    ctx.beginPath();
-    ctx.moveTo(cx + sx * off, cy);
-    ctx.lineTo(cx + sx * (off + len), cy);
-    ctx.moveTo(cx, cy + sy * off);
-    ctx.lineTo(cx, cy + sy * (off + len));
-    ctx.stroke();
-  });
-
-  [cardY * 0.46, cardY + cardH + (h - (cardY + cardH)) * 0.54].forEach((by) => {
-    const bx = w * 0.5;
-    const r = Math.max(4, w * 0.008);
-    ctx.beginPath();
-    ctx.arc(bx, by, r, 0, Math.PI * 2);
-    ctx.moveTo(bx - r * 1.6, by);
-    ctx.lineTo(bx + r * 1.6, by);
-    ctx.moveTo(bx, by - r * 1.6);
-    ctx.lineTo(bx, by + r * 1.6);
-    ctx.stroke();
-  });
-  ctx.restore();
-}
-
-// Renders any of the 5 individual prepress plates (or 'composite' proof) onto a target canvas
-// Supports optional `overrideOpts` ({ color, trim, greeting, foil, format, aiAutoFixed, showDefectCallouts }) for the 60-SKU QA Matrix
-function renderSinglePrintPlateCanvas(canvas, plateType, mode = 'visual', overrideOpts = null) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width;
-  const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-
-  const effColor = (overrideOpts && overrideOpts.color) || PLS_STATE.color;
-  const effTrim = (overrideOpts && overrideOpts.trim) || PLS_STATE.trim;
-  const effFoil = (overrideOpts && overrideOpts.foil) || PLS_STATE.foil;
-  const effEmboss = (overrideOpts && overrideOpts.emboss) || PLS_STATE.emboss;
-  const effFormat = (overrideOpts && overrideOpts.format) || PLS_STATE.format;
-  const effLayout = (overrideOpts && overrideOpts.layout) || PLS_STATE.layout;
-  const effGreeting = (overrideOpts && overrideOpts.greeting) || PLS_STATE.greeting;
-  const effSignoff = (overrideOpts && overrideOpts.signoff) || PLS_STATE.signoff;
-  const effAiFixed = overrideOpts && overrideOpts.aiAutoFixed != null ? Boolean(overrideOpts.aiAutoFixed) : Boolean(PLS_STATE.aiAutoFixed);
-  const showDefects = Boolean(overrideOpts && overrideOpts.showDefectCallouts);
-
-  const cardX = Math.round(w * 0.075);
-  const cardY = Math.round(h * 0.075);
-  const cardW = Math.round(w * 0.85);
-  const cardH = Math.round(h * 0.85);
-
-  const colorObj = PLS_COLOR_CATALOG[effColor] || PLS_COLOR_CATALOG.green;
-  const embossObj = PLS_EMBOSS_CATALOG[effEmboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
-  const insetScale = (effAiFixed && (effTrim === 'ticket' || effTrim === 'scalloped')) ? 0.028 : 0;
-  const photoWins = getCardPhotoRects(cardX, cardY, cardW, cardH, effLayout, insetScale);
-  const isModelSource = !overrideOpts && PLS_STATE.source.startsWith('slot-') && PLS_STATE.cachedSourceImage && PLS_STATE.cachedSourceImage.complete;
-  const vectorOpts = {
-    color: effColor,
-    trim: effTrim,
-    foil: effFoil,
-    layout: effLayout,
-    greeting: effGreeting,
-    signoff: effSignoff,
-    aiAutoFixed: effAiFixed,
-    showDefectCallouts: showDefects,
-  };
-
-  // ==================== COMPOSITE CUSTOMER PROOF ====================
-  if (plateType === 'composite') {
-    ctx.fillStyle = '#f2f0ea';
-    ctx.fillRect(0, 0, w, h);
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.34)';
-    ctx.shadowBlur = w * 0.036;
-    ctx.shadowOffsetX = -w * 0.008;
-    ctx.shadowOffsetY = h * 0.022;
-    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-    ctx.fillStyle = colorObj.hex;
-    ctx.fill();
-    ctx.restore();
-
-    ctx.save();
-    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-    ctx.clip();
-
-    if (isModelSource) {
-      ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
-    } else {
-      const bgGrad = ctx.createLinearGradient(cardX, cardY, cardX + cardW, cardY + cardH);
-      bgGrad.addColorStop(0, colorObj.hex);
-      bgGrad.addColorStop(1, colorObj.darkHex);
-      ctx.fillStyle = bgGrad;
-      ctx.fillRect(cardX, cardY, cardW, cardH);
-
-      if (effFoil === 'pearl-shimmer') {
-        const sheenShift = ((Number(PLS_STATE.foilSheen) || 38) / 100) * cardW;
-        const pearlGrad = ctx.createLinearGradient(cardX + sheenShift - cardW * 0.3, cardY, cardX + sheenShift + cardW * 0.3, cardY + cardH);
-        pearlGrad.addColorStop(0, 'rgba(255,255,255,0)');
-        pearlGrad.addColorStop(0.5, 'rgba(255,255,255,0.09)');
-        pearlGrad.addColorStop(1, 'rgba(255,255,255,0)');
-        ctx.fillStyle = pearlGrad;
-        ctx.fillRect(cardX, cardY, cardW, cardH);
-      }
-
-      if (effFormat === '5x7-folded') {
-        ctx.save();
-        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
-        ctx.setLineDash([6, 4]);
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(cardX, cardY + 5);
-        ctx.lineTo(cardX + cardW, cardY + 5);
-        ctx.stroke();
-        ctx.restore();
-      } else if (effFormat === 'ornament') {
-        // Keepsake ornament ribbon hole + gold grommet ring at top center
-        ctx.save();
-        const holeX = cardX + cardW * 0.5;
-        const holeY = cardY + cardH * 0.032;
-        const holeR = Math.max(5, cardW * 0.015);
-        ctx.fillStyle = '#f2f0ea';
-        ctx.beginPath();
-        ctx.arc(holeX, holeY, holeR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#d4af37';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.restore();
-      }
-
-      photoWins.forEach((win, idx) => drawStylizedHolidayFamilyScene(ctx, win, idx));
-
-      if (embossObj.dir !== 0) {
-        ctx.save();
-        ctx.translate(embossObj.dir * 1.6, embossObj.dir * 1.8);
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, 'rgba(0, 0, 0, 0.28)', { ...vectorOpts, monoPlate: true, showDefectCallouts: false });
-        ctx.restore();
-      }
-
-      const foilStyle = createFoilLinearGradient(ctx, w, h, effFoil, PLS_STATE.foilSheen);
-      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, foilStyle, vectorOpts);
-    }
-    ctx.restore();
-
-    // Optional Builder Z-Order Bounding Boxes + CutContour Magenta Die-Line Overlay
-    if (!overrideOpts && PLS_STATE.showTrimGuide) {
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
-      ctx.save();
-      ctx.strokeStyle = '#ec4899';
-      ctx.lineWidth = 2.2;
-      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-      ctx.stroke();
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = '#0284c7';
-      ctx.lineWidth = 1.4;
-      photoWins.forEach((win, idx) => {
-        ctx.strokeRect(win.x, win.y, win.w, win.h);
-        ctx.fillStyle = 'rgba(2, 132, 199, 0.88)';
-        ctx.fillRect(win.x + 4, win.y + 4, 86, 16);
-        ctx.fillStyle = '#ffffff';
-        ctx.font = '700 9.5px "JetBrains Mono", monospace';
-        ctx.textAlign = 'left';
-        ctx.fillText(`PHOTO_${idx + 1} (z:25)`, win.x + 8, win.y + 12);
-      });
-      // Editable Builder Text Box bounding box (z:50)
-      const tBoxX = cardX + cardW * 0.56;
-      const tBoxY = cardY + cardH * 0.61;
-      const tBoxW = cardW * 0.34;
-      const tBoxH = cardH * 0.13;
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 1.8;
-      ctx.strokeRect(tBoxX, tBoxY, tBoxW, tBoxH);
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.92)';
-      ctx.fillRect(tBoxX, tBoxY - 17, 158, 16);
-      ctx.fillStyle = '#ffffff';
-      ctx.font = '700 9.5px "JetBrains Mono", monospace';
-      ctx.fillText('TEXT_BOX (z:50 · CLICKABLE)', tBoxX + 5, tBoxY - 9);
-      ctx.restore();
-    }
-    return;
-  }
-
-  // ==================== PLATE 0: DIE-CUT & BLEED MASK (CutContour) ====================
-  if (plateType === 0) {
-    if (mode === 'factory') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
-      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-      ctx.fillStyle = '#000000';
-      ctx.fill();
-      ctx.strokeStyle = '#ec4899';
-      ctx.lineWidth = 2.2;
-      ctx.stroke();
-    } else {
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
-      ctx.save();
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
-      ctx.lineWidth = 1.4;
-      ctx.strokeRect(cardX - 8, cardY - 8, cardW + 16, cardH + 16);
-      ctx.restore();
-
-      ctx.save();
-      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-      ctx.fillStyle = 'rgba(236, 72, 153, 0.14)';
-      ctx.fill();
-      ctx.strokeStyle = '#ec4899';
-      ctx.lineWidth = 2.6;
-      ctx.stroke();
-      ctx.restore();
-
-      ctx.save();
-      ctx.setLineDash([3, 3]);
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.75)';
-      ctx.lineWidth = 1.3;
-      photoWins.forEach((win) => {
-        ctx.beginPath();
-        tracePhotoWindowPath(ctx, win, 0);
-        ctx.stroke();
-      });
-      ctx.restore();
-    }
-    return;
-  }
-
-  // ==================== PLATE 1: BASE CARDSTOCK & CMYK + FOIL/PHOTO KNOCKOUTS ====================
-  if (plateType === 1) {
-    if (mode === 'factory') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
-    } else {
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
-    }
-
-    ctx.save();
-    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-    ctx.clip();
-
-    if (isModelSource && mode === 'visual') {
-      ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
-    } else {
-      ctx.fillStyle = mode === 'factory' ? '#1e293b' : colorObj.hex;
-      ctx.fillRect(cardX, cardY, cardW, cardH);
-    }
-
-    ctx.fillStyle = '#ffffff';
-    photoWins.forEach((win) => {
-      ctx.beginPath();
-      tracePhotoWindowPath(ctx, win, 0);
-      ctx.fill();
-    });
-
-    if (effFoil !== 'none') {
-      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#ffffff', { ...vectorOpts, monoPlate: true });
-    } else {
-      renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, mode === 'factory' ? '#000000' : colorObj.inkHex, vectorOpts);
-    }
-    ctx.restore();
-    return;
-  }
-
-  // ==================== PLATE 2: CUSTOMER PHOTO APERTURE LAYER ====================
-  if (plateType === 2) {
-    if (mode === 'factory') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
-    } else {
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
-    }
-
-    ctx.save();
-    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-    ctx.clip();
-
-    if (isModelSource) {
-      photoWins.forEach((win) => {
-        ctx.save();
-        ctx.beginPath();
-        tracePhotoWindowPath(ctx, win, 0);
-        ctx.clip();
-        ctx.drawImage(PLS_STATE.cachedSourceImage, cardX, cardY, cardW, cardH);
-        ctx.restore();
-      });
-    } else {
-      photoWins.forEach((win, idx) => drawStylizedHolidayFamilyScene(ctx, win, idx));
-    }
-    ctx.restore();
-    return;
-  }
-
-  // ==================== PLATE 3: PEARL SHIMMER / METALLIC FOIL STAMPING SPOT PLATE ====================
-  if (plateType === 3) {
-    if (mode === 'factory') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, false);
-      if (effFoil !== 'none') {
-        ctx.save();
-        buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-        ctx.clip();
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#000000', { ...vectorOpts, monoPlate: true });
-        ctx.restore();
-      }
-    } else {
-      drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
-      ctx.save();
-      buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.16)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.clip();
-
-      if (effFoil !== 'none') {
-        const foilGrad = createFoilLinearGradient(ctx, w, h, effFoil, PLS_STATE.foilSheen);
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, foilGrad, vectorOpts);
-      } else {
-        ctx.fillStyle = 'rgba(148, 163, 184, 0.65)';
-        ctx.font = `600 ${Math.round(w * 0.032)}px "Inter", sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.fillText('NO FOIL PASS (MATTE SMOOTH CMYK SELECTED)', w * 0.5, h * 0.5);
-      }
-      ctx.restore();
-    }
-    return;
-  }
-
-  // ==================== PLATE 4: EMBOSS / DEBOSS TACTILE RELIEF HEIGHT MAP ====================
-  if (plateType === 4) {
-    ctx.fillStyle = mode === 'factory' ? '#000000' : '#0f172a';
-    ctx.fillRect(0, 0, w, h);
-    drawPrepressRegistrationMarks(ctx, w, h, cardX, cardY, cardW, cardH, true);
-
-    ctx.save();
-    buildDieCutContourPath(ctx, cardX, cardY, cardW, cardH, effTrim);
-    ctx.fillStyle = mode === 'factory' ? '#141414' : '#1e293b';
-    ctx.fill();
-    ctx.clip();
-
-    if (embossObj.dir !== 0) {
-      if (mode === 'visual') {
-        ctx.save();
-        ctx.translate(embossObj.dir * -2.2, embossObj.dir * -2.2);
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#38bdf8', { ...vectorOpts, monoPlate: true });
-        ctx.restore();
-        ctx.save();
-        ctx.translate(embossObj.dir * 2.2, embossObj.dir * 2.2);
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#020617', { ...vectorOpts, monoPlate: true });
-        ctx.restore();
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#f8fafc', { ...vectorOpts, monoPlate: true });
-      } else {
-        ctx.save();
-        ctx.shadowColor = '#ffffff';
-        ctx.shadowBlur = 4;
-        renderDecoBotanicalFoilVector(ctx, cardX, cardY, cardW, cardH, '#ffffff', { ...vectorOpts, monoPlate: true });
-        ctx.restore();
-      }
-    } else {
-      ctx.fillStyle = 'rgba(148, 163, 184, 0.7)';
-      ctx.font = `600 ${Math.round(w * 0.032)}px "Inter", sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText('0.00mm FLAT SMOOTH (NO EMBOSS PASS)', w * 0.5, h * 0.5);
-    }
-    ctx.restore();
-  }
-}
-
-function updateExploded3DStackTransforms() {
-  const viewport = $('#plsExplodedViewport');
-  const scene = $('#plsStackScene');
-  const spreadValEl = $('#plsSpreadVal');
-  const spread = Number(PLS_STATE.spread) || 0;
-  if (spreadValEl) spreadValEl.textContent = `${Math.round(spread)}%`;
-  if (viewport) viewport.dataset.cam = PLS_STATE.cam;
-
-  if (!scene) return;
-  const cam = PLS_STATE.cam;
-  if (cam === 'side') {
-    scene.style.transform = 'rotateX(74deg) rotateZ(-8deg) scale(0.92)';
-  } else if (cam === 'top') {
-    scene.style.transform = 'rotateX(0deg) rotateZ(0deg) scale(0.96)';
-  } else {
-    scene.style.transform = 'rotateX(52deg) rotateZ(-24deg) scale(0.90)';
-  }
-
-  const maxStepZ = 56;
-  const stepZ = (spread / 100) * maxStepZ;
-  const stepY = (spread / 100) * -10;
-
-  for (let i = 0; i < 5; i++) {
-    const plane = $(`#plsPlane${i}`);
-    if (!plane) continue;
-    const centeredIdx = i - 2;
-    const z = centeredIdx * stepZ;
-    const y = centeredIdx * stepY;
-    const isVis = Boolean(PLS_STATE.layerVis[i]);
-    const isHi = PLS_STATE.highlightedPlate === i;
-    plane.classList.toggle('is-hidden-layer', !isVis);
-    plane.classList.toggle('is-highlighted', isHi);
-    const extraScale = isHi ? 1.04 : 1.0;
-    plane.style.transform = `translate3d(0px, ${y.toFixed(1)}px, ${z.toFixed(1)}px) scale(${extraScale})`;
-  }
-}
-
-function ensurePrintPlatesGridBuilt() {
-  const grid = $('#plsPlatesGrid');
-  if (!grid || grid.children.length === 5) return;
-  grid.innerHTML = '';
-  PLS_PLATE_DEFS.forEach((def) => {
-    const card = el('div', 'pls-plate-card');
-    card.dataset.plateIdx = String(def.idx);
-    card.innerHTML = `
-      <div class="pls-plate-top">
-        <div class="pls-plate-top-row">
-          <span class="pls-plate-num">${esc(def.num)}</span>
-          <span class="pls-plate-channel" id="plsPlateChan${def.idx}">${esc(def.channel)}</span>
-        </div>
-        <h5 class="pls-plate-name" id="plsPlateName${def.idx}">${esc(def.name)}</h5>
-      </div>
-      <div class="pls-plate-stage" data-plate-enlarge="${def.idx}" title="Click to inspect high-resolution horizontal 7×5 plate in full-screen Lightbox">
-        <canvas id="plsPlateCanvas${def.idx}" width="672" height="480"></canvas>
-      </div>
-      <div class="pls-plate-spec" id="plsPlateSpec${def.idx}">${def.spec}</div>
-      <div class="pls-plate-actions">
-        <button type="button" class="bar-btn" data-plate-enlarge="${def.idx}">🔍 Inspect Layer</button>
-        <button type="button" class="bar-btn" data-plate-dl="${def.idx}">⬇ Save Layer PNG</button>
-      </div>
-    `;
-    card.addEventListener('mouseenter', () => {
-      PLS_STATE.highlightedPlate = def.idx;
-      updateExploded3DStackTransforms();
-    });
-    card.addEventListener('mouseleave', () => {
-      PLS_STATE.highlightedPlate = null;
-      updateExploded3DStackTransforms();
-    });
-    grid.appendChild(card);
-  });
-
-  grid.querySelectorAll('[data-plate-enlarge]').forEach((node) => {
-    node.addEventListener('click', () => {
-      const idx = Number(node.dataset.plateEnlarge);
-      openPrintPlateInLightbox(idx);
-    });
-  });
-
-  grid.querySelectorAll('[data-plate-dl]').forEach((node) => {
-    node.addEventListener('click', () => {
-      const idx = Number(node.dataset.plateDl);
-      downloadSinglePrintPlatePng(idx);
-    });
-  });
-}
-
-function buildCustomizedCardPromptFromStudio() {
-  const colorObj = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.green;
-  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.bracket;
-  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG['pearl-shimmer'];
-  const embossObj = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
-  const formatObj = PLS_FORMAT_CATALOG[PLS_STATE.format] || PLS_FORMAT_CATALOG['5x7-flat'];
-  const layoutObj = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
-
-  const foilDesc = PLS_STATE.foil === 'none'
-    ? `flat ${colorObj.inkHex} CMYK ink (no metallic foil)`
-    : `${foilObj.label} (${foilObj.meta})`;
-
-  return `Overhead flat-lay studio proof of a personalized ${formatObj.label} horizontal "Deco Botanical Holiday Card" (by Petite Lemon) on ${colorObj.label} cardstock (${colorObj.hex}) with a ${trimObj.label} die-cut outer trim contour. Feature a ${layoutObj.label} framing warm coastal family beach portraits along the top. Below the photos, render large red-and-white diagonal candy-cane striped serif lettering reading "${PLS_STATE.greeting}" with delicate botanical sprigs tucked around the letters in ${foilDesc} and ${embossObj.meta}, plus cursive script in the upper-right pocket reading "${PLS_STATE.signoff}".`;
-}
-
-function syncStudioPromptToComposer(flashButton = false) {
-  const promptEl = $('#imgPromptInput');
-  if (!promptEl) return;
-  promptEl.value = buildCustomizedCardPromptFromStudio();
-  markImageComposerApplied();
-  if (flashButton) {
-    const btn = $('#plsSyncPromptBtn');
-    if (btn) {
-      const orig = btn.textContent;
-      btn.textContent = '✓ Synced to Prompt';
-      setTimeout(() => { btn.textContent = orig; }, 1400);
-    }
-  }
-}
-
-function refreshPrintStudioSourceOptions() {
-  const sel = $('#plsSourceSelect');
-  if (!sel) return;
-  const prev = sel.value || PLS_STATE.source || 'designer-template';
-  sel.innerHTML = '';
-
-  const optDefault = el('option');
-  optDefault.value = 'designer-template';
-  optDefault.textContent = '🎨 Golden Base Template (Deco Botanical — Petite Lemon)';
-  sel.appendChild(optDefault);
-
-  (IMG_LAST_RESULTS || []).forEach((r) => {
-    if (r && r.ok && r.imageDataUrl) {
-      const o = el('option');
-      o.value = `slot-${r.slot}`;
-      o.textContent = `💥 Explode Slot ${r.slot} Output — ${r.label} (${r.width || '?'}×${r.height || '?'})`;
-      sel.appendChild(o);
-    }
-  });
-
-  if (Array.from(sel.options).some((o) => o.value === prev)) {
-    sel.value = prev;
-  } else {
-    sel.value = 'designer-template';
-    PLS_STATE.source = 'designer-template';
-  }
-}
-
-function loadPrintStudioSourceImageThenRender() {
-  let targetUrl = '';
-  if (PLS_STATE.source.startsWith('slot-')) {
-    const slot = PLS_STATE.source.replace('slot-', '');
-    const hit = (IMG_LAST_RESULTS || []).find((r) => r && r.ok && String(r.slot) === String(slot));
-    if (hit && hit.imageDataUrl) targetUrl = hit.imageDataUrl;
-  } else if (Array.isArray(IMG_REF_ATTACHMENTS) && IMG_REF_ATTACHMENTS.length > 0) {
-    const ref0 = IMG_REF_ATTACHMENTS[0];
-    const cleanB64 = String(ref0.data || '').replace(/^data:[^;]+;base64,/, '');
-    if (cleanB64) targetUrl = `data:${ref0.mimeType || 'image/png'};base64,${cleanB64}`;
-  }
-
-  if (!targetUrl) {
-    PLS_STATE.cachedSourceImage = null;
-    PLS_STATE.cachedSourceKey = '';
-    renderPrintLayerStudioNow();
-    return;
-  }
-
-  const key = targetUrl.slice(0, 128) + ':' + targetUrl.length;
-  if (PLS_STATE.cachedSourceKey === key && PLS_STATE.cachedSourceImage && PLS_STATE.cachedSourceImage.complete) {
-    renderPrintLayerStudioNow();
-    return;
-  }
-
-  const img = new Image();
-  img.onload = () => {
-    PLS_STATE.cachedSourceImage = img;
-    PLS_STATE.cachedSourceKey = key;
-    renderPrintLayerStudioNow();
-  };
-  img.onerror = () => {
-    PLS_STATE.cachedSourceImage = null;
-    PLS_STATE.cachedSourceKey = '';
-    renderPrintLayerStudioNow();
-  };
-  img.src = targetUrl;
-}
-
-function switchPrintStudioTab(tabId) {
-  const validTabs = ['customizer', 'matrix', 'layers', 'merchandising'];
-  const nextTab = validTabs.includes(tabId) ? tabId : 'customizer';
-  PLS_STATE.tab = nextTab;
-
-  document.querySelectorAll('#plsWorkflowTabs [data-pls-tab]').forEach((btn) => {
-    const isAct = btn.getAttribute('data-pls-tab') === nextTab;
-    btn.classList.toggle('active', isAct);
-    btn.setAttribute('aria-selected', String(isAct));
-  });
-
-  document.querySelectorAll('#imgPrintLayerStudio [data-pls-tab-panel]').forEach((panel) => {
-    const isAct = panel.getAttribute('data-pls-tab-panel') === nextTab;
-    panel.classList.toggle('hidden', !isAct);
-  });
-
-  renderPrintLayerStudioNow();
-}
-
-// Updates the Tab 1 right-hand AI Designer Co-Pilot Preflight Inspector (Stage 1 Build-Doc + Stage 2 Builder Z-Order)
-function renderDesignerPreflightCoPilot() {
-  const col = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.green;
-  const trim = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.bracket;
-  const gr = PLS_GREETING_CATALOG[PLS_STATE.greeting] || PLS_GREETING_CATALOG['MERRY CHRISTMAS'];
-  const layoutObj = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
-  const aiFixed = Boolean(PLS_STATE.aiAutoFixed);
-  const qa = evaluateCardPermutationQA(PLS_STATE.color, PLS_STATE.greeting, PLS_STATE.trim);
-
-  const toggleBtn = $('#plsAiAutoFixToggleBtn');
-  if (toggleBtn) {
-    toggleBtn.classList.toggle('is-on', aiFixed);
-    toggleBtn.setAttribute('aria-pressed', String(aiFixed));
-  }
-  const statusTxt = $('#plsAiAutoFixStatusTxt');
-  if (statusTxt) statusTxt.textContent = aiFixed ? 'ON' : 'OFF (Raw)';
-
-  // Evaluate the 4 checks for the active Customizer combination
-  const rawZOrderProblem = qa.issueType === 'zorder';
-  const rawTrimProblem = PLS_STATE.trim === 'ticket' || PLS_STATE.trim === 'scalloped';
-  const rawContrastProblem = PLS_STATE.color === 'cream' || PLS_STATE.color === 'burgundy' || PLS_STATE.color === 'cranberry';
-  const rawReflowProblem = gr.category === 'Religious' || gr.category === 'Holiday';
-
-  // 1. Stage 2 Builder Z-Order & Interactive Text Selectability
-  const zOrderEl = $('#plsCheckZOrder');
-  const zOrderDesc = $('#plsCheckZOrderDesc');
-  if (zOrderEl && zOrderDesc) {
-    const icon = zOrderEl.querySelector('.pls-chk-icon');
-    if (rawZOrderProblem && !aiFixed) {
-      zOrderEl.className = 'pls-check-item is-fail';
-      if (icon) icon.textContent = '🔒';
-      zOrderDesc.textContent = `LOCKOUT: Decorative Botanical Sticker Layer (z-index: 40) sits above Editable "${gr.topLine}" & Family Name Text Box (z-index: 20) — text is unselectable in staging Builder! Toggle AI Auto-Fix ON to fix.`;
-    } else if (rawZOrderProblem && aiFixed) {
-      zOrderEl.className = 'pls-check-item is-fixed';
-      if (icon) icon.textContent = '✨';
-      zOrderDesc.textContent = 'AI Auto-Fixed Builder Z-Order: Promoted Editable Text Box to z-index: 50 (above Botanical Sticker z-index: 30) and tucked overlapping sprig 3.5mm clear.';
-    } else {
-      zOrderEl.className = 'pls-check-item';
-      if (icon) icon.textContent = '✅';
-      zOrderDesc.textContent = 'Editable Text Layer (z-index: 50) sits cleanly above Decorative Botanical Sticker Layer (z-index: 30) — 100% clickable in staging Builder.';
-    }
-  }
-
-  // 2. Die-Cut Trim Safe-Zone & Multi-Photo Drop-Zone Reflow
-  const trimEl = $('#plsCheckTrim');
-  const trimDesc = $('#plsCheckTrimDesc');
-  if (trimEl && trimDesc) {
-    const icon = trimEl.querySelector('.pls-chk-icon');
-    if (rawTrimProblem && !aiFixed) {
-      trimEl.className = 'pls-check-item is-warn';
-      if (icon) icon.textContent = '⚠️';
-      trimDesc.textContent = `WARNING: Inward ${trim.label} die-cut notch cuts within 1.1mm of "${gr.botLine}" outer serifs (violates 3.2mm safe zone).`;
-    } else if (rawTrimProblem && aiFixed) {
-      trimEl.className = 'pls-check-item is-fixed';
-      if (icon) icon.textContent = '✨';
-      trimDesc.textContent = `AI Auto-Fixed: Applied 7% safe-zone inset inside ${trim.label} CutContour path (4.3mm clearance) + balanced ${layoutObj.label} drop-zones.`;
-    } else {
-      trimEl.className = 'pls-check-item';
-      if (icon) icon.textContent = '✅';
-      trimDesc.textContent = `4.4mm minimum clearance from ${trim.label} die-cut contour; ${layoutObj.label} (${layoutObj.slotCount} photo drop-zones) balanced with 2mm bleed trap.`;
-    }
-  }
-
-  // 3. Cardstock Colorway, Candy-Cane Stripe & Botanical Contrast
-  const contrastEl = $('#plsCheckContrast');
-  const contrastDesc = $('#plsCheckContrastDesc');
-  if (contrastEl && contrastDesc) {
-    const icon = contrastEl.querySelector('.pls-chk-icon');
-    if (rawContrastProblem && !aiFixed) {
-      contrastEl.className = 'pls-check-item is-fail';
-      if (icon) icon.textContent = '❌';
-      contrastDesc.textContent = PLS_STATE.color === 'cream'
-        ? 'DEFECT: White botanical sprigs (#f7f4ec) & cursive sign-off have 1.18:1 contrast on Warm Ivory Cream (#f4efe4) and vanish!'
-        : 'DEFECT: Red candy-cane stripes (#c83e3b) clash with Deep Burgundy (#4a1219) at 1.45:1 contrast.';
-    } else if (rawContrastProblem && aiFixed) {
-      contrastEl.className = 'pls-check-item is-fixed';
-      if (icon) icon.textContent = '✨';
-      contrastDesc.textContent = PLS_STATE.color === 'cream'
-        ? 'AI Auto-Fixed: Remapped botanical sprigs & cursive sign-off to Deep Forest Sage (#2f483f) on Cream cardstock (7.4:1 contrast).'
-        : 'AI Auto-Fixed: Remapped inline letter stripes to Champagne Gold (#d4a64a) & Warm Ivory on Burgundy cardstock (6.8:1 contrast).';
-    } else {
-      contrastEl.className = 'pls-check-item';
-      if (icon) icon.textContent = '✅';
-      contrastDesc.textContent = `8.1:1 optical contrast between ${col.label} (${col.hex}), white botanical sprigs, and red/white candy-cane stripes.`;
-    }
-  }
-
-  // 4. Stage 1 Build-Doc Spreadsheet 1:1 Row & Greeting Pocket Reflow
-  const reflowEl = $('#plsCheckReflow');
-  const reflowDesc = $('#plsCheckReflowDesc');
-  if (reflowEl && reflowDesc) {
-    const icon = reflowEl.querySelector('.pls-chk-icon');
-    if (rawReflowProblem && !aiFixed) {
-      reflowEl.className = 'pls-check-item is-warn';
-      if (icon) icon.textContent = '⚠️';
-      reflowDesc.textContent = `WARNING: "${gr.topLine}" (${gr.topLine.length} chars) pushes into the upper-right cursive sign-off pocket ("${PLS_STATE.signoff}").`;
-    } else if (rawReflowProblem && aiFixed) {
-      reflowEl.className = 'pls-check-item is-fixed';
-      if (icon) icon.textContent = '✨';
-      reflowDesc.textContent = `AI Auto-Fixed: Tightened "${gr.topLine}" kerning by 9%, shifted sign-off pocket rightward, and verified 1:1 Build-Doc row match.`;
-    } else {
-      reflowEl.className = 'pls-check-item';
-      if (icon) icon.textContent = '✅';
-      reflowDesc.textContent = `1:1 Build-Doc spreadsheet row verified (${layoutObj.slotCount}-Up layout, 5 discrete IDML/Builder layers, "${gr.topLine}" pocket balanced).`;
-    }
-  }
-
-  // Overall Preflight Banner
-  const banner = $('#plsPreflightBanner');
-  const scoreBadge = $('#plsPreflightScoreBadge');
-  const headline = $('#plsPreflightHeadline');
-  const subline = $('#plsPreflightSubline');
-  const anyRawProblem = rawZOrderProblem || rawTrimProblem || rawContrastProblem || rawReflowProblem;
-  if (banner && scoreBadge && headline && subline) {
-    if (anyRawProblem && !aiFixed) {
-      banner.className = 'pls-preflight-banner is-warn';
-      scoreBadge.textContent = rawZOrderProblem ? '48/100' : (rawContrastProblem ? '54/100' : '65/100');
-      headline.textContent = '⚠️ Raw Unfixed Variant — Manual InDesign / Staging Builder Defect Detected';
-      subline.textContent = 'Turn "✨ AI Auto-Fix: ON" above to automatically resolve Builder z-order, contrast, trim safe-zone, and reflow.';
-    } else if (anyRawProblem && aiFixed) {
-      banner.className = 'pls-preflight-banner';
-      scoreBadge.textContent = '99/100';
-      headline.textContent = '✨ AI Co-Pilot Auto-Fixed — Build-Doc & Staging Builder Verified';
-      subline.textContent = `Automatically adapted ${col.label} + ${gr.category} + ${trim.label} + ${layoutObj.label} with zero manual Illustrator/InDesign edits.`;
-    } else {
-      banner.className = 'pls-preflight-banner';
-      scoreBadge.textContent = '99/100';
-      headline.textContent = '✅ Staging & Print-Ready — All 4 Automated QA Gates Passed';
-      subline.textContent = `${trim.label} clearance, ${col.label} contrast, Builder z-order (Text z:50 > Sticker z:30), and ${layoutObj.label} verified.`;
-    }
-  }
-}
-
-// Renders the 60-combination Two-Stage QA Matrix in Tab 2
-function renderPermutationQaMatrix() {
-  const grid = $('#plsQaMatrixGrid');
-  if (!grid) return;
-
-  const matrixColors = ['green', 'cream', 'navy', 'burgundy'];
-  const matrixGreetings = ['MERRY CHRISTMAS', 'HAPPY HOLIDAYS', 'PEACE ON EARTH'];
-  const matrixTrims = ['bracket', 'rounded', 'square', 'ticket', 'scalloped'];
-
-  const allPerms = [];
-  matrixColors.forEach((cId) => {
-    matrixGreetings.forEach((gId) => {
-      matrixTrims.forEach((tId) => {
-        allPerms.push(evaluateCardPermutationQA(cId, gId, tId));
-      });
-    });
-  });
-
-  const flaggedCount = allPerms.filter((p) => p.hasRawIssue).length;
-  const aiFixed = Boolean(PLS_STATE.aiAutoFixed);
-
-  const tabSub = $('#plsTabMatrixSub');
-  const tabBadge = $('#plsTabMatrixBadge');
-  if (tabSub && tabBadge) {
-    if (aiFixed) {
-      tabSub.textContent = `60 / 60 SKUs Verified (${flaggedCount} Auto-Fixed by Gemini QA)`;
-      tabBadge.textContent = '60/60 Ready';
-      tabBadge.className = 'pls-wf-pill is-pass';
-    } else {
-      tabSub.textContent = `Stage 1 Build-Doc + Stage 2 Z-Order · ${flaggedCount} Issues Flagged`;
-      tabBadge.textContent = `${flaggedCount} Flagged`;
-      tabBadge.className = 'pls-wf-pill is-warn';
-    }
-  }
-
-  const kpiPass = $('#plsQaKpiPass');
-  const kpiPassSub = $('#plsQaKpiPassSub');
-  const kpiFlagged = $('#plsQaKpiFlagged');
-  const kpiFlaggedSub = $('#plsQaKpiFlaggedSub');
-  if (kpiPass && kpiFlagged) {
-    if (aiFixed) {
-      kpiPass.textContent = '60 / 60 (100%)';
-      if (kpiPassSub) kpiPassSub.textContent = `${60 - flaggedCount} Native Pass + ${flaggedCount} AI Auto-Fixed`;
-      kpiFlagged.textContent = `0 Unresolved (${flaggedCount} Fixed)`;
-      kpiFlagged.className = 'v is-pass';
-      if (kpiFlaggedSub) kpiFlaggedSub.textContent = '4 Z-Order · 5 Contrast · 4 Trim · 3 Reflow Resolved';
-    } else {
-      kpiPass.textContent = `${60 - flaggedCount} / 60 (73.3%)`;
-      if (kpiPassSub) kpiPassSub.textContent = 'Pass both Build-Doc & Builder Z-Order QA';
-      kpiFlagged.textContent = `${flaggedCount} Flagged`;
-      kpiFlagged.className = 'v is-warn';
-      if (kpiFlaggedSub) kpiFlaggedSub.textContent = '4 Z-Order Lockouts · 5 Contrast · 4 Trim · 3 Reflow';
-    }
-  }
-
-  const filter = PLS_STATE.qaFilter || 'all';
-  const filtered = allPerms.filter((p) => {
-    if (filter === 'flagged') return p.hasRawIssue;
-    if (filter === 'zorder') return p.issueType === 'zorder';
-    if (filter === 'contrast') return p.issueType === 'contrast';
-    if (filter === 'trim') return p.issueType === 'trim';
-    if (filter === 'reflow') return p.issueType === 'reflow';
-    return true;
-  });
-
-  grid.innerHTML = '';
-  filtered.forEach((perm) => {
-    const tile = el('div', 'pls-qa-tile');
-    const isSel = perm.key === PLS_STATE.selectedMatrixKey;
-    if (isSel) tile.classList.add('is-selected');
-    if (perm.hasRawIssue && !aiFixed) tile.classList.add('is-flagged');
-    if (perm.hasRawIssue && aiFixed) tile.classList.add('is-fixed');
-
-    let badgeClass = 'is-pass';
-    let badgeTxt = perm.fixedBadge;
-    if (perm.hasRawIssue && !aiFixed) {
-      badgeClass = perm.severity === 'fail' ? 'is-fail' : 'is-warn';
-      badgeTxt = perm.rawBadge;
-    } else if (perm.hasRawIssue && aiFixed) {
-      badgeClass = 'is-fixed';
-      badgeTxt = perm.fixedBadge;
-    }
-
-    tile.innerHTML = `
-      <div class="pls-qat-thumb">
-        <canvas width="252" height="180"></canvas>
-      </div>
-      <div class="pls-qat-meta">
-        <div class="pls-qat-row">
-          <span class="pls-qat-title">${esc(perm.colorLabel)} · ${esc(perm.greetingCategory)}</span>
-          <span class="pls-qat-badge ${badgeClass}">${esc(badgeTxt)}</span>
-        </div>
-        <div class="pls-qat-sub">${esc(perm.trimLabel)} Trim · "${esc(perm.greetingLabel)}"</div>
-      </div>
-    `;
-
-    const cnv = tile.querySelector('canvas');
-    renderSinglePrintPlateCanvas(cnv, 'composite', 'visual', {
-      color: perm.colorId,
-      greeting: perm.greetingId,
-      trim: perm.trimId,
-      aiAutoFixed: aiFixed,
-      showDefectCallouts: !aiFixed && perm.hasRawIssue,
-    });
-
-    tile.addEventListener('click', () => {
-      PLS_STATE.selectedMatrixKey = perm.key;
-      PLS_STATE.color = perm.colorId;
-      PLS_STATE.greeting = perm.greetingId;
-      PLS_STATE.trim = perm.trimId;
-      applyPrintStudioPresetUI({
-        color: perm.colorId,
-        greeting: perm.greetingId,
-        trim: perm.trimId,
-      });
-      renderPermutationQaMatrix();
-      renderSpotlightComparison();
-    });
-
-    grid.appendChild(tile);
-  });
-
-  renderSpotlightComparison();
-}
-
-function renderSpotlightComparison() {
-  const parts = String(PLS_STATE.selectedMatrixKey || 'green|HAPPY HOLIDAYS|bracket').split('|');
-  const cId = parts[0] || 'green';
-  const gId = parts[1] || 'HAPPY HOLIDAYS';
-  const tId = parts[2] || 'bracket';
-  const perm = evaluateCardPermutationQA(cId, gId, tId);
-
-  const titleEl = $('#plsSpotlightTitle');
-  if (titleEl) {
-    titleEl.textContent = `${PLS_COLOR_CATALOG[cId]?.label || cId} · ${perm.greetingCategory} ("${perm.greetingLabel}") · ${perm.trimLabel} Trim`;
-  }
-  const descEl = $('#plsSpotlightDesc');
-  if (descEl) {
-    descEl.textContent = perm.hasRawIssue
-      ? `${perm.rawReason} → ${perm.fixReason}`
-      : `${perm.rawReason} Click any flagged SKU tile below to inspect Before vs. After AI Auto-Fix.`;
-  }
-
-  const beforeMetric = $('#plsSpotlightBeforeMetric');
-  if (beforeMetric) beforeMetric.textContent = perm.rawMetric;
-  const afterMetric = $('#plsSpotlightAfterMetric');
-  if (afterMetric) afterMetric.textContent = perm.fixedMetric;
-
-  const beforeTag = $('#plsSpotlightBeforeTag');
-  if (beforeTag) {
-    beforeTag.textContent = perm.hasRawIssue ? `❌ Before: Raw Extrapolation (${perm.rawBadge})` : '✅ Raw Baseline (No Defect)';
-    beforeTag.className = perm.hasRawIssue ? 'pls-qas-tag is-bad' : 'pls-qas-tag is-good';
-  }
-
-  const beforeCanvas = $('#plsQaBeforeCanvas');
-  if (beforeCanvas) {
-    renderSinglePrintPlateCanvas(beforeCanvas, 'composite', 'visual', {
-      color: cId,
-      greeting: gId,
-      trim: tId,
-      aiAutoFixed: false,
-      showDefectCallouts: perm.hasRawIssue,
-    });
-  }
-
-  const afterCanvas = $('#plsQaAfterCanvas');
-  if (afterCanvas) {
-    renderSinglePrintPlateCanvas(afterCanvas, 'composite', 'visual', {
-      color: cId,
-      greeting: gId,
-      trim: tId,
-      aiAutoFixed: true,
-      showDefectCallouts: false,
-    });
-  }
-}
-
-// Builds the unified Pillar 1 + Pillar 2 + Pillar 3 JSON payload (Catalog Merchandising + Build-Doc + Adobe InDesign IDML Layer Schema)
-function buildCatalogMerchandisingPayload() {
-  const col = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.green;
-  const trim = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.bracket;
-  const foil = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG['pearl-shimmer'];
-  const emboss = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
-  const format = PLS_FORMAT_CATALOG[PLS_STATE.format] || PLS_FORMAT_CATALOG['5x7-flat'];
-  const layout = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
-  const gr = PLS_GREETING_CATALOG[PLS_STATE.greeting] || PLS_GREETING_CATALOG['MERRY CHRISTMAS'];
-  const dropZones = getCardPhotoRects(0, 0, 7.0, 5.0, PLS_STATE.layout, 0).map((r, i) => ({
-    slotId: `PHOTO_DROP_ZONE_${i + 1}`,
-    zIndex: 25,
-    xInches: Number(r.x.toFixed(3)),
-    yInches: Number(r.y.toFixed(3)),
-    widthInches: Number(r.w.toFixed(3)),
-    heightInches: Number(r.h.toFixed(3)),
-    bleedTrapMm: 2.0,
-    shape: r.arch ? 'arch-window' : 'rect-aperture',
-  }));
-
-  return {
-    schemaVersion: 'shutterfly.template.unified-spec.v2',
-    generatedBy: 'gemini-nano-banana-2.1 + gemini-visual-qa-agent',
-    skuId: `SFLY-DECO-BOT-${PLS_STATE.color.toUpperCase()}-${gr.category.toUpperCase()}-${PLS_STATE.trim.toUpperCase()}-${layout.slotCount}UP`,
-    designerArtist: 'Petite Lemon',
-    pillar1_BaseToVariantExtrapolation: {
-      goldenBaseTemplateId: 'INDESIGN-MASTER-DECO-BOTANICAL-5X7-H',
-      activeFormFactor: format.label,
-      orientation: 'Horizontal (Landscape 7" × 5")',
-      photoSlotCount: `${layout.slotCount}-Up (${layout.label})`,
-      supportedPhotoCounts: ['1-Up Hero Arch', '2-Up Balanced Duo', '3-Up Horizontal Strip', '5-Up Collage Mosaic'],
-      supportedFormFactors: ['5×7 Flat', '5×7 Folded', '6×8 Large Flat', '3.5×5 Keepsake Ornament'],
-      totalExtrapolatedFiles: 240,
-      dropZoneCoordinatesInches: dropZones,
-    },
-    pillar2_TwoStageAutomatedQA: {
-      stage1_BuildDocSpreadsheetAudit: {
-        buildDocSheetId: 'HOLIDAY-2026-BUILD-DOC-DECO-BOTANICAL',
-        expectedVariantRows: 60,
-        renderedInDesignFilesVerified: 60,
-        oneToOneMatchStatus: 'PASS (60/60 Rows Matched)',
-        layerCountVerified: 5,
-      },
-      stage2_StagingBuilderZOrderAndCollisionAudit: {
-        builderTextSelectabilityStatus: 'PASS — Interactive Text Layer (z-index: 50) > Botanical Sticker Layer (z-index: 30)',
-        boundingBoxCollisionsDetected: 0,
-        dieCutSafeZoneClearanceMm: 4.3,
-        colorwayOpticalContrastRatio: col.id === 'cream' ? '7.4:1 (AI Sage Palette)' : (col.id === 'burgundy' ? '6.8:1 (AI Champagne Gold Stripes)' : '8.1:1'),
-      },
-      editableBuilderLayerHierarchy: [
-        { layerOrder: 1, idmlLayerName: 'L1_CutContour_DieLine', zIndex: 10, builderEditable: false, role: `${trim.label} Rotary Die-Cut Path` },
-        { layerOrder: 2, idmlLayerName: 'L2_Cardstock_Substrate', zIndex: 20, builderEditable: true, role: `${col.label} (${col.hex}) Flood + 0% Knockouts` },
-        { layerOrder: 3, idmlLayerName: 'L3_Smart_Photo_DropZones', zIndex: 25, builderEditable: true, role: `${layout.slotCount}-Up Customer Photo Apertures` },
-        { layerOrder: 4, idmlLayerName: 'L4_Botanical_Sticker_Foil', zIndex: 30, builderEditable: false, role: `Decorative Botanical Sprigs & ${foil.label} (Locked Below Text)` },
-        { layerOrder: 5, idmlLayerName: 'L5_Interactive_Text_Emboss', zIndex: 50, builderEditable: true, role: `Selectable Greeting ("${gr.id}") & Sign-Off ("${PLS_STATE.signoff}") + ${emboss.label}` },
-      ],
-    },
-    pillar3_CatalogMerchandisingAndAttribution: {
-      pdpSeoTitle: `Deco Botanical ${gr.category} Holiday Card (${layout.slotCount}-Photo, ${col.label}, ${trim.label} Trim)`,
-      pdpMarketingCopy: `Celebrate the season with the Deco Botanical Holiday Card by Petite Lemon. Featuring festive diagonal candy-cane striped "${gr.id}" typography intertwined with delicate botanical sprigs on ${col.label} ${foil.label.toLowerCase()}, a ${layout.label.toLowerCase()} showcase for your favorite family memories, and ${trim.label.toLowerCase()} die-cut corners.`,
-      taxonomyTags: {
-        occasion: ['Holiday', gr.category, 'New Year', 'Winter Season'],
-        designStyle: ['Art Deco', 'Botanical', 'Candy-Cane Stripe', 'Classic Serif', 'Foil-Stamped'],
-        colorFamily: [col.label, col.hex, 'Red & White Stripe'],
-        photoAssortment: [`${layout.slotCount}-Photo`, 'Multi-Photo Family', 'Horizontal Landscape'],
-        trimAndPaper: [trim.label, foil.label, emboss.label, format.label],
-      },
-    },
-  };
-}
-
-function renderCatalogMerchandisingSpec() {
-  const visualBody = $('#plsMerchVisualBody');
-  const jsonPre = $('#plsMerchJsonPre');
-  if (!visualBody || !jsonPre) return;
-
-  const payload = buildCatalogMerchandisingPayload();
-  const m = payload.pillar3_CatalogMerchandisingAndAttribution;
-  const qa = payload.pillar2_TwoStageAutomatedQA;
-  const p1 = payload.pillar1_BaseToVariantExtrapolation;
-
-  jsonPre.textContent = JSON.stringify(payload, null, 2);
-
-  const allTags = [
-    ...m.taxonomyTags.occasion.map((t) => ['Occasion', t]),
-    ...m.taxonomyTags.designStyle.map((t) => ['Style', t]),
-    ...m.taxonomyTags.colorFamily.map((t) => ['Color', t]),
-    ...m.taxonomyTags.photoAssortment.map((t) => ['Photos', t]),
-    ...m.taxonomyTags.trimAndPaper.map((t) => ['Finish', t]),
-  ];
-
-  visualBody.innerHTML = `
-    <div class="pls-merch-block">
-      <div class="pls-merch-block-label">Storefront PDP Title &amp; SEO Copy (Auto-Generated from Visual Design)</div>
-      <h5 class="pls-merch-pdp-title">${esc(m.pdpSeoTitle)}</h5>
-      <p class="pls-merch-pdp-copy">${esc(m.pdpMarketingCopy)}</p>
-    </div>
-
-    <div class="pls-merch-block">
-      <div class="pls-merch-block-label">Multimodal Shopping Taxonomy &amp; Filter Attribution Tags</div>
-      <div class="pls-merch-tag-cloud">
-        ${allTags.map(([cat, val]) => `<span class="pls-merch-tag"><strong>${esc(cat)}:</strong> ${esc(val)}</span>`).join('')}
-      </div>
-    </div>
-
-    <div class="pls-merch-block">
-      <div class="pls-merch-block-label">Stage 1 Build-Doc Spreadsheet 1:1 Audit &amp; Stage 2 Builder Layer Z-Order Manifest</div>
-      <table class="pls-merch-table">
-        <thead>
-          <tr>
-            <th>Layer / Z-Order</th>
-            <th>IDML / Builder Layer Name</th>
-            <th>Builder Clickable</th>
-            <th>Assortment / Spec Verification</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${qa.editableBuilderLayerHierarchy.map((l) => `
-            <tr>
-              <td><code>z-index: ${l.zIndex}</code></td>
-              <td><strong>${esc(l.idmlLayerName)}</strong></td>
-              <td>${l.builderEditable ? '✅ Interactive' : '🔒 Locked Below Text'}</td>
-              <td>${esc(l.role)}</td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
-      <div style="margin-top:8px;font-size:11px;color:var(--muted);">
-        <strong>Assortment Coverage:</strong> ${esc(p1.photoSlotCount)} active · Extrapolates cleanly across <code>1-Up</code>, <code>2-Up</code>, <code>3-Up</code> &amp; <code>5-Up</code> photo counts (${p1.totalExtrapolatedFiles} total InDesign/Builder SKUs).
-      </div>
-    </div>
-  `;
-}
-
-function downloadIdmlAndCatalogSpecJson() {
-  const payload = buildCatalogMerchandisingPayload();
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `shutterfly-deco-botanical-idml-builder-catalog-spec-${PLS_STATE.color}-${PLS_STATE.trim}-${PLS_STATE.layout}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-function renderPrintLayerStudio() {
-  if (!PLS_STATE.open) return;
-  ensurePrintPlatesGridBuilt();
-  refreshPrintStudioSourceOptions();
-  loadPrintStudioSourceImageThenRender();
-}
-
-function renderPrintLayerStudioNow() {
-  if (!PLS_STATE.open) return;
-  ensurePrintPlatesGridBuilt();
-
-  const colorObj = PLS_COLOR_CATALOG[PLS_STATE.color] || PLS_COLOR_CATALOG.green;
-  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.bracket;
-  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG['pearl-shimmer'];
-  const embossObj = PLS_EMBOSS_CATALOG[PLS_STATE.emboss] || PLS_EMBOSS_CATALOG['raised-emboss'];
-  const formatObj = PLS_FORMAT_CATALOG[PLS_STATE.format] || PLS_FORMAT_CATALOG['5x7-flat'];
-  const layoutObj = PLS_LAYOUT_CATALOG[PLS_STATE.layout] || PLS_LAYOUT_CATALOG['3-photo-strip'];
-  const grObj = PLS_GREETING_CATALOG[PLS_STATE.greeting] || { id: PLS_STATE.greeting, category: 'Custom', meta: PLS_STATE.greeting };
-
-  const colorMeta = $('#plsColorMeta');
-  if (colorMeta) colorMeta.textContent = colorObj.meta;
-  const greetMeta = $('#plsGreetingMeta');
-  if (greetMeta) greetMeta.textContent = grObj.meta;
-  const trimMeta = $('#plsTrimMeta');
-  if (trimMeta) trimMeta.textContent = trimObj.meta;
-  const foilMeta = $('#plsFoilMeta');
-  if (foilMeta) foilMeta.textContent = foilObj.meta;
-  const layoutMeta = $('#plsLayoutMeta');
-  if (layoutMeta) layoutMeta.textContent = `${formatObj.label} · ${layoutObj.label}`;
-
-  const footFormat = $('#plsFootFormat');
-  if (footFormat) footFormat.textContent = `${formatObj.label} · ${layoutObj.label}`;
-  const footStock = $('#plsFootStock');
-  if (footStock) footStock.textContent = `${foilObj.label} · ${colorObj.label}`;
-  const footTrim = $('#plsFootTrim');
-  if (footTrim) footTrim.textContent = `${trimObj.label} Die-Cut (+$0.33 ea.)`;
-
-  const activeLayerSum = $('#plsLayersActiveSummary');
-  if (activeLayerSum) {
-    activeLayerSum.textContent = `${colorObj.label} · ${grObj.category} ("${PLS_STATE.greeting}") · ${trimObj.label} Trim · ${foilObj.label} · ${layoutObj.label} · ${formatObj.label}${PLS_STATE.aiAutoFixed ? ' (✨ AI Z-Order & QA Fixed)' : ' (Raw Unfixed)'}`;
-  }
-
-  const p3Title = $('#plsPlane3Title');
-  if (p3Title) p3Title.textContent = PLS_STATE.foil === 'none' ? 'Botanical Stickers (Flat CMYK)' : `Botanical Stickers & ${foilObj.label}`;
-  const p4Title = $('#plsPlane4Title');
-  if (p4Title) p4Title.textContent = `Editable Text & ${embossObj.label}`;
-  const cardP3Name = $('#plsPlateName3');
-  if (cardP3Name) cardP3Name.textContent = PLS_STATE.foil === 'none' ? 'Botanical Sticker Layer (Flat CMYK)' : `Botanical Stickers & ${foilObj.label}`;
-  const cardP4Name = $('#plsPlateName4');
-  if (cardP4Name) cardP4Name.textContent = `Interactive Text Box & ${embossObj.label}`;
-
-  const compCanvas = $('#plsCompositeCanvas');
-  if (compCanvas) renderSinglePrintPlateCanvas(compCanvas, 'composite', 'visual');
-
-  renderDesignerPreflightCoPilot();
-
-  for (let i = 0; i < 5; i++) {
-    const stackCanvas = $(`#plsStackCanvas${i}`);
-    if (stackCanvas) renderSinglePrintPlateCanvas(stackCanvas, i, 'visual');
-    const plateCanvas = $(`#plsPlateCanvas${i}`);
-    if (plateCanvas) renderSinglePrintPlateCanvas(plateCanvas, i, PLS_STATE.plateMode);
-  }
-
-  updateExploded3DStackTransforms();
-
-  if (PLS_STATE.tab === 'matrix') {
-    renderPermutationQaMatrix();
-  } else {
-    const flaggedCount = 14;
-    const tabBadge = $('#plsTabMatrixBadge');
-    const tabSub = $('#plsTabMatrixSub');
-    if (tabBadge && tabSub) {
-      if (PLS_STATE.aiAutoFixed) {
-        tabBadge.textContent = '60/60 Ready';
-        tabBadge.className = 'pls-wf-pill is-pass';
-        tabSub.textContent = `60 / 60 SKUs Verified (${flaggedCount} Auto-Fixed by Gemini QA)`;
-      } else {
-        tabBadge.textContent = `${flaggedCount} Flagged`;
-        tabBadge.className = 'pls-wf-pill is-warn';
-        tabSub.textContent = `Stage 1 Build-Doc + Stage 2 Z-Order · ${flaggedCount} Issues Flagged`;
-      }
-    }
-  }
-
-  if (PLS_STATE.tab === 'merchandising') {
-    renderCatalogMerchandisingSpec();
-  }
-}
-
-function setPrintLayerStudioOpen(open, scrollIntoView = false) {
-  PLS_STATE.open = Boolean(open);
-  const studio = $('#imgPrintLayerStudio');
-  if (studio) studio.classList.toggle('hidden', !PLS_STATE.open);
-  const toggleBtn = $('#imgPrintLayerToggleBtn');
-  if (toggleBtn) {
-    toggleBtn.classList.toggle('is-on', PLS_STATE.open);
-    toggleBtn.setAttribute('aria-pressed', String(PLS_STATE.open));
-  }
-  if (PLS_STATE.open) {
-    renderPrintLayerStudio();
-    if (scrollIntoView && studio && typeof studio.scrollIntoView === 'function') {
-      studio.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-  }
-}
-
-function applyPrintStudioPresetUI(preset) {
-  if (!preset || typeof preset !== 'object') return;
-  if (preset.color && PLS_COLOR_CATALOG[preset.color]) PLS_STATE.color = preset.color;
-  if (preset.trim && PLS_TRIM_CATALOG[preset.trim]) PLS_STATE.trim = preset.trim;
-  if (preset.foil && PLS_FOIL_CATALOG[preset.foil]) PLS_STATE.foil = preset.foil;
-  if (preset.emboss && PLS_EMBOSS_CATALOG[preset.emboss]) PLS_STATE.emboss = preset.emboss;
-  if (preset.format && PLS_FORMAT_CATALOG[preset.format]) PLS_STATE.format = preset.format;
-  if (preset.layout && PLS_LAYOUT_CATALOG[preset.layout]) PLS_STATE.layout = preset.layout;
-  if (preset.greeting) PLS_STATE.greeting = preset.greeting;
-  if (preset.signoff) PLS_STATE.signoff = preset.signoff;
-
-  const syncAttrPills = (containerId, attr, val) => {
-    const c = $(containerId);
-    if (!c) return;
-    c.querySelectorAll(`[${attr}]`).forEach((b) => {
-      b.classList.toggle('active', b.getAttribute(attr) === val);
-    });
-  };
-  syncAttrPills('#plsColorPills', 'data-pls-color', PLS_STATE.color);
-  syncAttrPills('#plsGreetingPills', 'data-pls-greeting', PLS_STATE.greeting);
-  syncAttrPills('#plsTrimPills', 'data-pls-trim', PLS_STATE.trim);
-  syncAttrPills('#plsFoilPills', 'data-pls-foil', PLS_STATE.foil);
-  syncAttrPills('#plsFormatPills', 'data-pls-format', PLS_STATE.format);
-  syncAttrPills('#plsEmbossPills', 'data-pls-emboss', PLS_STATE.emboss);
-  syncAttrPills('#plsLayoutPills', 'data-pls-layout', PLS_STATE.layout);
-
-  const greetSel = $('#plsGreetingSelect');
-  if (greetSel) greetSel.value = PLS_STATE.greeting;
-  const signInput = $('#plsSignoffInput');
-  if (signInput) signInput.value = PLS_STATE.signoff;
-}
-
-function syncPrintStudioForScenario(pack, sc, isInitialRestore) {
-  if (!sc) return;
-  const isPrintLayerPack = Boolean((pack && pack.id === 'stationery-print-layers') || sc.studioPreset || sc.id === 'deco-botanical-print-layers');
-  if (sc.studioPreset) {
-    applyPrintStudioPresetUI(sc.studioPreset);
-  }
-  if (isPrintLayerPack) {
-    setPrintLayerStudioOpen(true, !isInitialRestore);
-  } else if (PLS_STATE.open) {
-    setPrintLayerStudioOpen(false);
-  }
-}
-
-function explodeModelResultInPrintStudio(slot) {
-  refreshPrintStudioSourceOptions();
-  PLS_STATE.source = `slot-${slot}`;
-  const sel = $('#plsSourceSelect');
-  if (sel) sel.value = PLS_STATE.source;
-  setPrintLayerStudioOpen(true, true);
-  switchPrintStudioTab('layers');
-}
-
-function openPrintPlateInLightbox(plateIdx) {
-  const modeLabel = PLS_STATE.plateMode === 'factory' ? '100% K Factory RIP Mask' : 'Visual Layer Preview';
-  const allTargets = ['composite', 0, 1, 2, 3, 4];
-  const items = allTargets.map((t, galleryIdx) => {
-    const hiCanvas = document.createElement('canvas');
-    hiCanvas.width = 1344;
-    hiCanvas.height = 960;
-    const isComp = t === 'composite';
-    renderSinglePrintPlateCanvas(hiCanvas, isComp ? 'composite' : t, isComp ? 'visual' : PLS_STATE.plateMode);
-    const dataUrl = hiCanvas.toDataURL('image/png');
-    const def = isComp
-      ? { num: 'Composite Proof', name: 'Assembled 7×5" Customer Proof (RGB)', channel: 'Assembled Card Proof', fileSlug: '00-composite-customer-proof' }
-      : (PLS_PLATE_DEFS[t] || PLS_PLATE_DEFS[0]);
-    return {
-      badge: `${def.num} (${galleryIdx + 1} of ${allTargets.length})`,
-      url: dataUrl,
-      src: dataUrl,
-      title: `${def.num} · ${def.name}`,
-      meta: `${def.channel} · 1344×960 Prepress & Builder Inspection (${isComp ? 'RGB Customer Proof' : modeLabel})`,
-      downloadName: `shutterfly-deco-botanical-${def.fileSlug || 'plate'}-${PLS_STATE.color}-${PLS_STATE.trim}-${PLS_STATE.foil}.png`,
-      defaultPixelated: false,
-    };
-  });
-  const startIdx = plateIdx === 'composite' ? 0 : Math.max(0, Math.min(items.length - 1, Number(plateIdx) + 1));
-  openImageLightbox(items, startIdx);
-}
-
-function downloadSinglePrintPlatePng(plateIdx) {
-  const hiCanvas = document.createElement('canvas');
-  hiCanvas.width = 1680;
-  hiCanvas.height = 1200;
-  const isComposite = plateIdx === 'composite';
-  renderSinglePrintPlateCanvas(hiCanvas, isComposite ? 'composite' : plateIdx, isComposite ? 'visual' : PLS_STATE.plateMode);
-  const def = isComposite
-    ? { fileSlug: '00-composite-customer-proof' }
-    : (PLS_PLATE_DEFS[plateIdx] || PLS_PLATE_DEFS[0]);
-  const a = document.createElement('a');
-  a.href = hiCanvas.toDataURL('image/png');
-  a.download = `shutterfly-deco-botanical-${def.fileSlug}-${PLS_STATE.color}-${PLS_STATE.trim}-${PLS_STATE.foil}.png`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-function downloadCutContourSvg() {
-  const w = 700;
-  const h = 500;
-  const foilObj = PLS_FOIL_CATALOG[PLS_STATE.foil] || PLS_FOIL_CATALOG['pearl-shimmer'];
-  const trimObj = PLS_TRIM_CATALOG[PLS_STATE.trim] || PLS_TRIM_CATALOG.bracket;
-  const svgContent = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="7in" height="5in">
-  <title>Deco Botanical Holiday Card — Horizontal 7x5 Prepress CutContour &amp; Spot Foil Vector Separation</title>
-  <desc>Trim: ${esc(trimObj.label)} | Foil: ${esc(foilObj.label)} | Greeting: ${esc(PLS_STATE.greeting)}</desc>
-  <g id="Layer_1_Bleed_Box" stroke="#38bdf8" stroke-width="0.75" stroke-dasharray="4 3" fill="none">
-    <rect x="12" y="12" width="676" height="476" />
-  </g>
-  <g id="Layer_2_CutContour_DieLine" stroke="#ec4899" stroke-width="1.5" fill="none">
-    <rect x="24" y="24" width="652" height="452" rx="${PLS_STATE.trim === 'rounded' ? 28 : 0}" />
-  </g>
-  <g id="Layer_4_SPOT_FOIL_100K" fill="#c83e3b" stroke="#f7f4ec">
-    <text x="64" y="345" text-anchor="start" font-family="Cinzel, Georgia, serif" font-size="68" font-weight="bold">${esc(String(PLS_STATE.greeting).split(/\s+/)[0] || 'MERRY')}</text>
-    <text x="350" y="425" text-anchor="middle" font-family="Cinzel, Georgia, serif" font-size="68" font-weight="bold">${esc(String(PLS_STATE.greeting).split(/\s+/).slice(1).join(' ') || 'CHRISTMAS')}</text>
-    <text x="525" y="335" text-anchor="middle" font-family="Cormorant Garamond, Georgia, serif" font-style="italic" font-size="24" stroke="none" fill="#f7f4ec">${esc(PLS_STATE.signoff)}</text>
-  </g>
-</svg>`;
-  const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `shutterfly-deco-botanical-cutcontour-foil-${PLS_STATE.trim}-${PLS_STATE.foil}.svg`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-function initPrintLayerStudioBindings() {
-  const openBtn = $('#imgOpenPrintStudioBtn');
-  if (openBtn) {
-    openBtn.addEventListener('click', () => {
-      const packSel = $('#imgPackSelect');
-      if (packSel && IMG_CONFIG) {
-        packSel.value = 'stationery-print-layers';
-        if (typeof packSel.onchange === 'function') packSel.onchange();
-      }
-      setPrintLayerStudioOpen(true, true);
-    });
-  }
-
-  const toggleBtn = $('#imgPrintLayerToggleBtn');
-  if (toggleBtn) {
-    toggleBtn.addEventListener('click', () => {
-      setPrintLayerStudioOpen(!PLS_STATE.open, !PLS_STATE.open);
-    });
-  }
-
-  // 4-Step Workflow Tabs
-  const wfTabs = $('#plsWorkflowTabs');
-  if (wfTabs) {
-    wfTabs.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-pls-tab]');
-      if (!btn) return;
-      switchPrintStudioTab(btn.getAttribute('data-pls-tab'));
-    });
-  }
-
-  const bindPillGroup = (containerId, dataAttr, stateKey) => {
-    const container = $(containerId);
-    if (!container) return;
-    container.addEventListener('click', (e) => {
-      const btn = e.target.closest(`[${dataAttr}]`);
-      if (!btn) return;
-      const val = btn.getAttribute(dataAttr);
-      if (!val) return;
-      PLS_STATE[stateKey] = val;
-      if (stateKey === 'greeting') {
-        const gSel = $('#plsGreetingSelect');
-        if (gSel) gSel.value = val;
-      }
-      container.querySelectorAll(`[${dataAttr}]`).forEach((b) => b.classList.toggle('active', b === btn));
-      syncStudioPromptToComposer(false);
-      renderPrintLayerStudioNow();
-    });
-  };
-
-  bindPillGroup('#plsColorPills', 'data-pls-color', 'color');
-  bindPillGroup('#plsGreetingPills', 'data-pls-greeting', 'greeting');
-  bindPillGroup('#plsTrimPills', 'data-pls-trim', 'trim');
-  bindPillGroup('#plsFoilPills', 'data-pls-foil', 'foil');
-  bindPillGroup('#plsFormatPills', 'data-pls-format', 'format');
-  bindPillGroup('#plsEmbossPills', 'data-pls-emboss', 'emboss');
-  bindPillGroup('#plsLayoutPills', 'data-pls-layout', 'layout');
-
-  const greetSel = $('#plsGreetingSelect');
-  if (greetSel) {
-    greetSel.addEventListener('change', () => {
-      PLS_STATE.greeting = greetSel.value;
-      applyPrintStudioPresetUI({ greeting: PLS_STATE.greeting });
-      syncStudioPromptToComposer(false);
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const signInput = $('#plsSignoffInput');
-  if (signInput) {
-    signInput.addEventListener('input', () => {
-      PLS_STATE.signoff = signInput.value;
-      syncStudioPromptToComposer(false);
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const sourceSel = $('#plsSourceSelect');
-  if (sourceSel) {
-    sourceSel.addEventListener('change', () => {
-      PLS_STATE.source = sourceSel.value;
-      loadPrintStudioSourceImageThenRender();
-    });
-  }
-
-  const sheenSlider = $('#plsFoilSheenSlider');
-  if (sheenSlider) {
-    sheenSlider.addEventListener('input', () => {
-      PLS_STATE.foilSheen = Number(sheenSlider.value) || 38;
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const trimChk = $('#plsShowTrimGuideChk');
-  if (trimChk) {
-    trimChk.addEventListener('change', () => {
-      PLS_STATE.showTrimGuide = Boolean(trimChk.checked);
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  // AI Auto-Fix Toggle Button in Tab 1
-  const aiFixToggle = $('#plsAiAutoFixToggleBtn');
-  if (aiFixToggle) {
-    aiFixToggle.addEventListener('click', () => {
-      PLS_STATE.aiAutoFixed = !PLS_STATE.aiAutoFixed;
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  // "Simulate Real Manual Pipeline Defects" quick demo buttons in Tab 1
-  document.querySelectorAll('[data-pls-demo-case]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const c = btn.getAttribute('data-pls-demo-case');
-      if (c === 'zorder-unfixed') {
-        PLS_STATE.aiAutoFixed = false;
-        applyPrintStudioPresetUI({ color: 'green', greeting: 'HAPPY HOLIDAYS', trim: 'bracket' });
-      } else if (c === 'cream-unfixed') {
-        PLS_STATE.aiAutoFixed = false;
-        applyPrintStudioPresetUI({ color: 'cream', greeting: 'MERRY CHRISTMAS', trim: 'bracket' });
-      } else if (c === 'burgundy-unfixed') {
-        PLS_STATE.aiAutoFixed = false;
-        applyPrintStudioPresetUI({ color: 'burgundy', greeting: 'MERRY CHRISTMAS', trim: 'bracket' });
-      } else if (c === 'ticket-unfixed') {
-        PLS_STATE.aiAutoFixed = false;
-        applyPrintStudioPresetUI({ color: 'green', greeting: 'MERRY CHRISTMAS', trim: 'ticket' });
-      } else if (c === '5up-reflow') {
-        PLS_STATE.aiAutoFixed = true;
-        applyPrintStudioPresetUI({ color: 'green', greeting: 'MERRY CHRISTMAS', trim: 'bracket', layout: '5-photo-grid' });
-      }
-      renderPrintLayerStudioNow();
-    });
-  });
-
-  // Navigation CTAs between Tab 1, Tab 2, Tab 3, and Tab 4
-  const goToMatrixBtn = $('#plsGoToMatrixBtn');
-  if (goToMatrixBtn) goToMatrixBtn.addEventListener('click', () => switchPrintStudioTab('matrix'));
-  const goToLayersBtn = $('#plsGoToLayersBtn');
-  if (goToLayersBtn) goToLayersBtn.addEventListener('click', () => switchPrintStudioTab('layers'));
-  const goToMerchBtn = $('#plsGoToMerchBtn');
-  if (goToMerchBtn) goToMerchBtn.addEventListener('click', () => switchPrintStudioTab('merchandising'));
-  const backToMatrixBtn = $('#plsBackToMatrixBtn');
-  if (backToMatrixBtn) backToMatrixBtn.addEventListener('click', () => switchPrintStudioTab('matrix'));
-
-  const spotOpenCust = $('#plsSpotlightOpenCustomizerBtn');
-  if (spotOpenCust) spotOpenCust.addEventListener('click', () => switchPrintStudioTab('customizer'));
-  const spotExplode = $('#plsSpotlightExplodeBtn');
-  if (spotExplode) spotExplode.addEventListener('click', () => switchPrintStudioTab('layers'));
-
-  // Tab 2 Matrix Filter Pills & Batch AI Auto-Fix Buttons
-  const qaFilterGroup = $('#plsQaFilterPills');
-  if (qaFilterGroup) {
-    qaFilterGroup.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-qa-filter]');
-      if (!btn) return;
-      PLS_STATE.qaFilter = btn.getAttribute('data-qa-filter') || 'all';
-      qaFilterGroup.querySelectorAll('[data-qa-filter]').forEach((b) => b.classList.toggle('active', b === btn));
-      renderPermutationQaMatrix();
-    });
-  }
-
-  const qaResetRawBtn = $('#plsQaResetRawBtn');
-  if (qaResetRawBtn) {
-    qaResetRawBtn.addEventListener('click', () => {
-      PLS_STATE.aiAutoFixed = false;
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const qaAutoFixAllBtn = $('#plsQaAutoFixAllBtn');
-  if (qaAutoFixAllBtn) {
-    qaAutoFixAllBtn.addEventListener('click', () => {
-      PLS_STATE.aiAutoFixed = true;
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const compCanvas = $('#plsCompositeCanvas');
-  if (compCanvas) {
-    compCanvas.addEventListener('click', () => openPrintPlateInLightbox('composite'));
-  }
-
-  document.querySelectorAll('.pls-cam-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      PLS_STATE.cam = btn.dataset.plsCam || 'iso';
-      document.querySelectorAll('.pls-cam-btn').forEach((b) => b.classList.toggle('active', b === btn));
-      updateExploded3DStackTransforms();
-    });
-  });
-
-  const spreadSlider = $('#plsSpreadSlider');
-  if (spreadSlider) {
-    spreadSlider.addEventListener('input', () => {
-      PLS_STATE.spread = Number(spreadSlider.value) || 0;
-      const animBtn = $('#plsAnimateExplodeBtn');
-      if (animBtn) {
-        const isExploded = PLS_STATE.spread > 15;
-        animBtn.classList.toggle('is-on', isExploded);
-        animBtn.setAttribute('aria-pressed', String(isExploded));
-      }
-      updateExploded3DStackTransforms();
-    });
-  }
-
-  const animExplodeBtn = $('#plsAnimateExplodeBtn');
-  if (animExplodeBtn) {
-    animExplodeBtn.addEventListener('click', () => {
-      const nextExploded = PLS_STATE.spread <= 15;
-      PLS_STATE.spread = nextExploded ? 78 : 0;
-      if (spreadSlider) spreadSlider.value = String(PLS_STATE.spread);
-      animExplodeBtn.classList.toggle('is-on', nextExploded);
-      animExplodeBtn.setAttribute('aria-pressed', String(nextExploded));
-      updateExploded3DStackTransforms();
-    });
-  }
-
-  const layerToggles = $('#plsLayerToggles');
-  if (layerToggles) {
-    layerToggles.addEventListener('change', (e) => {
-      const chk = e.target.closest('[data-layer-vis]');
-      if (!chk) return;
-      const idx = Number(chk.dataset.layerVis);
-      if (idx >= 0 && idx < 5) {
-        PLS_STATE.layerVis[idx] = Boolean(chk.checked);
-        updateExploded3DStackTransforms();
-      }
-    });
-  }
-
-  const resetLayersBtn = $('#plsResetLayersBtn');
-  if (resetLayersBtn) {
-    resetLayersBtn.addEventListener('click', () => {
-      PLS_STATE.layerVis = [true, true, true, true, true];
-      PLS_STATE.highlightedPlate = null;
-      document.querySelectorAll('#plsLayerToggles [data-layer-vis]').forEach((c) => { c.checked = true; });
-      updateExploded3DStackTransforms();
-    });
-  }
-
-  for (let i = 0; i < 5; i++) {
-    const plane = $(`#plsPlane${i}`);
-    if (plane) {
-      plane.addEventListener('click', () => openPrintPlateInLightbox(i));
-      plane.addEventListener('mouseenter', () => {
-        PLS_STATE.highlightedPlate = i;
-        updateExploded3DStackTransforms();
-      });
-      plane.addEventListener('mouseleave', () => {
-        PLS_STATE.highlightedPlate = null;
-        updateExploded3DStackTransforms();
-      });
-    }
-  }
-
-  const plateModeToggle = $('#plsPlateModeToggle');
-  if (plateModeToggle) {
-    plateModeToggle.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-plate-mode]');
-      if (!btn) return;
-      PLS_STATE.plateMode = btn.dataset.plateMode || 'visual';
-      plateModeToggle.querySelectorAll('[data-plate-mode]').forEach((b) => {
-        const active = b === btn;
-        b.classList.toggle('active', active);
-        b.setAttribute('aria-pressed', String(active));
-      });
-      renderPrintLayerStudioNow();
-    });
-  }
-
-  const syncPromptBtn = $('#plsSyncPromptBtn');
-  if (syncPromptBtn) {
-    syncPromptBtn.addEventListener('click', () => syncStudioPromptToComposer(true));
-  }
-
-  const dlIdmlBtn = $('#plsDownloadIdmlBtn');
-  if (dlIdmlBtn) {
-    dlIdmlBtn.addEventListener('click', downloadIdmlAndCatalogSpecJson);
-  }
-
-  const dlMerchJsonBtn = $('#plsDownloadMerchJsonBtn');
-  if (dlMerchJsonBtn) {
-    dlMerchJsonBtn.addEventListener('click', downloadIdmlAndCatalogSpecJson);
-  }
-
-  const copyMerchJsonBtn = $('#plsCopyMerchJsonBtn');
-  if (copyMerchJsonBtn) {
-    copyMerchJsonBtn.addEventListener('click', () => {
-      const payload = buildCatalogMerchandisingPayload();
-      navigator.clipboard.writeText(JSON.stringify(payload, null, 2)).catch(() => {});
-      const orig = copyMerchJsonBtn.textContent;
-      copyMerchJsonBtn.textContent = '✓ Copied Unified Spec JSON';
-      setTimeout(() => { copyMerchJsonBtn.textContent = orig; }, 1400);
-    });
-  }
-
-  const dlSvgBtn = $('#plsDownloadSvgBtn');
-  if (dlSvgBtn) {
-    dlSvgBtn.addEventListener('click', downloadCutContourSvg);
-  }
-
-  const dlAllBtn = $('#plsDownloadAllBtn');
-  if (dlAllBtn) {
-    dlAllBtn.addEventListener('click', () => {
-      downloadSinglePrintPlatePng('composite');
-      for (let i = 0; i < 5; i++) {
-        setTimeout(() => downloadSinglePrintPlatePng(i), (i + 1) * 180);
-      }
-    });
-  }
-}
-
 const ARENA_CALLOUT_DISMISSED_KEY = 'llmc_arena_discovery_callout_v1';
 
 function isArenaDiscoveryCalloutDismissed() {
@@ -12479,7 +10515,6 @@ function initImageArenaBindings() {
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
       updateSplitCurtainView();
-      if (PLS_STATE.open) renderPrintLayerStudio();
     });
   }
 
@@ -12490,7 +10525,6 @@ function initImageArenaBindings() {
       renderImageReferenceAttachments();
       renderImageSlotsConfigurator();
       updateSplitCurtainView();
-      if (PLS_STATE.open) renderPrintLayerStudio();
     });
   }
 
@@ -12503,6 +10537,15 @@ function initImageArenaBindings() {
       dropzone.classList.remove('drag-over');
       if (e.dataTransfer && e.dataTransfer.files) addImageReferenceFiles(e.dataTransfer.files);
     });
+  }
+
+  const pixelLockBtn = $('#imgPixelLockBtn');
+  if (pixelLockBtn) {
+    pixelLockBtn.addEventListener('click', () => {
+      IMG_PIXEL_LOCK_OUTPAINT = !IMG_PIXEL_LOCK_OUTPAINT;
+      syncPixelLockButtonState();
+    });
+    syncPixelLockButtonState();
   }
 
   const curtainBtn = $('#imgSplitCurtainBtn');
@@ -12525,7 +10568,6 @@ function initImageArenaBindings() {
   if (offPeakSlider) offPeakSlider.addEventListener('input', renderImageEconomicsModeler);
 
   initCurtainDrag();
-  initPrintLayerStudioBindings();
   updateImageHistoryButton();
 }
 
