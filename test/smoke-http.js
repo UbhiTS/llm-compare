@@ -210,7 +210,7 @@ async function waitUp() {
   const cfg = r.json || {};
 
   r = await req('GET', '/api/image-arena/config');
-  check('GET /api/image-arena/config (Nano Banana 2 Lite, 2, 2.1, Pro & OpenAI GPT Image 2/2.5)', r.status === 200 && r.json && r.json.ok && Array.isArray(r.json.catalog) && r.json.catalog.length === 7 && Array.isArray(r.json.packs) && r.json.packs.length === 7, { status: r.status, shape: shape(r.json) });
+  check('GET /api/image-arena/config (Nano Banana 2 Lite, 2, 2.1, Pro & OpenAI GPT Image 2/2.5)', r.status === 200 && r.json && r.json.ok && Array.isArray(r.json.catalog) && r.json.catalog.length === 7 && Array.isArray(r.json.packs) && r.json.packs.length === 6, { status: r.status, shape: shape(r.json) });
 
   r = await req('GET', '/api/me/preferences');
   check('GET /api/me/preferences', r.status === 200 && r.json && r.json.ok && 'preferences' in r.json, { status: r.status });

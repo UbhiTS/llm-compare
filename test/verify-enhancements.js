@@ -250,11 +250,10 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(liteEntry.pricing.inputPerM, 0.25, 'gemini-3.1-flash-lite-image input price must be $0.25/1M');
   assert.strictEqual(liteEntry.pricing.imageOutputPerM, 30.00, 'gemini-3.1-flash-lite-image image output price must be $30.00/1M');
   assert(imgCfg.defaultSlots.every((s) => imgCfg.catalog.some((m) => m.id === s.catalogId)), 'Default image slots must only use catalog models');
-  assert.strictEqual(imgCfg.packs.length, 7, 'Image Arena must expose 7 workflow packs (custom, stationery-print-layers, upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation)');
+  assert.strictEqual(imgCfg.packs.length, 6, 'Image Arena must expose 6 workflow packs (upscaling/resampling, cleaning/restoration, recoloring/restyling, print creation, retail creation, custom)');
   const packIds = imgCfg.packs.map((p) => p.id);
   assert.strictEqual(packIds[0], 'custom-image-prompt', 'Custom Image Prompt must be index 0 (default) in IMAGE_USE_CASE_PACKS');
-  assert.strictEqual(packIds[1], 'stationery-print-layers', 'Stationery Customizer & 5-Layer Print Separation must be a top-level pack in IMAGE_USE_CASE_PACKS');
-  for (const expectedId of ['stationery-print-layers', 'upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
+  for (const expectedId of ['upscaling-resampling', 'cleaning-restoration', 'recoloring-restyling', 'print-photobooks', 'retail-ecommerce', 'custom-image-prompt']) {
     assert(packIds.includes(expectedId), `Image Arena packs must include ${expectedId}`);
   }
   const logoSvgFile = fs.readFileSync(path.join(__dirname, '..', 'public', 'logo.svg'), 'utf8');
@@ -278,23 +277,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
 
   const upscalePack = imgCfg.packs.find((p) => p.id === 'upscaling-resampling');
   assert(upscalePack && upscalePack.scenarios.some((s) => s.id === 'portrait-color-science-4k-upscale' && s.attachments && s.attachments.length === 1), 'Upscaling pack must include portrait-color-science-4k-upscale with 1 reference attachment');
-  const stationeryLayersPack = imgCfg.packs.find((p) => p.id === 'stationery-print-layers');
-  assert(stationeryLayersPack && Array.isArray(stationeryLayersPack.subcategories) && stationeryLayersPack.subcategories.length === 0, 'stationery-print-layers must be a direct top-level pack without redundant subcategories');
-  assert.strictEqual(stationeryLayersPack.scenarios.length, 1, 'stationery-print-layers must have exactly 1 canonical scenario');
-  const decoSc = stationeryLayersPack.scenarios[0];
-  assert(decoSc && decoSc.id === 'deco-botanical-print-layers' && decoSc.attachments && decoSc.attachments.length === 1, 'stationery-print-layers must include deco-botanical-print-layers scenario for customizer & 5-layer print separation');
   const printPack = imgCfg.packs.find((p) => p.id === 'print-photobooks');
-  assert(printPack && !printPack.scenarios.some((s) => s.id === 'deco-botanical-print-layers'), 'print-photobooks must not duplicate deco-botanical-print-layers');
-  const seenScIds = new Set();
-  const seenScTitles = new Set();
-  for (const p of imgCfg.packs) {
-    for (const s of (p.scenarios || [])) {
-      assert(!seenScIds.has(s.id), `Duplicate scenario id "${s.id}" found across Image Arena packs`);
-      assert(!seenScTitles.has(s.title), `Duplicate scenario title "${s.title}" found across Image Arena packs`);
-      seenScIds.add(s.id);
-      seenScTitles.add(s.title);
-    }
-  }
   const holidaySc = printPack && printPack.scenarios.find((s) => s.id === 'holiday-card-typography');
   assert(holidaySc && holidaySc.attachments && holidaySc.attachments.length === 1 && holidaySc.attachments[0].id === 'sample-holiday-card-2025-template', 'Holiday card scenario must attach 2025 template for Split Curtain comparison');
   assert(printPack && printPack.scenarios.some((s) => s.id === 'persistent-custom-stickers' && s.attachments && s.attachments.length === 1), 'Print pack must include persistent-custom-stickers with explorer fox reference');
@@ -364,9 +347,6 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(appJs.includes('function updateImageHistoryButton('), 'app.js must keep the History button run count');
   assert(appJs.includes('function saveImageArenaRunToHistory('), 'app.js must define saveImageArenaRunToHistory() for IndexedDB Image Run History');
   assert(appJs.includes('class="img-hist-thumb ihc-thumb" width="42" height="32"'), 'app.js must render History modal thumbnails with explicit 42x32 bounds');
-  assert(indexHtml.includes('id="imgPrintLayerStudio"'), 'index.html must include #imgPrintLayerStudio for stationery customization and 5-layer prepress explosion');
-  assert(indexHtml.includes('id="plsCompositeCanvas"') && indexHtml.includes('id="plsStackScene"') && indexHtml.includes('id="plsPlatesGrid"'), 'index.html must include composite proof canvas, 3D stack scene, and 5-plate prepress grid');
-  assert(appJs.includes('function renderSinglePrintPlateCanvas(') && appJs.includes('function explodeModelResultInPrintStudio('), 'app.js must define 5-plate prepress renderer and model result layer exploder');
 
   // Verify `gemini-nano-banana-2.1` two-part extraction (`part[0]` thought: true 1K draft vs `part[1]` final 4K image)
   const extracted = extractImageResponseParts([
@@ -946,72 +926,16 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
       appJs.includes('⚠️ Fallback'),
       'index.html and app.js must wire #imgPixelLockBtn, use-case-aware UI controls, Pre-Anchored + Feathered Pixel-Lock Outpaint, and 4K->2K fallback badges'
     );
-    console.log('✓ v1.0.73 9 DSLR/print aspect ratios, 4K Pixel-Lock Outpainting pipeline, Dual-Buffer upload normalization, 4K->2K fallback badge & use-case-aware UI controls verified');
-  }
-
-  // 24) v1.0.74: Unified Shutterfly Screenshot-to-Template Extrapolation, 5-Layer Explosion,
-  //     Two-Stage Build-Doc/Z-Order QA & Designer Approve/Fix Studio (+ v1.0.73 Pixel-Lock Coexistence)
-  {
-    const sflyImgPath = path.join(__dirname, '..', 'public', 'sfly-test-images', 'sfly-deco-botanical-pdp.png');
-    assert(fs.existsSync(sflyImgPath), 'public/sfly-test-images/sfly-deco-botanical-pdp.png must exist');
-    assert(fs.statSync(sflyImgPath).size > 100000, 'sfly-deco-botanical-pdp.png must be the real Shutterfly PDP screenshot (>100KB)');
-
-    // Coexistence of v1.0.73 and v1.0.72/v1.0.74 in index.html & app.js
-    for (const reqId of [
-      'id="imgPrintLayerToggleBtn"',
-      'id="imgOutpaintControlsBar"',
-      'id="imgPixelLockBtn"',
-      'id="imgPrintLayerStudio"',
-      'id="plsScreenshotIntakeBar"',
-      'id="plsScreenshotPresets"',
-      'id="plsScreenshotDropzone"',
-      'id="plsScreenshotThumb"',
-      'id="plsScreenshotBboxOverlay"',
-      'id="plsScreenshotInput"',
-      'id="plsIntakeJumpLayersBtn"',
-      'id="plsIntakeJumpCustomizerBtn"',
-      'id="plsIntakeJumpQaBtn"',
-      'id="plsDesignerQueueSummaryPill"',
-      'id="plsApproveAllPassingBtn"',
-      'id="plsBatchAutoFixBtn"',
-      'id="plsTab2ApproveAllPassingBtn"',
-      'id="plsFixAndApproveAllBtn"',
-      'id="plsSpotlightApproveBtn"',
-      'id="plsSpotlightFixApproveBtn"',
-      'id="plsBuildDocConfirmTable"',
-    ]) {
-      assert(indexHtml.includes(reqId), `index.html must include ${reqId}`);
-    }
-
-    for (const reqFn of [
-      'function getAll60CardPermutations(',
-      'function ensureQaMatrixStateInitialized(',
-      'function syncDesignerQueueAndBuildDocSummary(',
-      'function approveSingleQaCell(',
-      'function fixAndApproveSingleQaCell(',
-      'function approveAllPassingQaCells(',
-      'function fixAndApproveAllQaCells(',
-      'function resetQaMatrixToRawBaseline(',
-      'function analyzeShutterflyScreenshotCanvas(',
-      'function applyScreenshotIntakePreset(',
-      'function renderPermutationQaMatrix(',
-      'function renderSpotlightComparison(',
-    ]) {
-      assert(appJs.includes(reqFn), `app.js must define ${reqFn}`);
-    }
-
     assert(
-      stylesCss.includes('.pls-screenshot-intake-bar') &&
-      stylesCss.includes('.pls-ss-bbox-svg') &&
-      stylesCss.includes('.pls-qat-actions') &&
-      stylesCss.includes('.pls-builddoc-confirm-card'),
-      'styles.css must define v1.0.74 Screenshot Intake, Bounding-Box SVG, Per-Card QA Actions, and Build-Doc Confirmation styles'
+      !indexHtml.includes('id="imgPrintLayerStudio"') &&
+      !indexHtml.includes('id="plsScreenshotIntakeBar"') &&
+      !(imgCfg.packs || []).some((p) => p.id === 'stationery-print-layers'),
+      'v1.0.75 llm-compare must not contain customer-specific Shutterfly Print Layer Studio UI (which lives in standalone projects/shutterfly-template-studio)'
     );
-
-    const printPack = (imgCfg.packs || []).find((p) => p.id === 'stationery-print-layers');
-    assert(printPack && Array.isArray(printPack.scenarios) && printPack.scenarios.some((s) => s.id === 'deco-botanical-print-layers'), 'stationery-print-layers pack must exist in IMAGE_SCENARIO_PACKS with deco-botanical-print-layers');
-    console.log('✓ v1.0.74 Unified Shutterfly Screenshot-to-Template Extrapolation, 5-Layer Explosion, Two-Stage Build-Doc/Z-Order QA (60 SKUs, 44 Pass / 16 Collisions), Designer Approve/Fix Studio & v1.0.73 coexistence verified');
+    console.log('✓ v1.0.75 9 DSLR/print aspect ratios, 4K Pixel-Lock Outpainting pipeline, Dual-Buffer upload normalization, 4K->2K fallback badge, use-case-aware UI controls & clean customer-PoC separation verified');
   }
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
 })().catch((e) => { console.error('\nFAILED:', e.message); process.exit(1); });
+
+
