@@ -8,17 +8,17 @@
   <meta http-equiv="Expires" content="0" />
   <title>LLM Compare</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.ico" />
-  <script src="theme-init.js?v=1.0.72"></script>
+  <script src="theme-init.js?v=1.0.74"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="styles.css?v=1.0.72" />
+  <link rel="stylesheet" href="styles.css?v=1.0.74" />
   <!-- Pinned + Subresource Integrity (SRI): the browser refuses a tampered CDN file. Versions are the
        exact files the previous floating tags (marked@12, dompurify@3) resolved to on 2026-09-24. -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" integrity="sha384-bs/nf9FbdNouRbMiFcrcZfLXYPKiPaGVGplVbv7dLGECccEXDW+S3zjqSKR5ZEaD" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js" integrity="sha384-a7SzOxErzJ3ZpQz0zJ32d67dSitNzPcbfybc/ykU9KJhMgZkwqfSxlhhdJRS+XGL" crossorigin="anonymous" defer></script>
-  <script src="app.js?v=1.0.72" defer></script>
+  <script src="app.js?v=1.0.74" defer></script>
 </head>
 <body>
   <!-- shared gradient for model icons (referenced by the inline SVGs in app.js) -->
@@ -82,7 +82,7 @@
       <div>
         <div class="wordmark-row">
           <h1 class="wordmark">LLM Compare</h1>
-          <span id="headerAppVersion" class="head-version">v1.0.73</span>
+          <span id="headerAppVersion" class="head-version">v1.0.74</span>
         </div>
         <p class="tagline">One agentic task · your models race in parallel · real speed, tokens &amp; cost.</p>
       </div>
@@ -392,6 +392,7 @@
           </div>
           <div class="step-header-right">
             <span id="imgEndpointPill" class="img-endpoint-pill" title="Verified live Vertex AI endpoint routing">☁️ Vertex AI <code>/locations/global</code> · 64K Context · Up to 13 Reference Images</span>
+            <button type="button" id="imgOpenPrintStudioBtn" class="bar-btn bar-btn-accent" title="Open the Deco Botanical Holiday Card Customizer &amp; 5-Layer Print Separation Studio">✨ Stationery Print Layer Studio</button>
             <button type="button" id="imgNewClearBtn" class="bar-btn" title="Clear current outputs and start a fresh Custom Image Prompt">✦ New / Clear</button>
             <button type="button" id="imgCopyPromptBtn" class="bar-btn" title="Copy prompt to clipboard" aria-label="Copy prompt to clipboard">
               <svg class="copy-ic" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -474,9 +475,14 @@
               <button id="imgSplitCurtainBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Toggle interactive Before/After Split Curtain slider between Slot A and Slot B (or Input Reference vs Edited Output)">
                 <span class="ar-led"></span>⇔ Split Curtain Compare
               </button>
-              <button id="imgPixelLockBtn" class="bar-btn toggle is-on hidden" type="button" aria-pressed="true" title="Direction-Aware Pre-Anchor + Feathered Pixel-Lock Outpainting: pre-positions a single reference photo onto the target aspect-ratio canvas before calling Vertex AI and composites the untouched original pixels back into the center with a smooth raised-cosine feather blend (0% facial/subject drift)">
-                <span class="ar-led"></span>🔒 Pixel-Lock Outpaint
+              <button id="imgPrintLayerToggleBtn" class="bar-btn toggle" type="button" aria-pressed="false" title="Open the Unified Shutterfly Screenshot-to-Template Extrapolation, 5-Layer Card Explosion, Two-Stage Build-Doc/Z-Order QA &amp; Designer Approve/Fix Studio">
+                <span class="ar-led"></span>💥 Explode Print Layers Studio
               </button>
+              <span id="imgOutpaintControlsBar" style="display:inline-flex;align-items:center">
+                <button id="imgPixelLockBtn" class="bar-btn toggle is-on hidden" type="button" aria-pressed="true" title="Direction-Aware Pre-Anchor + Feathered Pixel-Lock Outpainting: pre-positions a single reference photo onto the target aspect-ratio canvas before calling Vertex AI and composites the untouched original pixels back into the center with a smooth raised-cosine feather blend (0% facial/subject drift)">
+                  <span class="ar-led"></span>🔒 Pixel-Lock Outpaint
+                </button>
+              </span>
             </div>
             <span id="imgStatusTimer" class="quota-badge">Ready · Live Vertex AI</span>
             <span id="imgQuotaBadge" class="quota-badge"></span>
@@ -490,6 +496,686 @@
         </div>
       </div>
     </div>
+
+    <!-- STATIONERY CUSTOMIZER, AI PERMUTATION QA MATRIX & PREPRESS 5-LAYER PRINT SEPARATION STUDIO -->
+    <section id="imgPrintLayerStudio" class="glass img-print-studio hidden" aria-label="Stationery Customizer, AI Permutation QA Matrix, and Prepress 5-Layer Print Separation Studio">
+      <div class="pls-head">
+        <div class="pls-head-left">
+          <div class="pls-title-row">
+            <span class="pls-badge">✨ Unified Screenshot-to-Template Extrapolation, 5-Layer Explosion &amp; Designer QA Studio</span>
+            <h3 class="pls-title">Deco Botanical Holiday Card — Screenshot Deconstruction, 5-Layer Explosion, 60-Copy Extrapolation &amp; Designer Approve/Fix Queue</h3>
+          </div>
+          <p class="sc-sub">Drop or paste <strong>any Shutterfly product page screenshot</strong> to run the unified 4-stage pipeline in one studio: <strong>(Stage A) Explode flattened card screenshot into 5 editable InDesign/Builder layers</strong> (<code>L1..L5</code>) → <strong>(Stage B) Extrapolate 60 template copies</strong> across colorways, trims &amp; <code>1-Up / 3-Up / 5-Up</code> photo reflows → <strong>(Stage C) Verify 60/60 Build-Doc confirmations &amp; catch 16 Stage-2 Z-Order collisions</strong> → <strong>(Stage D) Designer 1-click Approve or AI Auto-Fix</strong>.</p>
+        </div>
+        <div class="pls-head-actions">
+          <button type="button" id="plsSyncPromptBtn" class="bar-btn" title="Sync the selected customization options into the AI generation prompt above">
+            🪄 Sync Options → AI Prompt
+          </button>
+          <button type="button" id="plsDownloadIdmlBtn" class="bar-btn" title="Download structured Adobe InDesign IDML / Builder layer schema &amp; catalog attribution JSON">
+            🧬 Export IDML &amp; Builder Spec (JSON)
+          </button>
+          <button type="button" id="plsDownloadSvgBtn" class="bar-btn" title="Download vector CutContour die-line &amp; foil spot SVG">
+            📐 Download CutContour SVG
+          </button>
+          <button type="button" id="plsDownloadAllBtn" class="ctl-btn primary" title="Download all 5 separated prepress &amp; Builder layers + composite proof as high-res PNGs">
+            📦 Export All 5 Layers (PNG)
+          </button>
+        </div>
+      </div>
+
+      <!-- STEP 0: DROP, UPLOAD, OR PASTE ANY SHUTTERFLY PAGE SCREENSHOT INTAKE BAR -->
+      <div id="plsScreenshotIntakeBar" class="pls-screenshot-intake-bar" role="region" aria-label="Step 0: Drop, Upload, or Paste ANY Shutterfly Page Screenshot">
+        <!-- LEFT COLUMN: SCREENSHOT DROPZONE, 3 PRESETS & ANIMATED BOUNDING-BOX OVERLAY -->
+        <div class="pls-intake-left">
+          <div class="pls-intake-col-head">
+            <span class="pls-intake-step-pill">📸 Step 0</span>
+            <strong>Drop, Upload, or Paste ANY Shutterfly Page Screenshot</strong>
+            <span class="pls-intake-sub-hint">PNG · JPG · WebP · ⌘V Paste</span>
+          </div>
+
+          <div class="pls-intake-presets" id="plsScreenshotPresets" role="group" aria-label="1-Click Shutterfly Screenshot Presets">
+            <button type="button" class="pls-preset-chip active" data-pls-ss-preset="deco-botanical" title="Real Shutterfly PDP screenshot: Deco Botanical Holiday Card by Petite Lemon">
+              📸 Preset 1: Deco Botanical Holiday Card PDP (Real Screenshot)
+            </button>
+            <button type="button" class="pls-preset-chip" data-pls-ss-preset="arch-gold-foil" title="Shutterfly PDP preset: Arch Gold Foil 3-Photo Holiday Card">
+              📸 Preset 2: Arch Gold Foil 3-Photo Card PDP
+            </button>
+            <button type="button" class="pls-preset-chip" data-pls-ss-preset="scalloped-watercolor" title="Shutterfly PDP preset: Scalloped Watercolor Baby Shower Card">
+              📸 Preset 3: Scalloped Watercolor Baby Shower Card PDP
+            </button>
+          </div>
+
+          <div class="pls-intake-drop-row">
+            <div class="pls-screenshot-thumb-wrap" id="plsScreenshotDropzone" tabindex="0" role="button" aria-label="Click, drop, or paste a Shutterfly page screenshot">
+              <img id="plsScreenshotThumb" src="/sfly-test-images/sfly-deco-botanical-pdp.png" alt="Loaded Shutterfly Product Page Screenshot" />
+              <svg id="plsScreenshotBboxOverlay" class="pls-ss-bbox-svg" viewBox="0 0 1024 623" preserveAspectRatio="none" aria-hidden="true">
+                <!-- Card Canvas & CutContour (L1/L2) -->
+                <rect class="pls-bbox is-card" x="315" y="109" width="232" height="168" rx="6" />
+                <text class="pls-bbox-lbl is-card" x="319" y="103">L1/L2 Card Canvas + Bracket CutContour</text>
+                <!-- Photo Drop-Zones (L3) -->
+                <rect class="pls-bbox is-photo" x="333" y="117" width="197" height="86" rx="3" />
+                <text class="pls-bbox-lbl is-photo" x="337" y="131">L3 Photo Drop-Zones (3-Up · z:25)</text>
+                <!-- Botanical/Foil Stickers (L4) -->
+                <rect class="pls-bbox is-sticker" x="438" y="202" width="44" height="34" rx="3" />
+                <text class="pls-bbox-lbl is-sticker" x="440" y="198">L4 Sprigs (z:30)</text>
+                <!-- Editable Greeting & Family Name Text (L5) -->
+                <rect class="pls-bbox is-text" x="331" y="205" width="199" height="64" rx="3" />
+                <text class="pls-bbox-lbl is-text" x="335" y="289">L5 Editable Greeting &amp; Family Name Text (z:50)</text>
+                <!-- Right-Rail PDP Options -->
+                <rect class="pls-bbox is-pdp" x="668" y="236" width="310" height="346" rx="6" />
+                <text class="pls-bbox-lbl is-pdp" x="674" y="230">PDP Option Tree (Color · Greeting · Trim · Paper · Format)</text>
+              </svg>
+              <div class="pls-ss-drop-badge">📂 Drop / Click / ⌘V Paste Screenshot</div>
+            </div>
+            <input type="file" id="plsScreenshotInput" accept="image/png,image/jpeg,image/webp" class="hidden" aria-label="Upload Shutterfly page screenshot" />
+          </div>
+
+          <div class="pls-intake-telemetry-strip" id="plsScreenshotTelemetryStrip">
+            <span>📐 Source: <strong id="plsSsDimTxt">1024×623 px (Real PDP)</strong></span>
+            <span>🎨 Extracted Swatches: <span id="plsSsSwatches" class="pls-ss-swatch-row"><i style="background:#3f534d" title="#3f534d"></i><i style="background:#f4efe4" title="#f4efe4"></i><i style="background:#0d2232" title="#0d2232"></i><i style="background:#4a1219" title="#4a1219"></i><i style="background:#c83e3b" title="#c83e3b"></i></span></span>
+            <span>🖼 Crop Aperture: <strong id="plsSsCropTxt">3-Up Strip (x:0.32, y:0.19, w:0.19, h:0.14)</strong></span>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: GEMINI 4 ARGON + NANO BANANA 2.1 SCREENSHOT DECONSTRUCTION & CONFIRMATION PIPELINE -->
+        <div class="pls-intake-right">
+          <div class="pls-intake-col-head">
+            <span class="pls-intake-step-pill is-ai">🤖 Gemini 4 Argon + Nano Banana 2.1</span>
+            <strong>Screenshot Deconstruction, 5-Layer Explosion &amp; 60-Copy Confirmation Pipeline</strong>
+            <span class="pls-intake-status-badge" id="plsPipelineLiveBadge">● Live Unified Demo</span>
+          </div>
+
+          <div class="pls-pipeline-stages">
+            <!-- Stage A -->
+            <div class="pls-pipe-stage">
+              <div class="pls-pipe-stage-main">
+                <span class="pls-pipe-tag">Stage A</span>
+                <div class="pls-pipe-txt">
+                  <strong>💥 5-Layer Card Explosion (Same Unified Demo — Step 1)</strong>
+                  <span><code>L1 CutContour Die-Line (z:10)</code> · <code>L2 Cardstock Substrate (z:20)</code> · <code>L3 Smart Photo Drop-Zones 1-Up..5-Up (z:25)</code> · <code>L4 Botanical/Foil Stickers (z:30)</code> · <code>L5 Editable Text Frames (z:50)</code></span>
+                </div>
+              </div>
+              <button type="button" id="plsIntakeJumpLayersBtn" class="bar-btn pls-pipe-jump-btn">💥 View 5 Exploded Layers (Tab 3)</button>
+            </div>
+
+            <!-- Stage B -->
+            <div class="pls-pipe-stage">
+              <div class="pls-pipe-stage-main">
+                <span class="pls-pipe-tag">Stage B</span>
+                <div class="pls-pipe-txt">
+                  <strong>🧬 60 Template Copies Extrapolated from Screenshot</strong>
+                  <span id="plsPipeStageBTxt"><code>4 Colorways × 3 Greetings × 5 Trim Shapes (+ 1-Up, 3-Up, 5-Up Reflows) = 60 InDesign/IDML Copies</code></span>
+                </div>
+              </div>
+              <button type="button" id="plsIntakeJumpCustomizerBtn" class="bar-btn pls-pipe-jump-btn">🧬 View Extrapolated Copies (Tab 1)</button>
+            </div>
+
+            <!-- Stage C -->
+            <div class="pls-pipe-stage">
+              <div class="pls-pipe-stage-main">
+                <span class="pls-pipe-tag">Stage C</span>
+                <div class="pls-pipe-txt">
+                  <strong id="plsPipeStageCTitle">📋 60/60 Build-Doc Confirmations &amp; 16 Z-Order Collisions Caught</strong>
+                  <span id="plsPipeStageCTxt"><code>Stage 1 Build-Doc 1:1 Spec Confirmation: 60/60 PASS</code> · <code>Stage 2 Rendered Builder Z-Order Check: 44 PASS / 16 COLLISIONS FLAGGED</code></span>
+                </div>
+              </div>
+              <button type="button" id="plsIntakeJumpQaBtn" class="bar-btn pls-pipe-jump-btn">🧪 Open QA Matrix (Tab 2)</button>
+            </div>
+
+            <!-- Stage D -->
+            <div class="pls-pipe-stage is-designer-queue">
+              <div class="pls-pipe-stage-main">
+                <span class="pls-pipe-tag is-accent">Stage D</span>
+                <div class="pls-pipe-txt">
+                  <strong>👩‍🎨 Designer Approve / Fix Queue Summary</strong>
+                  <div class="pls-designer-counter-pill" id="plsDesignerQueueSummaryPill">
+                    <span class="is-ok" id="plsQueueApprovedCnt">✅ Approved: 44 / 60</span>
+                    <span>·</span>
+                    <span class="is-warn" id="plsQueueNeedsFixCnt">🔧 Needs Fix: 16 / 60</span>
+                    <span>·</span>
+                    <span class="is-info" id="plsQueueBuildDocCnt">📋 Build-Doc Confirmations: 60 / 60</span>
+                  </div>
+                </div>
+              </div>
+              <div class="pls-pipe-stage-actions">
+                <button type="button" id="plsApproveAllPassingBtn" class="bar-btn" title="Confirm &amp; approve all 44 passing template copies in one click">
+                  ✅ Approve All Passing (44)
+                </button>
+                <button type="button" id="plsBatchAutoFixBtn" class="ctl-btn primary" title="Auto-fix all 16 flagged Z-order/contrast/trim/reflow copies and mark all 60/60 Designer Approved">
+                  🔧 AI Fix &amp; Approve All 16 Flagged → 60/60 Ready
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4-STEP WORKFLOW NAVIGATION TABS (MAPPED TO THE 3 TEMPLATE DESIGN PILLARS + LAYER EXPLODER) -->
+      <div id="plsTabStrip"></div>
+      <div class="pls-workflow-tabs" id="plsWorkflowTabs" role="tablist" aria-label="Stationery Designer Co-Pilot Workflow">
+        <button type="button" class="pls-wf-tab active" data-pls-tab="customizer" role="tab" aria-selected="true">
+          <span class="pls-wf-step">1</span>
+          <span class="pls-wf-txt">
+            <strong>🎨 Base-to-Variant &amp; Multi-Photo Reflow</strong>
+            <em>Colorways, Greetings, Trims, Sizes &amp; 1-Up / 2-Up / 3-Up / 5-Up</em>
+          </span>
+        </button>
+        <button type="button" class="pls-wf-tab" data-pls-tab="matrix" role="tab" aria-selected="false">
+          <span class="pls-wf-step">2</span>
+          <span class="pls-wf-txt">
+            <strong>🧪 Two-Stage Build-Doc &amp; Builder QA (60 SKUs)</strong>
+            <em id="plsTabMatrixSub">Stage 1 Build-Doc 1:1 Audit + Stage 2 Z-Order &amp; Collision Check</em>
+          </span>
+          <span class="pls-wf-pill is-warn" id="plsTabMatrixBadge">16 Flagged</span>
+        </button>
+        <button type="button" class="pls-wf-tab" data-pls-tab="layers" role="tab" aria-selected="false">
+          <span class="pls-wf-step">3</span>
+          <span class="pls-wf-txt">
+            <strong>💥 5-Layer Builder &amp; Prepress Separation</strong>
+            <em>Editable Builder Layers (Bg · Photos · Stickers · Text) &amp; RIP Plates</em>
+          </span>
+        </button>
+        <button type="button" class="pls-wf-tab" data-pls-tab="merchandising" role="tab" aria-selected="false">
+          <span class="pls-wf-step">4</span>
+          <span class="pls-wf-txt">
+            <strong>🏷️ Catalog Merchandising &amp; IDML Spec</strong>
+            <em>Auto-Generated PDP Copy, Taxonomy Tags, Build-Doc &amp; IDML Schema</em>
+          </span>
+        </button>
+      </div>
+
+      <!-- ==================== TAB 1: BASE-TO-VARIANT EXTRAPOLATION & MULTI-PHOTO REFLOW ==================== -->
+      <div class="pls-tab-panel" id="plsTabPanelCustomizer" data-pls-tab-panel="customizer">
+        <!-- STRUCTURED DESIGNER CUSTOMIZATION OPTIONS (Modeled on Shutterfly Deco Botanical Holiday Card) -->
+        <div class="pls-options-grid" role="region" aria-label="Card customization options">
+          <!-- 1. Design Color -->
+          <div class="pls-opt-card">
+            <div class="pls-opt-label">1. Design Colorway <span class="pls-opt-sub" id="plsColorMeta">Forest Sage Green (#3f534d)</span></div>
+            <div class="pls-pill-row" id="plsColorPills" role="radiogroup" aria-label="Cardstock Color">
+              <button type="button" class="pls-swatch-btn active" data-pls-color="green" title="Forest Sage Green (#3f534d · Golden Base)"><span class="pls-swatch" style="background:#3f534d"></span>Green</button>
+              <button type="button" class="pls-swatch-btn" data-pls-color="cream" title="Warm Ivory Cream (#f4efe4)"><span class="pls-swatch" style="background:#f4efe4"></span>Cream</button>
+              <button type="button" class="pls-swatch-btn" data-pls-color="navy" title="Midnight Navy (#0d2232)"><span class="pls-swatch" style="background:#0d2232"></span>Navy</button>
+              <button type="button" class="pls-swatch-btn" data-pls-color="burgundy" title="Deep Burgundy Wine (#4a1219)"><span class="pls-swatch" style="background:#4a1219"></span>Burgundy</button>
+              <button type="button" class="pls-swatch-btn" data-pls-color="emerald" title="Emerald Pine (#123528)"><span class="pls-swatch" style="background:#123528"></span>Emerald</button>
+              <button type="button" class="pls-swatch-btn" data-pls-color="charcoal" title="Charcoal Slate (#23272e)"><span class="pls-swatch" style="background:#23272e"></span>Charcoal</button>
+            </div>
+          </div>
+
+          <!-- 2. Greeting -->
+          <div class="pls-opt-card">
+            <div class="pls-opt-label">2. Greeting Variant <span class="pls-opt-sub" id="plsGreetingMeta">Christmas ("MERRY CHRISTMAS")</span></div>
+            <div class="pls-pill-row" id="plsGreetingPills" role="radiogroup" aria-label="Card Greeting">
+              <button type="button" class="pls-pill-btn active" data-pls-greeting="MERRY CHRISTMAS">🎄 Christmas ("MERRY CHRISTMAS")</button>
+              <button type="button" class="pls-pill-btn" data-pls-greeting="HAPPY HOLIDAYS">✨ Holiday ("HAPPY HOLIDAYS")</button>
+              <button type="button" class="pls-pill-btn" data-pls-greeting="PEACE ON EARTH">🕊️ Religious ("PEACE ON EARTH")</button>
+            </div>
+          </div>
+
+          <!-- 3. Trim / Die-Cut Cutout Shape -->
+          <div class="pls-opt-card">
+            <div class="pls-opt-label">3. Trim Corner (+$0.33 ea.) <span class="pls-opt-sub" id="plsTrimMeta">Bracket Trim (Rotary Die)</span></div>
+            <div class="pls-pill-row" id="plsTrimPills" role="radiogroup" aria-label="Trim Die-Cut Shape">
+              <button type="button" class="pls-pill-btn" data-pls-trim="rounded">▢ Rounded</button>
+              <button type="button" class="pls-pill-btn" data-pls-trim="square">▭ Square</button>
+              <button type="button" class="pls-pill-btn active" data-pls-trim="bracket">❲❳ Bracket</button>
+              <button type="button" class="pls-pill-btn" data-pls-trim="ticket">🎟 Ticket</button>
+              <button type="button" class="pls-pill-btn" data-pls-trim="scalloped">❁ Scalloped</button>
+            </div>
+          </div>
+
+          <!-- 4. Paper & Metallic Foil Finish -->
+          <div class="pls-opt-card">
+            <div class="pls-opt-label">4. Paper &amp; Foil Finish <span class="pls-opt-sub" id="plsFoilMeta">Pearl Shimmer Cardstock (+$0.10 ea.)</span></div>
+            <div class="pls-pill-row" id="plsFoilPills" role="radiogroup" aria-label="Paper and Foil Stamping">
+              <button type="button" class="pls-pill-btn active" data-pls-foil="pearl-shimmer"><span class="pls-foil-dot is-pearl"></span>Pearl Shimmer (+Candy-Cane)</button>
+              <button type="button" class="pls-pill-btn" data-pls-foil="gold"><span class="pls-foil-dot is-gold"></span>Gold Foil</button>
+              <button type="button" class="pls-pill-btn" data-pls-foil="silver"><span class="pls-foil-dot is-silver"></span>Silver Foil</button>
+              <button type="button" class="pls-pill-btn" data-pls-foil="rosegold"><span class="pls-foil-dot is-rosegold"></span>Rose Gold</button>
+              <button type="button" class="pls-pill-btn" data-pls-foil="none">🎨 Matte Smooth CMYK</button>
+            </div>
+          </div>
+
+          <!-- 5. Physical Form Factor & Tactile Finish -->
+          <div class="pls-opt-card">
+            <div class="pls-opt-label">5. Physical Size &amp; Relief <span class="pls-opt-sub" id="plsLayoutMeta">5×7" Flat · 3-Up Photo Strip</span></div>
+            <div class="pls-pill-row" id="plsFormatPills" role="radiogroup" aria-label="Card Physical Form Factor">
+              <button type="button" class="pls-pill-btn active" data-pls-format="5x7-flat">📄 5×7 Flat</button>
+              <button type="button" class="pls-pill-btn" data-pls-format="5x7-folded">📖 5×7 Folded</button>
+              <button type="button" class="pls-pill-btn" data-pls-format="6x8-flat">🖼️ 6×8 Large</button>
+              <button type="button" class="pls-pill-btn" data-pls-format="ornament">🎄 Ornament</button>
+            </div>
+            <div class="pls-pill-row" id="plsEmbossPills" role="radiogroup" aria-label="Tactile Emboss or Deboss" style="margin-top:4px">
+              <button type="button" class="pls-pill-btn active" data-pls-emboss="raised-emboss">⛰ Raised Emboss (+0.35mm)</button>
+              <button type="button" class="pls-pill-btn" data-pls-emboss="letterpress-deboss">凹 Deboss (-0.25mm)</button>
+              <button type="button" class="pls-pill-btn" data-pls-emboss="flat">Flat (0.00mm)</button>
+            </div>
+          </div>
+
+          <!-- 6. Multi-Photo Layout Reflow (1-Up, 2-Up, 3-Up, 5-Up) & Editable Text Box -->
+          <div class="pls-opt-card pls-opt-card-inputs">
+            <div class="pls-opt-label">6. Multi-Photo Drop-Zone Reflow (1-Up → 5-Up) &amp; Builder Text Box</div>
+            <div class="pls-inputs-row">
+              <div class="pls-pill-row" id="plsLayoutPills" role="radiogroup" aria-label="Photo Count Layout Reflow">
+                <button type="button" class="pls-pill-btn" data-pls-layout="hero-arch" title="1-Up Single Hero Photo Drop-Zone">1-Up Hero</button>
+                <button type="button" class="pls-pill-btn" data-pls-layout="2-photo-duo" title="2-Up Balanced Duo Photo Drop-Zones">2-Up Duo</button>
+                <button type="button" class="pls-pill-btn active" data-pls-layout="3-photo-strip" title="3-Up Horizontal Strip (Golden Base)">3-Up Strip</button>
+                <button type="button" class="pls-pill-btn" data-pls-layout="5-photo-grid" title="5-Up Multi-Photo Mosaic Reflow (Often skipped manually due to file-count limits)">5-Up Collage</button>
+              </div>
+              <input type="text" id="plsSignoffInput" value="with love, the thompsons" aria-label="Interactive Builder Family Name Text Box" placeholder="with love, the thompsons" />
+              <select id="plsGreetingSelect" class="hidden" aria-label="Card Greeting Headline">
+                <option value="MERRY CHRISTMAS">MERRY CHRISTMAS</option>
+                <option value="HAPPY HOLIDAYS">HAPPY HOLIDAYS</option>
+                <option value="PEACE ON EARTH">PEACE ON EARTH</option>
+              </select>
+              <select id="plsSourceSelect" aria-label="Source image to decompose into layers" title="Choose between the parametric Deco Botanical designer template or exploding a live AI model output">
+                <option value="designer-template">🎨 Golden Base Template (Deco Botanical — Petite Lemon)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 1 STAGE: LIVE CUSTOMER BUILDER PROOF + REAL-TIME TWO-STAGE AI PREFLIGHT CO-PILOT -->
+        <div class="pls-stage-grid">
+          <!-- LEFT: COMPOSITE CUSTOMER BUILDER PROOF -->
+          <div class="pls-stage-card">
+            <div class="pls-stage-head">
+              <div>
+                <h4>👁 Live Staging Builder &amp; Customer Proof Preview (Horizontal 7×5" Card)</h4>
+                <p class="pls-stage-sub">Interactive preview with multi-photo drop-zone reflow (`1-Up`/`2-Up`/`3-Up`/`5-Up`) &amp; Builder z-order bounding-box inspection.</p>
+              </div>
+              <div class="pls-stage-controls">
+                <label class="pls-inline-ctl" title="Sweep simulated studio light across the Pearl Shimmer / metallic foil surface">
+                  <span>✨ Shimmer Angle</span>
+                  <input type="range" id="plsFoilSheenSlider" min="0" max="100" value="38" />
+                </label>
+                <label class="pls-inline-ctl" title="Overlay Builder interactive text/photo drop-zone bounding boxes, z-index hierarchy, and CutContour die-line">
+                  <input type="checkbox" id="plsShowTrimGuideChk" />
+                  <span>📐 Show Builder Z-Order &amp; CutContour Boxes</span>
+                </label>
+              </div>
+            </div>
+            <div class="pls-composite-viewport" id="plsCompositeViewport">
+              <canvas id="plsCompositeCanvas" width="840" height="600" aria-label="Assembled Deco Botanical Holiday Card Customer Proof"></canvas>
+            </div>
+            <div class="pls-stage-foot" id="plsProofSummaryBar">
+              <span><strong>Form Factor:</strong> <span id="plsFootFormat">5×7" Flat · 3-Up Strip</span></span>
+              <span><strong>Stock:</strong> <span id="plsFootStock">Pearl Shimmer Cardstock · Forest Sage Green</span></span>
+              <span><strong>Trim:</strong> <span id="plsFootTrim">Bracket Die-Cut (+$0.33 ea.)</span></span>
+            </div>
+          </div>
+
+          <!-- RIGHT: AI DESIGNER CO-PILOT — TWO-STAGE BUILD-DOC & STAGING BUILDER Z-ORDER INSPECTOR -->
+          <div class="pls-stage-card pls-copilot-card">
+            <div class="pls-stage-head">
+              <div>
+                <h4>🤖 AI Designer Co-Pilot — Two-Stage Build-Doc &amp; Builder Z-Order QA</h4>
+                <p class="pls-stage-sub">Audits Stage 1 (Build-Doc spreadsheet 1:1 spec) &amp; Stage 2 (Builder z-index text selectability, trim clearance &amp; contrast).</p>
+              </div>
+              <div class="pls-stage-controls">
+                <button type="button" id="plsAiAutoFixToggleBtn" class="bar-btn toggle is-on" aria-pressed="true" title="Toggle AI Co-Pilot automatic z-index reordering, palette adaptation, multi-photo reflow, and die-cut safe-zone inset">
+                  <span class="ar-led"></span>✨ AI Auto-Fix: <strong id="plsAiAutoFixStatusTxt">ON</strong>
+                </button>
+              </div>
+            </div>
+
+            <div class="pls-copilot-body">
+              <div class="pls-preflight-banner" id="plsPreflightBanner">
+                <div class="pls-pf-score" id="plsPreflightScoreBadge">99/100</div>
+                <div class="pls-pf-summary">
+                  <strong id="plsPreflightHeadline">✅ Build-Doc &amp; Staging Builder Ready — All 4 Automated QA Gates Passed</strong>
+                  <span id="plsPreflightSubline">1:1 Build-Doc match, interactive text z-index selectability, Bracket trim clearance, and colorway contrast verified.</span>
+                </div>
+              </div>
+
+              <div class="pls-checks-list" id="plsChecksList">
+                <div class="pls-check-item" id="plsCheckZOrder">
+                  <span class="pls-chk-icon">✅</span>
+                  <div class="pls-chk-text">
+                    <strong>1. Stage 2 Builder Z-Order &amp; Interactive Text Selectability</strong>
+                    <p id="plsCheckZOrderDesc">Editable Text Layer (<code>z-index: 50</code>) sits above Decorative Botanical Sticker Layer (<code>z-index: 30</code>) — family name &amp; greeting 100% clickable in Builder.</p>
+                  </div>
+                </div>
+                <div class="pls-check-item" id="plsCheckTrim">
+                  <span class="pls-chk-icon">✅</span>
+                  <div class="pls-chk-text">
+                    <strong>2. Die-Cut Trim Safe-Zone &amp; Multi-Photo Drop-Zone Reflow</strong>
+                    <p id="plsCheckTrimDesc">4.4mm minimum clearance from Bracket inward corner notches; 3-Up photo drop-zones balanced with 2mm bleed trap.</p>
+                  </div>
+                </div>
+                <div class="pls-check-item" id="plsCheckContrast">
+                  <span class="pls-chk-icon">✅</span>
+                  <div class="pls-chk-text">
+                    <strong>3. Cardstock Colorway, Candy-Cane Stripe &amp; Botanical Contrast</strong>
+                    <p id="plsCheckContrastDesc">8.1:1 optical contrast between Forest Sage Green (#3f534d), white botanical sprigs, and red/white stripes.</p>
+                  </div>
+                </div>
+                <div class="pls-check-item" id="plsCheckReflow">
+                  <span class="pls-chk-icon">✅</span>
+                  <div class="pls-chk-text">
+                    <strong>4. Stage 1 Build-Doc Spreadsheet 1:1 Row &amp; Layer Manifest Match</strong>
+                    <p id="plsCheckReflowDesc">Matches Build-Doc SKU row (5 editable InDesign/Builder layers present; greeting pocket &amp; photo slot count verified).</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pls-try-broken-box">
+                <div class="pls-tb-title">💡 Simulate Real Manual Pipeline Defects (Click any failure mode below):</div>
+                <div class="pls-tb-pills">
+                  <button type="button" class="bar-btn" data-pls-demo-case="zorder-unfixed">🔒 Builder Z-Order Bug (Sticker Blocks Text Box)</button>
+                  <button type="button" class="bar-btn" data-pls-demo-case="cream-unfixed">❌ Cream Stock (White Sprigs Vanish)</button>
+                  <button type="button" class="bar-btn" data-pls-demo-case="burgundy-unfixed">⚠️ Burgundy Stock (Red Stripes Clash)</button>
+                  <button type="button" class="bar-btn" data-pls-demo-case="ticket-unfixed">📐 Ticket Trim (Corner Clips "CHRISTMAS")</button>
+                  <button type="button" class="bar-btn" data-pls-demo-case="5up-reflow">🖼️ Extrapolate 5-Up Multi-Photo Collage</button>
+                </div>
+              </div>
+
+              <div class="pls-copilot-actions">
+                <button type="button" id="plsGoToMatrixBtn" class="ctl-btn primary">
+                  🧪 Run Two-Stage QA Matrix (60 SKUs) →
+                </button>
+                <button type="button" id="plsGoToLayersBtn" class="bar-btn">
+                  💥 Decompose 5 Builder &amp; Print Layers →
+                </button>
+                <button type="button" id="plsGoToMerchBtn" class="bar-btn">
+                  🏷️ View Catalog Merchandising &amp; IDML Spec →
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== TAB 2: TWO-STAGE AUTOMATED QA & TESTING PIPELINE (60 COMBINATIONS) ==================== -->
+      <div class="pls-tab-panel hidden" id="plsTabPanelMatrix" data-pls-tab-panel="matrix">
+        <div id="plsPanelQa">
+          <!-- TOP KPI SUMMARY BAR -->
+          <div class="pls-qa-kpi-bar">
+            <div class="pls-qa-kpi">
+              <span class="k">Stage 1: Build-Doc 1:1 Confirmations</span>
+              <strong class="v" id="plsQaKpiBuildDoc">60 / 60 CONFIRMED</strong>
+              <span class="s">4 Colors × 3 Greetings × 5 Trims (240 w/ 1-Up..5-Up)</span>
+            </div>
+            <div class="pls-qa-kpi">
+              <span class="k">Designer Approved Queue</span>
+              <strong class="v is-pass" id="plsQaKpiPass">44 / 60 PASS (73.3%)</strong>
+              <span class="s" id="plsQaKpiPassSub">44 Designer Approved · 16 Awaiting Fix</span>
+            </div>
+            <div class="pls-qa-kpi">
+              <span class="k">Stage 2: Z-Order &amp; Print Collisions</span>
+              <strong class="v is-warn" id="plsQaKpiFlagged">16 COLLISIONS</strong>
+              <span class="s" id="plsQaKpiFlaggedSub">4 Z-Order Lockouts · 5 Contrast · 4 Trim · 3 Reflow</span>
+            </div>
+            <div class="pls-qa-kpi">
+              <span class="k">Manual QA Time Saved per Card</span>
+              <strong class="v is-accent">5.5 hrs → 45 sec</strong>
+              <span class="s">Eliminates manual InDesign + staging Builder clicking</span>
+            </div>
+          </div>
+
+          <!-- MATRIX TOOLBAR: FILTERS + DESIGNER APPROVE / 1-CLICK AI FIX & APPROVE ALL -->
+          <div class="pls-qa-toolbar">
+            <div class="pls-qa-filters" id="plsQaFilterPills" role="group" aria-label="Filter permutation matrix">
+              <button type="button" class="pls-pill-btn active" data-qa-filter="all">All Copies (60)</button>
+              <button type="button" class="pls-pill-btn" data-qa-filter="flagged">⚠️ Needs Fix (16)</button>
+              <button type="button" class="pls-pill-btn" data-qa-filter="zorder">🔒 Stage 2: Z-Order Collisions (4)</button>
+              <button type="button" class="pls-pill-btn" data-qa-filter="contrast">❌ Colorway Contrast (5)</button>
+              <button type="button" class="pls-pill-btn" data-qa-filter="trim">📐 Die-Cut Trim Clips (4)</button>
+              <button type="button" class="pls-pill-btn" data-qa-filter="reflow">🔤 Greeting Pocket Reflow (3)</button>
+            </div>
+            <div class="pls-qa-actions">
+              <button type="button" id="plsQaResetRawBtn" class="bar-btn" title="Reset to the raw unfixed InDesign extrapolation baseline (44 PASS / 16 COLLISIONS) to inspect individual defects">
+                ↺ Show Raw Unfixed Baseline (16 Collisions)
+              </button>
+              <button type="button" id="plsTab2ApproveAllPassingBtn" class="bar-btn" title="Confirm &amp; approve all 44 passing template copies">
+                ✅ Approve All Passing (44)
+              </button>
+              <button type="button" id="plsFixAndApproveAllBtn" class="ctl-btn primary" title="Use AI Co-Pilot to fix all 16 flagged Z-order/contrast/trim/reflow copies and mark all 60/60 Designer Approved">
+                🔧 AI Fix &amp; Approve All 16 Flagged → 60/60 Ready
+              </button>
+              <button type="button" id="plsQaAutoFixAllBtn" class="hidden" aria-hidden="true">✨ AI Auto-Fix All 16 Flagged SKUs</button>
+            </div>
+          </div>
+
+          <!-- BEFORE vs AFTER AI FIX SPOTLIGHT INSPECTOR -->
+          <div class="pls-qa-spotlight" id="plsQaSpotlightCard">
+            <div class="pls-qas-head">
+              <div>
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+                  <span class="pls-badge" id="plsSpotlightBadge">🔍 Two-Stage Visual &amp; Layer Hierarchy Diagnosis</span>
+                  <span class="pls-qat-badge is-fail" id="plsSpotlightDesignerStatusBadge">🔧 NEEDS FIX (Z-ORDER COLLISION)</span>
+                </div>
+                <h4 id="plsSpotlightTitle">V-14 · Forest Sage Green · Holiday ("HAPPY HOLIDAYS") · Bracket Trim</h4>
+                <p class="pls-stage-sub" id="plsSpotlightDesc">Click any of the 60 template copies below to inspect Before vs. After, approve directly, or run 1-click AI Fix &amp; Approve.</p>
+              </div>
+              <div class="pls-qas-actions">
+                <button type="button" id="plsSpotlightApproveBtn" class="bar-btn pls-btn-approve" title="Approve this template copy as Designer Verified">
+                  ✅ Approve Copy
+                </button>
+                <button type="button" id="plsSpotlightFixApproveBtn" class="ctl-btn primary pls-btn-fix" title="Promote L5 Text z:32 → z:50, lock L4 Sticker pointerEvents:none, and mark Fixed &amp; Approved">
+                  🔧 AI Fix &amp; Approve
+                </button>
+                <button type="button" id="plsSpotlightOpenCustomizerBtn" class="bar-btn">🎨 Open in Customizer</button>
+                <button type="button" id="plsSpotlightExplodeBtn" class="bar-btn">💥 Inspect 5 Layers →</button>
+              </div>
+            </div>
+            <div class="pls-qas-compare-grid">
+              <div class="pls-qas-pane is-before">
+                <div class="pls-qas-pane-top">
+                  <span class="pls-qas-tag is-bad" id="plsSpotlightBeforeTag">❌ Before: Raw Extrapolation (Unfixed)</span>
+                  <span class="pls-qas-metric" id="plsSpotlightBeforeMetric">Stage 2 Builder Defect · Sticker (z:40) Blocks Text Box (z:20)</span>
+                </div>
+                <div class="pls-qas-canvas-wrap">
+                  <canvas id="plsQaBeforeCanvas" width="560" height="400"></canvas>
+                </div>
+              </div>
+              <div class="pls-qas-pane is-after">
+                <div class="pls-qas-pane-top">
+                  <span class="pls-qas-tag is-good" id="plsSpotlightAfterTag">✅ After: Gemini Co-Pilot Auto-Fix</span>
+                  <span class="pls-qas-metric" id="plsSpotlightAfterMetric">Text Selectable in Builder · L5 Text (z:50) &gt; L4 Sticker (z:30)</span>
+                </div>
+                <div class="pls-qas-canvas-wrap">
+                  <canvas id="plsQaAfterCanvas" width="560" height="400"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 60-PERMUTATION VISUAL THUMBNAIL MATRIX -->
+          <div class="pls-qa-matrix-grid" id="plsQaMatrixGrid" role="region" aria-label="60-Permutation Visual QA Grid"></div>
+
+          <!-- STAGE 1 BUILD-DOC 1:1 CONFIRMATION CHECKLIST TABLE -->
+          <div class="pls-builddoc-confirm-card" id="plsBuildDocConfirmSection">
+            <div class="pls-bdc-head">
+              <div>
+                <span class="pls-badge">📋 Stage 1 + Stage 2 Automated Build-Doc &amp; Builder Confirmation Checklist</span>
+                <h4>1:1 Build-Doc Spec &amp; Z-Order Confirmations Across All 60 Generated Template Copies</h4>
+                <p class="pls-stage-sub">Every extrapolated InDesign (<code>.idml</code>) and staging Builder copy is automatically audited against these 6 production gates before entering the Designer Approve/Fix queue.</p>
+              </div>
+              <div class="pls-bdc-summary-badge" id="plsBuildDocOverallBadge">📋 60 / 60 Build-Doc Spec Confirmed</div>
+            </div>
+            <table class="pls-merch-table pls-builddoc-table" id="plsBuildDocConfirmTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Automated Confirmation Gate</th>
+                  <th>Production Specification &amp; Tolerance</th>
+                  <th>Coverage</th>
+                  <th>Confirmation Status</th>
+                </tr>
+              </thead>
+              <tbody id="plsBuildDocConfirmTbody">
+                <tr>
+                  <td><code>1</code></td>
+                  <td><strong>1. Trim &amp; Die-Line CutContour Match</strong></td>
+                  <td>0.25pt Magenta <code>CutContour</code> vector path matches Bracket, Rounded, Square, Ticket &amp; Scalloped rotary dies</td>
+                  <td><code>60 / 60 Copies</code></td>
+                  <td><span class="pls-qat-badge is-pass">✅ 60/60 CONFIRMED</span></td>
+                </tr>
+                <tr>
+                  <td><code>2</code></td>
+                  <td><strong>2. Bleed &amp; 0.125" Safe Margin</strong></td>
+                  <td>Full 0.125" outer bleed extension + ≥3.2mm inward notch clearance on Ticket &amp; Scalloped corners</td>
+                  <td><code>60 / 60 Copies</code></td>
+                  <td><span class="pls-qat-badge is-pass" id="plsBdcBadge2">✅ 60/60 CONFIRMED</span></td>
+                </tr>
+                <tr>
+                  <td><code>3</code></td>
+                  <td><strong>3. CMYK + Foil Spot Swatch Mapping</strong></td>
+                  <td>0% white knockouts under <code>SPOT_FOIL</code> / Pearl Shimmer + ≥4.5:1 optical contrast across all 4 cardstock colors</td>
+                  <td><code>60 / 60 Copies</code></td>
+                  <td><span class="pls-qat-badge is-pass" id="plsBdcBadge3">✅ 60/60 CONFIRMED</span></td>
+                </tr>
+                <tr>
+                  <td><code>4</code></td>
+                  <td><strong>4. Photo Drop-Zone Aspect &amp; Smart-Crop Anchors</strong></td>
+                  <td>Parametric <code>1-Up / 2-Up / 3-Up / 5-Up</code> photo frames at <code>z-index: 25</code> with 2mm bleed trap &amp; face-safe anchors</td>
+                  <td><code>60 / 60 Copies</code></td>
+                  <td><span class="pls-qat-badge is-pass">✅ 60/60 CONFIRMED</span></td>
+                </tr>
+                <tr>
+                  <td><code>5</code></td>
+                  <td><strong>5. Font Family, Tracking &amp; Minimum Point Size</strong></td>
+                  <td>Display serif &ge;18pt, script sign-off &ge;11pt, dynamic kerning reflow on <code>PEACE ON EARTH</code> &amp; <code>HAPPY HOLIDAYS</code></td>
+                  <td><code>60 / 60 Copies</code></td>
+                  <td><span class="pls-qat-badge is-pass" id="plsBdcBadge5">✅ 60/60 CONFIRMED</span></td>
+                </tr>
+                <tr>
+                  <td><code>6</code></td>
+                  <td><strong>6. Builder Layer Z-Order &amp; Text Click-Selectability</strong></td>
+                  <td>Interactive Text Frame (<code>L5 z:50</code>) strictly above Decorative Botanical Stickers (<code>L4 z:30 · pointerEvents:none</code>)</td>
+                  <td id="plsBdcCov6"><code>44 / 60 Native (16 Flagged)</code></td>
+                  <td><span class="pls-qat-badge is-warn" id="plsBdcBadge6">⚠️ 44/60 PASS · 16 FLAGGED</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== TAB 3: 5-LAYER BUILDER EDITABILITY & PREPRESS SEPARATION ==================== -->
+      <div class="pls-tab-panel hidden" id="plsTabPanelLayers" data-pls-tab-panel="layers">
+        <div class="pls-layers-active-bar">
+          <div>
+            <strong>Active Variant for Builder &amp; Prepress Layer Decomposition:</strong>
+            <span id="plsLayersActiveSummary">Forest Sage Green · Christmas ("MERRY CHRISTMAS") · Bracket Trim · Pearl Shimmer · 3-Up Strip</span>
+          </div>
+          <div class="pls-layers-active-actions">
+            <button type="button" id="plsAnimateExplodeBtn" class="bar-btn toggle is-on" aria-pressed="true" title="Toggle exploded 3D layer separation vs merged stack">
+              <span class="ar-led"></span>💥 Explode 3D Layer Stack
+            </button>
+            <button type="button" id="plsBackToMatrixBtn" class="bar-btn">← Back to Two-Stage QA Matrix</button>
+          </div>
+        </div>
+
+        <!-- 3D ISOMETRIC EXPLODED LAYER STACK -->
+        <div class="pls-stage-card" style="margin-bottom:16px">
+          <div class="pls-stage-head">
+            <div>
+              <h4>💥 3D Exploded InDesign / Builder &amp; Prepress Layer Hierarchy (5 Discrete Editable Layers)</h4>
+              <p class="pls-stage-sub">Decomposes flattened artwork into discrete, z-indexed layers for <strong>Adobe InDesign (<code>.idml</code>)</strong>, the <strong>interactive customer Builder</strong> (background, photo drop-zones, botanical stickers, selectable text boxes), and <strong>factory press RIP plates</strong>.</p>
+            </div>
+            <div class="pls-stage-controls">
+              <div class="pls-cam-group" role="group" aria-label="3D Stack Camera View">
+                <button type="button" class="bar-btn pls-cam-btn active" data-pls-cam="iso">🧊 3D Iso</button>
+                <button type="button" class="bar-btn pls-cam-btn" data-pls-cam="side">📐 Side Profile</button>
+                <button type="button" class="bar-btn pls-cam-btn" data-pls-cam="top">⬇️ Top Align</button>
+              </div>
+              <label class="pls-inline-ctl" title="Control vertical Z-axis explosion spacing between the 5 layers">
+                <span>Spread</span>
+                <input type="range" id="plsSpreadSlider" min="0" max="100" value="76" />
+                <strong id="plsSpreadVal">76%</strong>
+              </label>
+            </div>
+          </div>
+
+          <div class="pls-exploded-viewport" id="plsExplodedViewport" data-cam="iso">
+            <div class="pls-stack-scene" id="plsStackScene">
+              <!-- 5 floating 3D layer planes populated & synced by app.js -->
+              <div class="pls-plane" data-plate-idx="0" id="plsPlane0">
+                <canvas id="plsStackCanvas0" width="504" height="360"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Layer 1 (z:10)</span><strong>Die-Cut &amp; Trim Contour</strong><em>CutContour Vector Path</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="1" id="plsPlane1">
+                <canvas id="plsStackCanvas1" width="504" height="360"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Layer 2 (z:20)</span><strong>Cardstock Background &amp; Knockouts</strong><em>InDesign Substrate Layer</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="2" id="plsPlane2">
+                <canvas id="plsStackCanvas2" width="504" height="360"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Layer 3 (z:25)</span><strong>Smart Photo Drop-Zones (1–5 Up)</strong><em>Builder Interactive Photo Slots</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="3" id="plsPlane3">
+                <canvas id="plsStackCanvas3" width="504" height="360"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Layer 4 (z:30)</span><strong id="plsPlane3Title">Decorative Botanical Stickers &amp; Foil</strong><em>Locked Below Editable Text (z:30)</em></div>
+              </div>
+              <div class="pls-plane" data-plate-idx="4" id="plsPlane4">
+                <canvas id="plsStackCanvas4" width="504" height="360"></canvas>
+                <div class="pls-plane-tag"><span class="pls-pt-num">Layer 5 (z:50)</span><strong id="plsPlane4Title">Interactive Text Box &amp; Emboss Relief</strong><em>Top Builder Z-Order + Tactile Map</em></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pls-layer-toggles" id="plsLayerToggles" role="group" aria-label="Toggle individual print layers in 3D stack">
+            <span class="pls-lt-label">Visible Layers:</span>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="0" checked /><span>1. Die-Cut Mask (z:10)</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="1" checked /><span>2. Background + Knockouts (z:20)</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="2" checked /><span>3. Photo Drop-Zones (z:25)</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="3" checked /><span>4. Botanical Stickers / Foil (z:30)</span></label>
+            <label class="pls-lt-chip"><input type="checkbox" data-layer-vis="4" checked /><span>5. Editable Text &amp; Emboss (z:50)</span></label>
+            <button type="button" id="plsResetLayersBtn" class="bar-btn subtle">Show All 5</button>
+          </div>
+        </div>
+
+        <!-- BOTTOM: 5 INDIVIDUAL SEPARATED BUILDER & PREPRESS PLATES -->
+        <div class="pls-plates-section">
+          <div class="pls-plates-head">
+            <div>
+              <h4>🖨 Discrete InDesign / Builder Assets &amp; Prepress Production Plates (Click Any Layer to Enlarge)</h4>
+              <p class="pls-stage-sub">Each decomposed layer exports cleanly into <strong>Adobe InDesign / Staging Builder</strong> and <strong>HP Indigo / Kurz Foil / Scodix Press RIPs</strong>.</p>
+            </div>
+            <div class="pls-plate-mode-switch" id="plsPlateModeToggle" role="group" aria-label="Prepress Plate Rendering Mode">
+              <button type="button" class="mv-btn active" data-plate-mode="visual" aria-pressed="true">👁 Visual Builder / Layer Preview</button>
+              <button type="button" class="mv-btn" data-plate-mode="factory" aria-pressed="false">🖨 Factory Spot Mask (100% K / RIP)</button>
+            </div>
+          </div>
+          <div class="pls-plates-grid" id="plsPlatesGrid"></div>
+        </div>
+      </div>
+
+      <!-- ==================== TAB 4: END-TO-END CATALOG MERCHANDISING, BUILD-DOC & IDML SPEC ==================== -->
+      <div class="pls-tab-panel hidden" id="plsTabPanelMerch" data-pls-tab-panel="merchandising">
+        <div class="pls-merch-grid">
+          <!-- LEFT COLUMN: MULTIMODAL CATALOG MERCHANDISING & ATTRIBUTION -->
+          <div class="pls-stage-card">
+            <div class="pls-stage-head">
+              <div>
+                <span class="pls-badge">🏷️ Pillar 3 · Multimodal Catalog Tagging &amp; PDP Generator</span>
+                <h4>Auto-Generated Site &amp; App Merchandising Attribution Payload</h4>
+                <p class="pls-stage-sub">Analyzes the visual card design + Build-Doc brief to generate SEO titles, PDP copy, taxonomy tags, and option-tree mappings in one pass.</p>
+              </div>
+              <div class="pls-stage-controls">
+                <button type="button" id="plsCopyMerchJsonBtn" class="ctl-btn primary">📋 Copy Unified Spec JSON</button>
+              </div>
+            </div>
+            <div class="pls-merch-body" id="plsMerchVisualBody"></div>
+          </div>
+
+          <!-- RIGHT COLUMN: STAGE 1 BUILD-DOC SPREADSHEET AUDIT + INDESIGN IDML / BUILDER SCHEMA JSON -->
+          <div class="pls-stage-card">
+            <div class="pls-stage-head">
+              <div>
+                <span class="pls-badge">🧬 Pillar 1 &amp; 2 · Adobe InDesign IDML &amp; Build-Doc Manifest</span>
+                <h4>Structured IDML Drop-Zone Coordinates, Layer Z-Order &amp; Option Tree</h4>
+                <p class="pls-stage-sub">Ready for automated ingestion into Adobe InDesign Server (<code>.idml</code>), the customer Builder, and storefront catalog publishing.</p>
+              </div>
+              <div class="pls-stage-controls">
+                <button type="button" id="plsDownloadMerchJsonBtn" class="bar-btn">⬇ Download <code>.json</code> Spec</button>
+              </div>
+            </div>
+            <pre class="pls-merch-json-pre" id="plsMerchJsonPre"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
 
     <!-- INTERACTIVE SPLIT-CURTAIN OVERLAY VIEW (OPTIONAL TOGGLE) -->
     <section id="imgCurtainSection" class="glass img-curtain-section hidden">
@@ -695,6 +1381,6 @@
   </div>
   <!-- [ARENA_BLOCK:CAD_MODAL_END] -->
 
-  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.73</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-20T00:00:00Z">Last updated Oct 19, 2026, 5:00 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
+  <footer class="foot">LLM Compare <span id="appVersion" class="foot-version">v1.0.74</span> · <span id="appLastUpdated" class="foot-updated" data-iso="2026-10-20T01:30:00Z">Last updated Oct 19, 2026, 6:30 PM PDT</span> · live side-by-side model arena · real-time latency, token economics &amp; blind evaluation<span id="googleFooterCredit" class="foot-credit" hidden> · created with <span class="foot-heart" aria-label="love">❤️</span> by <a href="mailto:ubhi@google.com">ubhi@google.com</a></span></footer>
 </body>
 </html>

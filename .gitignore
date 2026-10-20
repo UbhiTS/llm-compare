@@ -30,4 +30,5 @@ scratchpad/
 # --- editor / AI-assistant scaffolding (not part of the app) ---
 .claude/
 CLAUDE.md
-public/sfly-test-images/
+public/sfly-test-images/*
+!public/sfly-test-images/sfly-deco-botanical-pdp.png
