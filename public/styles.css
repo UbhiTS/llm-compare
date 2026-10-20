@@ -139,7 +139,13 @@ h1, h2 { font-family: "Space Grotesk", Inter, sans-serif; letter-spacing: -.02em
 /* light theme: soften the aurora (screen blend is invisible on light) + darken the wordmark for contrast */
 :root[data-theme="light"] .aurora::before,
 :root[data-theme="light"] .aurora::after { mix-blend-mode: normal; opacity: .3; }
-:root[data-theme="light"] .wordmark { background: linear-gradient(100deg, #2a5bd0 0%, #6b3bd0 50%, #128a7a 100%); }
+:root[data-theme="light"] .wordmark {
+  background: linear-gradient(100deg, #2a5bd0 0%, #6b3bd0 50%, #128a7a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
 
 /* theme switch (segmented, square corners) */
 .theme-switch { display: inline-flex; border: 1px solid var(--border); background: var(--surface); backdrop-filter: blur(12px); overflow: hidden; }

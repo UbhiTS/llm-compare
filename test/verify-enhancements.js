@@ -930,9 +930,18 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
       !indexHtml.includes('id="imgPrintLayerStudio"') &&
       !indexHtml.includes('id="plsScreenshotIntakeBar"') &&
       !(imgCfg.packs || []).some((p) => p.id === 'stationery-print-layers'),
-      'v1.0.75 llm-compare must not contain customer-specific Shutterfly Print Layer Studio UI (which lives in standalone projects/shutterfly-template-studio)'
+      'v1.0.76 llm-compare must not contain customer-specific Shutterfly Print Layer Studio UI (which lives in standalone projects/shutterfly-template-studio)'
     );
-    console.log('✓ v1.0.75 9 DSLR/print aspect ratios, 4K Pixel-Lock Outpainting pipeline, Dual-Buffer upload normalization, 4K->2K fallback badge, use-case-aware UI controls & clean customer-PoC separation verified');
+    const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'public', 'styles.css'), 'utf8');
+    const lightWordmarkMatch = stylesCss.match(/:root\[data-theme="light"\]\s*\.wordmark\s*\{([^}]+)\}/);
+    assert(
+      lightWordmarkMatch &&
+      lightWordmarkMatch[1].includes('-webkit-background-clip: text') &&
+      lightWordmarkMatch[1].includes('background-clip: text') &&
+      lightWordmarkMatch[1].includes('-webkit-text-fill-color: transparent'),
+      'v1.0.76 :root[data-theme="light"] .wordmark must explicitly re-declare background-clip: text and -webkit-background-clip: text after background shorthand'
+    );
+    console.log('✓ v1.0.76 9 DSLR/print aspect ratios, 4K Pixel-Lock Outpainting pipeline, Dual-Buffer upload normalization, 4K->2K fallback badge, use-case-aware UI controls, Light Theme wordmark clip & clean customer-PoC separation verified');
   }
 
   console.log('\nALL ENHANCEMENT CHECKS PASSED ✓');
