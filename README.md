@@ -79,7 +79,10 @@ GCP_PROJECT_ID=your-gcp-project-with-claude-enabled-in-vertex
 OPENAI_API_KEY=your-openai-api-key
 ```
 
-- **Gemini** slots use `AGENT_PLATFORM_API_KEY`. **Claude** runs through Vertex AI — the server
+- **Gemini** slots use `AGENT_PLATFORM_API_KEY` (created in the project named by
+  `AGENT_PLATFORM_PROJECT_NUMBER`, or in `GCP_PROJECT_ID`). To skip the API key, set
+  `AGENT_PLATFORM_GEMINI_AUTH=oauth`: Gemini then runs on the same `gcloud` login / service account
+  as Claude, in `GCP_PROJECT_ID` (this is what the Cloud Run deploy does). **Claude** runs through Vertex AI — the server
   **auto-mints** a token from your `gcloud` login (`gcloud auth login`), so no key is needed as long as
   the project has the Anthropic models enabled in Vertex Model Garden. **GPT-5.6** and **Kimi** slots call
   OpenAI / Moonshot directly with `OPENAI_API_KEY` / `MOONSHOT_API_KEY`.

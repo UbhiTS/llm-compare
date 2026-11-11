@@ -296,7 +296,7 @@ const json = (status, body) => new Response(JSON.stringify(body), { status, head
     // Hermetic: no Secret Manager, and blank values so a local .env can't add real keys.
     GLOBAL_KEYS_ENABLED: '0', GCP_PROJECT_ID: '',
     OPENAI_ADMIN_KEY: '', ANTHROPIC_ADMIN_KEY: '', MOONSHOT_API_KEY: '', ANTHROPIC_API_KEY: '',
-    AGENT_PLATFORM_API_KEY: 'vertex-spend-canary-0123', OPENAI_API_KEY: 'sk-spendcanary0123456789',
+    AGENT_PLATFORM_GEMINI_AUTH: 'apikey', AGENT_PLATFORM_API_KEY: 'vertex-spend-canary-0123', OPENAI_API_KEY: 'sk-spendcanary0123456789',
     NODE_OPTIONS: `--require ${preload}`,
   };
   delete env.K_SERVICE; delete env.ANTIGRAVITY_SIDECAR_WEB_PORT; delete env.ADMIN_EMAILS;

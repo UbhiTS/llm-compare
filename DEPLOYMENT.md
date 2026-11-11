@@ -120,7 +120,15 @@ gcloud storage buckets add-iam-policy-binding "gs://$DATA_BUCKET" \
 
 The Gemini/Agent-Platform key, OpenAI key, OAuth client secret, and a **break-glass admin
 password** live in Secret Manager. The OpenAI key is loaded by the app's shared-key manager;
-the other three are injected at deploy time.
+the OAuth client secret and admin password are injected at deploy time.
+
+> **Gemini needs no API key on Cloud Run.** The GitHub Actions deploy sets
+> `AGENT_PLATFORM_GEMINI_AUTH=oauth`, so Gemini runs on the runtime service account in
+> `GCP_PROJECT_ID` (the Vertex AI User role from Step 4), exactly like Claude. The
+> `AGENT_PLATFORM_API_KEY` secret is only read in the default `apikey` mode (local dev, or
+> if you remove that env var from the deploy). In that mode the key works only on the
+> project it was created in (`AGENT_PLATFORM_PROJECT_NUMBER`), which makes that project a
+> hard dependency of every Gemini call.
 
 ```bash
 printf '%s' "YOUR_AGENT_PLATFORM_API_KEY" | \

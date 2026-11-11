@@ -164,7 +164,7 @@ async function waitUp() {
     SMOKE_CANARY_SECRET_TOKEN: 'canary-should-not-leak',
     ...(LIVE ? {} : {
       GLOBAL_KEYS_ENABLED: '0', GCP_PROJECT_ID: '', GCLOUD_TOKEN_AUTOMINT: '0',
-      AGENT_PLATFORM_API_KEY: 'vertex-smoke-canary-0123456789',
+      AGENT_PLATFORM_GEMINI_AUTH: 'apikey', AGENT_PLATFORM_API_KEY: 'vertex-smoke-canary-0123456789',
       NODE_OPTIONS: `--require ${preload}`,
     }),
   };

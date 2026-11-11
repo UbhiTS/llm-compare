@@ -28,6 +28,9 @@ const globalKeys = require('./globalKeys');
 // credential (and the user's own GCP project) is used - never a shared key or
 // shared project, not even as a retry/fallback. See src/byok.js.
 const byok = require('./byok');
+// Credential + project for Gemini on Vertex: the user's own key, else the shared
+// service-account token or shared API key (AGENT_PLATFORM_GEMINI_AUTH).
+const vertexGeminiAuth = require('./vertexGeminiAuth');
 const {
   toGeminiParts,
   toClaudeContent,
@@ -925,7 +928,9 @@ async function anthropic({ model, system, messages, keys, signal }) {
 
 // --- Google Agent Platform (formerly Vertex AI) ---------------------------
 // One platform, two call styles:
-//   * Google (Gemini) publishers -> :generateContent with the API key (x-goog-api-key header)
+//   * Google (Gemini) publishers -> :generateContent, authenticated per
+//     src/vertexGeminiAuth.js: the user's own API key, else the shared
+//     service-account token (AGENT_PLATFORM_GEMINI_AUTH=oauth) or shared API key.
 //   * Anthropic (Claude) publishers -> :rawPredict with an OAuth bearer token
 //     on the project-scoped /locations/global path (per the model sheet).
 // Both can return reasoning ("thinking"); we separate it from the answer and
@@ -933,28 +938,41 @@ async function anthropic({ model, system, messages, keys, signal }) {
 
 // (agentplatform dispatcher is defined below alongside agentPlatformOpenAIMaaS)
 
-// Gemini 4+ (e.g. `gemini-4-argon`) and explicitly global-scoped Gemini models
+// A Vertex location that may be interpolated into a regional hostname.
+const VERTEX_REGION_RE = /^[a-z]{2,}(?:-[a-z]+)+\d{1,2}$/;
+
+// Base URL (no :method suffix) for a Gemini model, given the credential resolved
+// by vertexGeminiAuth.resolve().
+//
+// Service-account token: always the project-scoped path on the shared project
+// (a bearer token has no projectless alias); models without a region use the
+// global endpoint.
+//
+// API key: Gemini 4+ (e.g. `gemini-4-argon`) and explicitly global-scoped models
 // are served on the project-scoped `/v1/projects/<PROJECT>/locations/global`
-// Vertex AI path rather than the projectless `/v1/publishers/google` alias
-// (which routes to us-central1 and returns 404 for global-only models).
-// Because `AGENT_PLATFORM_API_KEY` belongs to project 419460847694 while
-// `GCP_PROJECT_ID` is used for Claude OAuth (`llm-compare-ubhits`), the shared
-// key defaults to `AGENT_PLATFORM_PROJECT_NUMBER` (`419460847694`).
+// path rather than the projectless `/v1/publishers/google` alias (which routes
+// to us-central1 and returns 404 for global-only models). The project must be
+// the key's own: `AGENT_PLATFORM_PROJECT_NUMBER` for the shared key.
 // Strict BYOK: a user's own key is only ever paired with the user's own
 // `gcpProject` (or the projectless alias, which bills the key's own project) -
 // never with the shared project - and a user-supplied `gcpProject` is never
-// paired with the shared key.
-function vertexGeminiBaseUrl(model, keys, region) {
+// paired with a shared credential.
+function vertexGeminiBaseUrl(model, auth, region) {
+  const m = encodeURIComponent(model);
+  if (auth.kind === 'oauth') {
+    const loc = String(region || 'global').trim();
+    if (loc !== 'global' && !VERTEX_REGION_RE.test(loc)) {
+      throw statusError(`Unsupported Vertex AI region "${loc.slice(0, 40)}" for model "${model}".`, 400, model);
+    }
+    const host = loc === 'global' ? 'aiplatform.googleapis.com' : `${loc}-aiplatform.googleapis.com`;
+    return `https://${host}/v1/projects/${encodeURIComponent(auth.project)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${m}`;
+  }
   const needsGlobalProjectPath = region === 'global' || geminiVersion(model) >= 4;
-  const ownKey = !!byok.userCredential('vertexKey', keys);
-  const proj = ownKey
-    ? byok.userProject(keys)
-    : (process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694').trim();
-  if (!needsGlobalProjectPath || !proj) {
-    return `https://aiplatform.googleapis.com/v1/publishers/google/models/${encodeURIComponent(model)}`;
+  if (!needsGlobalProjectPath || !auth.project) {
+    return `https://aiplatform.googleapis.com/v1/publishers/google/models/${m}`;
   }
   const loc = (region || 'global').trim();
-  return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(proj)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${encodeURIComponent(model)}`;
+  return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(auth.project)}/locations/${encodeURIComponent(loc)}/publishers/google/models/${m}`;
 }
 
 // Extra hint on a Vertex Gemini error when the user's own key was used without
@@ -980,8 +998,7 @@ function vertexOAuthProject(keys, catalogProject) {
 }
 
 async function agentPlatformGemini({ model, system, messages, keys, signal, effort, region, auditUser }) {
-  const key = byok.userCredential('vertexKey', keys) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
-  if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
+  const auth = vertexGeminiAuth.resolve(keys); // own key, else the shared credential (throws if none is usable)
   const attr = buildUpstreamAttribution(auditUser);
 
   const buildBody = (inlineDocs = true) => {
@@ -1001,25 +1018,25 @@ async function agentPlatformGemini({ model, system, messages, keys, signal, effo
     return body;
   };
 
-  const url = `${vertexGeminiBaseUrl(model, keys, region)}:generateContent`;
-  // SECURITY: API key in the x-goog-api-key header, never in the URL.
-  const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
-
+  const url = `${vertexGeminiBaseUrl(model, auth, region)}:generateContent`;
   const t0 = Date.now();
-  let r = await providerFetch(url, {
+  let headers = await vertexGeminiAuth.headers(auth);
+  const send = (inlineDocs) => providerFetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify(buildBody(true)),
+    body: JSON.stringify(buildBody(inlineDocs)),
     signal,
   });
+
+  let r = await send(true);
+  if (r.status === 401 && auth.kind === 'oauth') {
+    // The shared service-account token expired: mint a fresh one, once.
+    headers = await vertexGeminiAuth.headers(auth, { forceRefresh: true });
+    r = await send(true);
+  }
   const notes = [];
   if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
-    r = await providerFetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(buildBody(false)),
-      signal,
-    });
+    r = await send(false);
     if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
   const j = await r.json();
@@ -1216,8 +1233,7 @@ function streamErrorEvent(label, model, detail) {
 }
 
 async function agentPlatformGeminiStream({ model, system, messages, onDelta, keys, signal, effort, region, auditUser }) {
-  const key = byok.userCredential('vertexKey', keys) || globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY');
-  if (!key) throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env)');
+  const auth = vertexGeminiAuth.resolve(keys); // own key, else the shared credential (throws if none is usable)
   const attr = buildUpstreamAttribution(auditUser);
 
   const buildBody = (inlineDocs = true) => {
@@ -1236,15 +1252,20 @@ async function agentPlatformGeminiStream({ model, system, messages, onDelta, key
     if (attr && attr.vertexLabels) body.labels = attr.vertexLabels;
     return body;
   };
-  const url = `${vertexGeminiBaseUrl(model, keys, region)}:streamGenerateContent?alt=sse`;
-  // SECURITY: API key in the x-goog-api-key header, never in the URL.
-  const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
-
+  const url = `${vertexGeminiBaseUrl(model, auth, region)}:streamGenerateContent?alt=sse`;
   const t0 = Date.now();
-  let r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(true)), signal });
+  let headers = await vertexGeminiAuth.headers(auth);
+  const send = (inlineDocs) => providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(inlineDocs)), signal });
+
+  let r = await send(true);
+  if (r.status === 401 && auth.kind === 'oauth') {
+    // The shared service-account token expired: mint a fresh one, once.
+    headers = await vertexGeminiAuth.headers(auth, { forceRefresh: true });
+    r = await send(true);
+  }
   const notes = [];
   if (r.status === 400 && hasNativeDocs(messages) && !(await isImageError(r, messages)) && DOC_REJECTION_RE.test(await peekBody(r))) {
-    r = await providerFetch(url, { method: 'POST', headers, body: JSON.stringify(buildBody(false)), signal });
+    r = await send(false);
     if (r.ok) notes.push(docNote(model, 'PDF/audio/video attachment(s)'));
   }
   if (!r.ok) { let e; try { e = await r.json(); } catch { e = await r.text(); } throw statusError(`Agent Platform ${r.status} for model "${model}": ${scrubError(JSON.stringify(e)).slice(0, 400)}${ownVertexKeyHint(keys, r.status)}`, r.status, model); }

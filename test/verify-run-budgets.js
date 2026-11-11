@@ -149,7 +149,7 @@ const ADMIN = { username: 'ubhi@google.com', role: 'admin', external: true };
     ...process.env, PORT: String(PORT), HOST: '127.0.0.1', SECONDARY_PORT: '0',
     APP_DATA_DIR: path.join(tmp, 'data'), AUTH_DATA_DIR: path.join(tmp, 'auth'),
     ENABLE_CODE_EXEC: '0', GCLOUD_TOKEN_AUTOMINT: '0',
-    OPENAI_API_KEY: 'sk-budgetcanary0123456789', AGENT_PLATFORM_API_KEY: 'vertex-budget-canary',
+    OPENAI_API_KEY: 'sk-budgetcanary0123456789', AGENT_PLATFORM_GEMINI_AUTH: 'apikey', AGENT_PLATFORM_API_KEY: 'vertex-budget-canary',
   };
   delete env.K_SERVICE; delete env.ANTIGRAVITY_SIDECAR_WEB_PORT; delete env.ADMIN_EMAILS;
   const srv = spawn(process.execPath, ['server.js'], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });

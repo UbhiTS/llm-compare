@@ -47,6 +47,8 @@ const history = require('./src/history');
 const auth = require('./src/auth');
 const googleAuth = require('./src/googleAuth');
 const globalKeys = require('./src/globalKeys');
+// Which shared credential Gemini on Vertex runs on (API key or service account).
+const vertexGeminiAuth = require('./src/vertexGeminiAuth');
 // Strict BYOK: single source of truth for "does this model run on the user's own
 // credential" - own-key models never touch shared keys and never count toward caps.
 const { modelUsesOwnKey } = require('./src/byok');
@@ -1108,7 +1110,8 @@ app.get('/api/config', (req, res) => {
       gui: !!t.gui,
     })),
     keysPresent: {
-      agentplatform: globalKeys.has('AGENT_PLATFORM_API_KEY') || globalKeys.has('GEMINI_API_KEY'),
+      // Shared Gemini on Vertex: an API key, or the service account (AGENT_PLATFORM_GEMINI_AUTH=oauth).
+      agentplatform: vertexGeminiAuth.sharedConfigured(),
       claude: autoMintEnabled() || !!process.env.CLAUDE_BEARER_TOKEN,
       gemini: globalKeys.has('GEMINI_API_KEY'),
       openai: globalKeys.has('OPENAI_API_KEY'),

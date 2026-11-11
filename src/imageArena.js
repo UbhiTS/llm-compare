@@ -17,10 +17,10 @@ const { providerFetch } = require('./providerFetch');
 const globalKeys = require('./globalKeys');
 // Strict BYOK: a user's own key is used exclusively (never a shared key or shared project).
 const byok = require('./byok');
+// Credential + project for Gemini image models on Vertex (shared with the text adapters).
+const vertexGeminiAuth = require('./vertexGeminiAuth');
 const { scrubError } = require('./secrets');
 const { imageDimensionsFromBase64 } = require('./imageInfo');
-
-const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';
 
 const IMAGE_RESOLUTIONS = [
   { id: '1K', label: '1K · Standard (~1.0 MP)', shortLabel: '1K', description: 'Fast web preview & social cards (1376×768 at 16:9 · 1024×1024 at 1:1)' },
@@ -1534,30 +1534,25 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const { buildUpstreamAttribution } = require('./providers');
   const attr = buildUpstreamAttribution(auditUser);
 
-  // Strict BYOK: the user's own Vertex key (when supplied) is the ONLY key used
-  // and is only ever paired with the user's own project (or the projectless
-  // alias, which bills the key's own project) - never a shared key/project.
-  const ownVertexKey = byok.userCredential('vertexKey', keys);
-  let key = ownVertexKey
-    || globalKeys.get('AGENT_PLATFORM_API_KEY')
-    || globalKeys.get('GEMINI_API_KEY')
-    || process.env.AGENT_PLATFORM_API_KEY
-    || process.env.GEMINI_API_KEY;
-  if (!key && typeof globalKeys.refreshAll === 'function') {
+  // Credential + project (src/vertexGeminiAuth.js). Strict BYOK: the user's own Vertex
+  // key (when supplied) is the ONLY key used and is only ever paired with the user's own
+  // project (or the projectless alias, which bills the key's own project) - never a
+  // shared credential/project. Otherwise the shared credential: the service-account
+  // token on GCP_PROJECT_ID (AGENT_PLATFORM_GEMINI_AUTH=oauth) or the shared API key.
+  let auth;
+  try {
+    auth = vertexGeminiAuth.resolve(keys);
+  } catch (e) {
+    // A shared key set in Settings a moment ago may not be cached yet: refresh once.
+    if (!(e && e.missingSharedKey) || typeof globalKeys.refreshAll !== 'function') throw e;
     await globalKeys.refreshAll().catch(() => {});
-    key = globalKeys.get('AGENT_PLATFORM_API_KEY') || globalKeys.get('GEMINI_API_KEY') || process.env.AGENT_PLATFORM_API_KEY || process.env.GEMINI_API_KEY;
+    auth = vertexGeminiAuth.resolve(keys);
   }
-  if (!key) {
-    throw new Error('Missing AGENT_PLATFORM_API_KEY in environment (.env) or Settings.');
-  }
-
-  const candidateProjects = ownVertexKey
-    ? [byok.userProject(keys)].filter(Boolean)
-    : Array.from(new Set([
-      process.env.AGENT_PLATFORM_PROJECT_NUMBER || '',
-      '419460847694',
-      process.env.GCP_PROJECT_ID || '',
-    ].filter(Boolean)));
+  const oauth = auth.kind === 'oauth';
+  // Project-scoped endpoints to try, in order. Own key: the user's project only.
+  // Service account: GCP_PROJECT_ID only. Shared API key: the key's own project
+  // (AGENT_PLATFORM_PROJECT_NUMBER) first, then GCP_PROJECT_ID.
+  const candidateProjects = auth.projects;
 
   const userParts = [];
   for (const att of refs) {
@@ -1590,17 +1585,20 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
   const shortPublisherUrl =
     `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${encodeURIComponent(entry.model)}:generateContent`;
 
-  const headers = { 'Content-Type': 'application/json', 'x-goog-api-key': key };
   const payloadStr = buildPayload(effectiveSize);
   const t0 = Date.now();
   const checkDeadline = slotDeadline(entry, t0);
+  let headers = await vertexGeminiAuth.headers(auth);
   const post = (url, body) => imageFetch(url, { method: 'POST', headers, body, signal });
 
-  // Own key without an own project -> straight to the projectless alias.
-  let usedUrl = candidateProjects.length
-    ? buildGlobalProjectUrl(candidateProjects[0])
-    : (ownVertexKey ? shortPublisherUrl : buildGlobalProjectUrl(DEFAULT_IMAGE_PROJECT_NUMBER));
+  // No project to scope to (an API key without one) -> straight to the projectless alias.
+  let usedUrl = candidateProjects.length ? buildGlobalProjectUrl(candidateProjects[0]) : shortPublisherUrl;
   let { r, j } = await readJsonBody(() => post(usedUrl, payloadStr), signal);
+  if (r.status === 401 && oauth) {
+    // The shared service-account token expired: mint a fresh one, once.
+    headers = await vertexGeminiAuth.headers(auth, { forceRefresh: true });
+    ({ r, j } = await readJsonBody(() => post(usedUrl, payloadStr), signal));
+  }
 
   // If the key belongs to another candidate project (e.g., GCP_PROJECT_ID when a custom key is mounted),
   // try remaining candidate /locations/global project endpoints next.
@@ -1616,9 +1614,10 @@ async function runSingleImageSlot({ slot, catalogId, prompt, aspectRatio, imageS
     }
   }
 
-  // If a custom BYOK key belongs to a different project number (403/404 on project path),
-  // fall back automatically to the projectless publisher path.
-  if ((r.status === 403 || r.status === 404) && usedUrl !== shortPublisherUrl) {
+  // If an API key belongs to a different project number (403/404 on project path),
+  // fall back automatically to the projectless publisher path. API keys only: a
+  // service-account token has no projectless alias.
+  if (!oauth && (r.status === 403 || r.status === 404) && usedUrl !== shortPublisherUrl) {
     checkDeadline('the projectless publisher endpoint');
     const fb = await readJsonBody(() => post(shortPublisherUrl, payloadStr), signal);
     if (fb.r.ok || fb.r.status === 400) {

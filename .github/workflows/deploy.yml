@@ -17,7 +17,10 @@ name: Deploy to Cloud Run
 #     WIF_PROVIDER (workload identity provider resource name),
 #     DEPLOY_SERVICE_ACCOUNT (deployer SA email)
 #   Secret Manager secrets referenced at deploy (see --set-secrets):
-#     AGENT_PLATFORM_API_KEY, GOOGLE_CLIENT_SECRET, ADMIN_BOOTSTRAP_PASSWORD
+#     GOOGLE_CLIENT_SECRET, ADMIN_BOOTSTRAP_PASSWORD
+#   Gemini on Vertex runs on the runtime service account in GCP_PROJECT_ID
+#   (AGENT_PLATFORM_GEMINI_AUTH=oauth), the same identity as Claude: no API key, and no
+#   dependency on any other project. The service account needs roles/aiplatform.user.
 # See DEPLOYMENT.md for the one-time setup that creates all of the above.
 
 on:
@@ -148,8 +151,8 @@ jobs:
             --min-instances=1 --max-instances=1 \
             --concurrency=40 \
             --cpu=2 --memory=2Gi --cpu-boost --no-cpu-throttling --timeout=3600 \
-            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@AGENT_PLATFORM_PROJECT_NUMBER=419460847694@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
-            --set-secrets="AGENT_PLATFORM_API_KEY=AGENT_PLATFORM_API_KEY:latest,GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest" \
+            --set-env-vars="^@@^HOST=0.0.0.0@@PYTHON_CMD=python3@@GCP_PROJECT_ID=${{ vars.GCP_PROJECT_ID }}@@AGENT_PLATFORM_GEMINI_AUTH=oauth@@COOKIE_SECURE=1@@TRUST_PROXY=1@@CLAUDE_EFFORT=high@@ALLOWED_EMAIL_DOMAINS=${{ vars.ALLOWED_EMAIL_DOMAINS }}@@ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}@@GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}@@OAUTH_REDIRECT_BASE=${{ vars.OAUTH_REDIRECT_BASE }}@@APP_DATA_DIR=/data@@AUTH_DATA_DIR=/data/auth@@ENABLE_CODE_EXEC=0" \
+            --set-secrets="GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET:latest,ADMIN_BOOTSTRAP_PASSWORD=ADMIN_BOOTSTRAP_PASSWORD:latest" \
             --add-volume="name=appdata,type=cloud-storage,bucket=${{ vars.APP_DATA_BUCKET }}" \
             --add-volume-mount="volume=appdata,mount-path=/data" \
             --startup-probe="httpGet.path=/api/health,httpGet.port=8080,initialDelaySeconds=0,periodSeconds=5,timeoutSeconds=3,failureThreshold=48" \

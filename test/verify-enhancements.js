@@ -376,21 +376,68 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert(Math.abs(econ21.offPeakPayGoCostUsd - econ21.standardPayGoCostUsd * 0.5) < 1e-6, 'Off-Peak PayGo cost must be 50% of Standard PayGo');
   assert(econ21.savingsVsNanoBanana2Pct >= 48, 'Nano Banana 2.1 should show ~50% lower output cost vs Nano Banana 2');
   const imageArenaJs = fs.readFileSync(path.join(__dirname, '..', 'src', 'imageArena.js'), 'utf8');
-  assert(
-    imageArenaJs.includes("const DEFAULT_IMAGE_PROJECT_NUMBER = process.env.AGENT_PLATFORM_PROJECT_NUMBER || '419460847694';"),
-    'imageArena.js must default DEFAULT_IMAGE_PROJECT_NUMBER to 419460847694 when AGENT_PLATFORM_PROJECT_NUMBER is unset (never letting GCP_PROJECT_ID override 419460847694)'
-  );
-  // Shared-key candidates (strict BYOK nests them under the !ownVertexKey branch, so match whitespace-tolerantly).
-  const idx419 = imageArenaJs.search(/process\.env\.AGENT_PLATFORM_PROJECT_NUMBER \|\| '',\s*\n\s*'419460847694'/);
-  const idxGcpProject = imageArenaJs.indexOf("process.env.GCP_PROJECT_ID || ''");
-  assert(
-    idx419 !== -1 && idxGcpProject !== -1 && idx419 < idxGcpProject,
-    'imageArena.js candidateProjects must prioritize 419460847694 before process.env.GCP_PROJECT_ID'
-  );
+  // Gemini on Vertex must not depend on any project other than the one the app runs in
+  // (v1.0.77): the shared key lived in a separate project, and when that project was
+  // shut down every Gemini call failed with "403 Permission denied on resource project".
+  // No project number may be baked into the code, and the Cloud Run deploy runs Gemini
+  // on the runtime service account in GCP_PROJECT_ID instead of an API key.
+  const srcDir = path.join(__dirname, '..', 'src');
+  for (const f of ['imageArena.js', 'providers.js', 'vertexGeminiAuth.js']) {
+    const srcText = fs.readFileSync(path.join(srcDir, f), 'utf8');
+    assert(!/\b\d{12}\b/.test(srcText.replace(/\/\/.*$/gm, '')), `src/${f} must not hardcode a GCP project number`);
+  }
+  const vertexGeminiAuth = require('../src/vertexGeminiAuth');
+  const savedAuthEnv = {};
+  for (const k of ['AGENT_PLATFORM_GEMINI_AUTH', 'AGENT_PLATFORM_PROJECT_NUMBER', 'GCP_PROJECT_ID', 'AGENT_PLATFORM_API_KEY', 'GEMINI_API_KEY']) savedAuthEnv[k] = process.env[k];
+  try {
+    process.env.AGENT_PLATFORM_API_KEY = 'unit-shared-vertex-key';
+    delete process.env.GEMINI_API_KEY;
+    process.env.GCP_PROJECT_ID = 'host-project';
+    process.env.AGENT_PLATFORM_PROJECT_NUMBER = '123456789012';
+    delete process.env.AGENT_PLATFORM_GEMINI_AUTH;
+    assert.strictEqual(vertexGeminiAuth.sharedMode(), 'apikey', 'shared Gemini auth defaults to the API key');
+    const viaKey = vertexGeminiAuth.resolve({});
+    assert.deepStrictEqual(
+      { kind: viaKey.kind, own: viaKey.own, projects: viaKey.projects },
+      { kind: 'apikey', own: false, projects: ['123456789012', 'host-project'] },
+      'shared API key must try its own project (AGENT_PLATFORM_PROJECT_NUMBER) before GCP_PROJECT_ID'
+    );
+    process.env.AGENT_PLATFORM_GEMINI_AUTH = 'oauth';
+    const viaSa = vertexGeminiAuth.resolve({});
+    assert.deepStrictEqual(
+      { kind: viaSa.kind, own: viaSa.own, key: viaSa.key, projects: viaSa.projects },
+      { kind: 'oauth', own: false, key: undefined, projects: ['host-project'] },
+      'oauth mode must run on the service account in GCP_PROJECT_ID only (no API key, no other project)'
+    );
+    assert.strictEqual(vertexGeminiAuth.sharedConfigured(), true, 'oauth mode with GCP_PROJECT_ID counts as a configured shared credential');
+    delete process.env.GCP_PROJECT_ID;
+    assert.throws(() => vertexGeminiAuth.resolve({}), /needs GCP_PROJECT_ID/, 'oauth mode without GCP_PROJECT_ID must fail before any request');
+    assert.strictEqual(vertexGeminiAuth.sharedConfigured(), false);
+    process.env.GCP_PROJECT_ID = 'host-project';
+    process.env.AGENT_PLATFORM_GEMINI_AUTH = 'oath';
+    assert.throws(() => vertexGeminiAuth.resolve({}), /must be "oauth" or "apikey"/, 'a mistyped mode must be an error, never a silent fall back to the API key');
+    assert.strictEqual(vertexGeminiAuth.sharedConfigured(), false);
+    const ownKey = vertexGeminiAuth.resolve({ agentplatform: 'USER_KEY', gcpProject: 'user-proj' });
+    assert.deepStrictEqual(
+      { kind: ownKey.kind, own: ownKey.own, key: ownKey.key, projects: ownKey.projects },
+      { kind: 'apikey', own: true, key: 'USER_KEY', projects: ['user-proj'] },
+      "a user's own key wins in every mode and is paired only with the user's own project"
+    );
+  } finally {
+    for (const [k, v] of Object.entries(savedAuthEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
   const deployYml = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'deploy.yml'), 'utf8');
   assert(
-    deployYml.includes('AGENT_PLATFORM_PROJECT_NUMBER=419460847694'),
-    'deploy.yml must set AGENT_PLATFORM_PROJECT_NUMBER=419460847694 on Cloud Run'
+    deployYml.includes('@@AGENT_PLATFORM_GEMINI_AUTH=oauth@@'),
+    'deploy.yml must run Gemini on the runtime service account (AGENT_PLATFORM_GEMINI_AUTH=oauth) on Cloud Run'
+  );
+  assert(
+    !deployYml.includes('AGENT_PLATFORM_PROJECT_NUMBER') && !/\b\d{12}\b/.test(deployYml),
+    'deploy.yml must not pin Gemini to another GCP project'
+  );
+  assert(
+    !/--set-secrets="[^"]*AGENT_PLATFORM_API_KEY/.test(deployYml),
+    'deploy.yml must not mount the unused shared Gemini API key'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   // The version is derived from package.json (review 12.3): index.html must show the SAME

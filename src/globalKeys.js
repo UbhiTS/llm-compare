@@ -113,11 +113,18 @@ function has(name) { return !!get(name); }
 
 // Admin view: presence + masked tail only. The real values never leave the server.
 function status() {
+  // In service-account mode the shared Gemini key is not used at all: say so, so an
+  // admin doesn't set one here expecting it to take effect. (Required lazily:
+  // vertexGeminiAuth itself depends on this module.)
+  const geminiOnServiceAccount = require('./vertexGeminiAuth').sharedMode() === 'oauth';
   return MANAGED.map((m) => {
     const v = get(m.name);
     const c = cache.get(m.name);
     return {
-      name: m.name, label: m.label, hint: m.hint,
+      name: m.name, label: m.label,
+      hint: (geminiOnServiceAccount && m.name === 'AGENT_PLATFORM_API_KEY')
+        ? 'Not used: Gemini on Vertex runs on the service account (AGENT_PLATFORM_GEMINI_AUTH=oauth)'
+        : m.hint,
       present: !!v,
       masked: mask(v),
       source: (c && c.value) ? 'secret-manager' : (process.env[m.name] ? 'deploy env' : 'unset'),

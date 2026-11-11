@@ -295,7 +295,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     ENABLE_CODE_EXEC: '0', ENABLE_WEB_GAME: '0', GCLOUD_TOKEN_AUTOMINT: '0',
     GLOBAL_KEYS_ENABLED: '0', GCP_PROJECT_ID: '', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '',
     OPENAI_ADMIN_KEY: '', ANTHROPIC_ADMIN_KEY: '', MOONSHOT_API_KEY: '', ANTHROPIC_API_KEY: '', GEMINI_API_KEY: '', CLAUDE_BEARER_TOKEN: '',
-    AGENT_PLATFORM_API_KEY: 'vertex-authhard-canary-0123456',
+    AGENT_PLATFORM_GEMINI_AUTH: 'apikey', AGENT_PLATFORM_API_KEY: 'vertex-authhard-canary-0123456',
     OPENAI_API_KEY: SEEDED_SECRET,
     NODE_OPTIONS: `--require ${preload}`,
   };

@@ -159,6 +159,73 @@ test('Vertex Gemini: a user project without an own key is ignored (shared key st
   }
 });
 
+// ---- 2b. shared Gemini on the service account (AGENT_PLATFORM_GEMINI_AUTH=oauth) ----
+// The shared credential is the server's service-account token on GCP_PROJECT_ID - the
+// same identity + project as Claude. The shared API key and its separate project are
+// never used, so Gemini depends on no project other than the one the app runs in.
+const GEMINI_REGIONLESS = { provider: 'agentplatform', publisher: 'google', model: 'gemini-3.5-flash' };
+const withOauthMode = async (fn) => {
+  process.env.AGENT_PLATFORM_GEMINI_AUTH = 'oauth';
+  try { await fn(); } finally { delete process.env.AGENT_PLATFORM_GEMINI_AUTH; }
+};
+const assertOnlySharedServiceAccount = (urlPrefix) => {
+  assert.ok(calls.length > 0, 'expected at least one upstream call');
+  for (const c of calls) {
+    assert.strictEqual(c.credential, 'Bearer GLOBAL_ADC_TOKEN', `call to ${c.url} used "${c.credential}"`);
+    assert.ok(!c.headers['x-goog-api-key'], 'the shared API key must never be sent in oauth mode');
+    assert.ok(c.url.startsWith(urlPrefix), c.url);
+    assert.ok(!c.url.includes('/projects/111111111111/') && !c.url.includes('user-proj'), `wrong project: ${c.url}`);
+  }
+};
+
+test('Vertex Gemini (oauth mode): shared runs use the service-account token on GCP_PROJECT_ID only', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, keys: { gcpProject: 'user-proj' } }));
+  assert.ok(adcCalls >= 1);
+  assertOnlySharedServiceAccount('https://aiplatform.googleapis.com/v1/projects/shared-oauth-project/locations/global/publishers/google/models/gemini-4-argon:generateContent');
+}));
+
+test('Vertex Gemini (oauth mode): a model without a region uses the project-scoped global path, not the projectless alias', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await assert.rejects(complete({ ...GEMINI_REGIONLESS, messages: MSGS, keys: {} }));
+  assertOnlySharedServiceAccount('https://aiplatform.googleapis.com/v1/projects/shared-oauth-project/locations/global/publishers/google/models/gemini-3.5-flash:generateContent');
+}));
+
+test('Vertex Gemini (oauth mode): a regional model uses the regional host; a malformed region never becomes a hostname', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await assert.rejects(complete({ ...GEMINI_REGIONLESS, region: 'us-central1', messages: MSGS, keys: {} }));
+  assertOnlySharedServiceAccount('https://us-central1-aiplatform.googleapis.com/v1/projects/shared-oauth-project/locations/us-central1/publishers/google/models/gemini-3.5-flash:generateContent');
+  calls.length = 0;
+  await assert.rejects(complete({ ...GEMINI_REGIONLESS, region: 'evil.example/x#', messages: MSGS, keys: {} }), /Unsupported Vertex AI region/);
+  assert.strictEqual(calls.length, 0, 'no request (and no token) may go to a host built from a malformed region');
+}));
+
+test('Vertex Gemini streaming (oauth mode): service-account token on GCP_PROJECT_ID only', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, onDelta: noop, keys: {} }));
+  assertOnlySharedServiceAccount('https://aiplatform.googleapis.com/v1/projects/shared-oauth-project/locations/global/publishers/google/models/gemini-4-argon:streamGenerateContent?alt=sse');
+}));
+
+test('Vertex Gemini (oauth mode): a 401 re-mints the service-account token exactly once (text + streaming)', () => withOauthMode(async () => {
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, keys: {} }));
+  assert.strictEqual(calls.length, 2, 'one request + one retry with a fresh token');
+  assert.strictEqual(adcCalls, 2);
+  calls.length = 0; adcCalls = 0;
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, onDelta: noop, keys: {} }));
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(adcCalls, 2);
+}));
+
+test('Vertex Gemini (oauth mode): an own key is still the only credential used (no service-account token, no shared project)', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, keys: { agentplatform: 'USER_VERTEX_KEY', gcpProject: 'user-proj' } }));
+  assertOnlyUserCredential('USER_VERTEX_KEY');
+  assert.ok(calls.every((c) => c.url.includes('/v1/projects/user-proj/locations/global/')), calls.map((c) => c.url).join('\n'));
+  calls.length = 0;
+  await assert.rejects(complete({ ...GEMINI_VERTEX, messages: MSGS, onDelta: noop, keys: { agentplatform: 'USER_VERTEX_KEY' } }), /GCP project ID/);
+  assertOnlyUserCredential('USER_VERTEX_KEY');
+}));
+
 test('Claude on Vertex: own token without a project fails fast (no request, no shared token, no shared project)', async () => {
   await assert.rejects(complete({ ...CLAUDE_VERTEX, messages: MSGS, keys: { claudeBearerToken: 'USER_OAUTH_TOKEN' } }), /GCP project ID/);
   assert.strictEqual(calls.length, 0, 'no upstream request may be made');
@@ -231,6 +298,41 @@ test('Image Arena (Vertex): shared key ignores a user project', async () => {
   }
   assert.ok(calls[0].url.includes('/projects/111111111111/'));
 });
+
+test('Image Arena (Vertex): shared key tries its own project, then GCP_PROJECT_ID, then the projectless alias', async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  await imgRun('gemini-nano-banana-2.1', {});
+  assert.deepStrictEqual(calls.map((c) => c.url.replace('https://aiplatform.googleapis.com/v1beta1/', '').split('/publishers/')[0]), [
+    'projects/111111111111/locations/global',
+    'projects/shared-oauth-project/locations/global',
+    'publishers/google/models/gemini-nano-banana-2.1:generateContent',
+  ]);
+  assert.ok(calls.every((c) => c.credential === 'GLOBAL_VERTEX_KEY'));
+});
+
+test('Image Arena (Vertex, oauth mode): service-account token on GCP_PROJECT_ID only - no API key, no other project, no projectless alias', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  const out = await imgRun('gemini-nano-banana-2.1', { gcpProject: 'user-proj' });
+  assert.strictEqual(out.results[0].ok, false);
+  assert.strictEqual(calls.length, 1, calls.map((c) => c.url).join('\n'));
+  assertOnlySharedServiceAccount('https://aiplatform.googleapis.com/v1beta1/projects/shared-oauth-project/locations/global/publishers/google/models/gemini-nano-banana-2.1:generateContent');
+}));
+
+test('Image Arena (Vertex, oauth mode): a 401 re-mints the service-account token exactly once', () => withOauthMode(async () => {
+  const out = await imgRun('gemini-3.1-flash-image', {});
+  assert.strictEqual(out.results[0].ok, false);
+  assert.strictEqual(calls.length, 2, 'one request + one retry with a fresh token');
+  assert.strictEqual(adcCalls, 2);
+  assertOnlySharedServiceAccount('https://aiplatform.googleapis.com/v1beta1/projects/shared-oauth-project/locations/global/publishers/google/models/gemini-3.1-flash-image:generateContent');
+}));
+
+test('Image Arena (Vertex, oauth mode): an own key is still the only credential used', () => withOauthMode(async () => {
+  responder = () => jsonResponse(403, { error: { message: 'denied (mock)' } });
+  const out = await imgRun('gemini-nano-banana-2.1', { agentplatform: 'USER_VERTEX_KEY' });
+  assert.strictEqual(out.results[0].ok, false);
+  assertOnlyUserCredential('USER_VERTEX_KEY');
+  assert.ok(calls.every((c) => c.url.includes('/v1beta1/publishers/google/models/')), calls.map((c) => c.url).join('\n'));
+}));
 
 test('Image Arena (OpenAI GPT Image): own key is the only key used', async () => {
   const out = await imgRun('gpt-image-2', { openai: 'USER_OPENAI_KEY' });

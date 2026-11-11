@@ -323,7 +323,7 @@ const OWN_CLAUDE = { claudeBearerToken: 'unit-test-oauth-token-0123', gcpProject
     // Hermetic: no Secret Manager, and blank values so a local .env can't add real keys.
     GLOBAL_KEYS_ENABLED: '0', GCP_PROJECT_ID: '',
     ANTHROPIC_ADMIN_KEY: '', MOONSHOT_API_KEY: '', ANTHROPIC_API_KEY: '',
-    AGENT_PLATFORM_API_KEY: 'vertex-enforce-canary-0123', OPENAI_API_KEY: 'sk-enforcecanary0123456789',
+    AGENT_PLATFORM_GEMINI_AUTH: 'apikey', AGENT_PLATFORM_API_KEY: 'vertex-enforce-canary-0123', OPENAI_API_KEY: 'sk-enforcecanary0123456789',
     OPENAI_ADMIN_KEY: 'sk-admin-enforce-unit-test-0123456789', // answered by the preload ($60 org spend)
     CLAUDE_BEARER_TOKEN: 'unit-test-claude-token-0123',        // shared Claude credential (mocked upstream)
     RATE_LIMIT_EXEMPT_ADMINS: '1',
