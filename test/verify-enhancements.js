@@ -522,9 +522,19 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ External user Force Password Change on login, Anytime Admin Force, Temp Password Reset, and Email-Address Usernames verified');
 
-  // Verify Gemini 4 Argon (gemini-4-argon) + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
+  // Verify Gemini 4 Carbon + Gemini 4 Argon + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');
   const providersMod = require('../src/providers');
+  const carbonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
+  assert(carbonEntry, 'MODEL_CATALOG must include gemini-4-carbon (Gemini 4 Carbon)');
+  assert.strictEqual(carbonEntry.label, 'Gemini 4 Carbon', 'Gemini 4 Carbon label must match');
+  assert.strictEqual(carbonEntry.provider, 'agentplatform', 'Gemini 4 Carbon must use Vertex AI Agent Platform');
+  assert.strictEqual(carbonEntry.region, 'global', 'Gemini 4 Carbon must route to global region');
+  assert.strictEqual(carbonEntry.context, 1048576, 'Gemini 4 Carbon context window must be 1,048,576');
+  assert.deepStrictEqual(carbonEntry.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Carbon intro pricing must be $2.00 / $10.00');
+  assert.deepStrictEqual(providersMod.thinkingOptions(carbonEntry).options.map((o) => o.value), ['low', 'medium', 'high']);
+  assert.strictEqual(providersMod.thinkingProfile(carbonEntry).level, 'medium');
+
   const argonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');
   assert(argonEntry, 'MODEL_CATALOG must include gemini-4-argon (Gemini 4 Argon)');
   assert.strictEqual(argonEntry.label, 'Gemini 4 Argon', 'Gemini 4 Argon label must match');

@@ -107,7 +107,7 @@ const OWN_CLAUDE = { claudeBearerToken: 'unit-test-oauth-token-0123', gcpProject
     near(pricing.callCostUsd(haiku, 0, 0), 0, 'nothing used');
   });
   await check('models without priceTiers are priced exactly as before (any prompt size)', () => {
-    for (const id of ['gemini-3.8-flash', 'gemini-4-argon', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'gpt-6-sol', 'glm-5-maas']) {
+    for (const id of ['gemini-3.8-flash', 'gemini-4-carbon', 'gemini-4-argon', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'gpt-6-sol', 'glm-5-maas']) {
       const m = pricing.modelFromCatalog('A', id);
       assert.ok(!('priceTiers' in m), `${id} has no priceTiers key`);
       for (const pt of [0, 1000, 100000, 900000]) {

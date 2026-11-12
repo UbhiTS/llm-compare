@@ -32,6 +32,21 @@ assert.deepStrictEqual(
   'default slots should use the 2-model Gemini Models preset (Gemini 3.8 Flash + Gemini 4 Argon) across all arenas'
 );
 
+const gemini4Carbon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
+assert(gemini4Carbon, 'Gemini 4 Carbon should be present in the model catalog');
+assert.deepStrictEqual(gemini4Carbon.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Carbon introductory pricing');
+assert.strictEqual(gemini4Carbon.region, 'global', 'Gemini 4 Carbon should target the global region');
+assert.strictEqual(gemini4Carbon.provider, 'agentplatform', 'Gemini 4 Carbon should use agentplatform');
+const gemini4CarbonSlot = modelFromCatalog('A', 'gemini-4-carbon');
+assert.strictEqual(gemini4CarbonSlot.model, 'gemini-4-carbon', 'Gemini 4 Carbon should use its stable API model id');
+assert.deepStrictEqual(
+  thinkingOptions(gemini4CarbonSlot).options.map((o) => o.value),
+  ['low', 'medium', 'high'],
+  'Gemini 4 Carbon should expose low, medium, high thinking levels'
+);
+assert.strictEqual(thinkingOptions(gemini4CarbonSlot).defaultValue, 'medium', 'Gemini 4 Carbon default thinkingLevel should be medium');
+assert.strictEqual(thinkingProfile(gemini4CarbonSlot).level, 'medium', 'Gemini 4 Carbon thinkingProfile should show medium (default)');
+
 const gemini4Argon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-argon');
 assert(gemini4Argon, 'Gemini 4 Argon should be present in the model catalog');
 assert.deepStrictEqual(gemini4Argon.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Argon pricing');

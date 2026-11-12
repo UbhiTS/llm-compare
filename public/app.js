@@ -2770,7 +2770,7 @@ function addSlot() {
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-4-argon', 'gemini-3.8-flash', 'claude-fable-5-1', 'gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
+    'gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash', 'claude-fable-5-1', 'gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
     'grok-4.20-reasoning', 'deepseek-v4.1-flash-maas', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
