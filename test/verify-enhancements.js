@@ -522,9 +522,21 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ External user Force Password Change on login, Anytime Admin Force, Temp Password Reset, and Email-Address Usernames verified');
 
-  // Verify Gemini 4 Carbon + Gemini 4 Argon + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
+  // Verify Gemini 4 Neon + Gemini 4 Carbon + Gemini 4 Argon + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');
   const providersMod = require('../src/providers');
+  const neonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-neon');
+  assert(neonEntry, 'MODEL_CATALOG must include gemini-4-neon (Gemini 4 Neon)');
+  assert.strictEqual(neonEntry.label, 'Gemini 4 Neon', 'Gemini 4 Neon label must match');
+  assert.strictEqual(neonEntry.model, 'gemini-4-neon', 'Gemini 4 Neon API model id must match');
+  assert.strictEqual(neonEntry.provider, 'agentplatform', 'Gemini 4 Neon must use Vertex AI Agent Platform');
+  assert.strictEqual(neonEntry.region, 'global', 'Gemini 4 Neon must route to global region');
+  assert.strictEqual(neonEntry.context, 1048576, 'Gemini 4 Neon context window must be 1,048,576');
+  assert.deepStrictEqual(neonEntry.price, { input: 3.00, output: 15.00 }, 'Gemini 4 Neon pricing must be $3.00 / $15.00');
+  assert.deepStrictEqual(providersMod.thinkingOptions(neonEntry).options.map((o) => o.value), ['low', 'medium', 'high', 'xhigh']);
+  assert.strictEqual(providersMod.thinkingOptions(neonEntry).defaultValue, 'high');
+  assert.strictEqual(providersMod.thinkingProfile(neonEntry).level, 'high');
+
   const carbonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
   assert(carbonEntry, 'MODEL_CATALOG must include gemini-4-carbon (Gemini 4 Carbon)');
   assert.strictEqual(carbonEntry.label, 'Gemini 4 Carbon', 'Gemini 4 Carbon label must match');

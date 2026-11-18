@@ -179,6 +179,7 @@ function openaiDefaultEffort() {
 // Offering a level a model rejects turns the picker into a hard failure — probe a
 // new model before listing it here.
 const GEMINI_LEVELS = {
+  'gemini-4-neon':          ['low', 'medium', 'high', 'xhigh'], // GA on Vertex global endpoint 2026-11-18 (accepts 'xhigh', rejects 'minimal' with 400, verified live 2026-11-18)
   'gemini-4-carbon':        ['low', 'medium', 'high'],          // GA on Vertex global endpoint 2026-11-10 (rejects 'minimal' with 400, verified live 2026-11-12)
   'gemini-4-argon':         ['low', 'medium', 'high'],          // GA on Vertex global endpoint (verified 2026-10-14)
   'gemini-3.8-flash':       ['low', 'medium', 'high'],          // no minimal (verified)
@@ -191,6 +192,7 @@ const GEMINI_LEVELS = {
   'gemini-3.1-flash-lite':  ['minimal', 'low', 'medium', 'high'],
 };
 const GEMINI_DEFAULT_LEVEL = {
+  'gemini-4-neon': 'high',
   'gemini-4-carbon': 'medium',
   'gemini-4-argon': 'medium',
   'gemini-3.8-flash': 'medium', 'gemini-3.7-flash': 'medium', 'gemini-3.6-flash': 'medium', 'gemini-3.5-flash': 'medium',

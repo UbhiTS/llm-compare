@@ -9,6 +9,10 @@
 // price or model id is ignored.
 //
 // Prices are USD per 1,000,000 tokens, taken from public 2026 pricing:
+//   • Gemini 4 Neon         - $3.00 in / $15.00 out (standard list price, no introductory
+//       rate. Vertex Agent Platform GA 2026-11-18; 1M unified context/output, global
+//       endpoint. Thinking levels: low | medium | high (default) | xhigh - it REJECTS
+//       'minimal' with a 400. Verified live 2026-11-18.)
 //   • Gemini 4 Carbon       — $2.00 in / $10.00 out (introductory through 2026-11-30;
 //       $4.00 / $20.00 standard from 2026-12-01. Vertex Agent Platform GA 2026-11-10;
 //       1M unified context/output, global endpoint. Thinking levels: low | medium | high.)
@@ -59,6 +63,7 @@ const PRICING = {
 // (== `model` except where the API id differs, e.g. Gemini 3.1 Pro's preview id).
 const MODEL_CATALOG = [
   // --- 1. Google (Gemini — Vertex AI Agent Platform) ---
+  { id: 'gemini-4-neon', label: 'Gemini 4 Neon', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', region: 'global', model: 'gemini-4-neon', price: { input: 3.00, output: 15.00 }, context: 1048576 },
   { id: 'gemini-4-carbon', label: 'Gemini 4 Carbon', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', region: 'global', model: 'gemini-4-carbon', price: { input: 2.00, output: 10.00 }, context: 1048576 },
   { id: 'gemini-4-argon', label: 'Gemini 4 Argon', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', region: 'global', model: 'gemini-4-argon', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', provider: 'agentplatform', publisher: 'google', providerFamily: 'google', providerLabel: 'Google (Gemini)', model: 'gemini-3.8-flash', price: { input: 0.75, output: 3.75 }, context: 1000000 },

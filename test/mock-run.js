@@ -32,6 +32,29 @@ assert.deepStrictEqual(
   'default slots should use the 2-model Gemini Models preset (Gemini 3.8 Flash + Gemini 4 Argon) across all arenas'
 );
 
+const gemini4Neon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-neon');
+assert(gemini4Neon, 'Gemini 4 Neon should be present in the model catalog');
+assert.deepStrictEqual(gemini4Neon.price, { input: 3.00, output: 15.00 }, 'Gemini 4 Neon standard list pricing');
+assert.strictEqual(gemini4Neon.region, 'global', 'Gemini 4 Neon should target the global region');
+assert.strictEqual(gemini4Neon.provider, 'agentplatform', 'Gemini 4 Neon should use agentplatform');
+const gemini4NeonSlot = modelFromCatalog('A', 'gemini-4-neon');
+assert.strictEqual(gemini4NeonSlot.model, 'gemini-4-neon', 'Gemini 4 Neon should use its stable API model id');
+assert.deepStrictEqual(
+  thinkingOptions(gemini4NeonSlot).options.map((o) => o.value),
+  ['low', 'medium', 'high', 'xhigh'],
+  'Gemini 4 Neon should expose low, medium, high, xhigh thinking levels (no minimal)'
+);
+assert.strictEqual(thinkingOptions(gemini4NeonSlot).defaultValue, 'high', 'Gemini 4 Neon default thinkingLevel should be high');
+assert.strictEqual(thinkingProfile(gemini4NeonSlot).level, 'high', 'Gemini 4 Neon thinkingProfile should show high (default)');
+assert.strictEqual(
+  thinkingProfile({ ...gemini4NeonSlot, effort: 'xhigh' }).level, 'xhigh',
+  'Gemini 4 Neon should send thinkingLevel xhigh when it is picked on the card'
+);
+assert.strictEqual(
+  thinkingProfile({ ...gemini4NeonSlot, effort: 'minimal' }).overridden, false,
+  'Gemini 4 Neon must never send the unsupported minimal level (the API rejects it with a 400)'
+);
+
 const gemini4Carbon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
 assert(gemini4Carbon, 'Gemini 4 Carbon should be present in the model catalog');
 assert.deepStrictEqual(gemini4Carbon.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Carbon introductory pricing');
