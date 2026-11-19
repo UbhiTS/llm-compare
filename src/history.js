@@ -52,6 +52,10 @@ function isImageRunMeta(m) {
   }
   return false;
 }
+function isInvalidArchivedTextRunId(id) {
+  const s = String(id || '');
+  return /^hist-seed-/i.test(s) || /^img_/i.test(s);
+}
 function isCadRunMeta(m) {
   if (!m || typeof m !== 'object') return false;
   if (m.arena === '3d' || m.kind === '3d' || m.kind === '3d_single' || m.category === 'cad3d') return true;
@@ -264,6 +268,8 @@ function recoverDeletedRunsFromSqliteBinary(rawBuf) {
     if (idLen < 8 || idLen > 64) continue;
     const id = rawBuf.toString('latin1', idStart, idEnd);
     if (!safeId(id)) continue;
+    // Never resurrect legacy phantom `hist-seed-*` rows from unvacuumed SQLite freelist pages.
+    if (/^hist-seed-/i.test(id)) continue;
 
     const at = rawBuf.readUIntBE(i, 6);
     if (at < 1700000000000 || at > 2100000000000) continue;
@@ -309,9 +315,14 @@ function recoverDeletedRunsFromSqliteBinary(rawBuf) {
     }
 
     const summaryArr = (Array.isArray(arr2) && arr2.length > 0) ? arr2 : (Array.isArray(arr1) ? arr1 : []);
-    const isImageRun = summaryArr.some((s) => s && (s.hasImage !== undefined || s.imageOutputTokens !== undefined || s.imageVaultRef !== undefined));
+    const hasImageFields = summaryArr.some((s) => s && (s.hasImage !== undefined || s.imageOutputTokens !== undefined || s.imageVaultRef !== undefined));
+    const isImageId = /^img_/i.test(id);
+    const isImageRun = isImageId || hasImageFields;
 
     if (isImageRun) {
+      // Never route `img_*` IDs into `textById`, and skip deleted/truncated `img_*` cells
+      // that lack image summary metadata so they don't fabricate $0 image runs either.
+      if (!hasImageFields) continue;
       let costUsd = 0;
       let imagesCount = 0;
       for (const s of summaryArr) {
@@ -418,7 +429,7 @@ function archivedRowToEntry(r) {
 
 function upsertArchivedRunInternal(entry, { allowOwnerChange = false } = {}) {
   const clean = metaToArchivedEntry(entry);
-  if (!clean || !clean.id) return false;
+  if (!clean || !clean.id || isInvalidArchivedTextRunId(clean.id)) return false;
   const existing = archivedMetaById.get(clean.id);
   // Ownership is immutable from the ledger's point of view unless an admin explicitly re-owns the run
   if (existing && existing.userKey && existing.userKey !== clean.userKey && !allowOwnerChange) return false;
@@ -1100,10 +1111,24 @@ function initSqlite() {
         }
       } catch (_) {}
 
+      // Purge legacy phantom `hist-seed-*` rows (previously fabricated on boot from `user_prefs`
+      // sign-in/preference saves) and misplaced `img_*` Image Arena rows from `archived_runs`.
+      try {
+        const purgeRes = sqliteDb.prepare(
+          `DELETE FROM archived_runs WHERE LOWER(SUBSTR(id, 1, 10)) = 'hist-seed-' OR LOWER(SUBSTR(id, 1, 4)) = 'img_'`
+        ).run();
+        if (purgeRes && purgeRes.changes > 0) {
+          console.log(`[history] Purged ${purgeRes.changes} phantom hist-seed/misplaced img_* row(s) from archived_runs.`);
+          try { sqliteDb.exec('VACUUM;'); } catch (_) {}
+          needsPersistFlush = true;
+        }
+      } catch (_) {}
+
       // Load existing archived_runs and archived_image_runs ledger rows
       try {
         const archRows = stmts.allArchivedRuns.all();
         for (const r of archRows) {
+          if (r && isInvalidArchivedTextRunId(r.id)) continue;
           const entry = archivedRowToEntry(r);
           if (entry && entry.id) archivedMetaById.set(entry.id, entry);
         }
@@ -1286,36 +1311,14 @@ function initSqlite() {
           needsPersistFlush = true;
         }
 
-        // If any real user in `user_prefs` has saved `slots` from a past run (`saveRun()` writes `slots` + `updatedAt`)
-        // whose run row was pruned and overwritten before `archived_runs` existed, seed a baseline archived run
-        // so their historical user and run participation is preserved.
-        const usersWithArchivedRuns = new Set();
-        for (const ar of archivedMetaById.values()) {
-          if (ar && ar.userKey) usersWithArchivedRuns.add(ar.userKey);
-        }
-        for (const [uKey, pref] of prefsByUserKey.entries()) {
-          if (!pref || !pref.user || SYNTHETIC_TEST_USER_RE.test(pref.user)) continue;
-          if (usersWithArchivedRuns.has(uKey)) continue;
-          const hasRunSlots = Array.isArray(pref.slots) && pref.slots.length > 0 && Number(pref.updatedAt) > 0;
-          if (hasRunSlots) {
-            upsertArchivedRunInternal({
-              id: `hist-seed-${uKey.slice(0, 16)}`,
-              at: Number(pref.updatedAt) || Date.now(),
-              user: pref.user,
-              userKey: uKey,
-              userName: pref.user,
-              kind: 'compare',
-              callsCount: pref.slots.length,
-              costUsd: 0,
-            });
-            needsPersistFlush = true;
-          }
-        }
-
-        if (needsPersistFlush) {
-          flushSnapshotNow();
-        }
+        // Do NOT fabricate `hist-seed-*` archived runs from `user_prefs` — visitors who sign in
+        // and save default model preferences without executing a run have 0 runs and must not
+        // appear in Text, Code & Agent Run History with phantom 1 run / $0 rows.
       } catch (_) {}
+
+      if (needsPersistFlush) {
+        flushSnapshotNow();
+      }
     }
   } catch (e) {
     console.warn('[history] SQLite init fallback to JSON index:', (e && e.message) || e);
@@ -1748,6 +1751,7 @@ function syncFromPersistSqliteIfNewer(force = false) {
     if (lastPersistMtimeMs > 0 && st.mtimeMs <= lastPersistMtimeMs + 5 && st.size === lastPersistSize) {
       return;
     }
+    let sawInvalidExtArchRuns = false;
     const tmpMerge = path.join(os.tmpdir(), `llm-compare-merge-${process.pid}-${now}-${crypto.randomBytes(3).toString('hex')}.sqlite`);
     try {
       const buf = fs.readFileSync(PERSIST_SQLITE_PATH);
@@ -1770,7 +1774,12 @@ function syncFromPersistSqliteIfNewer(force = false) {
         try {
           const extArchRuns = extDb.prepare(`SELECT * FROM archived_runs`).all();
           for (const r of extArchRuns) {
-            if (r && r.id && !archivedMetaById.has(r.id)) {
+            if (!r || !r.id) continue;
+            if (isInvalidArchivedTextRunId(r.id)) {
+              sawInvalidExtArchRuns = true;
+              continue;
+            }
+            if (!archivedMetaById.has(r.id)) {
               upsertArchivedRunInternal(archivedRowToEntry(r));
             }
           }
@@ -1900,6 +1909,9 @@ function syncFromPersistSqliteIfNewer(force = false) {
     }
     lastPersistMtimeMs = st.mtimeMs;
     lastPersistSize = st.size;
+    if (sawInvalidExtArchRuns) {
+      flushSnapshotSync();
+    }
   } catch (_) {}
 }
 
@@ -3643,7 +3655,7 @@ function usageSummary(opts = {}) {
 
   // 2. Include all pruned historical runs from `archivedMetaById` (skipping any ID already counted above)
   for (const arch of archivedMetaById.values()) {
-    if (!arch || !arch.id || countedRunIds.has(arch.id)) continue;
+    if (!arch || !arch.id || isInvalidArchivedTextRunId(arch.id) || countedRunIds.has(arch.id)) continue;
     const archAudit = auditMetaById.get(arch.id);
     const archIsCad = isCadRunMeta(arch) || (archAudit && isCadRunMeta(archAudit));
     if (arenaFilter === '3d' && !archIsCad) continue;

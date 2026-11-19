@@ -436,6 +436,79 @@ const { TASKS } = require('../src/tasks');
   assert(!logMod.redact('Bearer sk-proj-secret1234567890').includes('sk-proj-secret1234567890'), 'log.redact must scrub Bearer tokens');
   console.log('✓ 5. Module surface & edge-case coverage checks passed');
 
+  // ---------------------------------------------------------------------------
+  // 6. Phantom `hist-seed-*` & Misplaced `img_*` Archived Run Regressions (v1.0.83)
+  // ---------------------------------------------------------------------------
+  const crypto = require('crypto');
+  const { DatabaseSync } = require('node:sqlite');
+  const visitorEmail = 'visitor.only@google.com';
+  const visitorKey = crypto.createHash('sha256').update(visitorEmail).digest('hex').slice(0, 40);
+
+  // 6a. Visitor saves default preferences (slots) without ever running a prompt
+  history.saveUserPreferences(visitorEmail, {
+    taskId: 'custom',
+    slots: [
+      { slot: 'A', catalogId: 'gemini-4-argon', effort: 'high' },
+      { slot: 'B', catalogId: 'claude-fable-5-2', effort: 'high' },
+    ],
+  });
+  await history.flushSnapshotAsync();
+
+  // Inject legacy phantom `hist-seed-*` and misplaced `img_*` rows directly into persisted SQLite
+  const persistSqlite = path.join(tmpDir, 'history', 'history.sqlite');
+  assert(fs.existsSync(persistSqlite), 'Persisted history.sqlite must exist after flushSnapshotAsync');
+  const rawDb = new DatabaseSync(persistSqlite);
+  const nowTs = Date.now();
+  rawDb.prepare(
+    `INSERT OR REPLACE INTO archived_runs (id, at, user, user_key, user_name, kind, calls_count, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(`hist-seed-${visitorKey.slice(0, 16)}`, nowTs, visitorEmail, visitorKey, visitorEmail, 'compare', 2, 0);
+  rawDb.prepare(
+    `INSERT OR REPLACE INTO archived_runs (id, at, user, user_key, user_name, kind, calls_count, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run('img_1795000000_misplaced', nowTs, visitorEmail, visitorKey, visitorEmail, 'compare', 1, 0);
+  rawDb.close();
+
+  // 6b. Binary recovery scanner must never recover `hist-seed-*` or put `img_*` into `textRuns`
+  const dirtyBuf = fs.readFileSync(persistSqlite);
+  const binRec = history.recoverDeletedRunsFromSqliteBinary(dirtyBuf);
+  assert(
+    !(binRec.textRuns || []).some((r) => /^hist-seed-/i.test(r.id) || /^img_/i.test(r.id)),
+    'recoverDeletedRunsFromSqliteBinary must never return hist-seed-* or img_* in textRuns'
+  );
+  assert(
+    !(binRec.imageRuns || []).some((r) => /^hist-seed-/i.test(r.id) || r.id === 'img_1795000000_misplaced'),
+    'recoverDeletedRunsFromSqliteBinary must not fabricate imageRuns from archived_runs cells lacking image metadata'
+  );
+
+  // 6c. Reloading history module must purge phantom `hist-seed-*` and `img_*` rows,
+  // not re-seed from `user_prefs`, and keep real users intact.
+  delete require.cache[require.resolve('../src/history')];
+  const historyReloaded = require('../src/history');
+  const usageAfterPurge = historyReloaded.usageSummary();
+  const usersAfterPurge = new Set(usageAfterPurge.users.map((u) => u.user));
+  assert(!usersAfterPurge.has(visitorEmail), 'Sign-in/prefs-only visitor must NOT appear in usageSummary after reload');
+  assert(usersAfterPurge.has('ubhi@google.com'), 'Real text run user ubhi@google.com must remain in usageSummary after purge');
+  assert(usersAfterPurge.has('alice@example.com'), 'Real text run user alice@example.com must remain in usageSummary after purge');
+
+  // Verify persisted SQLite has zero `hist-seed-*` or `img_*` rows in `archived_runs`
+  const verifyDb = new DatabaseSync(persistSqlite);
+  const badRows = verifyDb.prepare(
+    `SELECT id FROM archived_runs WHERE LOWER(SUBSTR(id, 1, 10)) = 'hist-seed-' OR LOWER(SUBSTR(id, 1, 4)) = 'img_'`
+  ).all();
+  verifyDb.close();
+  assert.strictEqual(badRows.length, 0, `Persisted archived_runs must have 0 hist-seed-* or img_* rows after boot purge (found ${badRows.length})`);
+
+  // 6d. Reload a second time to prove neither seeder nor binary freelist recovery resurrects them
+  delete require.cache[require.resolve('../src/history')];
+  const historyReloaded2 = require('../src/history');
+  const usageAfterSecondReload = historyReloaded2.usageSummary();
+  assert(
+    !usageAfterSecondReload.users.some((u) => u.user === visitorEmail),
+    'Second reload must not resurrect hist-seed-* or img_* rows'
+  );
+  console.log('✓ 6. Phantom hist-seed-* removal, misplaced img_* purge & non-resurrection verified');
+
   console.log('\nALL v1.0.45 ARENA POLISH, HISTORY RESTORE & REGRESSION CHECKS PASSED!');
   process.exit(0);
 })().catch((err) => {
