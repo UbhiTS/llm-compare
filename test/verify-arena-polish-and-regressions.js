@@ -36,7 +36,9 @@ const { TASKS } = require('../src/tasks');
   // ---------------------------------------------------------------------------
   // Version badge derived from package.json (review 12.3), not pinned per release.
   const pkgVersion = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+  const loginHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'login.html'), 'utf8');
   assert(indexHtml.includes('<div class="wordmark-row">') && indexHtml.includes(`id="headerAppVersion" class="head-version">v${pkgVersion}</span>`), `index.html must render #headerAppVersion (v${pkgVersion}) next to LLM Compare title on top-left`);
+  assert(loginHtml.includes('<div class="brand-row">') && loginHtml.includes(`id="loginAppVersion" class="head-version">v${pkgVersion}</span>`), `login.html must render #loginAppVersion (v${pkgVersion}) next to LLM Compare title on login screen`);
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"') && indexHtml.includes('Last updated '), 'index.html footer must render #appLastUpdated with "Last updated" timestamp');
   assert(serverJs.includes('lastUpdated: LAST_UPDATED_ISO'), 'server.js /api/config must expose lastUpdated timestamp');
   assert(appJs.includes('function formatLastUpdatedStamp(isoStr)'), 'app.js must format lastUpdated timestamp');

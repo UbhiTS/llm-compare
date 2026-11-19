@@ -180,8 +180,9 @@ async function waitUp() {
   if (!(await waitUp())) { console.error('server did not start\n' + srvLog); process.exit(1); }
 
   // ---------------- FUNCTIONAL ----------------
+  const pkgVersion = require('../package.json').version;
   let r = await req('GET', '/login');
-  check('GET /login serves HTML', r.status === 200 && /<html|<!doctype/i.test(r.text), { status: r.status });
+  check('GET /login serves HTML with version badge', r.status === 200 && /<html|<!doctype/i.test(r.text) && r.text.includes(`id="loginAppVersion" class="head-version">v${pkgVersion}</span>`), { status: r.status });
 
   r = await req('GET', '/api/auth/status');
   check('GET /api/auth/status', r.status === 200 && r.json && 'authenticated' in r.json && 'setupRequired' in r.json, { status: r.status, shape: shape(r.json) });

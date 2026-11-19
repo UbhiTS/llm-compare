@@ -440,11 +440,13 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
     'deploy.yml must not mount the unused shared Gemini API key'
   );
   const pkgJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
-  // The version is derived from package.json (review 12.3): index.html must show the SAME
-  // version in the header badge and the footer, whatever the current release number is.
+  const loginHtml = fs.readFileSync(path.join(__dirname, '..', 'public', 'login.html'), 'utf8');
+  // The version is derived from package.json (review 12.3): index.html and login.html must show
+  // the SAME version in the header/login badge and the footer, whatever the current release number is.
   assert.match(pkgJson.version, /^\d+\.\d+\.\d+$/, 'package.json version must be semver');
   assert(indexHtml.includes(`id="appVersion" class="foot-version">v${pkgJson.version}</span>`), `index.html must display v${pkgJson.version} in footer`);
   assert(indexHtml.includes(`id="headerAppVersion" class="head-version">v${pkgJson.version}</span>`), `index.html must display v${pkgJson.version} next to top-left title`);
+  assert(loginHtml.includes(`id="loginAppVersion" class="head-version">v${pkgJson.version}</span>`), `login.html must display v${pkgJson.version} next to sign-in title`);
   assert(indexHtml.includes('id="appLastUpdated" class="foot-updated"'), 'index.html must display last updated date and time stamp in footer');
 
   // Verify External User Force Password Change on First Login & Anytime Admin Enforcement (v1.0.35)
