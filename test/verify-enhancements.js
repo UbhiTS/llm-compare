@@ -565,16 +565,20 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.strictEqual(argonEntry.provider, 'agentplatform', 'Gemini 4 Argon must use Vertex AI Agent Platform');
   assert.strictEqual(argonEntry.region, 'global', 'Gemini 4 Argon must route to global region');
   assert.deepStrictEqual(argonEntry.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Argon pricing must be $2.00 / $10.00');
-  assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-3.8-flash', 'Slot A default must be gemini-3.8-flash');
-  assert.strictEqual(DEFAULT_MODELS[1].catalogId, 'gemini-4-argon', 'Slot B default must be gemini-4-argon');
-  assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high']);
-  assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'medium');
+  assert.strictEqual(DEFAULT_MODELS[0].catalogId, 'gemini-4-hydrogen', 'Slot A default must be gemini-4-hydrogen');
+  assert.strictEqual(DEFAULT_MODELS[1].catalogId, 'gemini-4-neon', 'Slot B default must be gemini-4-neon');
+  assert.strictEqual(DEFAULT_MODELS[2].catalogId, 'gemini-4-carbon', 'Slot C default must be gemini-4-carbon');
+  assert.deepStrictEqual(providersMod.thinkingOptions(DEFAULT_MODELS[0]).options.map((o) => o.value), ['low', 'medium', 'high', 'xhigh']);
+  assert.strictEqual(providersMod.thinkingProfile(DEFAULT_MODELS[0]).level, 'high');
 
   for (const [id, expectedIn, expectedOut] of [
     ['claude-fable-5-1', 10.00, 50.00],
     ['claude-opus-5-5', 4.00, 20.00],
     ['claude-sonnet-5-5', 2.00, 10.00],
     ['claude-haiku-5-5', 0.10, 0.50],
+    ['gpt-6.2-astra', 8.00, 40.00],
+    ['gpt-6.2-sol', 2.00, 10.00],
+    ['gpt-6.1-terra', 1.00, 5.00],
     ['gpt-6.1-sol', 2.00, 10.00],
     ['gpt-6-sol', 2.00, 10.00],
     ['gpt-6-astra', 10.00, 50.00],

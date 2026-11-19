@@ -46,6 +46,9 @@
 //   • Claude Opus 5         — $5.00 in / $25.00 out (Anthropic list price; launched 2026-07-24)
 //   • Claude Opus 4.8       — $5.00 in / $25.00 out (Anthropic list price)
 //   • Claude Sonnet 5       — $3.00 in / $15.00 out (standard rate since 2026-09-01)
+//   • GPT-6.2 Astra         - $8.00 in / $40.00 out (OpenAI Responses/Chat API; 1.05M context, 128K out)
+//   • GPT-6.2 Sol           - $2.00 in / $10.00 out (OpenAI Responses/Chat API; 1.05M context, 128K out)
+//   • GPT-6.1 Terra         - $1.00 in / $5.00 out  (OpenAI Responses/Chat API; 1.05M context, 128K out)
 //   • GPT-6.1 Sol           — $2.00 in / $10.00 out (OpenAI Responses/Chat API; 1M context)
 //   • GPT-6 Sol             — $2.00 in / $10.00 out (OpenAI Responses/Chat API; 1M context)
 //   • GPT-6 Astra           — $10.00 in / $50.00 out (OpenAI deep reasoning tier; 1M context)
@@ -58,7 +61,7 @@
 
 const PRICING = {
   gemini:    { input: 1.50, output: 9.00 },   // Gemini 3.5 Flash (May 2026)
-  openai:    { input: 2.00, output: 10.00 },  // GPT-6.1 Sol / GPT-6 Sol fallback
+  openai:    { input: 2.00, output: 10.00 },  // GPT-6.2 Sol / GPT-6.1 Sol fallback
   anthropic: { input: 4.00, output: 20.00 },  // Claude Opus 5.5 fallback
 };
 
@@ -115,6 +118,9 @@ const MODEL_CATALOG = [
   { id: 'qwen3-next-80b-a3b-instruct-maas', label: 'Qwen3 Next 80B Instruct', provider: 'agentplatform', publisher: 'qwen', providerFamily: 'qwen', providerLabel: 'Alibaba (Qwen)', endpointType: 'openai-maas', region: 'global', thinkingMode: 'off', model: 'qwen/qwen3-next-80b-a3b-instruct-maas', price: { input: 0.40, output: 1.60 }, context: 131072 },
 
   // --- 7. OpenAI & GPT-OSS (Verified live endpoints + Vertex AI MaaS) ---
+  { id: 'gpt-6.2-astra', label: 'GPT-6.2 Astra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6.2-astra', price: { input: 8.00, output: 40.00 }, context: 1050000 },
+  { id: 'gpt-6.2-sol', label: 'GPT-6.2 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6.2-sol', price: { input: 2.00, output: 10.00 }, context: 1050000 },
+  { id: 'gpt-6.1-terra', label: 'GPT-6.1 Terra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6.1-terra', price: { input: 1.00, output: 5.00 }, context: 1050000 },
   { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6.1-sol', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-sol', price: { input: 2.00, output: 10.00 }, context: 1000000 },
   { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'openai', publisher: 'openai', providerFamily: 'openai', providerLabel: 'OpenAI & GPT-OSS', model: 'gpt-6-astra', price: { input: 10.00, output: 50.00 }, context: 1000000 },
@@ -211,10 +217,11 @@ function modelFromCatalog(slot, id) {
   };
 }
 
-// The default 2 slots shown in the UI on first load (Gemini Models preset across all arenas).
+// The default 3 slots shown in the UI on first load (Gemini Models preset across all arenas).
 const DEFAULT_MODELS = [
-  modelFromCatalog('A', 'gemini-3.8-flash'),
-  modelFromCatalog('B', 'gemini-4-argon'),
+  modelFromCatalog('A', 'gemini-4-hydrogen'),
+  modelFromCatalog('B', 'gemini-4-neon'),
+  modelFromCatalog('C', 'gemini-4-carbon'),
 ];
 
 // Server-authoritative model resolution for a run. Takes whatever the client

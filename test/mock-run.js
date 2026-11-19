@@ -26,10 +26,11 @@ const fence = (code) => '```javascript\n' + code + '\n```';
 assert.deepStrictEqual(
   DEFAULT_MODELS.map((m) => ({ slot: m.slot, catalogId: m.catalogId })),
   [
-    { slot: 'A', catalogId: 'gemini-3.8-flash' },
-    { slot: 'B', catalogId: 'gemini-4-argon' },
+    { slot: 'A', catalogId: 'gemini-4-hydrogen' },
+    { slot: 'B', catalogId: 'gemini-4-neon' },
+    { slot: 'C', catalogId: 'gemini-4-carbon' },
   ],
-  'default slots should use the 2-model Gemini Models preset (Gemini 3.8 Flash + Gemini 4 Argon) across all arenas'
+  'default slots should use the 3-model Gemini Models preset (Gemini 4 Hydrogen + Gemini 4 Neon + Gemini 4 Carbon) across all arenas'
 );
 
 const gemini4Neon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-neon');
@@ -126,10 +127,10 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(thinkingProfile(gemini37Slot).level, 'medium', 'Gemini 3.7 Flash should show its medium default');
 
-// Verify documented defaults for the 3-slot Flagships lineup (Gemini 3.8 Flash, Claude Opus 5.5, GPT-6 Sol)
-const gemini38Slot = modelFromCatalog('A', 'gemini-3.8-flash');
-assert.strictEqual(thinkingOptions(gemini38Slot).defaultValue, 'medium', 'Gemini 3.8 Flash default thinkingLevel should be medium');
-assert.strictEqual(thinkingProfile(gemini38Slot).level, 'medium', 'Gemini 3.8 Flash thinkingProfile should show medium (default)');
+// Verify documented defaults for the 3-slot Flagships lineup (Gemini 4 Carbon, Claude Opus 5.5, GPT-6.2 Astra)
+const gemini4CarbonDefaultSlot = modelFromCatalog('A', 'gemini-4-carbon');
+assert.strictEqual(thinkingOptions(gemini4CarbonDefaultSlot).defaultValue, 'medium', 'Gemini 4 Carbon default thinkingLevel should be medium');
+assert.strictEqual(thinkingProfile(gemini4CarbonDefaultSlot).level, 'medium', 'Gemini 4 Carbon thinkingProfile should show medium (default)');
 
 const claudeOpus55Slot = modelFromCatalog('B', 'claude-opus-5-5');
 assert.strictEqual(thinkingOptions(claudeOpus55Slot).defaultValue, 'high', 'Claude Opus 5.5 default effort should be high');
@@ -139,6 +140,20 @@ assert.deepStrictEqual(
   'Claude Opus 5.5 should expose low, medium, high, xhigh, max effort options'
 );
 assert.strictEqual(thinkingProfile(claudeOpus55Slot).level, 'high', 'Claude Opus 5.5 thinkingProfile should show high');
+
+for (const [id, expectedIn, expectedOut] of [
+  ['gpt-6.2-astra', 8.00, 40.00],
+  ['gpt-6.2-sol', 2.00, 10.00],
+  ['gpt-6.1-terra', 1.00, 5.00],
+]) {
+  const gptSlot = modelFromCatalog('C', id);
+  assert(gptSlot, `${id} should resolve from catalog`);
+  assert.strictEqual(gptSlot.model, id, `${id} API model id should match`);
+  assert.strictEqual(gptSlot.context, 1050000, `${id} context window should be 1,050,000`);
+  assert.deepStrictEqual(gptSlot.price, { input: expectedIn, output: expectedOut }, `${id} standard pricing`);
+  assert.strictEqual(thinkingOptions(gptSlot).defaultValue, 'medium', `${id} default reasoning effort should be medium`);
+  assert.strictEqual(thinkingProfile(gptSlot).level, 'medium', `${id} thinkingProfile should show medium`);
+}
 
 const gpt6SolSlot = modelFromCatalog('C', 'gpt-6-sol');
 assert.strictEqual(thinkingOptions(gpt6SolSlot).defaultValue, 'medium', 'GPT-6 Sol default reasoning effort should be medium');

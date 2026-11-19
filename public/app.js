@@ -2634,8 +2634,8 @@ function seedSlots(preferredSlots) {
   }
 
   // Migrate legacy 3-model default (`gemini-4-argon` / `gemini-3.8-flash`, `claude-opus-5-5`, `gpt-6-sol`)
-  // to the new 2-model Gemini Models default (`gemini-3.8-flash` + `gemini-4-argon`) once per user
-  // unless the user subsequently selects a different lineup.
+  // and untouched older built-in preset lineups once per user so returning users see the updated
+  // Gemini 4 / GPT-6.2 / Opus 5.5 / GLM-5.2 lineups without overwriting custom picks.
   let migratedToGeminiDefault = false;
   try {
     const migKey = 'ullm.geminiDefaultV1.' + getUsername();
@@ -2651,6 +2651,36 @@ function seedSlots(preferredSlots) {
         migratedToGeminiDefault = true;
       }
       localStorage.setItem(migKey, '1');
+    }
+  } catch (_) {}
+
+  let migratedPresetSlots = false;
+  try {
+    const migV2Key = 'ullm.presetsV2.' + getUsername();
+    if (!localStorage.getItem(migV2Key) && Array.isArray(rawList)) {
+      const ids = rawList.map((m) => m && (m.catalogId || m.id));
+      const noEffort = rawList.every((m) => !m || !m.effort);
+      const exactIds = (expected) => ids.length === expected.length && expected.every((v, i) => ids[i] === v);
+      if (noEffort && exactIds(['gemini-3.8-flash', 'gemini-4-argon'])) {
+        rawList = CONFIG.models;
+        migratedPresetSlots = true;
+      } else if (noEffort && exactIds(['gemini-4-argon', 'claude-fable-5-1', 'gpt-6.1-sol'])) {
+        rawList = builtinPresetSlots('frontier');
+        migratedPresetSlots = true;
+      } else if (noEffort && exactIds(['gemini-3.8-flash', 'claude-sonnet-5-5', 'gpt-6-luna'])) {
+        rawList = builtinPresetSlots('fast');
+        migratedPresetSlots = true;
+      } else if (ids.length === 3 && ids.every((id) => id === 'gemini-3.8-flash')
+        && rawList[0] && rawList[0].effort === 'low'
+        && (!rawList[1] || !rawList[1].effort)
+        && rawList[2] && rawList[2].effort === 'high') {
+        rawList = builtinPresetSlots('same-model-thinking');
+        migratedPresetSlots = true;
+      } else if (noEffort && exactIds(['llama-4-maverick-17b-128e-maas', 'deepseek-v4.1-flash-maas', 'qwen3-235b-a22b-instruct-maas'])) {
+        rawList = builtinPresetSlots('open-maas');
+        migratedPresetSlots = true;
+      }
+      localStorage.setItem(migV2Key, '1');
     }
   } catch (_) {}
 
@@ -2673,7 +2703,7 @@ function seedSlots(preferredSlots) {
   // hardcoded `effort: 'high'` instead of their documented `medium` defaults.
   const hasLegacyFlagshipHigh = list.some((m) => m.id === 'gemini-3.8-flash' && m.effort === 'high')
     && list.some((m) => m.id === 'gpt-6-sol' && m.effort === 'high');
-  if (hasLegacyFlagshipHigh || migratedToGeminiDefault) {
+  if (hasLegacyFlagshipHigh || migratedToGeminiDefault || migratedPresetSlots) {
     if (hasLegacyFlagshipHigh) {
       list = list.map((m) => ({
         ...m,
@@ -2686,7 +2716,7 @@ function seedSlots(preferredSlots) {
     }, 50);
   }
 
-  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 2));
+  const count = Math.max(1, Math.min(MAX_SLOTS, list.length || 3));
   SLOT_IDS = ALL_SLOT_IDS.slice(0, count);
   ALL_SLOT_IDS.forEach((s) => { SLOT_ASSIGN[s] = null; SLOT_EFFORT[s] = null; });
   list.forEach((m, i) => {
@@ -2770,8 +2800,9 @@ function addSlot() {
   if (!nextSlot) return;
   // Pick verified frontier models for new slots
   const preferredOrder = [
-    'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash', 'claude-fable-5-1', 'gpt-6.1-sol', 'claude-opus-5-5', 'gpt-6-sol', 'claude-sonnet-5-5',
-    'grok-4.20-reasoning', 'deepseek-v4.1-flash-maas', 'deepseek-v3.2-maas', 'llama-4-maverick-17b-128e-maas',
+    'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-carbon', 'gemini-4-argon',
+    'gpt-6.2-astra', 'gpt-6.2-sol', 'claude-opus-5-5', 'gpt-6.1-terra', 'gpt-6.1-sol', 'claude-sonnet-5-5', 'claude-haiku-5-5',
+    'grok-4.20-reasoning', 'deepseek-v4.1-flash-maas', 'glm-5.2-maas', 'llama-4-maverick-17b-128e-maas',
   ];
   const existingIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]));
   let chosenId = preferredOrder.find((id) => {
@@ -2780,7 +2811,7 @@ function addSlot() {
   });
   if (!chosenId) {
     const firstAvail = catalog().find((c) => modelAvailability(c).ok);
-    chosenId = firstAvail ? firstAvail.id : 'gemini-4-argon';
+    chosenId = firstAvail ? firstAvail.id : 'gemini-4-neon';
   }
   SLOT_IDS.push(nextSlot);
   SLOT_ASSIGN[nextSlot] = chosenId;
@@ -2812,29 +2843,30 @@ function builtinPresetSlots(presetName) {
   let target = [];
   if (presetName === 'gemini') {
     target = [
-      { id: 'gemini-3.8-flash',    effort: null },
-      { id: 'gemini-4-argon',      effort: null },
+      { id: 'gemini-4-hydrogen', effort: null },
+      { id: 'gemini-4-neon',     effort: null },
+      { id: 'gemini-4-carbon',   effort: null },
     ];
   } else if (presetName === 'frontier') {
     target = [
-      { id: 'gemini-4-argon',      effort: null },
-      { id: 'claude-fable-5-1',    effort: null },
-      { id: 'gpt-6.1-sol',         effort: null },
+      { id: 'gemini-4-carbon',   effort: null },
+      { id: 'claude-opus-5-5',   effort: null },
+      { id: 'gpt-6.2-astra',     effort: null },
     ];
   } else if (presetName === 'fast') {
     const fastThird = catalog().find((x) => x.id === 'gpt-6-luna' && modelAvailability(x).ok)
       ? 'gpt-6-luna'
-      : 'grok-4.20-non-reasoning';
+      : 'grok-4.1-fast-non-reasoning';
     target = [
-      { id: 'gemini-3.8-flash',    effort: null },
-      { id: 'claude-sonnet-5-5',   effort: null },
-      { id: fastThird,             effort: null },
+      { id: 'gemini-4-hydrogen', effort: null },
+      { id: 'claude-haiku-5-5',  effort: null },
+      { id: fastThird,           effort: null },
     ];
   } else if (presetName === 'same-model-thinking') {
     target = [
-      { id: 'gemini-3.8-flash', effort: 'low' },
-      { id: 'gemini-3.8-flash', effort: null },
-      { id: 'gemini-3.8-flash', effort: 'high' },
+      { id: 'gemini-4-hydrogen', effort: 'low' },
+      { id: 'gemini-4-hydrogen', effort: null },
+      { id: 'gemini-4-hydrogen', effort: 'xhigh' },
     ];
   } else if (presetName === 'grok-reasoning') {
     target = [
@@ -2846,7 +2878,7 @@ function builtinPresetSlots(presetName) {
     target = [
       { id: 'llama-4-maverick-17b-128e-maas', effort: null },
       { id: 'deepseek-v4.1-flash-maas',       effort: null },
-      { id: 'qwen3-235b-a22b-instruct-maas',  effort: null },
+      { id: 'glm-5.2-maas',                   effort: null },
     ];
   }
   return target.filter((t) => {
@@ -5529,10 +5561,10 @@ async function run() {
       if (window._lastQuotaBusy) return; // concurrency cap: per-slot message only, no alert loop
       if (window._lastQuotaObj && (window._lastQuotaObj.externalQuotaExhausted || window._lastQuotaObj.openaiQuotaExhausted)) {
         const switchToVertex = window.confirm(
-          `${m}\n\nReplace the OpenAI / external slot(s) with Vertex AI models (Claude Opus 5.5 / Gemini 3.8 Flash) and run this comparison now? It will count against your Vertex AI budget instead.`
+          `${m}\n\nReplace the OpenAI / external slot(s) with Vertex AI models (Gemini 4 Hydrogen / Gemini 4 Neon / Claude Opus 5.5) and run this comparison now? It will count against your Vertex AI budget instead.`
         );
         if (switchToVertex) {
-          const vertexFallbacks = ['claude-opus-5-5', 'gemini-3.8-flash', 'claude-sonnet-5-5', 'gemini-3.1-pro', 'claude-haiku-4-5'];
+          const vertexFallbacks = ['gemini-4-hydrogen', 'gemini-4-neon', 'claude-opus-5-5', 'gemini-4-carbon', 'claude-sonnet-5-5', 'claude-haiku-5-5'];
           const k = loadKeys();
           const usedIds = new Set(SLOT_IDS.map((s) => SLOT_ASSIGN[s]).filter(Boolean));
           MODELS.forEach((mod) => {
@@ -6982,7 +7014,7 @@ function renderSavedRun(snap) {
       let catEntry = cat.find((x) => x.id === mappedId)
         || (m && m.model ? cat.find((x) => x.model === m.model && x.provider === m.provider) : null)
         || (m && m.label ? cat.find((x) => x.label === m.label) : null);
-      const cid = catEntry ? catEntry.id : (mappedId || (cat[0] && cat[0].id) || 'gemini-3.8-flash');
+      const cid = catEntry ? catEntry.id : (mappedId || (cat[0] && cat[0].id) || 'gemini-4-hydrogen');
       newSlotIds.push(slot);
       newAssign[slot] = cid;
       let eff = (m && m.effortOverride) || null;

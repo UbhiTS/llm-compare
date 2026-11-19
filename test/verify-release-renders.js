@@ -120,11 +120,16 @@ function httpRequest(port, method, urlPath, bodyObj) {
     appJs.includes('function isCadHistoryRun(r)') &&
     appJs.includes("'🧊 3D & CAD Arena Run History'") &&
     appJs.includes("if (presetName === 'gemini')") &&
-    appJs.includes("{ id: 'claude-fable-5-1',    effort: null }") &&
-    appJs.includes("{ id: 'gpt-6.1-sol',         effort: null }") &&
+    appJs.includes("{ id: 'gemini-4-hydrogen', effort: null }") &&
+    appJs.includes("{ id: 'gemini-4-neon',     effort: null }") &&
+    appJs.includes("{ id: 'gemini-4-carbon',   effort: null }") &&
+    appJs.includes("{ id: 'claude-opus-5-5',   effort: null }") &&
+    appJs.includes("{ id: 'gpt-6.2-astra',     effort: null }") &&
+    appJs.includes("{ id: 'claude-haiku-5-5',  effort: null }") &&
+    appJs.includes("{ id: 'glm-5.2-maas',                   effort: null }") &&
     appJs.includes('function buildProviderModelCascadingControlsHtml(') &&
     appJs.includes("providerSelectClass: 'slot-provider-select col-inline-select col-prov-sel img-provider-select'"),
-    'public/app.js must isolate 3D & CAD Arena history, use Gemini 4 Argon + Fable 5.1 + Sol 6.1 in Flagships preset, and use Provider ▸ Model cascading controls across all arenas including Image & GenMedia Arena'
+    'public/app.js must isolate 3D & CAD Arena history, use updated Gemini 4 / Flagships / Fast / Thinking / Vertex MaaS presets, and use Provider ▸ Model cascading controls across all arenas including Image & GenMedia Arena'
   );
   assert(
     cadRunnerHtml.includes('renderer.shadowMap.autoUpdate = vi === 0 ? savedShadowAutoUpdate : false;') &&
