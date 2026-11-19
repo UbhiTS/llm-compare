@@ -522,7 +522,7 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   }
   console.log('✓ External user Force Password Change on login, Anytime Admin Force, Temp Password Reset, and Email-Address Usernames verified');
 
-  // Verify Gemini 4 Neon + Gemini 4 Carbon + Gemini 4 Argon + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
+  // Verify Gemini 4 Neon + Gemini 4 Hydrogen + Gemini 4 Carbon + Gemini 4 Argon + new Claude 5.5 & OpenAI 6.1/5.5/5.4/5.3 models & pricing in MODEL_CATALOG & providers
   const { DEFAULT_MODELS, RETIRED_CATALOG, RETIRED_REPLACEMENT } = require('../src/pricing');
   const providersMod = require('../src/providers');
   const neonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-neon');
@@ -536,6 +536,18 @@ assert(Array.isArray(history.listRuns(HUSER)), 'listRuns should return an array'
   assert.deepStrictEqual(providersMod.thinkingOptions(neonEntry).options.map((o) => o.value), ['low', 'medium', 'high', 'xhigh']);
   assert.strictEqual(providersMod.thinkingOptions(neonEntry).defaultValue, 'high');
   assert.strictEqual(providersMod.thinkingProfile(neonEntry).level, 'high');
+
+  const hydrogenEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-hydrogen');
+  assert(hydrogenEntry, 'MODEL_CATALOG must include gemini-4-hydrogen (Gemini 4 Hydrogen)');
+  assert.strictEqual(hydrogenEntry.label, 'Gemini 4 Hydrogen', 'Gemini 4 Hydrogen label must match');
+  assert.strictEqual(hydrogenEntry.model, 'gemini-4-hydrogen', 'Gemini 4 Hydrogen API model id must match');
+  assert.strictEqual(hydrogenEntry.provider, 'agentplatform', 'Gemini 4 Hydrogen must use Vertex AI Agent Platform');
+  assert.strictEqual(hydrogenEntry.region, 'global', 'Gemini 4 Hydrogen must route to global region');
+  assert.strictEqual(hydrogenEntry.context, 1048576, 'Gemini 4 Hydrogen context window must be 1,048,576');
+  assert.deepStrictEqual(hydrogenEntry.price, { input: 1.50, output: 7.50 }, 'Gemini 4 Hydrogen pricing must be $1.50 / $7.50');
+  assert.deepStrictEqual(providersMod.thinkingOptions(hydrogenEntry).options.map((o) => o.value), ['low', 'medium', 'high', 'xhigh']);
+  assert.strictEqual(providersMod.thinkingOptions(hydrogenEntry).defaultValue, 'high');
+  assert.strictEqual(providersMod.thinkingProfile(hydrogenEntry).level, 'high');
 
   const carbonEntry = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
   assert(carbonEntry, 'MODEL_CATALOG must include gemini-4-carbon (Gemini 4 Carbon)');

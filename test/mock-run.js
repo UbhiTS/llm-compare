@@ -55,6 +55,29 @@ assert.strictEqual(
   'Gemini 4 Neon must never send the unsupported minimal level (the API rejects it with a 400)'
 );
 
+const gemini4Hydrogen = MODEL_CATALOG.find((m) => m.id === 'gemini-4-hydrogen');
+assert(gemini4Hydrogen, 'Gemini 4 Hydrogen should be present in the model catalog');
+assert.deepStrictEqual(gemini4Hydrogen.price, { input: 1.50, output: 7.50 }, 'Gemini 4 Hydrogen flat 1M pricing');
+assert.strictEqual(gemini4Hydrogen.region, 'global', 'Gemini 4 Hydrogen should target the global region');
+assert.strictEqual(gemini4Hydrogen.provider, 'agentplatform', 'Gemini 4 Hydrogen should use agentplatform');
+const gemini4HydrogenSlot = modelFromCatalog('A', 'gemini-4-hydrogen');
+assert.strictEqual(gemini4HydrogenSlot.model, 'gemini-4-hydrogen', 'Gemini 4 Hydrogen should use its stable API model id');
+assert.deepStrictEqual(
+  thinkingOptions(gemini4HydrogenSlot).options.map((o) => o.value),
+  ['low', 'medium', 'high', 'xhigh'],
+  'Gemini 4 Hydrogen should expose low, medium, high, xhigh thinking levels (no minimal)'
+);
+assert.strictEqual(thinkingOptions(gemini4HydrogenSlot).defaultValue, 'high', 'Gemini 4 Hydrogen default thinkingLevel should be high');
+assert.strictEqual(thinkingProfile(gemini4HydrogenSlot).level, 'high', 'Gemini 4 Hydrogen thinkingProfile should show high (default)');
+assert.strictEqual(
+  thinkingProfile({ ...gemini4HydrogenSlot, effort: 'xhigh' }).level, 'xhigh',
+  'Gemini 4 Hydrogen should send thinkingLevel xhigh when it is picked on the card'
+);
+assert.strictEqual(
+  thinkingProfile({ ...gemini4HydrogenSlot, effort: 'minimal' }).overridden, false,
+  'Gemini 4 Hydrogen must never send the unsupported minimal level (the API rejects it with a 400)'
+);
+
 const gemini4Carbon = MODEL_CATALOG.find((m) => m.id === 'gemini-4-carbon');
 assert(gemini4Carbon, 'Gemini 4 Carbon should be present in the model catalog');
 assert.deepStrictEqual(gemini4Carbon.price, { input: 2.00, output: 10.00 }, 'Gemini 4 Carbon introductory pricing');
